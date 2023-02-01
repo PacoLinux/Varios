@@ -1,18 +1,18 @@
 https://bitsavers.org/pdf/dartmouth/theses/Blean_-_The_PDP-9_Mini_Time-Sharing_System_197206.pdf
 
-						THAYER SCHOOL OF ENGINEERING
-							DARTMOUTH COLLEGE
+				THAYER SCHOOL OF ENGINEERING
+						DARTMOUTH COLLEGE
 
-					The PDP-9 Mini Time-Sharing System
-								  by
+				The PDP-9 Mini Time-Sharing System
+							  by
 
-							Robert Wo Blean
+						Robert Wo Blean
 
-							Master of Science
+						Master of Science
 
-							JUNE 1972
+						JUNE 1972
 
-							ABSTRACT
+						ABSTRACT
 
 The PDP-9 Mini Time-Sharing System (MTSS) is a small general purpose time-sharing system running on a Digital Equipment Corporation PDP-9 computer with BK of core memory and three Teletype terminals. MTSS demonstrates the practicality of implementing a general purpose time sharing system on such a small computer, and illustrates one way in which this can be done.
  
@@ -24,7 +24,7 @@ MTSS is designed to permit additional system programs and features to be easily 
 
 
 
-					 			ACKNOWLEDGEMENTS
+					 ACKNOWLEDGEMENTS
 
 I would like to express my gratitude to my advisor, Professor Miles Ve Hayes, for his help, encouragement, and time spent as a sounding board. In addition, I am grateful for the advice of my other committee members.
 
@@ -32,66 +32,119 @@ My thanks also go to Thayer School and to the College for the resources provided
 
 
 
-							TABLE OF CONTENTS
+					TABLE OF CONTENTS
 
 1. ABSTRACT
+
 2. ACKNOWLEDGEMENTS
+
 3. INTRODUCTION
+
 4. ENVIRONMENT
+
 	4.1. Software Environment
+	
 	4.2. MTSS, GROWTH, and DTSS Relationship 13
+	
 	4.3. Hardware Environment 14
+	
 5. INPUT/OUTPUT DEVICE TREATMENT 18
+
 6. SYSTEM INITIALIZATION 26
+
 	6.1. What A ctually Happens 28
+	
 	6.2. Adding New System Programs to MTSS 28
+	
 7. HOW TO LOAD AND RUN A PROGRAM 30
+
 	7.1. System Programs 30
+	
 	7.2. User-Supplied Programs 30
+	
 8. MTSS CONVENTIONS 31
+
 9. PROGRAM STRUCTURE 33
+
 	9.1. Resident Executive 33
+	
 	9.2. Executive Overlays 35
+	
 		9.2.1) SWAPPER 35
+		
 		9.2.2) Memory Protection 40
+		
 		9.2.2.1) Memory Reference Instructions 41
+		
 		9o2.2.2) Operate Instructions 41
+		
 		9.2.2.3) Input/Output Instructions 42
+		
 		9.2.3) Special IOT Instructions 46
+		
 	9.3. Phantom Programs 53
+	
 		9.3.1 MONITOR 53
+		
 			9.3.1.1 Commands 54
+			
 			9.3.1.2 Validation 56
+			
 			9.3.1.3 Control Line 57
+			
 			9.3.1.4 MONITOR Error Messages 57
+			
 			9.3.1.5	Run-Time Error Messages 58
+			
 		9.3.2 LOADER 61
+		
 			9.3.2.1 Formats 61
+			
 			9.3.2.1 Filenames 61
+			
 			9.3.2.1 Commands 61
+			
 		9.3.3 DDT
+		
 			9.3.3.1 Command Format 65
+			
 			9.3.3.2 File Specification 65
+			
 			9.3.3.3 Range specification 67
+			
 			9.3.3.4 Mode specification 67
+			
 			9.3.3.5 DDT Commands 70
+			
 		9.3.4 CATALOG 77
+		
 	9.4 System-Supplied User Programs 78
+	
 		9.4.1 BASIC Interpreter 79
+		
 		9.4.2 DEBUGGER 78
+		
 	9.5 General Discussion of System Programs 80
+	
 10. SCHEDULING
+
 11. FILE STRUCTURE
+
 12. CORE STRUCTURE
+
 13. DISK STRUCTURE
 
 
 							FIGURES
 
 12.1. MTSS CORE MAP: USER or S-USER PROGRAM 79
+
 12.2. MTSS CORE MAP: PHANTOM PROGRAM 81
+
 13.1. MAJOR DIVISIONS OF THE DISK 83
+
 13.2. A TYPICAL USER'S DISK AREA 85
+
 13.3. MAJOR DIVISIONS OF THE MTSS/GROWTH DISK 86
 
 --
@@ -916,10 +969,7 @@ Section 9a 3o 1.1 -54-
 
 
 
-README.md
-From the ABSTRACT - JUNE 1972
 
-The PDP-9 Mini Time-Sharing System (MTSS) is a small general purpose time-sharing system running on a Digital Equipment Corporation PDP-9 computer with 8K of core memory and three Teletype terminals.
 
 
 
