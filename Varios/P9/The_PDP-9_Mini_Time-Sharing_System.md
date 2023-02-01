@@ -177,7 +177,7 @@ E) System-Supplied User programs
 
  1) DDT
  
- 2) [BASIC Interpreter](./PDP9.MAR.asm)
+ 2) [BASIC Interpreter](./PDP9BAS.MAR.asm)
 
 						INTRODUCTION
 
