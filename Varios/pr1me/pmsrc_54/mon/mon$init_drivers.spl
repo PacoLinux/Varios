@@ -1,0 +1,130 @@
+/* MON$INIT_DRIVERS.SPL, PrintMaster, Jim Wilcoxson, May 10, 1984             */
+/* Initializes device drivers when the monitor starts up.                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$init_drivers : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$change_device_kwl.ins.spl';
+%include '*>entry>mon$create_device.ins.spl';
+%include '*>entry>mon$unattach.ins.spl';
+%list;
+
+dcl
+   kwlp                 ptr,                /* keyword list pointer */
+   kwlb                 ptr,                /* pointer to keyword buffer */
+   expand_info          like kwl$expand_info,
+   flags                like kwl$flags,
+   kwl_unit             bin,                /* unit for keyword file */
+   kwl_name             char(32) var,
+   wildname    char(32) var,
+   dir_unit    bin,
+   1  dir_entry,
+      2  ecw   bin,
+      2  name  char(32) var,
+      2  junk  (9) bin,
+   counts(4)   bin,
+   device_id   char(32) var,
+   ents        bin,                      /* number returned */
+   devp        ptr,
+   status      bin;
+
+   kwl_unit = 0;
+   dir_unit = 0;
+   kwlp = null;
+   kwlb = null;
+
+   on condition (cleanup$)
+      begin;
+         call kwl$free_buffer (kwlb);
+         call kwl$destroy_kwl (kwlp);
+         call gp$close (dir_unit);
+         call gp$close (kwl_unit);
+      end;
+
+   if ^gp$attach_system_dir (status) then
+      call err$ (err$primos_et, 'No system directory', status, 0, 0);
+
+   call at$rel (k$seth, gbl$device_dir_name, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'No device directory', status, 0, 0);
+
+   /* search for device CPL files */
+
+   string(expand_info) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   wildname = '@.CPL';
+   dir_unit = gp$open_curdir();
+   call dir$ls (dir_unit, 4, '1'b, '0010'b, addr(wildname), 1,
+                addr(dir_entry), 1, 27, ents, counts, 0, 0, status);
+   do while (status = 0);
+
+      device_id = before (dir_entry.name, '.');
+      kwl_name = device_id || kwl$kwl_suffix;
+
+      devp = mon$create_device (device_id, psv.my_system_id);
+      call at$hom (status);                 /* back up to device directory */
+      call sem$op ((dir_entry.name), length(dir_entry.name), 1,
+                   devp->device_info.semaphore, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'Opening device semaphore', status, 0, 0);
+
+      /* if device timed-out, change state to timed-out and read in KWL */
+
+      call mon$change_device_state (devp, '', ds$none_cc, 0, ds$shutdown_st);
+      call at$rel (k$setc, gbl$timeout_dir_name, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'No device timeout directory', status, 0, 0);
+
+      if gp$file_exists (kwl_name) then do;
+         on condition (err$condition_before_msg)
+            begin;
+               call gp$close (kwl_unit);
+               call kwl$free_buffer (kwlb);
+               call kwl$destroy_kwl (kwlp);
+               if err$es.status1 ^= e$fntf then
+                  call err$ (err$primos_et+err$warning_et,
+                             'Couldn''t open device keyword file.',
+                             err$es.status1, 0, 0);
+               goto notify_device;
+            end;
+
+         call gp$open_file (k$read+k$getu, kwl_name, kwl_unit);
+         call kwl$read_disk_buffer (kwl_unit, kwlb);
+         call gp$close (kwl_unit);
+         kwlp = null;
+         call kwl$buf_to_kwl (kwlb, kwlp, expand_info, flags);
+         call kwl$free_buffer (kwlb);
+         call mon$change_device_kwl (devp, kwlp);
+         call mon$change_device_state (devp, '', ds$none_cc, 0,
+                                       ds$timed_out_st);
+         kwlp = null;
+         end;
+
+notify_device:
+
+      /* notify device semaphore in case device is running */
+
+      call sem$nf (devp->device_info.semaphore, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'Notifying semaphore', status, 0, 0);
+
+      call dir$ls (dir_unit, 4, '0'b, '0010'b, addr(wildname), 1,
+                   addr(dir_entry), 1, 27, ents, counts, 0, 0, status);
+   end;  /* do while status = 0 */
+   call gp$close (dir_unit);
+   if status ^= e$eof then
+      call err$ (err$primos_et, 'Reading device directory', status, 0, 0);
+
+   call mon$unattach;
+
+end mon$init_drivers;

@@ -1,0 +1,337 @@
+/* L3$PDN.SPL, PrintMaster, Jim Wilcoxson, April 20, 1986                     */
+/* Device Driver for serial devices attached via PDN.                         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l3$pdn: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   key            bin,
+   data_line      char(*),                  /* only valid when key = print */
+   number         bin;                      /* skip count or channel */
+
+/* static vars */
+
+%replace
+   buffer_maxlen  by 512;
+
+dcl
+   buffer         char (buffer_maxlen),
+   buffer_len     bin static init (0),      /* chars currently in buffer */
+   connected      bit static init (false),
+   1  vcstatus static,
+      2  stat     bin,
+      2  cc       bin,
+   vcid           bin static;
+
+/* miscellaneous dynamic vars */
+
+dcl
+   status         bin;
+
+
+   select (key);
+      when (l2$output_string)
+         return (output_string());
+      when (l2$job_init)
+         return (job_init());
+      when (l2$job_terminate)
+         return (job_terminate());
+      when (l2$device_init)
+         return (device_init());
+      when (l2$device_terminate)
+         return (device_terminate());
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of standard device driver */
+
+%page;
+
+device_init: proc returns (bin);
+
+dcl
+   func           bin,
+   kwp            ptr;
+
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = ' ';
+   l23.scan_key = l2$trim_key;
+
+   do func = l2$job_init, l2$job_terminate,
+             l2$output_string, l2$device_terminate;
+      l23.func_implemented (func) = true;
+      end;
+
+   return (l2$func_handled_rc);
+
+end device_init;
+
+
+
+device_terminate: proc returns (bin);
+
+   if connected then do;
+      call x$clr (vcid, 0, status);         /* clear circuit */
+      do while (vcstatus.stat ^= xs$clr);   /* wait for circuit to clear */
+         call x$wait (1);
+         end;
+      connected = false;                    /* now we're not connected */
+      end;
+
+   return (l2$func_handled_rc);
+
+end device_terminate;
+
+
+
+job_init: proc returns (bin);
+
+   if ^connected then
+      call connect;
+
+   return (l2$func_handled_rc);
+
+end job_init;
+
+
+
+job_terminate: proc returns (bin);
+
+   call flush_output;
+   return (l2$func_handled_rc);
+
+end job_terminate;
+
+
+
+output_string: proc returns (bin);
+
+   if length (data_line) > buffer_maxlen - buffer_len then
+      call flush_output;
+   substr (buffer, buffer_len+1, length (data_line)) = data_line;
+   buffer_len = buffer_len + length (data_line);
+
+   return (l2$func_handled_rc);
+
+end output_string;
+
+%page;
+
+/* CONNECT - procedure to connect to printer over PDN */
+
+connect: proc;
+
+dcl
+   kwp            ptr,
+   value          char (kwl$chars_in_value) var,
+   available      bit,
+   x25_addr       char(20),
+   x25_addr_len   bin,
+   user_data      char(12),
+   user_data_len  bin,
+   prid           char(4),
+   prid_len       bin;
+
+   /* lookup -PDN keyword in device keyword list; format is:
+
+         -PDN <X.25 addr> <user data> <initial buffer> <buffer size>
+
+      where:
+
+         <X.25 addr> is the X.25 address to call
+         <user data> is the user data field to use in the call
+         <initial buffer> is a string to be transmitted with trailing
+                          CR/LF after the call
+         <buffer size> is the maximum buffer size to send to X$TRAN
+                       (default is 1024 characters)
+
+   */
+
+   if ^kwl$find_kw ('PDN', ds.p_device_kwl, kwp) then
+      call err$ (err$user_et, 'Missing -PDN keyword on device.', 0, 0, 0);
+
+   if kwl$get_nth_value (kwp, 1, value) then do;
+      x25_addr = value;
+      x25_addr_len = length (value);
+      end;
+   else
+      call err$ (err$user_et, 'Missing X.25 address on PDN keyword', 0, 0, 0);
+
+   if kwl$get_nth_value (kwp, 2, value) then do; /* fetch user data */
+      user_data = value;
+      user_data_len = length (value);
+      end;
+   else
+      user_data_len = 0;
+
+   /* call the printer */
+
+   prid = gp$hex ('01000000');
+
+   available = true;
+   vcstatus.stat = xs$mem;
+   do while (vcstatus.stat = xs$mem | vcstatus.stat = xs$rst);
+      call xlconn (xk$adr+xk$any+xk$fct, vcid, 0, x25_addr, x25_addr_len, '', 0,
+                   prid, 4, user_data, user_data_len, vcstatus);
+
+      /* wait for call to complete */
+
+      do while (vcstatus.stat = xs$ip);
+         call x$wait (1);
+         end;
+
+      /* did it work? */
+
+      select (vcstatus.stat);
+         when (xs$cmp,xs$mem,xs$rst)
+            ;                               /* yes, or retry */
+         when (xs$dwn, xs$max, xs$net, xs$unk, xs$clr)
+            available = false;
+         otherwise
+            call err$ (err$network_et, 'Calling PDN device',
+                       vcstatus.stat, 0, vcstatus.cc);
+         end;
+      end;  /* do while */
+
+   /* if we can't connect due to a temporary problem, let somebody know */
+
+   if ^available then
+      ; /* change state to retry in a few minute */
+
+   /* okay, we're connected; send the initial string, if any */
+
+   if kwl$get_nth_value (kwp, 3, value) then
+      call xmit (addr(value)->bvs.chars, length (value), xt$lv0);
+
+   /* set X.29 parameter 12 to 1 (enable XON/XOFF) */
+
+   call xmit (gp$hex ('020C01'), 3, xt$lv1);
+
+end connect;
+
+
+/* XMIT - transmit a nonvarying character string over X.25 */
+
+xmit: proc (string, len, level);
+
+dcl
+   string      char(*),
+   len         bin,
+   level       bin;
+
+dcl
+   status      bin;                         /* x$tran status */
+
+
+   if len = 0 then
+      return;
+
+
+retry:
+
+   call x$tran (vcid, level, string, len, status);
+   do while (status = xs$ip);
+      call x$wait (5);
+      end;
+   select (status);
+      when (xs$cmp)
+         ;
+      when (xs$mem, xs$max, xs$rst) do;
+         if status = xs$rst then
+            call err$ (err$log_event_et, 'Circuit reset', 0, 0, 0);
+         call sleep$ (one_second);
+         goto retry;
+         end;
+      when (xs$bvc, xs$clr)
+         ; /* signal device not available */
+      otherwise
+         call err$ (err$network_et+err$warning_et, 'Sending buffer',
+                    vcstatus.stat, status, vcstatus.cc);
+      end;  /* select (status) */
+
+end xmit;
+
+
+/* FLUSH_OUTPUT - flush any buffered data */
+
+flush_output: proc;
+
+   if buffer_len > 0 then do;
+      call xmit (buffer, buffer_len, xt$lv0);
+      buffer_len = 0;
+      end;
+
+end flush_output;
+
+
+/* TALKBACK - respond to X.29 requests from PAD, flush any other messages */
+
+talkback: proc;
+
+dcl
+   1  receive_stat static,
+      2  stat     bin init (xs$mem),        /* receive status */
+      2  level    bin,                      /* data level */
+      2  nbytes   bin,                      /* bytes received */
+   receive_buf    char(128) static,         /* buffer for received data */
+   1  x29_buf     defined (receive_buf),
+      2  type     bit(8) unal,
+      2  pairs    (63),
+         3  par   bit(8) unal,
+         3  value bit(8) unal;
+
+
+   select (receive_stat.stat);
+
+      when (xs$mem, xs$max, xs$rst)
+         call x$rcv (vcid, receive_buf, 128, receive_stat);
+
+      when (xs$ip)
+         ;                                  /* do nothing */
+
+      when (xs$cmp) do;                     /* talk back to PDN */
+         if receive_stat.level = xt$lv1 then
+            select (x29_buf.type);
+               when ('01'b4) do;            /* invitation to clear */
+                  status = device_terminate();  /* dummy status */
+                  ; /* tell somebody device not available */
+                  end;
+               when ('04'b4, '06'b4) do;    /* read, set & read */
+                  x29_buf.type = '00';
+                  call xmit (receive_buf, receive_stat.nbytes, xt$lv1);
+                  end;
+               otherwise
+                  ;
+               end;  /* select */
+         call x$rcv (vcid, receive_buf, 128, receive_stat);
+         end;
+
+      when (xs$clr)
+         ; /* tell somebody device no longer available */
+
+      otherwise
+         call err$ (err$network_et, 'Receiving buffer', vcstatus.stat,
+                    receive_stat.stat, vcstatus.cc);
+      end;  /* select */
+
+end talkback;
+
+end l3$pdn;

@@ -1,0 +1,323 @@
+/* MON$MAIN_MONITOR.SPL, PrintMaster, Jim Wilcoxson, November 23, 1983        */
+/* Main monitor/master procedure.                                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$main_monitor : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_to_master.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$scan_device_list.ins.spl';
+%include '*>entry>mon$init_disk_list.ins.spl';
+%include '*>entry>mon$master_check.ins.spl';
+%include '*>entry>mon$process_message.ins.spl';
+%include '*>entry>mon$scan_job_list.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$update_disk_list.ins.spl';
+
+dcl mon$read_system_list   entry;
+dcl mon$init_drivers       entry;
+%list;
+
+
+%replace
+   x$wait_tenths        by 10,              /* =1 second */
+   device_scan_secs     by 30,
+   disk_list_secs       by 60,
+   open_job_check_secs  by 60,              /* check open jobs every 60 secs */
+   slow_job_scan_secs   by 15,              /* normal scan every 15 seconds */
+   fast_job_scan_secs   by  5;              /* fast scan is every 5 seconds */
+
+dcl
+   device_scan_ticks       bin(31),
+   disk_list_ticks         bin(31),
+   fast_job_scan_ticks     bin(31),
+   slow_job_scan_ticks     bin(31),
+   system_scan_ticks       bin(31),
+
+   ticks_waited            bin(31),
+   shortest_event_ticks    bin(31),
+   sem$wait_tenths         bin,
+   tenths_per_tick         float,
+
+   device_scan_ticks_left  bin(31),
+   disk_list_ticks_left    bin(31),
+   job_scan_ticks_left     bin(31),
+   system_scan_ticks_left  bin(31),
+
+   devp           ptr,
+   more           bit,
+   ph_logo$       condition,                /* condition for phantom logouts */
+   phant_user     bin,                      /* phantom user number */
+
+   (swi, value) like swi_switches,
+   sw$int_status           bin,             /* need separate status for this */
+   status                  bin,
+   msgp                    ptr,             /* pointer to received message */
+   user_msgp               ptr,             /* pointer to user part of msg */
+   system_scan_index       bin;             /* next system to be scanned */
+
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.kwl_address = addr(kwl$static_external); /* dynamic common kludge */
+
+   if gp$init ('monitor', '', proc_exit) then
+      on condition (any$)
+         call gp$any;
+   psv.copyright_counter = 0;               /* force copyright message */
+   call gp$version ('MONITOR');
+
+   /* make on-unit to catch device logouts, and mark them and shutdown */
+
+   on condition (ph_logo$)
+      begin;
+      do while (true);
+         call lon$r (addr(phant_user), 1, more, status);
+         if status = e$ndat then
+            leave;                       /* do while (true) */
+
+search_loop:
+         do devp = mon.device_bol repeat devp->device_info.next while (devp ^= null);
+            if devp->device_info.user_nr = phant_user
+             & devp->device_info.device_state ^= ds$timed_out_st then do;
+               call mon$change_device_state (devp, '', ds$none_cc, 0,
+                                              ds$shutdown_st);
+               leave search_loop;
+               end;
+            end;  /* do devp */
+         end;  /* do while true */
+      end;  /* begin block*/
+
+   call initialization;
+
+   /* Top of monitor loop */
+
+   do while (true);
+
+      /* NOTE: If a software interrupt is pending, it will be invoked
+               immediately during SW$INT.  A separate status variable is
+               needed because the on-unit for PH_LOGO$ will leave "status"
+               set to e$ndat if it is invoked */
+
+      call sw$int (k$alon, swi, value, sw$int_status);
+      if sw$int_status ^= 0 then
+         call err$ (err$primos_et, 'Enabling interrupts', sw$int_status, 0, 0);
+
+      ticks_waited = gp$ticks();
+      if psv.network_exists then
+         call x$wait (x$wait_tenths);       /* wait for an event */
+      else do;
+
+         /* compute semaphore wait time; this is the length of the shortest
+            event */
+
+         shortest_event_ticks = device_scan_ticks_left;
+         if job_scan_ticks_left < shortest_event_ticks then
+            shortest_event_ticks = job_scan_ticks_left;
+         if disk_list_ticks_left < shortest_event_ticks then
+            shortest_event_ticks = disk_list_ticks_left;
+
+         sem$wait_tenths = shortest_event_ticks * tenths_per_tick;
+         if sem$wait_tenths > 0 then
+            call sem$tw (gbl.monitor_semaphore, sem$wait_tenths, status);
+
+         end;
+
+      /* monitor is awake; if user # has been set to zero, change it
+         back.  This pathological case occurs if INIT_PRINTMASTER -FULL
+         is run while the monitor is active */
+
+      if psv.monitor_user ^= gbl.my_user_nr then
+         if ^cstore (psv.monitor_user, 0, gbl.my_user_nr) then
+            call err$ (err$user_et, 'Another monitor has started',
+                       err$monitor_already_running_ue, 0, 0);
+
+      /* turn off logout notification to prevent updating a device that
+         has logged out.  This can cause concurrency problems if the
+         monitor happens to be looking at the device list */
+
+      swi.len = 5;
+      swi.flags='08'b4;
+      call sw$int (k$off, swi, value, sw$int_status);
+      if sw$int_status ^= 0 then
+         call err$ (err$primos_et, 'Disabling interrupts', sw$int_status, 0, 0);
+
+      /* service the network */
+
+      if psv.network_exists then
+         call comm$service;
+
+      /* process all requests on request list */
+
+      do while (comm$fetch_msg (msgp, user_msgp));
+         call mon$process_message (msgp, user_msgp);
+         if msgp ^= null then               /* may be destroyed in above call */
+            call comm$destroy_msg (msgp);
+         end;
+
+      ticks_waited = gp$ticks() - ticks_waited;
+      if ticks_waited < 0 then
+         call err$ (err$coding_et, 'Ticker is broke', 0, 0, 0);
+
+      /* process all events if time is up */
+
+      if psv.network_exists & mon.my_system_index ^= 1 then do;
+         system_scan_ticks_left = system_scan_ticks_left - ticks_waited;
+         if system_scan_ticks_left <= 0 then do;
+            system_scan_ticks_left = system_scan_ticks;
+
+            /* check for new masters */
+
+            if gbl.I_am_master then
+               call check_for_new_master;
+            else                            /* make sure my master is there */
+               if ^comm$connected (mon.master_system_id) then do;
+                  system_scan_index = 1;    /* prep for changing to master */
+                  call mon$change_to_master;
+                  end;
+            end;
+         end;
+
+      device_scan_ticks_left = device_scan_ticks_left - ticks_waited;
+      if device_scan_ticks_left <= 0 then do;
+         call mon$scan_device_list;
+         device_scan_ticks_left = device_scan_ticks;
+         end;
+
+      disk_list_ticks_left = disk_list_ticks_left - ticks_waited;
+      if disk_list_ticks_left <= 0 then do;
+         call mon$update_disk_list;
+         disk_list_ticks_left = disk_list_ticks;
+         if gbl.I_am_master then
+            call mon$schedule_all;   /* run schedule in case one was missed */
+         end;
+
+      job_scan_ticks_left = job_scan_ticks_left - ticks_waited;
+      if job_scan_ticks_left <= 0 then do;
+         call mon$scan_job_list;
+         if mon.need_fast_scan then
+            job_scan_ticks_left = fast_job_scan_ticks;
+         else
+            job_scan_ticks_left = slow_job_scan_ticks;
+         end;
+
+      end;  /* do while true */
+
+proc_exit:
+   call gp$terminate;                       /* what about return code? */
+   return;
+
+
+/***************************************************************************/
+
+
+check_for_new_master : procedure;
+
+   /* I am a master; attempt connection to other systems to determine
+      if there is a higher priority master running */
+
+   if mon$master_check (mon.system_list (system_scan_index)) then
+
+      /* successfully connected;  Reset "system_scan_index" to try
+         higher priority systems, and wait for someone to take over */
+
+         system_scan_index = 1;             /* start scan from top */
+
+   else do;                                 /* try next system */
+      system_scan_index = system_scan_index + 1;
+      if system_scan_index = mon.my_system_index then
+         system_scan_index = 1;
+      end;
+
+end check_for_new_master;
+
+/******************************************************************************/
+
+initialization : procedure;
+
+dcl
+   num_potential_masters   bin,             /* # systems "higher" than me */
+   sys_scan_secs           bin;
+
+
+   call mon$init_disk_list;                 /* clear my disk list */
+   call mon$read_system_list;               /* create the system list */
+
+
+   /* setup timers; setup monitor (numbered) semaphore if networks
+      don't exist; otherwise, we'll use x$wait */
+
+   /* compute number of 1/10 seconds per clock tick; this is used for sems */
+
+   tenths_per_tick = 10.0/float (psv.ticks_per_sec, 23);
+
+   device_scan_ticks = device_scan_secs*psv.ticks_per_sec;
+   disk_list_ticks = disk_list_secs*psv.ticks_per_sec;
+   slow_job_scan_ticks = slow_job_scan_secs*psv.ticks_per_sec;
+   fast_job_scan_ticks = fast_job_scan_secs*psv.ticks_per_sec;
+   mon.scan_quadsecs = divide (open_job_check_secs, 4, 15);
+
+   if psv.network_exists then do;
+
+      /* setup system scanner to scan all systems higher in priority than
+         me in one minute (if possible).  Also, if only one master, scan
+         him every 30 seconds instead of 60 for faster response. */
+
+      num_potential_masters = mon.my_system_index - 1;
+      if num_potential_masters = 0 then
+         sys_scan_secs = maxint;             /* not referenced */
+      else if num_potential_masters = 1 then
+         sys_scan_secs = 30;
+      else if num_potential_masters < 60 then
+         sys_scan_secs = divide (60, num_potential_masters, 5);
+      else
+         sys_scan_secs = 1;
+      system_scan_ticks = sys_scan_secs*psv.ticks_per_sec;
+      end;
+   else
+      system_scan_ticks = maxint;           /* not referenced */
+
+   mon.monitor_bol = null;
+   mon.device_bol = null;
+   mon.job_bol = null;
+   mon.master_system_id = '';
+   mon.need_fast_scan = false;
+
+   /* initialize countdown clocks */
+
+   disk_list_ticks_left = 0;
+   device_scan_ticks_left = 0;
+   job_scan_ticks_left = 0;
+   system_scan_ticks_left = 0;
+   system_scan_index = 1;                   /* start with the highest priority */
+
+   call mon$init_drivers;
+
+   /* NOTE: here, we should ensure that all systems of higher priority
+            are visible.  If not, we could have the following situation:
+
+      A can see B
+      B can see A and C
+      C can see B
+
+      A would be a master and takeover B.  C cannot see A, so would always
+      want B to be its master (which it wouldn't do as long as A was up).
+      If A went down, B would takeover C, but drop it when A came back up.
+
+      This case will not occur if we ensure that we can always get to
+      all higher priority systems.
+   */
+
+end initialization;
+
+end mon$main_monitor;

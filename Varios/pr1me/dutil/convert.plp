@@ -1,0 +1,257 @@
+/* Convert.plp, Dutil, JEW, 9-May-81
+   Convert command handler.
+
+   CONVERT {-DVNO | -D <dvno>} | {-RECORD | -R [<dvno>] <ra>} |
+           {-TRACK | -T [<dvno>] <head> <track>}
+
+   -DVNO converts <dvno> into number of heads, records, etc.
+   -R    converts <ra> into head and track components
+   -T    converts head and track into record address
+
+   Since head and track depend on the physical device, <dvno> may be
+   specified for -R and -T.  If it is not, the current device will be
+   used.
+
+*/
+
+Convert: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>disk_info_structure.plp.ins
+
+dcl
+   help     entry (char(*) var, bit),
+   ioa$     entry options (variable),
+   ioa$er   entry options (variable);
+
+
+   call parse;
+   if info.keyword then
+      do until (info.eol);
+
+         if info.keyword then
+            select (token);
+
+               when ('-DVNO', '-D')
+                  call cvt_dvno;
+
+               when ('-RECORD', '-R')
+                  call cvt_ra;
+
+               when ('-TRACK', '-T')
+                  call cvt_track;
+
+               otherwise
+                  call ioa$er ('Unrecognized keyword "%v" ignored.%.', -1, token);
+               end;
+         else
+            call ioa$er ('Token "%v" ignored.%.', -1, token);
+
+         call parse;
+
+      end;
+
+   else
+      call help ('CONVERT', false);
+
+
+   /* Internal procedure - shorthand call to cl$par */
+
+   Parse: proc options (shortcall);
+
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+
+   end;     /* Parse */
+
+/**/
+
+   /* Internal procedure for -DVNO conversion */
+
+   Cvt_dvno: proc options (shortcall);
+
+   dcl
+      disk_info   entry options (variable),
+      disp_info   entry options (variable);
+
+   dcl
+      partition   bin,
+      1  part_info  like disk_info_structure;
+
+      call parse;
+      if info.oct_number then
+         do;
+         partition = info.oct_val;
+         call disk_info (partition, part_info);
+         call disp_info (partition, part_info);
+         end;
+      else
+         call ioa$er ('-DVNO requires 1 octal parameter.%.', -1);
+
+   end;    /* Cvt_dvno */
+
+/**/
+
+   Cvt_ra: proc options (shortcall);
+
+   dcl
+      to_hts  entry (bin(31), bin, bin, bin, bin, label);
+
+   dcl
+      dvno     bin,
+      head     bin,
+      old_clp  bin,
+      ra       bin(31),
+      sector   bin,
+      track    bin;
+
+      dvno = cpartition;
+      call parse;
+      if info.oct_number then
+         do;
+         ra = info.oct_val;
+         old_clp = clp;    /* to allow backup in case of failure */
+         call parse;
+         if info.oct_number then
+            do;
+            dvno = ra;
+            ra = info.oct_val;
+            end;
+         else if info.keyword | info.eol then
+            clp = old_clp;
+         else
+            goto help_me;
+
+         if dvno = -1 then
+            call ioa$er ('<dvno> must be specified.  There is no current partition.%.', -1);
+         else
+            do;
+            call to_hts (ra, dvno, head, track, sector, abort);
+            call ioa$ ('Record %:3o on partition %:0o is head %d, track %d, sector %d.%.',
+                        -1, ra, dvno, head, track, sector);
+            end;
+
+         end;
+      else
+         do;
+
+   help_me:
+         call ioa$er ('Correct format is -RECORD [<dvno>] <ra>.%.', -1);
+         end;
+
+   abort:
+   end;     /* Cvt_ra */
+
+/**/
+
+   Cvt_track: proc options (shortcall);
+
+   dcl
+      to_ra    entry (bin(31), bin, bin, bin, label);
+
+   dcl
+      dvno     bin,
+      head     bin,
+      ra       bin(31),
+      track    bin;
+
+      /* the parse for this command is rather ugly because the first parameter
+         must be octal if it is <dvno>, but decimal otherwise */
+
+      call get_params;
+
+      if dvno = -1 then
+         call ioa$er ('<dvno> must be specified.  There is no current partition.%.', -1);
+      else
+         do;
+         call to_ra (ra, dvno, head, track, abort);
+         call ioa$ ('Head %d, cylinder %d on partition %:0o contains %$', -1,
+                     head, track, dvno);
+         call ioa$ ('records %:3o to %:3o (octal).%.', -1, ra, ra+8);
+         end;
+
+   abort:
+      return;
+
+
+      /* Internal procedure to do parse for cvt_track.
+         legal formats are:
+
+            -T <dvno> <head> <track>             (format 1)
+            -T <head> <track>                    (format 2)
+
+         <dvno> must be octal, <head> & <track> must be decimal */
+
+      Get_params: proc options (shortcall);
+
+      dcl
+         oldclp      bin,     /* in case backup is needed */
+         tempdvno    bin,
+         temphead    bin;
+
+         call parse;
+         if info.dec_number then
+            if info.oct_number then
+               do;
+
+               /* first token is octal and decimal, save both */
+
+               tempdvno = info.oct_val;
+               temphead = info.dec_val;
+               call parse;
+               if info.dec_number then
+                  do;
+
+                  /* have 2 numbers, assume 2nd is head but save clp */
+
+                  head = info.dec_val;
+                  oldclp = clp;
+                  call parse;
+                  if info.dec_number then
+                     do;
+
+                     /* At last!! 3 numbers...first was dvno */
+
+                     track = info.dec_val;
+                     dvno = tempdvno;
+                     end;
+                  else
+                     do;
+
+                     /* only 2 numbers, must be <head> <track> */
+
+                     track = head;
+                     clp = oldclp;     /* backup since last token read is still valid */
+                     head = temphead;
+                     dvno = cpartition;
+                     end;
+                  end;
+               else
+                  goto error;     /* only 1 number */
+               end;
+            else
+               do;
+
+               /* first param was decimal but not octal...must be format 2 */
+
+               head = info.dec_val;
+               call parse;
+               if info.dec_number then
+                  do;
+                  track = info.dec_val;
+                  dvno = cpartition;
+                  end;
+               else
+                  goto error;     /* 2nd not decimal */
+               end;
+         else
+            goto error;    /* 1st not decimal */
+         return;
+
+      error:
+         call ioa$er ('Must have 2 or 3 parameters for -TRACK.%.', -1);
+      end;     /* get_params */
+
+   end;     /* Cvt_track */
+
+end;     /* Convert */

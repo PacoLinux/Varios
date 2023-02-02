@@ -1,0 +1,667 @@
+/* DS$MAIN.SPL, PrintMaster, Jeff Hostetler, March 14, 1984                   */
+/* Main program for device driver system.                                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$main: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>ds$completion_codes.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>insert>ds$device_states.ins.spl';
+%include '*>insert>ds$keys.ins.spl';
+%include '*>entry>ds$change_state.ins.spl';
+%include '*>entry>ds$process_request.ins.spl';
+%include '*>entry>ds$send_kwl.ins.spl';
+%include '*>entry>ds$write_device_kwl.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      uncl_length by 160;                   /* cl$pix limit */
+
+   dcl
+      cl                         char(max_cl) var,
+      com_status                 bin,
+
+      assign_name                char(32) var,
+      level_2_inited             bit,
+      ei                         like kwl$expand_info,
+      kwl_changed                bit,
+      p                          ptr,
+      status                     bin,
+      tenths_to_wait             bin,
+      time_of_wait               bin(31),
+      ticks_waited               bin(31),
+      ticks_per_tenth            bin,
+      time_of_last_request       bin(31),
+      we_did_initialization      bit,
+      1  struc,
+         2  uncl                 char (uncl_length) var,
+         2  device_given         bit(1) aligned,
+         2  device_name          char(32) var,
+      spawner_user_nr            bin;
+
+%page;
+
+   /* initialization */
+
+   com_status = severity$error;
+
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+
+   call parse_cl;                           /* sets ds.device_name */
+
+   we_did_initialization = gp$init ('device', ds.device_name, abnormal_return);
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+
+   psv.copyright_counter = 0;               /* force copyright message */
+   call gp$version ('Device Driver');
+
+   call sid$gt (spawner_user_nr);
+   ds.started_by_monitor = (psv.monitor_user ^= 0 & psv.monitor_user = spawner_user_nr);
+
+   assign_name = '';
+   level_2_inited = false;
+
+   call init_ds$;
+
+   string (ei) = kwl$default_expand_info;   /* verify */
+   ei.expand = true;
+   ei.wp_use_acl = true;
+   ei.info_use_skwl = true;
+   ds.p_device_kwl = null;
+   call kwl$cl_to_kwl (cl, ds.p_device_kwl, ei);
+
+   on condition (CLEANUP$)
+      begin;
+      call ds$change_state (ds$shutdown_st, ds.completion_code,
+                            ds.unique_id, ds.tranid);
+      call system_shutdown;
+      end;
+
+   /* since ANY$ on-unit is in this block, this on-unit needs special
+      coding if it is ever changed to continue to signal instead of
+      doing a goto */
+
+   on condition (err$condition_after_msg)
+      begin;
+      call ds$change_state (ds$shutdown_st, ds.completion_code,
+                            ds.unique_id, ds.tranid);
+      goto shutdown;
+      end;
+
+   ds.initial_kwl = kwl$copy_kwl (ds.p_device_kwl);
+   call get_timed_out_kwl;                  /* if a timed-out keyword file exists, read it in */
+   call get_initial_kws;                    /* setup ds$ vars from initial keywords */
+
+   /* initialize named semaphore for wait loop, and set home attach point
+      to the device directory */
+
+   if ds.started_by_monitor then
+      begin;
+
+      dcl
+         cpl_file    char(32);
+
+      call at$ (k$seth, '<'||psv.system_partition||'>'||gbl$device_dir, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'Attaching to device directory',
+                    status, 0, 0);
+      cpl_file = ds.device_name || '.CPL';
+      call sem$op (cpl_file, length(cpl_file), 1, ds.semaphore, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'Opening semaphore', status, 0, 0);
+      end;
+
+   ds.monitor_uid = psv.monitor_uid;
+   call ds.level_2_driver (ds$device_init);
+   level_2_inited = true;
+
+   if ds.auto_restart then
+      call ds$write_device_kwl;             /* write initial keyword list */
+   call ds$send_kwl;
+
+%page;
+
+   ticks_per_tenth = divide (psv.ticks_per_sec, 10, 15);
+   ds.time_of_last_request_call = gp$ticks();
+   time_of_last_request = ds.time_of_last_request_call; /* current date/time */
+   if ds$process_request (false) then
+      ;
+
+   do while (ds.device_state = ds$idle_st
+           | ds.device_state = ds$paused_st
+           | ds.device_state = ds$ready_st);
+
+      /* make sure monitor has current state before waiting */
+
+      if ds.device_state ^= ds.monitors_device_state then
+         call ds$change_state (ds.device_state, ds.completion_code,
+                               ds.unique_id, ds.tranid);
+
+      time_of_wait = gp$ticks();
+
+      if ds.semaphore ^= 0 then do;
+         if ds.idle_time_limit < 0 then     /* device doesn't time-out */
+            call sem$wt (ds.semaphore, status);
+         else do;
+            tenths_to_wait = divide (ds.ticks_until_timeout,
+                                     ticks_per_tenth, 31);
+            if tenths_to_wait < 1 then
+               tenths_to_wait = 1;
+            call sem$tw (ds.semaphore, tenths_to_wait, status);
+            end;
+         if status > 2 then
+            call err$ (err$primos_et, 'Waiting on semaphore', status, 0, 0);
+
+         /* now that we're awake, drain semaphore of extraneous notifies
+            that may have accumulated while printing */
+
+         call sem$dr (ds.semaphore, status);
+         end;
+      else
+         if time_of_wait - time_of_last_request < psv.ticks_per_sec*10 then
+            call sleep$ (100);             /* wait 1/10th sec for 1st 10 secs */
+         else
+            call sleep$ (1000);             /* then wait one second */
+
+      if ds$process_request (false) then
+         time_of_last_request = gp$ticks();
+
+      end;
+
+
+shutdown:
+
+   if ds.device_state = ds$shutdown_st then
+      revert condition (err$condition_after_msg);
+   call system_shutdown;
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+abnormal_return:
+
+   com_status = severity$error;
+   revert condition (err$condition_after_msg);
+   call ds$change_state (ds$shutdown_st, ds.completion_code,
+                         ds.unique_id, ds.tranid);
+   call system_shutdown;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+quick_abnormal_return:
+
+   com_status = severity$error;
+   return;
+
+%page;
+/* driver.parse_cl, PrintMaster, Jim Wilcoxson, February 19, 1985             */
+/******************************************************************************/
+
+/* NOTE: this procedure is called before any initialization has been
+         performed.  It cannot call ERR$, or any other routine that
+         may reference gbl or psv external structures; gbl has not
+         been initialized by GP$INIT, and therefore the address
+         of psv is unknown */
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print */
+         caller_name    by 'driver',
+         pixel_size     by 29;
+
+      dcl
+         pix_index      bin,
+         bad_index      bin,
+         max_device_length bin,
+         ns_code        bin,
+         pic            char(pixel_size) var static
+                        init('uncl; -device_name entry; end');
+
+
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         goto quick_abnormal_return;        /* error already printed */
+
+      ds.device_name = '';
+      max_device_length = 32 - length(kwl$kwl_suffix);
+      if struc.device_given then
+         if length (struc.device_name) ^= 0 then
+            if length(struc.device_name) <= max_device_length then
+               ds.device_name = translate(struc.device_name, uppercase, lowercase);
+            else do;
+               call ioa$er ('A device name can''t be > %d chars.%.', -1,
+                            max_device_length);
+               goto quick_abnormal_return;
+               end;
+
+      if length (ds.device_name) = 0 then do;
+         call ioa$er ('A device name must be specified.%.', -1);
+         goto quick_abnormal_return;
+         end;
+
+   end parse_cl;
+
+%page;
+
+/* driver.error_, PrintMaster, Jim Wilcoxson, February 19, 1985               */
+/* procedure to display error message and command usage and call err$.        */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg         char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* driver.get_initial_kws, PrintMaster, Jeff Hostetler, March 19, 1984        */
+/******************************************************************************/
+
+   get_initial_kws: proc;
+
+      dcl
+         code           bin,
+         i              bin,
+         (from_string,
+         to_string)     char(256) var,
+         (p, p_kw)      ptr,
+         parity_change  bin,
+         (status, status2)   bin,
+         value          char(kwl$chars_in_value) var,
+         1  bvs32       based,
+            2  len      bin,
+            2  chars    char(32),
+         bptr           ptr based,
+         bit123         bit(3) based;
+
+
+      /* Get info from keyword list */
+      /* Get assign name.  This is used in command "ASSIGN x". */
+
+      if kwl$find_kw ('ASSIGN_DEVICE', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then do;
+               assign_name = translate (value, uppercase, lowercase);
+               if assign_name = 'TERMINAL' | assign_name = 'TTY' then
+                  assign_name = '';         /* prevents UNASSIGN later */
+               else do;
+                  call cp$ ('assign ' || assign_name, status, status2);
+                  if status ^= 0  |  status2 ^= 0 then do;
+                     if status = 0 then
+                        status = status;
+                     call err$ (err$primos_et,
+                                'Error occurred assigning device with "ASSIGN '
+                                || assign_name || '" command.', status, 0, 0);
+                     end;
+                  end;
+               end;
+
+      /* Get device unit.  This is used in calls to Primos device drivers */
+
+      if kwl$find_kw ('DEVICE_UNIT', ds.p_device_kwl, p_kw) then /* If kw is present */
+         if kwl$get_nth_value (p_kw, 1, value) then /* and it has a value */
+            if verify (value, digits) = 0 then      /* and value numeric */
+               ds.device_unit = binary(value);   /* then it's ok */
+
+
+      if kwl$find_kw ('LEVEL_3_DRIVER', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then do;
+            value = translate (value, uppercase, lowercase);
+            if gp$dynamic_link (value, ds.level_3_driver) then
+               goto level_3_driver_ok;
+            else
+               call err$ (err$user_et, 'Driver procedure "' || value ||
+                          '" not found.',
+                          err$bad_value_ue, 0, 0);
+            end;
+
+      call err$ (err$user_et, 'Level 3 driver entry name not given.',
+                         err$missing_kw_ue, 0, 0);
+
+
+level_3_driver_ok:
+
+      if kwl$find_kw ('LEVEL_2_DRIVER', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then do;
+            value = translate (value, uppercase, lowercase);
+            if gp$dynamic_link (value, ds.level_2_driver) then
+               goto level_2_driver_ok;
+            else
+               call err$ (err$user_et, 'Driver procedure "' || value ||
+                          '" not found.',
+                          err$bad_value_ue, 0, 0);
+            end;
+
+      call err$ (err$user_et, 'Level 2 driver entry name not given.',
+                         err$missing_kw_ue, 0, 0);
+
+
+level_2_driver_ok:
+
+      /* now make dynamic link to the user's accounting procedure, if this is */
+      /* not given then they don't have one. */
+
+      addr(ds.user_accounting_proc)->bptr = null;
+      if kwl$find_kw ('ACCOUNTING', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then do;
+            value = translate (value, uppercase, lowercase);
+            if ^gp$dynamic_link (value, ds.user_accounting_proc) then
+               call err$ (err$user_et, 'Accounting procedure "' || value ||
+                          '" not found.',
+                          err$bad_value_ue, 0, 0);
+            end;
+
+      ds.auto_restart = false;
+      if kwl$find_kw ('AUTO_RESTART', ds.p_device_kwl, p_kw) then
+         if ds.started_by_monitor then
+            ds.auto_restart = true;
+         else
+            if gbl.trace_on then
+               call err$ (err$user_et+err$warning_et,
+                          '-AUTO_RESTART ignored unless started by monitor.',
+                          0, 0, 0);
+
+      if kwl$find_kw ('TIME_BEFORE_SHUTDOWN', ds.p_device_kwl, p_kw) then do;
+
+         /* If -TIME_BEFORE_SHUTDOWN is given and we were started by the
+            monitor then -AUTO_RESTART must also be given.  08/09/84     */
+
+         if ds.started_by_monitor & ^ds.auto_restart then
+            call err$ (err$user_et,
+                       'Use of -TIME_BEFORE_SHUTDOWN requires -AUTO_RESTART when started by monitor.',
+                       err$missing_kw_ue, 0, 0);
+
+         if kwl$get_nth_value (p_kw, 1, value)
+          & verify (value, decimal_digits) = 0 then
+
+            /* KLUDGE TO PREVENT QUAD INSTRUCTIONS
+            /**** ds.idle_time_limit = float(value, 23)*float(60*psv.ticks_per_sec, 23);  ****/
+            begin;
+
+               dcl (f1,f2,f3) float;
+
+               /* If the FLOAT() function is used in the following conversions,
+                  SPL at 19.3 generates QUAD-Precision instructions; this is a
+                  problem (UII) for 19.1 sites. */
+
+               f1 = value;                  /* CHAR() VAR to FLOAT conversion */
+               f2 = psv.ticks_per_sec;      /* BIN(31) to FLOAT conversion */
+
+               f3 = f1 * (60.0 * f2);
+
+               ds.idle_time_limit = f3;     /* FLOAT to BIN(31) conversion */
+
+            end;
+
+         else call err$ (err$user_et, 'Shutdown time invalid.',
+                         err$bad_value_ue, 0, 0);
+         end;
+      else ds.idle_time_limit = -1;
+
+      /* modify translation tables if -UPPERCASE specified.
+         N.B.: Only characters with parity initially on are mapped. */
+
+      if kwl$find_kw ('UPPERCASE', ds.p_device_kwl, p_kw) then do;
+
+         /* map lowercase letters to uppercase */
+
+         call gp$set_translation (ds.device_translation_table,
+                                  lowercase, uppercase);
+
+         /* map some special characters:  `  ->  @
+                                          {  ->  [
+                                          }  ->  ]
+                                          |  ->  \
+                                         del ->  space    */
+
+         call gp$set_translation (ds.device_translation_table,
+                                  '`{|}~', '@[\]^ ');
+
+         ds.need_device_translate = true;
+         p_kw->kw_entry.wp = true;
+         end;
+
+      if kwl$find_kw ('PARITY', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then do;
+            value = translate (value, uppercase, lowercase);
+            parity_change = 0;              /* same parity */
+dcl select_hack char(32); /*
+            select (value);
+*/          select_hack = value;
+            select (select_hack);
+               when ('SAME') ;
+               when ('FLIP') parity_change = 1;
+               when ('ON')   parity_change = 2;
+               when ('OFF')  parity_change = 3;
+               otherwise
+                  call err$ (err$user_et, 'Bad value for PARITY keyword.',
+                             err$bad_value_ue, 0, 0);
+               end;
+            if parity_change ^= 0 then
+               call change_translate_parity (parity_change);
+            end;
+
+      from_string = '';
+      to_string = '';
+      if kwl$find_kw ('TRANSLATE', ds.p_device_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, from_string) then
+            if kwl$get_nth_value (p_kw, 2, to_string) then do;
+               call gp$set_translation (ds.device_translation_table,
+                                        from_string, to_string);
+               ds.need_device_translate = true;
+               end;
+
+      return;
+      end get_initial_kws;
+
+
+/* driver.change_translate_parity, PrintMaster, Jim Wilcoxson, 12/19/84       */
+/*******************************************************************************/
+
+change_translate_parity: procedure (type);
+
+dcl
+   type           bin,
+
+   table          bit(2048) defined ds.device_translation_table,
+   mod_byte       bit(8),
+   bool_op        bit(4);
+
+   select (type);
+      when (1) do;                          /* flip parity */
+         bool_op = '0110'b;                 /* xor operator */
+         mod_byte = '80'b4;                 /* parity bit */
+         end;
+      when (2) do;                          /* parity on */
+         bool_op = '0111'b;                 /* or operator */
+         mod_byte = '80'b4;                 /* parity bit */
+         end;
+      when (3) do;                          /* parity off */
+         bool_op = '0001'b;                 /* and operator */
+         mod_byte = '7F'b4;                 /* all but parity */
+         end;
+      end;
+
+   table = bool (table, copy (mod_byte, 256), bool_op);
+
+   ds.need_device_translate = true;
+
+end change_translate_parity;
+
+
+%page;
+/* driver.system_shutdown, PrintMaster, Jeff Hostetler, March 14, 1984        */
+/******************************************************************************/
+
+   system_shutdown: proc;
+
+      dcl
+         (status1, status2)   bin;
+
+      if ds.semaphore ^= 0 then do;
+         call sem$cl (ds.semaphore, status1);
+         if status1 ^= 0 then
+            call err$ (err$primos_et+err$warning_et, 'Closing semaphore',
+                       status1, 0, 0);
+         end;
+
+      /* device state is either shutdown or timed-out at this point*/
+
+      if ds.device_state = ds$shutdown_st then do;
+         call at$ (k$setc, gbl$timeout_dir, status1);
+         call gp$close (ds.kwl_unit);
+         call gp$delete_file (ds.device_name || kwl$kwl_suffix);
+         call at$hom (status1);             /* attach to device directory */
+         end;
+      else                                  /* timed-out */
+
+         /* if device can be restarted by the monitor, write the current
+            keyword list to the timed-out directory.  Otherwise, the device
+            was started by a user and cannot be restarted */
+
+         if ds.started_by_monitor then do;
+            call ds$write_device_kwl;       /* timed-out; write kwl */
+            call gp$close (ds.kwl_unit);
+            end;
+
+      if level_2_inited then
+         call ds.level_2_driver (ds$device_terminate);
+
+      if length (assign_name) ^= 0 then
+         call cp$ ('unassign ' || assign_name, status1, status2);
+      assign_name = '';
+
+      /* put a message in the COMO file telling why the device died, but
+         don't write the message if a user manually started the device */
+
+      if ds.started_by_monitor then
+         if ds.device_state = ds$timed_out_st then
+            call err$ (err$log_event_et, 'Device idle time-out.', 0, 0, 0);
+         else                               /* shutdown */
+            call err$ (err$log_event_et, 'Device shutdown.', 0, 0, 0);
+
+      /* if device timed-out, don't put "logged out at ..." message in
+         COMO file - it confuses people.  Also, always close COMO file
+         if device was not started by monitor (i.e., it's not a phantom) */
+
+      if ds.device_state = ds$timed_out_st | ^ds.started_by_monitor then
+         call cp$ ('COMO -END', status1, status2);
+
+      /* if a user-started device times-out, tell the monitor it is shut
+         down, since the monitor cannot successfully restart it */
+
+      if ds.device_state = ds$timed_out_st & ^ds.started_by_monitor then
+         ds.device_state = ds$shutdown_st;
+
+      call ds$change_state (ds.device_state, ds.completion_code,
+                            ds.unique_id, ds.tranid);
+
+      end system_shutdown;
+
+%page;
+/* driver.init_ds$, PrintMaster, Jeff Hostetler, March 19, 1984               */
+/******************************************************************************/
+
+   init_ds$: proc;
+
+      dcl
+         code           bin,
+         i              bin;
+
+      ds.device_state = ds$ready_st;
+      ds.device_unit = -1;
+      ds.monitors_device_state = ds$logging_in_st;
+      ds.job_id = -1;
+      ds.unique_id = '';
+      ds.completion_code = ds$none_cc;
+      ds.tranid = -1;
+      ds.last_unique_id = '';
+      ds.action_after_eoj = ds$no_action;
+      ds.action_when_idle = ds$no_action;
+      ds.reinit_kwl = false;
+      ds.kwls_to_load = null;
+      ds.kwl_unit = 0;
+      ds.p_job_kwl = null;
+      ds.semaphore = 0;
+      ds.error_msgp = null;
+      ds.sd_display = null;
+      ds.sd_width = 0;
+      ds.sd_lines = 0;
+      ds.need_file_translate = false;
+      ds.need_device_translate = false;
+
+      /* put ASCII collating sequence in translation tables */
+
+      do i = 0 to 255;
+         substr (ds.device_translation_table, i+1, 1) = byte(i);
+         substr (ds.file_translation_table, i+1, 1) = byte(i);
+      end;
+      return;
+      end init_ds$;
+
+%page;
+/* driver.get_timed_out_kwl, PrintMaster, Jeff Hostetler, May 10, 1984        */
+/* if we timed out last time then load the kwl we had before                  */
+/******************************************************************************/
+
+   get_timed_out_kwl: proc;
+
+      dcl
+         backup            ptr,
+         ei                like kwl$expand_info,
+         kwl_path          char(128) var,
+         cp(2)             bin,
+         status            bin,
+         unit              bin;
+
+      backup = ds.p_device_kwl;
+
+      on condition (err$condition_before_msg)
+         begin;
+         if err$es.type = err$primos_et  &  err$es.status1 = e$fntf then do;
+            ds.p_device_kwl = backup;
+            goto end_of_procedure;
+            end;
+
+         call err$ (err$log_event_et, 'Cannot read timed-out kwl.', 0, 0, 0);
+         cp(1) = 0;
+         cp(2) = length(kwl_path);
+         call tsrc$$ (k$dele, addr(kwl_path)->bvs.chars, 0, cp, 0, status);
+         if status ^= 0 then
+            call err$ (err$primos_et+err$warning_et, 'Deleting bad device kwl', status, 0, 0);
+         call kwl$destroy_kwl (ds.p_device_kwl);
+         ds.p_device_kwl = backup;
+         goto end_of_procedure;
+         end;
+
+      string(ei) = kwl$default_expand_info;
+      kwl_path = '<' || psv.system_partition || '>' || gbl$timeout_dir || '>'
+                 || ds.device_name;
+      ds.p_device_kwl = null;
+      call kwl$expand_value (kwl_path, ds.p_device_kwl, ei);
+      call kwl$destroy_kwl (backup);
+
+end_of_procedure:
+
+      return;
+      end get_timed_out_kwl;
+
+end ds$main;

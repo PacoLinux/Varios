@@ -1,0 +1,153 @@
+/* GP$INIT.SPL, PrintMaster, Jim Wilcoxson, August 9, 1983                    */
+/* Initialize the spool subsystem.  MUST be called before doing anything.     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+gp$init : procedure (user_type, device_id, error_label) returns (bit);
+
+dcl
+   user_type      char(*) var,              /* monitor, device, or user */
+   device_id      char(*) var,              /* only valid if user_type is "device" */
+   error_label    label variable;
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>gp$make_dynt.ins.spl';
+%include '*>entry>gp$partial_init.ins.spl';
+%include '*>entry>gp$sswitch.ins.spl';
+%include '*>entry>gp$ticks.ins.spl';
+%include '*>entry>gp$uid.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+
+   dcl b16   bit(16) based;
+   dcl d     entry variable returns (bin(31)) based;
+   dcl f     entry (bin) variable based;
+   dcl fs    bin(31);
+   dcl exp   bin(31);
+
+
+dcl
+   gp$any         entry,
+   any$           condition,
+   1  comswi,
+      2  on       bit,
+      2  other    bit(15),
+   comi_unit      bin,
+   dow            bin,
+   full_init      bit(1) aligned,
+   i              bin,
+   initing        bit(1) aligned,
+   status         bin,
+   sys_admin      char(32) var,             /* sys admin user id */
+   users_logged_in bin,
+   uid            char(6),                  /* actually is a bit(48) */
+   visual_date    char(28) var,
+   was_inited     bit;
+
+
+   if gbl.user_inited then
+      return (false);                       /* no initialization needed */
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.kwl_address = addr(kwl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   /* first determine address of shared system variables and set up
+      semaphores.  If this can't be done, all is lost.
+
+      If called from INIT_PRINTMASTER (user_type = 'system'), segment
+      initialization has already been done */
+
+   if user_type ^= 'system' then
+      if ^gp$partial_init (false, false, rev_number) then do;
+         call ioa$er ('Contact your System Administrator if you need help.%.', -1);
+         call exit;
+         end;
+
+    on condition (any$)
+      call gp$any;
+
+   exp = 0;
+   addr(exp)->b16 = 'B2DE'b4;               /* On or After June 30, 1989 */
+   fs = date$();
+   if fs >= exp then
+      call fatal$ (0);
+
+   if user_type = 'system' then do;
+      psv.expiration_date = exp;
+      call cv$fdv (exp, dow, visual_date);
+      call ioa$ ('Demo version expires %v.%.', -1, visual_date);
+      end;
+
+   gbl.abort_label = error_label;           /* here on fatal errors */
+   gbl.abort_label_set = true;
+   call err$init;
+
+   /* if bit 16 of virtual sense switches is is set (with VRTSSW
+      command), set the using_debugger flag (running under DBG);
+      if bit 15 of sense switches set, set trace_on */
+
+   addr(gbl.sswitch)->fb15 = gp$sswitch();
+   gbl.using_debugger = gbl.sswitch(16);
+   gbl.trace_on = gbl.sswitch(15);
+
+   gbl.I_am_master = false;
+   gbl.I_am_monitor = false;
+   gbl.I_am_device = false;
+   gbl.I_am_user = false;
+
+   call prjid$ (gbl.my_project_id);
+
+   gbl.full_id.version = getid$_version;
+   call getid$ (addr(gbl.full_id), id_max_groups, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'While getting user id', status, 0, 0);
+
+   call user$ (gbl.my_user_nr, users_logged_in);
+
+dcl select_hack char(32); /*
+   select (user_type);
+*/ select_hack =  (user_type);
+   select (select_hack);
+      when ('monitor') do;
+         gbl.I_am_master = true;            /* initially, that is */
+         gbl.I_am_monitor = true;
+         gbl.my_id = 'monitor';
+         end;
+      when ('device') do;
+         gbl.I_am_device = true;
+         gbl.my_id = device_id;
+         end;
+      when ('user', 'system') do;
+         gbl.I_am_user = true;
+         gbl.my_id = 'user';                /* (pads with blanks) */
+         gbl.I_am_opr = (gbl.my_user_id = 'SYSTEM'); /* SYSTEM is ALWAYS opr */
+         do i = 1 to gbl.full_id.group_count while (^gbl.I_am_opr);
+            if gbl.my_groups(i) = gbl$operator_group then
+               gbl.I_am_opr = true;
+            end;
+         if ^gbl.I_am_opr then do;          /* so is administrator */
+            call sanam$ (sys_admin);
+            gbl.I_am_opr = gbl.my_user_id = sys_admin;
+            end;
+         end;
+      otherwise
+         call err$ (err$coding_et, 'Bad user type given to GBL$INIT', 0, 0, 0);
+      end;
+
+   call comm$init;
+   call kwl$init;
+
+   call accom$ (comswi, comi_unit, 'save');   /* read values from PUDCOM */
+   gbl.command_file_active = comswi.on;
+   gbl.my_login_time = gp$ticks();
+   gbl.user_inited = true;
+   return (true);
+
+end gp$init;

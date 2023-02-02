@@ -1,0 +1,55 @@
+/* GP$LOCK_SHARED_AREA.SPL, PrintMaster, Jim Wilcoxson, August 5, 1983        */
+/* Locks the shared segment area.  Also inhibits software interrupts.         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+gp$lock_shared_area : procedure (saved_swi);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   1  saved_swi like swi_switches,          /* old software interrupts (out) */
+   status      bin;
+
+
+   /* if system hasn't been initialized, assume it is in the process
+      of initializing, and the area is already locked */
+
+   if ^psv.system_inited then
+      return;
+
+   /* save current interrupt status in caller's argument; this is used
+      to enable interrupts when the lock is released */
+
+   saved_swi.len = nr_swints;
+
+   /* this cleanup is needed for the case where I was waiting on the
+      semaphore (with interrupts enabled) and hit a break; the
+      semaphore may be undernotified, so notify it to prevent future
+      hangs */
+
+   on condition (cleanup$)
+      call sem$nf (gbl.area_semaphore, status);
+
+   do while (true);
+
+      /* turn off all interrupts in case user gets the lock; they remain
+         off until lock is unlocked */
+
+      call sw$rao (saved_swi);
+
+      if cstore (psv.shared_area_owner, 0, gbl.my_user_nr) then
+         return;
+
+      /* lock is held by another process - enable interrupts and wait
+         for lock to be released */
+
+      call sw$on (saved_swi);
+      call sem$wt (gbl.area_semaphore, status);
+      end;
+
+end gp$lock_shared_area;

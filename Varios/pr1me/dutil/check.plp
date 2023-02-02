@@ -1,0 +1,120 @@
+/* Check.plp, Dutil, JEW, 14-Mar-81
+   Check status of a record - free or in use.
+*/
+
+Check: proc (cl, info, clp);
+
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>global.plp.ins
+
+dcl
+   free_rec entry (bin(31)) returns (bit),
+   help entry (char(*) var, bit),
+   ioa$ entry options (variable);
+
+dcl
+   begin_ra       bin(31),
+   end_ra         bin(31),
+   ra             bin(31),
+   stat           char(6) var;
+
+
+   if parse () then
+
+      do ra = begin_ra to end_ra;
+         if free_rec (ra) then
+            stat = 'free';
+         else
+            stat = 'in use';
+         call ioa$ ('Record %:3o is %v.%.', -1, ra, stat);
+      end;
+
+   else
+      call help ('CHECK', false);
+
+
+   /* Internal procedure to parse command line for CHECK.
+      There are four formats:
+
+         CHECK               (no args => check current record)
+         CHECK <ra>
+         CHECK <begin_ra> <end_ra>
+         CHECK -T | -TRACK <head> <track>
+
+      If all goes well, begin_ra and end_ra will be set to the starting
+      and ending record addresses to be checked.    */
+
+   Parse: proc returns (bit) options (shortcall);
+
+   dcl
+      to_ra    entry (bin(31), bin, bin, bin, label);
+
+   dcl
+      head     bin,
+      track    bin;
+
+
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      if info.flags.oct_number then
+         do;
+         begin_ra = info.oct_val;
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+         if info.flags.oct_number then
+            do;
+            end_ra = info.oct_val;
+            call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+            end;
+         else
+            end_ra = begin_ra;
+         end;
+
+      else if info.flags.keyword then
+         if token = '-T' | token = '-TRACK' then
+            do;
+            call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+            if info.flags.dec_number then
+               do;
+               head = info.dec_val;
+               call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+               if info.flags.dec_number then
+                  do;
+                  track = info.dec_val;
+
+                  /* convert head/track to record address */
+
+                  call to_ra (begin_ra, cpartition, head, track, bad_news);
+                  end_ra = begin_ra + 8;     /* check entire track */
+
+                  call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+                  end;
+               else
+                  info.eol = false;     /* so error will occur */
+               end;
+            else
+               info.eol = false;     /* so error will occur */
+            end;
+         else
+            info.eol = false;   /* flag error */
+
+      else
+         do;
+         begin_ra = rec.cra;
+         end_ra = begin_ra;
+         end;
+
+      /* check ranges of begin_ra and end_ra */
+
+      if 0 <= begin_ra & begin_ra <= end_ra & end_ra <= maxra then
+
+         /* params are ok...if command line ok, all is ok */
+
+         return (info.eol);
+      else
+         return (false);
+
+   bad_news:     /* bad head/track coordinates */
+      return (false);
+
+   end;     /* Parse */
+
+end;    /* Check */

@@ -1,0 +1,554 @@
+/* PRIMOS.INS.SPL, PrintMaster, Jim Wilcoxson, November 4, 1983               */
+/* Declarations for Primos entry points.                                      */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+%include 'syscom>keys.ins.pl1';
+%include 'syscom>errd.ins.pl1';
+%include 'syscom>a$keys.ins.pl1';
+%include 'syscom>user_types.ins.pl1';
+%include 'syscom>x$keys.ins.pl1';
+%include '*>entry>gtpar.ins.plp';
+%include '*>insert>spawn_dcl.ins.spl';
+%include '*>entry>fsulib.ins.spl';
+
+/* AR$.INS.SPL, PrintMaster, Jim Wilcoxson, August 12, 1983                   */
+/* Area management routines in Primos.                                        */
+/******************************************************************************/
+
+dcl
+
+   /* initialize an area */
+      ar$in       entry (ptr,               /* pointer to start of area */
+                         bin(31)),          /* size in words of area */
+
+   /* allocate space in an area, returns null if no space */
+      ar$alc      entry (ptr,               /* area pointer */
+                         bin(31))           /* size needed in words */
+                        returns (ptr options(short)),      /* pointer to space allocated */
+
+   /* free an allocated object */
+      ar$fre      entry (ptr,               /* area pointer */
+                         ptr);              /* object to free */
+
+/* End of insert file AR$.INS.SPL                                             */
+/******************************************************************************/
+
+/* FS$.INS.SPL, PrintMaster, Jeff Hostetler, August 5, 1983                   */
+/* Primos File System subroutine declarations and related parameters.       */
+/****************************************************************************/
+
+%replace
+   k$$no_wait        by 8192,               /* non-standard k$key for use with*/
+                                            /* sq$open_entry and gp$open_file */
+   no_wait_bit_nr    by 3,                  /* (2000h) must match k$$no_wait */
+
+   /* file system format constant (for this rev) */
+   fs$wds_in_file_entry    by 24,
+
+   /* file types */                   /* SGDR$$, Values returned in "entryb". */
+   ft$$sam_file      by 0,               sgdr$$eof            by -1,
+   ft$$dam_file      by 1,               sgdr$$null_entry     by  0,
+   ft$$sam_seg_dir   by 2,               sgdr$$file_present   by  1,
+   ft$$dam_seg_dir   by 3,
+   ft$$ufd           by 4;
+
+   dcl
+      1  fs$entry_format   based,
+         2  ecw,
+            3  type        bit(8),
+            3  len         bit(8),
+         2  name           char(32),
+         2  pw_protection  bit(16) aligned,
+         2  non_dft_prot   bit(1) aligned,
+         2  file_info,
+            3  spare1      bit(4),
+            3  rwlock      bit(2),
+            3  spare2      bit(10),
+         2  dtm_mod        bin(31),         /* close enough */
+         2  logical_type   bin,
+         2  reserved       bin,
+         2  truncated      bit,
+         2  dtm_backed_up  bin(31);         /* (new at 19.2) */
+
+%replace
+   spec_aclt      by 0,
+   cat_aclt       by 1,
+   dft_spec_aclt  by 2;
+
+   dcl
+      1  primos_acl based,
+         2 version   bin,                   /* currently 2 */
+         2 count     bin,                   /* number of access pairs */
+         2 ent (max_acl_ents)  char(80) var;/* id:access pair */
+
+   dcl
+      ac$lst   entry (char(*) var,          /* pathname (in) */
+                      ptr,                  /* acl ptr (in->out) */
+                      bin,                  /* max entries (in) */
+                      char(128) var,        /* acl name (out) */
+                      bin,                  /* acl type (out) */
+                      bin),                 /* status code (out) */
+
+      at$               entry (bin,         /* key (in) */
+                               char(*) var, /* pathname (in) */
+                               bin),        /* code (out) */
+
+      at$abs            entry (bin,         /* attach key (in) */
+                               char(*) var, /* partition name (in) */
+                               char(*) var, /* directory name (in) */
+                               bin),        /* status code (out) */
+
+      at$any            entry (bin,         /* key (in) */
+                               char(*) var, /* directory (in) */
+                               bin),        /* status (out) */
+
+      at$rel            entry (bin,         /* key (in) */
+                               char(*) var, /* directory (in) */
+                               bin),        /* status (out) */
+
+      at$hom            entry (bin),        /* status (out) */
+
+   /* invalidate attach point */
+      at$inv            entry (bin,         /* key (in) */
+                               bin),        /* status (out) */
+
+      at$tmp            entry
+                        returns (bit),      /* true if swapped */
+
+      rdlin$            entry(bin,          /* file unit */
+                              char(*),      /* buffer */
+                              bin,          /* nr WORDS in buffer */
+                              bin),         /* status code */
+
+      wtlin$            entry(bin,          /* file unit */
+                              char(*),      /* buffer */
+                              bin,          /* nr WORDS in buffer */
+                              bin),         /* status code */
+
+      ent$rd            entry(bin,          /* unit */
+                              char(*) var,  /* name */
+                              ptr,          /* to return structure (in) */
+                              bin,          /* buf size */
+                              bin),         /* code */
+
+      prwf$$            entry(bin,          /* key                   */
+                              bin,          /* unit                  */
+                              pointer,      /* address of buffer     */
+                              bin,          /* nw                    */
+                              bin(31),      /* file position         */
+                              bin,          /* rnw                   */
+                              bin),         /* code                  */
+
+      sgd$dl            entry(bin,          /* file unit seg-dir open on (in) */
+                              bin),         /* code (out) */
+
+      sgdr$$            entry(bin,          /* key (in) */
+                              bin,          /* file unit seg-dir open on (in) */
+                              bin,          /* entry a */
+                              bin,          /* entry b */
+                              bin),         /* code (out) */
+
+      srch$$            entry options (variable),
+
+      apsfx$            entry (char(*) var,     /* in pathname (in)           */
+                               char(*) var,     /* out pathname (out)         */
+                               char(*) var,     /* suffix (in)                */
+                               bin),            /* status code (out)          */
+
+      calac$            entry (char(*) var,     /* pathname of object (in)    */
+                               pointer,         /* ptr to user-id struct (in) */
+                               char(*) var,     /* accesses required (in)     */
+                               char(*) var,     /* accesses available (out)   */
+                               bin)             /* standard error code        */
+                        returns(bit(1)),        /* do we have access wanted   */
+
+      tnchk$            entry (bin,             /* key (in) */
+                               char(*) var)     /* pathname (in) */
+                        returns(bit(1)),        /* Is pathname valid ? */
+
+      fnchk$            entry (bin,             /* key (in) */
+                               char(*) var)     /* filename (in) */
+                        returns(bit(1)),        /* Is filename valid ? */
+
+      ldisk$            entry (bin,             /* key (in) */
+                               char(32) var,    /* system id (in) */
+                               ptr,             /* addr of output structure (in) */
+                               bin,             /* max entries to be returned (in) */
+                               bin);            /* error status (out) */
+
+/* End of insert file FS$.INS.SPL                                             */
+/******************************************************************************/
+
+/* NET$.INS.SPL, PrintMaster, Jim Wilcoxson, May 9, 1983.                     */
+/* Network parameters and routine declarations.                               */
+/******************************************************************************/
+
+dcl
+
+   r$cknt   entry (char(*) var, bin),       /* check node name */
+
+   x$acpt   entry (bin, 1, 2 bin, 2 bin),   /* accept connection */
+
+   x$asgn   entry (bin, bin, bin),          /* assign port */
+
+   x$clr    entry (bin, bin, bin),          /* clear circuit */
+
+   x$clra   entry,                          /* clear all */
+
+   x$conn   entry (bin, bin, char(*), bin, 1, 2 bin, 2 bin), /* request connect */
+
+   xlconn   entry (bin,                     /* key (in) */
+                   bin,                     /* vcid (in) */
+                   bin,                     /* port (in) */
+                   char(*), bin,            /* network address and length (in) */
+                   char(*), bin,            /* facilities and length (in) */
+                   char(*), bin,            /* protocol id and length (in) */
+                   char(*), bin,            /* user data and length (in) */
+                   1, 2 bin, 2 bin),        /* vc status (out) */
+
+   xlgcon   entry (bin,                     /* key (in) */
+                   bin,                     /* vcid (out) */
+                   bin,                     /* port (out) */
+                   char(*), bin, bin,       /* calling system's name */
+                   bin, bin, bin,           /* facilities (unused) */
+                   bin, bin, bin,           /* protocol id (unused) */
+                   bin, bin, bin,           /* user data (unused) */
+                   1, 2 bin, 2 bin),        /* vc status (out) */
+
+   x$gvvc   entry (bin,                     /* vcid (in) */
+                   bin,                     /* user to pass to (in) */
+                   bin),                    /* status (out) */
+
+   x$rcv    entry options (variable),       /* receive data */
+
+   x$tran   entry options (variable),       /* transmit data */
+
+   x$uasn   entry (bin),                    /* unassign port */
+
+   x$wait   entry (bin);                    /* timed wait */
+
+/* End of insert file NET$.INS.SPL                                            */
+/******************************************************************************/
+
+/* SW$.INS.SPL, PrintMaster, Jim Wilcoxson, August 5, 1983                    */
+/* Insert file for sw$int procedure (controls software interrupts).           */
+/******************************************************************************/
+
+%replace
+   nr_swints by 32;
+
+dcl
+   /* read all, turn all off (inhibit) */
+   sw$rao   entry (1, 2 bin, 2 bit(32)),    /* value (out) */
+
+   /* restore interrupt status (enable) */
+   sw$on    entry (1, 2 bin, 2 bit(32)),    /* value (in) */
+
+   /* general purpose software interrupt (read,set,etc.) */
+   sw$int   entry (bin,                     /* key (in) */
+                  1, 2 bin, 2 bit(32),      /* selection (in) */
+                  1, 2 bin, 2 bit(32),      /* value (out) */
+                  bin);                     /* status (out) */
+
+dcl
+   1  swi_switches based,                   /* this is bit(32) varying */
+      2  len         bin,
+      2  flags       bit(32);               /* quit, cpu time, real time, */
+                                            /* forced logout, phantom logout, */
+                                            /* cps */
+/* End of insert file SW$INT.INS.SPL                                          */
+/******************************************************************************/
+
+/* FSULIB.INS.SPL, PrintMaster, Jeff Hostetler, February 1, 1984              */
+/* Entry declarations for all FSULIB routines used.                           */
+/******************************************************************************/
+
+dcl
+   dl$sgu entry (bin, bin);
+
+/* End of insert file FSULIB.INS.SPL                                          */
+/******************************************************************************/
+
+
+%replace
+   severity$error    by 1,
+   severity$ok       by 0,
+   severity$warning  by -1;
+
+dcl
+
+   /* read/set cominput info */
+      accom$   entry (1, 2 bit, 2 bit(15), bin, char(*) var),
+
+   /* read a char from command stream */
+      c1in     entry (bin),                 /* since char returned in right byte */
+
+   /* check if dynamic link procedure exists */
+      ckdyn$   entry (char(*) var, bin),
+
+   /* get a new command line from user */
+      cl$get   entry (char(*) var, bin, bin),
+
+   /* parse command line */
+      cl$par   entry (bit(16) aligned, char(*) var, char(*) var, bin,
+                      1, 2, 3 bit(8), 3 bit, 3 bit, 3 bit, 3 bit,
+                                      3 bit, 3 bit, 3 bit, 3 bit,
+                         2 bin(31), 2 bin(31), 2 (5) bin, bin, bin),
+
+   /* parse command line using picture */
+      cl$pix   entry (bit(16) aligned, char(*) var, ptr, bin, char(*) var,
+                      ptr, bin, bin, bin, ptr),
+
+   /* change name of a file */
+      cnam$$   entry (char(*),              /* from (in) */
+                      bin,                  /* from length (in) */
+                      char(*),              /* to (in) */
+                      bin,                  /* to length (in) */
+                      bin),                 /* status (out) */
+
+   /* call a new command level, no error */
+      comlv$   entry,
+
+   /* call a new command level with error prompt */
+      cmlv$e   entry,
+
+   /* continue to signal most recent condition */
+      cnsig$   entry (bin),
+
+   /* get comoutput information */
+      co$get   entry (bin,                  /* comoutput unit (out) */
+                      1,2 bit(15),2 bit),   /* comoutput flags (out) */
+
+   /* set comoutput */
+      como$$   entry (bin,                  /* key (in) */
+                      char(*),              /* filename (in) */
+                      bin,                  /* name length (in) */
+                      bin,                  /* dummy */
+                      bin),                 /* status (out) */
+
+   /* execute a command line */
+      cp$      entry (char(*) var, bin, bin),
+
+   /* convert visual format to file system date */
+      cv$dtb   entry (char(*) var, bin(31), bin),
+
+   /* convert file system date to ISO format YY-MM-DD.HH:MM:SS.DOW */
+      cv$fda   entry (bin(31), bin, char(21)),
+
+   /* convert file system date to visual format */
+      cv$fdv   entry (bin(31), bin, char(*) var),
+
+   /* return the current date in file system format */
+      date$    entry
+               returns (bin(31)),
+
+   /* directory searcher */
+      dir$ls   entry (bin,                  /* unit (in) */
+                      bin,                  /* directory type (in) */
+                      bit,                  /* initialize flag (in) */
+                      bit(4),               /* desired types (in) */
+                      ptr,                  /* ptr to wildname array (in) */
+                      bin,                  /* number of wildnames (in) */
+                      ptr,                  /* to output structure (in) */
+                      bin,                  /* entries in output struct (in) */
+                      bin,                  /* size of each entry (in) */
+                      bin,                  /* entries read (out) */
+                      (4) bin,              /* counts by type (out) */
+                      bin(31),              /* modified before date (in) */
+                      bin(31),              /* modified after date (in) */
+                      bin),                 /* error status (out) */
+
+   /* return/set terminal configuration */
+
+      duplx$   entry (bit(16))              /* new config (in) */
+               returns (bit(16)),           /* old config */
+
+   /* print Primos system error */
+      errpr$   entry (bin, bin, char(*), bin, char(*), bin),
+
+   /* return Primos error text for an error code */
+      ertxt$   entry (bin, char(1024) var),
+
+   /* exit program */
+      exit     entry,
+
+   /* abort and re-initialize command environment (for time bomb) */
+      fatal$   entry (bin),
+
+   /* get user id and group list */
+      getid$   entry (ptr, bin, bin),
+
+   /* allocate a free segment */
+      getsn$   entry (bin, bin, bin, bin, bin, bin),
+
+   /* return pathname of a file unit or attach point */
+      gpath$   entry (bin, bin, char(*), bin, bin, bin),
+
+   /* set a global variable */
+      gv$set   entry (char(*) var, char(*) var, bin),
+
+   /* get a global variable */
+      gv$get   entry (char(*) var, char(*) var, bin, bin),
+
+   /* print a formatted message */
+      ioa$     entry options (variable),
+
+   /* print formatted error message (turns on comoutput) */
+      ioa$er   entry options (variable),
+
+   /* return formatted message */
+      ioa$rs   entry options (variable),
+
+   /* return system name of a file */
+      isrem$   entry (bin,                  /* key - k$unit | k$name (in) */
+                      char(*) var,          /* pathname (in) */
+                      bin,                  /* file unit (in) */
+                      char(*) var,          /* system name (out) */
+                      bin)                  /* status (out) */
+               returns (bit),               /* true if remote */
+
+   /* return phantom logout info */
+      lon$r    entry (ptr,                  /* to returned message (in) */
+                      bin,                  /* max message length (in) */
+                      bit,                  /* true if more msgs queued (out) */
+                      bin),                 /* status code */
+
+   /* make on-unit */
+      mkonu$   entry (char(*) var, entry)
+               options (shortcall(18)),
+
+   /* list (return) a priority ACL */
+      pa$lst   entry (char(*) var,          /* object name (in) */
+                      ptr,                  /* acl structure (->out) */
+                      bin,                  /* max acl entries (in) */
+                      bin),                 /* status (out) */
+
+   /* set priority ACL */
+      pa$set   entry (char(*) var,          /* partition name (in) */
+                      ptr,                  /* acl structure (in) */
+                      bin),                 /* status (out) */
+
+   /* start (CPL) phantom */
+      phntm$   entry (bit(16) aligned, char(*), bin, bin, bin, bin, char(*),
+                      bin),
+
+   /* return the user's project id */
+      prjid$   entry (char(*) var),
+
+   /* converts a node name to a node number */
+      r$cvt    entry (char(*), bin)
+               returns (bin),
+
+   /* return the node name given the node number */
+      r$name   entry (bin, char(32) var),
+
+   /* return the Primenet node number for a file */
+      r$wher   entry (bin, char(*) var, bin, bin)
+               returns (bin),
+
+   /* return (deallocate) segment */
+      rtnsg$   entry (bin, bin),
+
+   /* get system administrator's user id */
+      sanam$   entry (char(32) var),
+
+   /* set r/w lock on a file (other functions have a different calling seq.) */
+      satr$$   entry (bin, char(*), bin, bin, bin),
+
+   /* drain semaphore */
+      sem$dr   entry (bin,                  /* semaphore id (in) */
+                      bin),                 /* status (out) */
+
+   /* get semaphore count */
+      sem$ts   entry (bin,                  /* semaphore id (in) */
+                      bin)                  /* status (out) */
+               returns (bin),               /* count (out) */
+
+   /* open named semaphore */
+      sem$op   entry (char(*),              /* filename (in) */
+                      bin,                  /* name length (in) */
+                      bin,                  /* number of semaphores (in) */
+                      bin,                  /* semaphore id (out) */
+                      bin),                 /* error status (out) */
+
+   /* open named semaphore on an open file unit with initialization */
+      sem$ou   entry (bin,                  /* file unit (in) */
+                      bin,                  /* number of sems to open (in) */
+                      bin,                  /* array of sem IDs (out) */
+                      bin,                  /* initial value (in) */
+                      bin),                 /* status (out) */
+
+   /* notify semaphore */
+      sem$nf   entry (bin,                  /* semaphore id (in) */
+                      bin),                 /* status (out) */
+
+   /* wait on semaphore */
+      sem$wt   entry (bin,                  /* semaphore id (in) */
+                      bin),                 /* status (out) */
+
+   /* wait on semaphore with timeout */
+      sem$tw   entry (bin,                  /* semaphore id (in) */
+                      bin,                  /* timeout (tenths) */
+                      bin),                 /* status (out) */
+
+   /* close named semaphore */
+      sem$cl   entry (bin,                  /* semaphore id (in) */
+                      bin),                 /* status (out) */
+
+   /* set severity code */
+      setrc$   entry (bin),
+
+   /* delay n milliseconds */
+      sleep$   entry (bin(31)),
+
+   /* get our spawner's user number */
+      sid$gt   entry (bin),                 /* spawner's user nr (out) */
+
+   /* send interuser message */
+      smsg$    entry (bin,                  /* key (in) */
+                      char(*),              /* user name (in) */
+                      bin,                  /* user name length (in) */
+                      bin,                  /* user number (in) */
+                      char(*),              /* system name (in) */
+                      bin,                  /* system name length (in) */
+                      char(*),              /* message (in) */
+                      bin,                  /* length of message (in) */
+                      (3) bin),             /* ervec (out) */
+
+   /* spawn a phantom process */
+      spawn$   entry (bit(16),              /* keys (in) */
+                      ptr,                  /* ptr to data structure (in) */
+                      char(*) var,          /* input file name (in) */
+                      bin,                  /* input file unit (in) */
+                      char(*) var,          /* CPL arguments (in) */
+                      bin,                  /* user number (out) */
+                      bin),                 /* status code (out) */
+
+   /* get date/time information */
+      timdat   entry ((*) bin,              /* time array (out) */
+                      bin),                 /* number of elements (in) */
+
+   /* terminal output */
+      tnoua    entry (char(*), bin),
+      tnou     entry (char(*), bin),
+      tonl     entry,
+
+   /* flush terminal I/O buffers */
+      tty$rs   entry (bit(2) aligned,       /* output, input buffer (in) */
+                      bin),                 /* status (out) */
+
+   /* open a treename */
+      tsrc$$   entry (bin, char(*), bin, (2) bin, bin, bin),
+
+   /* return unique id */
+      uid$bt   entry (char(6)),
+
+   /* get current user number & number users logged in */
+      user$    entry (bin, bin),
+
+      ysno$a   entry (char(*), bin, bin)
+               returns (bin);               /* instead of FTN Logical */
+
+/* End of insert file PRIMOS.INS.SPL                                          */
+/******************************************************************************/

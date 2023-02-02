@@ -1,0 +1,506 @@
+/* EKF.SPL, PrintMaster, Jeff Hostetler, September 12, 1983                   */
+/* Key Word List Editor Command.                                              */
+/*                                                                            */
+/* Usage:  EKF <kwl> <opt>                                                    */
+/*    or:  EKF -HELP                                                          */
+/*                                                                            */
+/* Where <kwl> ::= <kwl> [-LIBrary] | -Master                                 */
+/*                                                                            */
+/*       <opt> ::=   -Edit [{textfile | <keywords>}]                          */
+/*                 | -Create [{textfile | <keywords>}]                        */
+/*                 | -Delete                                                  */
+/*                 | [-List [<textfile>]] [-EXPand]                           */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ekf: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      uncl_length       by 160,
+      response_length   by   3;
+
+   dcl                                      /* EPF style */
+      cl             char(max_cl) var,
+      com_status     bin,
+
+      1  struc,
+         2  pathname       char(128) var,
+         2  kw_cl          char(uncl_length) var, /* for edit keywords */
+         2  m_given        bit(1) aligned,  /* -Master */
+         2  list_given     bit(1) aligned,  /* -List */
+         2  list_path      char(128) var,   /* text output pathname */
+         2  create_given   bit(1) aligned,  /* -Create kwl form text input */
+         2  create_path    char(128) var,   /* text input pathname */
+         2  edit_given     bit(1) aligned,  /* -Edit */
+         2  edit_path      char(128) var,   /* text input pathname */
+         2  delete_given   bit(1) aligned,  /* -Delete */
+         2  help_given     bit(1) aligned,
+         2  lib_given      bit(1) aligned,  /* -LIBrary */
+         2  exp_given      bit(1) aligned,  /* -EXPand */
+
+      p_kwl                   ptr,
+      p_buf                   ptr,
+      local_old_master_kwl    ptr,
+      ei                      like kwl$expand_info,
+      flags_acl               like kwl$flags, /* flags from ACL on kwl */
+      indent_count            bin,
+      we_did_initialization   bit,
+      local_master_list       bit,          /* This is TRUE iff we are modifying */
+                                            /* the MASTER list on the same */
+                                            /* partition as is in psv.system_partition. */
+      full_pathname           char(128) var,
+      response                char(response_length) var,
+      filetype                bin,
+      (code, code1, rnw, unit)   bin;
+
+%page;
+
+   unit = 0;
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.kwl_address = addr(kwl$static_external); /* dynamic common kludge */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+   call gp$version ('Edit Keyword File');
+
+   on condition(CLEANUP$)
+      call gp$close (unit);
+
+   kwl.in_edit_kwl = true;
+
+   p_kwl = null;
+   p_buf = null;
+
+   call parse_cl;
+
+   if struc.delete_given then do;
+      call gp$quote (struc.pathname);
+      call cp$ ('delete ' || struc.pathname || ' -nvfy -nq', code, code1);
+      if code > 0  |  code1 > 0 then
+         goto abnormal_return;
+
+      if struc.m_given  &  local_master_list then do;
+         local_old_master_kwl = psv.old_master_kwl;
+         psv.old_master_kwl = psv.master_kwl;
+         psv.master_kwl = null;
+         call kwl$destroy_kwl (local_old_master_kwl);
+         end;
+
+      goto normal_return;
+      end;                                  /* of -DELETE section */
+
+%page;
+   if struc.list_given then do;
+      if length (struc.list_path) = 0
+         then indent_count = 3;
+         else indent_count = 0;
+
+      string(ei) = kwl$default_expand_info;
+      ei.verify_kws = false;
+      if struc.m_given then
+         ei.special_kwl = true;             /* If listing MASTER list. */
+      if struc.exp_given then               /* If -EXPand given */
+         ei.expand = true;
+
+      call kwl$open_kwl (k$read + k$getu + k$$no_wait, struc.pathname, unit, flags_acl);
+      call kwl$read_disk_buffer (unit, p_buf);
+      call kwl$buf_to_kwl (p_buf, p_kwl, ei, flags_acl);
+      call kwl$free_buffer (p_buf);
+      call gp$close (unit);
+      call kwl$kwl_to_text (struc.list_path, p_kwl, indent_count);
+      call kwl$destroy_kwl (p_kwl);
+      goto normal_return;
+      end;
+      /* logical end of -LIST section */
+
+%page;
+   string(ei) = kwl$default_expand_info;
+   if struc.m_given then                    /* If editing the MASTER list. */
+      ei.special_kwl = true;
+
+   /* EDIT and CREATE now have the same function, except that EDIT */
+   /*   works upon the existing kwl and CREATE starts from scratch */
+
+   call kwl$open_kwl (k$rdwr+k$getu+k$$no_wait, struc.pathname,unit,flags_acl);
+
+   if struc.edit_given then do;
+      ei.verify_kws = false;
+      call read_existing_kwl;
+      ei.verify_kws = true;
+
+      if length(kw_cl) > 0 then
+         call kwl$cl_to_kwl (kw_cl, p_kwl, ei);
+      else
+         call kwl$text_to_kwl (struc.edit_path, p_kwl, ei);
+      end;
+
+   if struc.create_given then do;
+      if length(kw_cl) > 0 then
+         call kwl$cl_to_kwl (kw_cl, p_kwl, ei);
+      else
+         call kwl$text_to_kwl (struc.create_path, p_kwl, ei);
+      end;
+
+   call prwf$$ (k$posn + k$prea, unit, null, 0, 0, rnw, code);
+   call kwl$kwl_to_buf (p_kwl, p_buf);
+   call kwl$destroy_kwl (p_kwl);
+   call kwl$write_disk_buffer (unit, p_buf);
+   call kwl$free_buffer (p_buf);
+   call gp$close (unit);
+   if struc.m_given  &  local_master_list then
+      call kwl$load_mkwl;
+
+   goto normal_return;
+   /* logical end of -CREATE and -EDIT */
+
+%page;
+
+normal_return:
+
+   com_status = severity$ok;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+help_wanted:
+   call display_help;
+   goto normal_return;
+
+
+abnormal_return:
+   call gp$close (unit);
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+   /* logical end of edit_kf */
+%page;
+/* edit_kf.error_, PrintMaster, Jeff Hostetler, September 12, 1983            */
+/* Procedure to display command usage and call ERR$.                          */
+/******************************************************************************/
+
+   error_: proc (error_msg);
+
+      dcl
+         error_msg   char(*) var;
+
+      if length (error_msg) ^= 0 then
+         call ioa$er ('%v%.', -1, error_msg);
+      call ioa$er ('Type EKF -HELP or HELP EKF for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+
+      return;
+      end error_;
+
+%page;
+/* edit_kf.display_help, PrintMaster, Jeff Hostetler, March 27, 1984          */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage:  EKF  keyword_file  command%.', -1);
+      call ioa$ ('   or:  EKF  -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('KEYWORD_FILE is one of the following:%.', -1);
+      call ioa$ ('   pathname          -- pathname of keyword file%.', -1);
+      call ioa$ ('   filename -LIBrary -- filename of system LIBRARY keyword file%.', -1);
+      call ioa$ ('   -Master           -- the system MASTER keyword file%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('COMMAND must be one of the following:%.', -1);
+      call ioa$ ('   -Create kw_source -- Create keyword file using KW_SOURCE%.', -1);
+      call ioa$ ('   -Delete           -- Delete keyword file%.', -1);
+      call ioa$ ('   -Edit kw_source   -- Edit keyword file with KW_SOURCE%.', -1);
+      call ioa$ ('   -List pathname    -- List keyword file to PATHNAME (or tty, if blank)%.', -1);
+      call ioa$ ('   -EXPand or -X     -- Expand -USING references; may only be used with -LIST%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('KW_SOURCE must be either the pathname of a keyword file in TEXT format, a list%.', -1);
+      call ioa$ ('of keywords, or blank.  If blank, input is taken from the terminal.  Keywords%.', -1);
+      call ioa$ ('given on the command line must have the following form:%.', -1);
+      call ioa$ ('   -keyword                       -- INSERT keyword with no values%.', -1);
+      call ioa$ ('   -keyword -value_1 ... -value_N -- INSERT keyword with these values%.', -1);
+      call ioa$ ('                                       or CHANGE the keyword''s values%.', -1);
+      call ioa$ ('   -^keyword                      -- DELETE keyword from the file%.', -1);
+      call ioa$ ('%.', -1);
+      return;
+      end display_help;
+
+%page;
+/* edit_kf.parse_cl, PrintMaster, Jeff Hostetler, February 2, 1984            */
+/* procedure to interpret the command line (see initial comment for usage).   */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys       by '000A'b4,
+         caller_name       by 'ekf',
+         pixel_size        by 46;
+
+      dcl
+         pic (3) char(pixel_size) var static init
+             ('tree; uncl; -m, -master; -l, -list tree;',
+              '-c, -create tree; -e, -edit tree; -d, -delete;',
+              '-help; -lib, -library; -exp, -expand, -x; end'),
+         pix_index   bin,
+         bad_index   bin,
+         ns_code     bin,
+
+         full_pathname  char(128) var,
+         count       bin;
+
+      call cl$pix (cl$pix_keys, caller_name, addr(pic), pixel_size, cl,
+                   addr(struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ ('');
+
+      if help_given then
+         goto help_wanted;
+
+      /* Process <kwl>:  allow only one source to be named */
+
+      call gp$unquote (struc.pathname);
+      call gp$unquote (struc.list_path);
+      call gp$unquote (struc.create_path);
+      call gp$unquote (struc.edit_path);
+
+      if struc.m_given then do;
+         if struc.lib_given then
+            call error_ ('-LIB and -MASTER cannot be used together.');
+         if length(struc.pathname) > 0 then
+            call error_ ('Pathname and -MASTER cannot be used together.');
+
+         struc.pathname = '<' || psv.system_partition || '>'
+                           || kwl$master_kwl || kwl$kwl_suffix;
+         local_master_list = true;
+         goto end_of_process_kwl;
+         end;
+
+
+      if struc.lib_given then do;
+         if length(struc.pathname) = 0 then
+            call error_ ('Library name not specified.');
+         if index(struc.pathname,'>') ^= 0 then
+            call error_ ('Library name cannot be a pathname.');
+
+         struc.pathname = '<' || psv.system_partition || '>'
+                           || kwl$library_directory || '>' || struc.pathname;
+         call apsfx$ (struc.pathname, struc.pathname, kwl$kwl_suffix, code);
+         if code > 0 then
+            call err$ (err$primos_et, 'Unable to append keyword file suffix.',
+                       code, 0, 0);
+
+         goto end_of_process_kwl;
+         end;
+
+
+      /* Otherwise, we have EKF <pathname> ... */
+
+      if (length(struc.pathname) = 0) then
+         call error_ ('No keyword file given.');
+
+      call apsfx$ (struc.pathname, struc.pathname, kwl$kwl_suffix, code);
+      if code > 0 then
+         call err$ (err$primos_et, 'Unable to append keyword file suffix.', code, 0, 0);
+      call complete_pathname(struc.pathname, full_pathname);
+      if after(full_pathname, '>') = (kwl$master_kwl || kwl$kwl_suffix) then do;
+         struc.m_given = true;
+         local_master_list = (substr(before(full_pathname,'>'),2) /* See if the partition name */
+                              = psv.system_partition);            /*   is the same as in psv.  */
+         goto end_of_process_kwl;
+         end;
+
+      if index(struc.pathname,'>') = 0 then /* inhibits library search */
+         struc.pathname = '*>' || struc.pathname;
+
+end_of_process_kwl:
+
+      /* Process <opt>: */
+
+      count = struc.create_given + struc.delete_given
+             + struc.edit_given + struc.list_given;
+      if count = 0 & length(kw_cl) = 0 then /* no options given: */
+         struc.list_given = true;           /*   -LIST is implied */
+      else if count > 1 then
+         call error_ ('Only one option (-CREATE, DELETE, -EDIT, or -LIST) can be specified.');
+
+      if struc.exp_given  &  ^struc.list_given then
+         call error_ ('-EXPAND may only be used with -LIST.');
+
+      if length(kw_cl) > 0 then do;
+         if struc.edit_given then do;
+            if length(struc.edit_path) > 0 then
+               call error_ ('EDIT_PATHNAME and KEYWORDS cannot be used together.');
+            end;
+
+         else if struc.create_given then do;
+            if length(struc.create_path) > 0 then
+               call error_ ('CREATE_PATHNAME and KEYWORDS cannot be used together.');
+            end;
+
+         else if struc.list_given | struc.delete_given then
+            call error_ ('KEYWORDS may not be used with -LIST or -DELETE.');
+
+         else do;
+            call ioa$ ('Assuming -EDIT.%.', -1);
+            struc.edit_given = true;
+            end;
+         end;
+
+      if struc.m_given then do;
+         if struc.create_given then
+            call master_verify('Okay to create a new MASTER keyword file (y/n) ',
+                               'MASTER keyword file will not be changed.',
+                               'Creating a new MASTER keyword file.', true);
+
+         if struc.delete_given then
+            call master_verify('Okay to delete the MASTER keyword file (y/n) ',
+                               'MASTER keyword file will not be deleted.',
+                               'MASTER keyword file not found.', false);
+         end;
+
+      return;
+      /* logical end of parse_cl */
+
+%page;
+/* ekf.parse_cl.master_verify, PrintMaster, Jeff Hostetler, December 29, 1984 */
+/* Procedure to query the user before attempting to change the MASTER keyword */
+/*   list.                                                                    */
+/******************************************************************************/
+
+      master_verify: proc (msg1, msg2, msg3, flag);
+
+         dcl
+            msg1        char(*) var,        /* (in) */
+            msg2        char(*) var,        /* (in) */
+            msg3        char(*) var,        /* (in) */
+            flag        bit,                /* true iff return on e$fntf (in) */
+
+            code        bin;
+
+         on condition (err$condition_before_msg)
+            begin;
+            if err$es.type = err$primos_et  &  err$es.status1 = e$fntf then
+               goto no_master_file;
+            call cnsig$(code);
+            end;
+
+         call gp$open_path (k$exst, struc.pathname, 0);
+         revert condition (err$condition_before_msg);
+
+         if ysno$a(addr(msg1)->bvs.chars, addr(msg1)->bvs.len, a$ndef) = ftn_true
+            then return;
+         else do;                           /* Give nothing will be changed */
+            if length(msg2) > 0 then        /*   message. */
+               call ioa$('%v%.', -1, msg2);
+            goto abnormal_return;
+            end;
+
+no_master_file:
+
+         if length(msg3) > 0 then           /* Give message about new MASTER */
+            call ioa$('%v%.', -1, msg3);    /*   file. */
+         if ^flag then
+            goto normal_return;
+
+         end master_verify;
+      end parse_cl;
+
+%page;
+/* ekf.read_existing_kwl, PrintMaster, Jeff Hostetler, December 30, 1984      */
+/******************************************************************************/
+
+   read_existing_kwl: proc;
+
+      on condition (err$condition_before_msg)
+         begin;
+         if err$es.type = err$user_et
+               &  err$es.status1 = err$kwl_incomplete_ue then do;
+            call ioa$ ('Creating new keyword file.%.', -1);
+            goto empty_kwl;
+            end;
+         call cnsig$ (code);
+         end;
+
+      call kwl$read_disk_buffer (unit, p_buf);
+      revert condition (err$condition_before_msg);
+
+      call kwl$buf_to_kwl (p_buf, p_kwl, ei, flags_acl);
+      call kwl$free_buffer (p_buf);
+
+empty_kwl:
+
+      return;
+      end read_existing_kwl;
+
+%page;
+/* ekf.complete_pathname, PrintMaster, Jeff Hostetler, December 30, 1984      */
+/******************************************************************************/
+
+   complete_pathname: proc (path_in, path_out);
+
+      dcl
+         path_in     char(*) var,
+         path_out    char(*) var,
+
+         (p1,e1)     char(32) var,
+         (ca,d1)     char(128) var,
+         path        char(128) var,
+         code        bin;
+
+      call gp$split_pathname (path_in, p1,d1,e1);
+
+      if d1 = '*' then do;                  /* (i.e. Open *>x ) */
+         call at$hom (code);
+         if code ^= 0 then
+            call err$ (err$primos_et, 'Attaching to home directory', code, 0, 0);
+         path = '';
+         end;
+      else do;
+         if length(p1) = 0 then
+            path = d1;                      /* "dir1>...>dir_n" or "" */
+         else
+            if length(d1) = 0 then          /* "<prtn>MFD" */
+               path = '<' || p1 || '>MFD';
+            else                               /* "<prtn>dir1>dir2>...>dir_n" */
+               path = '<' || p1 || '>' || d1;
+
+         if length(path) > 0 then do;       /* did they specify at least one of them */
+            call at$ (k$setc, path, code);  /* if so attach there, otherwise stay where we are. */
+            if code ^= 0 then
+               call err$ (err$primos_et, 'Attaching to ' || path, code, 0, 0);
+            end;
+         end;
+
+      call gpath$(k$cura,0,addr(ca)->bvs.chars,128,addr(ca)->bvs.len,code);
+      if after(ca, '>') = 'MFD' then
+         ca = before(ca, '>');
+      if length(e1) > 0 then
+         ca = ca || '>' || e1;
+
+      call at$hom(code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Attaching to home directory', code, 0, 0);
+
+      path_out = ca;
+
+      return;
+      end complete_pathname;
+   end ekf;

@@ -1,0 +1,346 @@
+/* Command_processor.plp, Dutil, JEW, 21-Mar-81
+   Command processor for Dutil.   */
+
+Command_processor: proc options (nocopy);
+
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>global.plp.ins
+$Insert *>insert>condition.plp.ins
+
+dcl
+   cl$get entry (char(*) var, bin, bin),
+   ioa$er entry options (variable),
+   ioa$   entry options (variable),
+   tnoua  entry (char(*), bin),
+   tonl   entry;
+
+dcl
+   display  entry options (variable),
+   read     entry options (variable),
+   write    entry options (variable),
+   disk     entry options (variable),
+   header   entry options (variable),
+   quit     entry options (variable),
+   find     entry options (variable),
+   check    entry options (variable),
+   verify   entry options (variable),
+   rat      entry options (variable),
+   recover  entry options (variable),
+   boot     entry options (variable),
+   used     entry options (variable),
+   free     entry options (variable),
+   add_entry  entry options (variable),
+   delete   entry options (variable),
+   search   entry options (variable),
+   copy     entry options (variable),
+   modify   entry options (variable),
+   rdent    entry options (variable),
+   list     entry options (variable),
+   next     entry options (variable),
+   patch    entry options (variable),
+   help_cmd entry options (variable),
+   setmode  entry options (variable),
+   spool    entry options (variable),
+   fp       entry options (variable),
+   format   entry options (variable),
+   who      entry options (variable),
+   execute  entry options (variable),
+   compare  entry options (variable),
+   convert  entry options (variable);
+
+dcl
+   my_level          bin,
+   new_level_ok      bit,
+   new_level_ok_save bit,
+   quit_  char(5) var static init ('QUIT$'),
+   target            bin,       /* target level for level manipulations */
+   waiting_for_cl    bit;
+
+
+   /* make on-unit for breaks unless in debug mode */
+
+   if ^in_dbg_mode then
+      call mkonu$ (quit_, quit_hlr);
+
+   /* initialize state vars */
+
+   flush_tty_buffers = true;
+   new_level_ok = false;
+   my_level = com_level;
+
+   do while ('1'b);
+
+get_command:
+      if com_level = 0 then
+         call tnoua ('> ', 2);
+      else
+         call ioa$ ('%D> %$', -1, com_level);
+
+      waiting_for_cl = true;
+      call cl$get (cl, cl_sz, status);
+      if length (cl) = 0 then goto get_command;      /* ignore blank lines */
+
+      /* parse command name */
+
+      clp = 1;
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+
+      /* setup control variables */
+
+      waiting_for_cl = false;
+      new_level_ok_save = new_level_ok;
+      new_level_ok = true;
+      call tonl;
+
+      /* dispatch on command */
+
+      select (token);
+
+         when ('DISK')
+            call disk (cl, info, clp);
+
+         when ('QUIT', 'Q')
+            call quit (cl, info, clp);
+
+         when ('BOOT')
+            call boot (cl, info, clp);
+
+         when ('MODE_SET', 'MS')
+            call setmode (cl, info, clp);
+
+         when ('SPOOL', 'SP')
+            call spool (cl, info, clp);
+
+         when ('!')
+            call execute (cl, info, clp);
+
+         when ('CONVERT', 'CVT')
+            call convert (cl, info, clp);
+
+         when ('HELP')
+            call help_cmd (cl, info, clp);
+
+         otherwise
+
+            /* must have current partition to use next set of commands */
+
+            if cpartition ^= -1 then
+               select (token);
+
+                  when ('C')
+                     if com_level > 0 then
+                        return;
+                     else
+                        new_level_ok = new_level_ok_save;   /* this C was not a cmd */
+
+                  when ('RELEASE', 'RL')
+                     if com_level > 0 then
+                        do;
+                        target = com_level - 1;
+                        call signl$ ('unwind_', null(), 0, addr(target), 1, '0'b);
+                        end;
+                     else
+                        new_level_ok = new_level_ok_save;
+
+                  when ('UNWIND', 'UW')
+                     if com_level > 0 then
+                        do;
+                        target = 0;
+                        call signl$ ('unwind_', null(), 0, addr(target), 1, '0'b);
+                        end;
+                     else
+                        new_level_ok = new_level_ok_save;
+
+                  when ('DISPLAY', 'D')
+                     call display (cl, info, clp);
+
+                  when ('READ', 'R')
+                     call read (cl, info, clp);
+
+                  when ('WRITE')
+                     call write (cl, info, clp);
+
+                  when ('HEADER', 'H')
+                     call header (cl, info, clp);
+
+                  when ('FIND', 'F')
+                     call find (cl, info, clp);
+
+                  when ('CHECK', 'CHK')
+                     call check (cl, info, clp);
+
+                  when ('VERIFY',  'VFY')
+                     call verify (cl, info, clp);
+
+                  when ('RAT')
+                     call rat (cl, info, clp);
+
+                  when ('RECOVER')
+                     call recover (cl, info, clp);
+
+                  when ('USED')
+                     call used (cl, info, clp);
+
+                  when ('FREE')
+                     call free (cl, info, clp);
+
+                  when ('ADD_ENTRY', 'AE')
+                     call add_entry (cl, info, clp);
+
+                  when ('DELETE')
+                     call delete (cl, info, clp);
+
+                  when ('SEARCH', 'SRCH')
+                     call search (cl, info, clp);
+
+                  when ('COPY', 'CPY')
+                     call copy (cl, info, clp);
+
+                  when ('MODIFY', 'M')
+                     call modify (cl, info, clp);
+
+                  when ('RDENT', 'RE')
+                     call rdent (cl, info, clp);
+
+                  when ('LIST', 'L')
+                     call list (cl, info, clp);
+
+                  when ('NEXT', 'N')
+                     call next (cl, info, clp);
+
+                  when ('PATCH', 'P')
+                     call patch (cl, info, clp);
+
+                  when ('COMPARE', 'CMP')
+                     call compare (cl, info, clp);
+
+                  when ('WHO', 'W')
+                     call who (cl, info, clp);
+
+                  when ('FIND_PARTITIONS', 'FP')
+                     call fp (cl, info, clp);
+
+                  when ('FORMAT')
+                     call format (cl, info, clp);
+
+                  otherwise
+                     do;
+                     new_level_ok = new_level_ok_save;
+                     call ioa$er ('"%v" is not a command.%.', -1, token);
+                     end;
+                  end;     /* select */
+            else
+               call ioa$er ('No DISK command has been given yet.%.', -1);
+
+         end;     /* select */
+
+         call tonl;
+
+   end;     /* do until */
+
+/**/
+
+Quit_hlr: proc (cfp) options (nocopy);
+
+   /* on-unit for breaks.  Makes a copy of the current disk record
+      and calls a new command level */
+
+dcl
+   cfp   ptr;
+
+dcl
+   ioa$er entry options (variable),
+   mkonu$ entry (char(*) var, entry) options (shortcall (18)),
+   tty$rs entry (bit(16), bin);
+
+dcl
+   c2080       char(2080) based,
+   copy_of_rec char(2080),
+   unwind_  char(7) var static init ('unwind_');
+
+
+   /* if a command has been issued since the last copy, another copy
+      is performed.  If not, a new command level is useless, so we
+      tell him and ignore the break */
+
+   if waiting_for_cl then
+      if new_level_ok then
+         call ioa$ ('%/Record is saved at level %d.%.', -1, com_level);
+      else
+         do;
+         if first_quit_signal then
+            do;
+            first_quit_signal = false;
+            call ioa$ ('%/Use QUIT command to exit program.%.', -1);
+            end;
+         else
+            do;
+            call ioa$ ('%/The disk record at this command level has not been modified.%.', -1);
+            call ioa$ ('A new level will not be entered.%.', -1);
+            end;
+         goto get_command;
+         end;
+   else
+      do;
+
+      /* since some commands grab quits, print a message, then continue
+         the signal, tty buffer can only be flushed if nobody else
+         did */
+
+      if flush_tty_buffers then
+         call tty$rs ('11'b, status);
+      call ioa$er ('%/QUIT.  Use Continue to resume operation at level %d.%.',
+                   -1, com_level);
+      end;
+
+   copy_of_rec = addr(rec) -> c2080;
+   com_level = com_level + 1;
+
+   /* before invoking the c.p., an on-unit is made for the condition
+      'unwind_'.  This condition is used to release levels.  Currently
+      the UNWIND command unwinds back to level 0.  */
+
+   call mkonu$ (unwind_, unwind_hlr);
+   call command_processor;
+
+   /* when command processor returns, restore old level */
+
+   com_level = com_level - 1;
+
+   addr(rec) -> c2080 = copy_of_rec;
+
+   if waiting_for_cl then
+      goto get_command;      /* to re-print prompt, etc. */
+   else
+      do;
+      call ioa$ ('Resuming command "%v"...%.', -1, cl);
+      return;
+      end;
+
+
+/* command_processor.quit_.unwind_ - routine to handle releases of command
+   levels */
+
+unwind_hlr: proc (cfp);
+
+dcl
+   cfp   ptr;
+
+
+   if cfp -> cfh.info_ptr -> fb15 = my_level then
+      do;
+
+      /* I am the target level.  Reset com_level and rec. */
+
+      com_level = my_level;
+      addr(rec) -> c2080 = copy_of_rec;
+      goto get_command;
+      end;
+   else
+      call cnsig$ (status);
+
+end;    /* Unwind_hlr */
+
+end;     /* Quit_hlr */
+
+end;     /* Command_processor */

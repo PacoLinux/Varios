@@ -1,0 +1,73 @@
+/* COMM$CONNECT.SPL, PrintMaster, Jim Wilcoxson, August 4, 1983               */
+/* Connect procedure.                                                         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+comm$connect : procedure (system_id, cbp, wait) returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>comm.ins.spl';
+%include '*>entry>comm$connected.ins.spl';
+%include '*>entry>comm$create_cb.ins.spl';
+%include '*>entry>comm$disconnect.ins.spl';
+%include '*>entry>comm$find_cb.ins.spl';
+%include '*>entry>comm$service.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   system_id   char(*) var,                 /* target system id (in) */
+   cbp         ptr,                         /* connection block pointer (out) */
+   wait        bit;                         /* wait for connect (in) */
+
+dcl
+   max_time_limit    bin,                   /* max time to wait for connect */
+   tenths_per_cycle  bin,                   /* tenths of a second in a cycle */
+   time_left         bin;
+
+   /* if networks not configured, this fails */
+
+   if ^psv.network_exists then
+      return (false);
+
+   if comm$find_cb (system_id, cbp) then
+      if cbp->cb.connected then
+         return (true);                     /* already connected */
+      else                                  /* have cb, but not connected */
+         ;
+   else                                     /* need cb */
+      cbp = comm$create_cb (system_id);
+
+   if ^cbp->cb.connect_in_progress then do;
+      cbp->cb.connect_in_progress = true;
+      cbp->cb.connection_id = gp$uid();     /* make this connection different */
+
+      /* make comm$service think the connection failed because of
+         insufficient memory; this will make IT do the connection stuff */
+
+      cbp->cb.vcstatus.circuit_status = xs$mem;
+      call comm$service;
+      end;
+
+   if wait then
+      max_time_limit = psv.time_limit;
+   else
+      max_time_limit = 3;                   /* at least wait a few seconds */
+
+   do time_left = max_time_limit to 0 by -1 while (cbp->cb.connect_in_progress);
+      call x$wait (10);
+      call comm$service;
+      end;
+
+   if wait & ^cbp->cb.connected then
+      call comm$disconnect (system_id);
+   else
+      if gbl.trace_on then
+         call err$ (err$log_event_et, 'Connect time-out', 0, 0, 0);
+
+   return (cbp->cb.connected);
+
+end comm$connect;

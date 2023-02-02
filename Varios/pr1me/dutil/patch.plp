@@ -1,0 +1,1052 @@
+/* Patch.plp, Dutil, JEW, 7-MAR-81
+   Patch command handler.  Allows modification of the current record
+   much like VPSD.   */
+
+patch: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>query.plp.ins
+$Insert *>insert>diskio.plp.ins
+
+dcl
+   cl$get entry (char(*) var, bin, bin),
+   cvt_value entry options (variable) returns (bin(31)),
+   erkl$$ entry (bin, bin, bin, bin),
+   ioa$ entry options (variable),
+   print entry options (variable),
+   parsefmt entry options (variable),
+   tnoua entry (char(*), bin),
+   tonl entry;
+
+dcl
+   backspace      char static,
+   bb8            bit(8) based,
+   command        char(10) var,
+   cr             char static,        /* a carriage return */
+   current_loc    bin,         /* current location in record */
+   delete         char static,        /* line delete character */
+   done           bit,
+   erase          bin static,         /* erase param for erkl$$ */
+   first_time     bit static init(true),
+   kill           bin static,         /* kill param for erkl$$ */
+   my_cl          char(cl_sz) var,    /* local command line */
+   1  my_format like print_format static,
+   quote          char static,
+   record_modified bit,
+   rel            bin,       /* relocation factor */
+   saved_record   (-16:1023) bin,
+   1  word  based,
+      2  high_byte   char,
+      2  low_byte    char;
+
+
+   /* initialize important vars */
+
+   current_loc = 0;        /* current location in record */
+   rel = 0;                /* relocation constant */
+   command = '';
+   if first_time then
+      do;
+
+      /* init format structure */
+
+      my_format.picture = '%6:0o %$';
+      my_format.mode    = 3;
+      my_format.els_per_line = 10;
+      my_format.words   = 1;
+
+      addr (cr) -> bb8 = '8a'b4;
+      call erkl$$ (1, erase, kill, status);
+      backspace = addr(erase) -> word.low_byte;
+      delete = addr(kill) -> word.low_byte;
+      quote = '''';
+
+      first_time = false;
+
+      end;
+
+
+   call backup;            /* make copy of the current disk record */
+   record_modified = false;     /* true if record ever modified */
+
+   done = false;
+   do until (done);
+
+gc:   call ioa$ ('$ %$', -1);
+      call cl$get (my_cl, cl_sz, status);
+
+      /* get command and dispatch */
+
+      clp = 1;
+      call cl$par ('0'b, my_cl, command, 10, info, clp, status);
+
+      select (command);
+
+         when ('A', 'ACCESS') call access;
+         when ('C', 'COPY') call copy;
+         when ('D', 'DISPLAY') call display;
+         when ('E', 'EQUAL') call equal;
+         when ('F', 'FILL') call fill;
+         when ('H', 'HEADER') call header;
+         when ('L', 'LIST') call list;
+         when ('N', 'NOTEQU') call not_equal;
+         when ('Q', 'QUIT') call quit;
+         when ('R', 'RELATIVE') call relative;
+         when ('U', 'UPDATE') call update;
+         when ('X', 'ROLLBACK') call rollback;
+         when (' ');
+         otherwise
+            call ioa$ ('Unrecognized command.%.', -1);
+         end;     /* of select */
+
+   end;      /* of do until */
+   return;
+
+bad_terminator:
+      call ioa$ ('Bad command terminator.%.', -1);
+      goto gc;
+
+bad_fmt_string:
+      call ioa$ ('Bad format string.%.', -1);
+      goto gc;
+
+bad_parameters:
+      call ioa$ ('Bad parameters.%.', -1);
+      goto gc;
+
+conv_error:
+      call ioa$ ('Conversion error.%.', -1);
+      goto gc;
+
+bad_fmt_structure:
+      call ioa$ ('Bad value in format structure. Internal error.%.', -1);
+      goto gc;
+
+bad_com_format:
+      call ioa$ ('Bad command format.%.', -1);
+      goto gc;
+
+/**/
+
+/*   Patch internal procedures for various functions...
+
+   This one backs up the current record to a save area */
+
+backup: proc;
+
+dcl
+   big_string char(2080) based;
+
+   addr (saved_record) -> big_string = addr (rec) -> big_string;
+   record_modified = true;
+
+end;
+
+
+/*
+   Get_token - read next token from the command line with Patch break
+      characters
+*/
+
+get_token: proc (token, del);
+
+$Insert *>insert>gtpar.plp.ins
+
+dcl
+   token    char(32) var,
+   del      char;
+
+dcl
+   break  char (5) var static init ('/:^.!'),
+   1  info like gtpar;
+
+   call gt$par ('0'b, ' ', '''', break, my_cl, token, 32, info, clp);
+   if info.delimiter_eol then
+      del = cr;
+   else
+      del = info.delimiter;
+
+end;
+
+
+/* Expression analyzer - handles addition and subtraction, relocation
+      factors, and a * for the current location */
+
+expr: proc (string) returns (bin);
+
+%replace
+   minus by -1,
+   none  by 0,
+   plus  by 1;
+
+dcl
+   acc         bin,
+   ch          char,
+   1  chb  based,
+      2  filler   bit(4),
+      2  nibble   bit(4),
+   cx          bin,      /* character index */
+   done        bit,
+   n           bin,
+   sign        bin,
+   sl          bin,     /* string length */
+   string      char(32) var;
+
+
+   done = false;
+   sign = none;
+   acc = 0;      /* accumulated value */
+   cx = 1;
+   sl = length (string);
+
+   ch = get ();
+
+   do until (done);
+
+      if ch = '-' then
+         if sign = none then
+            do;
+            sign = minus;
+            ch = get();
+            end;
+         else
+            goto bad_expr;
+
+      else if ch = '+' then
+         if sign = none then
+            do;
+            sign = plus;
+            ch = get();
+            end;
+         else
+            goto bad_expr;
+
+      else if '0' <= ch & ch <= '9' then
+         do;
+         n = 0;
+         do while ('0' <= ch & ch <= '9');
+            n = n*10 + addr (ch) -> chb.nibble;
+            ch = get();
+         end;
+
+adjust:
+         if sign = minus then
+            acc = acc - n;
+         else
+            acc = acc + n;
+         sign = none;
+         end;
+
+      else if ch = cr then
+         done = true;
+
+      else if ch = '*' then
+         do;
+         n = current_loc;
+         ch = get();
+         goto adjust;
+         end;
+
+      else if ch = '>' then
+         do;
+         ch = get();
+         n = 0;
+         do while ('0' <= ch & ch <= '9');
+            n = n*10 + addr (ch) -> chb.nibble;
+            ch = get();
+         end;
+         n = n + rel;
+         goto adjust;
+         end;
+
+      else
+         do;
+
+bad_expr:
+         call ioa$ ('Bad expression.%.', -1);
+         goto gc;
+         end;
+
+   end;
+
+   /* make sure no trailing signs or anything */
+
+   if sign ^= none then
+      do;
+      call ioa$ ('Trailing sign in expression.%.', -1);
+      goto gc;
+      end;
+
+   return (acc);
+
+
+   /* internal proc to get a character and return <cr> at eos */
+
+   get: proc options (shortcall) returns (char);
+
+      if cx > sl then
+         return (cr);
+
+      cx = cx + 1;
+      return (substr (string, cx-1, 1));
+
+   end;
+
+end;       /* Expr */
+
+/**/
+
+/* Access subcommand handler */
+
+Access: proc;
+
+dcl
+   ch$fx2  entry (char(*) var, bin(31), bin);
+
+dcl
+   del         char,
+   done        bit,
+   leave_access bit,
+   modified     bit,
+   new_value   bin(31),
+   new_value_length bin,
+   offset      bin,
+   offset_spec bit,
+   status      bin,
+   token       char(32) var,
+   v31         bin(31),
+   value       char(15) var;
+
+
+   modified = false;
+
+   call get_token (token, del);
+   current_loc = expr (token);
+   if del = ':' then
+      do;
+      call get_token (token, del);
+      call parsefmt (token, my_format, status);
+      if status ^= 0 then
+         goto bad_fmt_string;
+      end;
+
+   if del ^= cr then
+      goto bad_terminator;
+
+loop:       /* main access loop */
+
+   call ioa$ ('(%4d) %$', -1, current_loc);
+   call print (rec,my_format, (current_loc));     /* note pass-by-value */
+   call tnoua (' ', 1);
+
+   /* now that item is printed, allow change */
+
+   call get_access_cl ();       /* get command line */
+   clp = 1;
+   offset = 1;
+   offset_spec = false;
+   value = '';
+   leave_access = false;
+   done = false;
+
+   do until (done);
+
+      call get_token (token, del);
+      if length (token) > 0 then
+         do;
+
+         /* a new value...check for multiples */
+
+         if length (value) > 0 then
+            do;
+            call ioa$ ('Multiple values given, location unmodified.%.', -1);
+            goto loop;
+            end;
+         else
+            do;
+            value = token;
+            call set_new_value;
+            end;
+         end;
+
+      /* check the delimiter that ended token */
+
+del_check:
+
+      select (del);
+
+         when (':')
+            do;
+            call get_token (token, del);
+            call parsefmt (token, my_format, status);
+            if status ^= 0 then
+               goto bad_fmt_string;
+            goto del_check;     /* have to since we parsed again */
+            end;
+
+         when ('^')
+            do;
+            offset = -my_format.words;
+            offset_spec = true;
+            done = true;
+            call get_token (token, del);
+            end;
+
+         when ('!')
+            do;
+            leave_access = true;
+            done = true;
+            call get_token (token, del);
+            end;
+
+         when ('.')
+            do;
+            call get_token (token, del);
+            call ch$fx2 (token, v31, status);
+            if status ^= 0 then
+               goto conv_error;
+            offset = v31;
+            offset_spec = true;
+            done = true;
+            end;
+
+         when ('/')
+            do;
+            value = '';         /* don't alter location */
+            leave_access = true;
+            end;
+
+         when (cr)
+            done = true;
+
+         when (' ');
+
+         otherwise
+            goto bad_parameters;
+
+         end;        /* of select */
+   end;      /* of do until */
+
+   /* last delimiter should be a cr, or extraneous text was specified */
+
+   if del ^= cr then
+      do;
+      call ioa$ ('Characters following terminator.%.', -1);
+      goto loop;
+      end;
+
+   if length (value) > 0 then
+      do;
+
+      /* modifying record; if this is the first modification, backup the
+         record */
+
+      if ^modified then
+         do;
+         modified = true;
+         call backup;
+         end;
+
+      if new_value_length = 2 then
+         addr (rec.data (current_loc)) -> fb31 = new_value;
+      else
+         rec.data (current_loc) = new_value;
+      end;
+
+   if leave_access then
+      return;
+
+   if offset_spec then
+      current_loc = current_loc + offset;
+   else
+      current_loc = current_loc + my_format.words;
+
+   if -16 <= current_loc & current_loc + my_format.words - 1 <= 1023 then;   /* in range */
+   else
+      current_loc = 0;     /* wraparound to zero */
+
+   goto loop;
+
+
+   /* Internal access procedures */
+
+   set_new_value: proc options (shortcall);
+
+      new_value = cvt_value (value, my_format, status);
+      if status ^= 0 then
+         goto conv_error;
+
+      new_value_length = my_format.words;
+
+   end;      /* set_value */
+
+
+   get_access_cl: proc options (shortcall);
+
+   dcl
+      c1in entry (char);
+
+   dcl
+      ch       char,
+      done     bit;
+
+
+      /* get command line.  terminators are <cr> ! / ^  */
+
+      done = false;
+      my_cl = '';
+      do until (done);
+
+         call c1in (ch);
+         ch = addr(ch) -> word.low_byte;    /* kinda sneaky */
+         select (ch);
+
+            when (cr)
+               done = true;
+
+            when ('^', '/', '!')
+               do;
+               call store ();
+               if quotes_balanced () then    /* not quoted */
+                  do;
+                  done =  true;
+                  call tonl;
+                  end;
+               end;
+
+            when (backspace)
+               if length (my_cl) > 0 then
+                  my_cl = substr (my_cl,  1,  length (my_cl) - 1);
+
+            when (delete)
+               my_cl = '';
+
+            otherwise
+               call store ();
+
+            end;     /* select */
+
+      end;    /* do until */
+
+
+      store: proc options (shortcall);
+
+         /* store ch in command line (my_cl) */
+
+         if length (my_cl) < cl_sz then
+            my_cl = my_cl || ch;
+
+      end;
+
+
+      quotes_balanced: proc returns (bit) options (shortcall);
+
+         /* returns true if my_cl is balanced w.r.t. quotes */
+
+      dcl
+         ch       char,
+         cp       bin,      /* character pointer */
+         in_quotes bit;
+
+
+         cp = 0;
+         in_quotes = false;
+         do while (cp < length (my_cl));
+
+            ch = get ();
+            if ch = quote then
+               do;
+               in_quotes = true;
+
+               /* find the end of the quote */
+
+               do while (in_quotes);
+
+                  ch = get ();
+                  if ch = quote then
+                     do;
+                     ch = get ();
+                     if ch = quote then;    /* quote quote */
+                     else
+                        in_quotes = false;
+                     end;
+               end;    /* do while */
+               end;
+         end;   /* do while */
+
+      eos:
+         return (^in_quotes);     /* balanced if not in quotes */
+
+
+         get: proc returns (char) options (shortcall);
+
+            cp = cp + 1;
+            if cp <= length (my_cl) then
+               return (substr (my_cl, cp));
+            else
+               if cp = length (my_cl) + 1 then   /* return blank for eos */
+                  return ('');
+               else
+                  goto eos;     /* end of string */
+
+         end;     /* get */
+
+      end;        /* quotes_balanced */
+
+   end;      /* get_access_cl */
+
+end;      /* of Access */
+/**/
+
+/* Copy subcommand handler
+
+      Copy <start> <end> <destination>
+
+   Moves a block of data
+*/
+
+copy: proc;
+
+dcl
+   del         char,
+   destination bin,
+   end         bin,
+   i           bin,
+   start       bin,
+   token       char(32) var;
+
+
+   call get_token (token, del);
+   start = expr (token);
+   if del = ' ' then
+      do;
+      call get_token (token, del);
+      end = expr (token);
+      if del = ' ' then
+         do;
+         call get_token (token, del);
+         destination = expr (token);
+         if del ^= cr then
+            goto bad_terminator;
+         end;
+      else
+         goto bad_com_format;
+      end;
+   else
+      goto bad_com_format;
+
+   /* have start, end, and destination.  Verify they are legal */
+
+   if -16 <= start & end <= 1023 & start <= end
+   &  -16 <= destination & destination + (end-start) <= 1023
+   &  start ^= destination then
+
+      /* parameters are ok, decide direction to move data */
+
+      do;
+      call backup;          /* backup copy of record */
+      if start < destination & destination <= end then
+         do;
+         destination = destination + (end-start);
+         do i = end to start by  -1;
+
+            rec.data (destination) = rec.data (i);
+            destination = destination - 1;
+
+         end;
+         end;
+
+      else
+         do i = start to end;
+
+            rec.data (destination) = rec.data (i);
+            destination = destination + 1;
+
+         end;
+
+      end;
+
+   else
+      goto bad_parameters;
+
+end;         /* copy */
+/**/
+
+/* Display subcommand handler
+
+      D <start> <end> [:<format>]
+
+   Display a block of data
+*/
+
+display: proc;
+
+dcl
+   del         char,
+   els_printed bin,
+   end         bin,
+   start       bin,
+   status      bin,
+   token       char(32) var;
+
+
+   start = 0;
+   end = 1023;
+   call get_token (token, del);
+   if length (token) > 0 then
+      do;
+      start = expr (token);
+      if del = ' ' then
+         do;
+         call get_token (token, del);
+         end = expr (token);
+         end;
+      end;
+
+   if del = ':' then
+      do;
+      call get_token (token, del);
+      call parsefmt (token, my_format, status);
+      if status ^= 0 then
+         goto bad_fmt_string;
+      end;
+
+   if del = cr then
+      if -16 <= start & end <= 1023 & start <= end then
+
+         /* everything is correct, do display */
+
+         do;
+         els_printed = 0;
+         do while (start <= end);
+
+            if mod (els_printed, my_format.els_per_line) = 0 then
+               call ioa$ ('%/(%4d) %$', -1, start);
+            call print (rec, my_format, start);
+            els_printed = els_printed + 1;
+
+         end;
+         call tonl;
+         end;
+
+      else
+         goto bad_parameters;
+   else
+      goto bad_terminator;
+
+end;         /* Display */
+
+/**/
+
+/* Equal subcommand */
+
+Equal: proc;
+
+dcl
+   del            char,
+   end            bin,
+   eq             bit,
+   len            bin,
+   p              ptr,
+   start          bin,
+   status         bin,
+   test           bit,
+   token          char(32)  var,
+   v15            bin,
+   v31            bin(31),
+   value          char(32) var,
+   xor            entry (bit, bit) options (shortcall(4)) returns (bit);
+
+
+   test = '0'b;    /* this is equal test */
+   goto do_match;
+
+not_equal: entry;
+
+   test = '1'b;    /* this is not-equal test */
+
+do_match:
+
+   call get_token (token, del);
+   start = expr (token);
+   if del = ' ' then
+      do;
+      call get_token (token, del);
+      end = expr (token);
+      if del = ' ' then
+         do;
+         call get_token (value, del);
+         if del =  ':' then
+            do;
+            call get_token (token, del);
+            call parsefmt (token, my_format, status);
+            if status ^= 0 then
+               goto bad_fmt_string;
+            end;
+         if del ^= cr then
+            goto bad_terminator;
+
+         p = addr (rec.data (start));
+         v31 = cvt_value (value, my_format, status);
+         if status ^= 0 then goto conv_error;
+         v15 = v31;
+         len = my_format.words;
+         if -16 <= start & end <= 1023 & start <= end then
+            do start = start to end by len;
+
+               select (len);
+                  when (1)
+                     eq = (p -> fb15 = v15);
+                  when (2)
+                     eq = (p -> fb31 = v31);
+                  end;
+
+               if xor (eq, test) then
+                  do;
+
+                  /* A match! */
+
+                  call ioa$ ('(%4d) %$', -1, start);
+                  call print (rec, my_format, (start));
+                  call tonl;
+                  end;
+
+               p = addrel (p, len);
+
+            end;       /* do */
+         end;
+      else
+         goto bad_com_format;
+      end;
+   else
+      goto bad_com_format;
+
+end;     /* Equal */
+
+/**/
+
+/* Fill subcommand */
+
+Fill: proc;
+
+dcl
+   del            char,
+   end            bin,
+   len            bin,
+   p              ptr,
+   start          bin,
+   status         bin,
+   token          char(32) var,
+   v15            bin,
+   v31            bin(31),
+   value          char(32) var;
+
+
+   call get_token (token, del);
+   start = expr (token);
+   if del = ' ' then
+      do;
+      call get_token (token, del);
+      end = expr (token);
+      if del = ' ' then
+         do;
+         call get_token (value, del);
+         if del = ':' then
+            do;
+            call get_token (token, del);
+            call parsefmt (token, my_format, status);
+            if status ^= 0 then
+               goto bad_fmt_string;
+            end;
+         if del ^= cr then
+            goto bad_terminator;
+         if -16 <= start & end + my_format.words - 1 <= 1023 & start <= end then
+            do;
+            v31 = cvt_value (value, my_format, status);
+            if status ^= 0 then
+               goto conv_error;
+            call backup;
+            p = addr (rec.data (start));
+            len = my_format.words;
+            v15 = v31;
+
+            do start = start to end by len;
+
+               select (len);
+                  when (1)
+                     p -> fb15 = v15;
+                  when (2)
+                     p -> fb31 = v31;
+                  end;
+               p = addrel (p, len);
+
+            end;
+            end;
+         else
+            goto bad_parameters;
+         end;
+      else
+         goto bad_com_format;
+      end;
+   else
+      goto bad_com_format;
+
+end;        /* Fill */
+
+/**/
+
+/* Header subcommand */
+
+Header: proc;
+
+dcl
+   print_header entry options (variable);
+
+   call print_header (rec);
+
+end;
+
+/**/
+
+/* List subcommand */
+
+List: proc;
+
+dcl
+   del         char,
+   loc         bin,
+   status      bin,
+   token       char(32) var;
+
+
+   call get_token (token, del);
+   loc = expr (token);
+   if del = ':' then
+      do;
+      call get_token (token, del);
+      call parsefmt (token, my_format, status);
+      if status ^= 0 then
+         goto bad_fmt_string;
+      end;
+
+   if del ^= cr then
+      goto bad_terminator;
+
+   if -16 <= loc & loc + my_format.words - 1 <= 1023 then
+      do;
+      call ioa$ ('(%4d) %$', -1, loc);
+      call print (rec, my_format, loc);
+      call tonl;
+      end;
+   else
+      goto bad_parameters;
+
+end;        /* List */
+
+/**/
+
+/* Quit subcommand */
+
+Quit: proc;
+
+dcl
+   status      bin;
+
+   /* if record has been modified and verify_changes switch is on,
+      query about writing the record */
+
+   if record_modified & mode_flags.verify_changes then
+      if query ('Write modified record on current partition? ', no_def) then
+         call diskio (write_key, rec.cra, cpartition, rec, status);
+
+   done = true;
+
+end;
+
+/**/
+
+/* Relative subcommand */
+
+Relative: proc;
+
+dcl
+   del         char,
+   i           bin,
+   token       char(32) var;
+
+
+   call get_token (token, del);
+   i = expr (token);
+   if del ^= cr then
+      goto bad_com_format;
+   rel = i;
+
+end;       /* Relative */
+
+/**/
+
+/* Rollback subcommand - Restore previous record image */
+
+Rollback: proc;
+
+dcl
+   big_string char(2080) based;
+
+   addr (rec) -> big_string = addr (saved_record) -> big_string;
+
+end;
+
+/**/
+
+/* Update subcommand */
+
+Update: proc;
+
+dcl
+   del         char,
+   loc         bin,
+   status      bin,
+   token       char(32) var,
+   v           bin(31),
+   value       char(32) var;
+
+
+   call get_token (token, del);
+   loc = expr (token);
+   if del = ' ' then
+      do;
+      call get_token (value, del);
+      if del = ':' then
+         do;
+         call get_token (token, del);
+         call parsefmt (token, my_format, status);
+         if status ^= 0 then
+            goto bad_fmt_string;
+         end;
+      if del ^= cr then
+         goto bad_terminator;
+
+      v = cvt_value (value, my_format, status);
+      if status ^= 0 then
+         goto conv_error;
+
+      call backup;
+      call ioa$ ('Was %$', -1);
+      call print (rec, my_format, (loc));
+      call tonl;
+
+      select (my_format.words);
+         when (1)
+            rec.data (loc) = v;
+         when (2)
+            addr (rec.data (loc)) -> fb31 = v;
+         end;
+      end;
+
+   else
+      goto bad_com_format;
+
+end;       /* Update */
+
+end;   /* Patch */

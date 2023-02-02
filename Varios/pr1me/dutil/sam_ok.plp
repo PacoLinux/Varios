@@ -1,0 +1,152 @@
+/* Sam_ok.plp, Dutil, JEW, 8-Feb-81
+   Verifies integrity of a sam string.  Verify may start in
+   the middle of the file.  */
+
+sam_ok: proc (my_rec, ra, trace, in_vfy_cmd, n) returns (bit) options (nocopy);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>condition.plp.ins
+
+dcl
+   1  my_rec like disk_record,
+   ra          bin(31),
+   trace       bit,           /* print records as they are verified? */
+   in_vfy_cmd  bit,           /* called from VERIFY command handler? */
+   n           bin(31);       /* number of records checked */
+
+dcl
+   ioa$ entry options (variable);
+
+dcl
+   bra      bin(31),
+   done     bit,
+   lra      bin(31),
+   nra      bin(31),
+   ok       bit,
+   status   bin;
+
+
+   /* make quit on-unit.  Informs user of current record */
+
+   call mkonu$ ('QUIT$', quit_);
+
+   /* get first record of sam string */
+
+   call diskio (read_key, ra, cpartition, my_rec, status);
+   if status ^= 0 then
+      return (false);
+
+   /* setup for verify */
+
+   lra = 0;       /* last record address */
+   bra = ra;      /* beginning record address */
+   ok = true;
+   n = 0;
+   done = false;
+
+   /* special setup if starting in the middle of a file */
+
+   if my_rec.back ^= 0 then
+      do;
+      bra = my_rec.bra;      /* at least make sure all bra pointers agree */
+      lra = my_rec.back;
+      end;
+
+   /* begin verify */
+
+   do until (done);
+
+      if trace then
+         call ioa$ ('%10:3o%.', -1, my_rec.cra);
+
+      if my_rec.back ^= lra then
+         do;
+         call ioa$ ('Record %:3o back pointer should be %:3o, is %:3o%.', -1,
+                     my_rec.cra, lra, my_rec.back);
+         ok = false;
+         end;
+
+      if my_rec.bra ^= bra then
+         if lra ^= 0 then       /* special because bra of 1st rec is parent */
+            do;
+            call ioa$ ('Record %:3o bra pointer should be %:3o, is %:3o%.', -1,
+                        my_rec.cra, bra, my_rec.bra);
+            ok = false;
+            end;
+
+      if my_rec.level ^= 0 then
+         do;
+         call ioa$ ('Record %:3o level should be 0, is %d.%.', -1,
+                     my_rec.cra, my_rec.level);
+         ok = false;
+         end;
+
+      if my_rec.count < 0 | my_rec.count > 1024 then
+         do;
+         call ioa$ ('Record %:3 count should be 0 - 1024, is %d.%.', -1,
+                     my_rec.cra, my_rec.count);
+         ok = false;
+         end;
+
+      if my_rec.next < 0 | my_rec.next > maxra then
+         do;
+         call ioa$ ('Record %:3o forward pointer (%:3o) is out of range.%.',
+                     -1, my_rec.cra, my_rec.next);
+         ok = false;
+         done = true;    /* have to quit on this */
+         end;
+      else
+         do;
+
+         /* forward pointer is semi-ok, setup for next record */
+
+         n = n + 1;    /* this record checked now */
+         lra = my_rec.cra;
+         nra = my_rec.next;
+         if nra ^= 0 then
+            do;
+            if my_rec.count ^= 1024 then
+               do;
+               call ioa$ ('Record %:3o count should be 1024, is %d.%.', -1,
+                           my_rec.cra, my_rec.count);
+               ok = false;
+               end;
+
+            call diskio (read_key | demote_bit, nra, cpartition, my_rec, status);
+            if status ^= 0 then
+               do;
+               ok = false;
+               done = true;
+               end;
+
+            end;
+
+         else
+            done = true;
+         end;
+   end;
+
+   return (ok);
+
+
+/* On-unit for quits...displays current record then continues signal */
+
+Quit_: proc (cfp);
+
+dcl
+   cfp   ptr;
+
+dcl
+   tty$rs entry (bit(16), bin);
+
+
+   call tty$rs ('11'b, status);
+   flush_tty_buffers = false;
+   call ioa$ ('%/Current record is %:3o.  %:3d records checked so far.%.', -1,
+               my_rec.cra, n);
+   call cnsig$ (status);       /* continue to command level */
+
+end;   /* Quit_ */
+
+end;    /* Sam_ok */

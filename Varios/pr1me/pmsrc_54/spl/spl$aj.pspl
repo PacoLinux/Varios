@@ -1,0 +1,280 @@
+/* SPL$AJ.SPL, PrintMaster, Jeff Hostetler, November 4, 1983                  */
+/* User callable procedure to spool an existing file.                         */
+/* NOTE:  This procedure must catch all errors and return {true | false}      */
+/*        if and only if it is called directly by a user program.             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spl$aj: proc (pathname_given, kw_cl, partition_given, p_job_info)
+        returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      pathname_given char(*) var,           /* (in) */
+      kw_cl          char(*) var,           /* Note:  This only contains the */
+                                            /* "<kw>" portion of the command */
+                                            /* line. (in) */
+      partition_given   char(*) var,        /* (in) */
+      p_job_info     ptr,                   /* points to output struct (in) */
+
+      we_did_initialization         bit,
+      open_file_in_queue            bit,
+      in_updt_queue                 bit,
+      code                          bin,
+      nr_copies                     bin,
+      (p_buf, p_kwl, p_kw, p_kw_fs) ptr,
+      pj_partition                  char(32) var,
+      system_job_is_on              char(32) var,
+      file_unit                     bin,
+      kw_e_unit                     bin,
+      pj_unit                       bin,
+      (dt_mod, dt_backed_up)        char(28) var; /* standard primos "visual" format */
+
+%page;
+   kw_e_unit = 0;
+   pj_unit = 0;                             /* queue data file */
+   file_unit = 0;                           /* user data file */
+   p_kwl = null;
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then do;
+      on condition (any$)
+         call gp$any;
+      on condition (err$condition_before_msg)
+         goto abnormal_return;
+      end;
+
+   on condition (CLEANUP$)
+      call cleanup;
+
+%page;
+   if p_job_info->spl$info.version ^= spl$info_version then
+      call err$ (err$user_et, 'Version mismatch.', err$version_mismatch_ue, 0, 0);
+
+   /* initialize output structure */
+
+   p_job_info->spl$info.job_id = -1;
+   p_job_info->spl$info.job_name = '';
+   p_job_info->spl$info.pathname = '';
+   p_job_info->spl$info.job_system = '';
+   p_job_info->spl$info.file_size = maxint;
+   p_job_info->spl$info.q_partition = trim(partition_given, '11'b);
+   p_job_info->spl$info.q_system = '';      /* NOT FILLED IN YET */
+
+   /* open user data file and get modified/backup dates and complete
+      pathname */
+
+   call gp$open_path (k$read + k$getu + k$$no_wait, pathname_given, file_unit);
+   call gp$get_dtm (pathname_given, dt_mod, dt_backed_up);
+   call gpath$ (k$unit, file_unit,
+                addr(p_job_info->spl$info.pathname)->bvs.chars, 128,
+                addr(p_job_info->spl$info.pathname)->bvs.len, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Getting job pathname', code, 0, 0);
+
+   p_job_info->spl$info.job_system = gp$system_name (file_unit);
+   p_job_info->spl$info.job_name = entry$(p_job_info->spl$info.pathname);
+
+   call sq$set_up_kwl (p_job_info->spl$info.job_system,
+                       p_job_info->spl$info.pathname,
+                       dt_mod, dt_backed_up, kw_cl,
+                       p_kwl, nr_copies, p_job_info->spl$info.job_name);
+
+   open_file_in_queue = kwl$find_kw (kw$copyfile, p_kwl, p_kw);
+   in_updt_queue = kwl$find_kw (kw$inuse_ok, p_kwl, p_kw);
+
+   call sq$grab_a_new_job (p_kwl, nr_copies, open_file_in_queue, in_updt_queue,
+                           true, p_job_info->spl$info.job_id, kw_e_unit,
+                           p_job_info->spl$info.q_partition, pj_unit);
+   call do_data;
+   call gp$close (file_unit);
+
+   call sq$write_job_kwl (p_kwl, kw_e_unit); /* write the kwl for the job */
+   system_job_is_on = gp$system_name (kw_e_unit);
+   call gp$close (kw_e_unit);               /* release the job */
+
+   call sq$part_2 (p_kwl, p_job_info->spl$info.job_id,
+                   p_job_info->spl$info.q_partition,
+                   system_job_is_on, nr_copies, 1);
+
+   call kwl$destroy_kwl (p_kwl);
+
+   /* ... We should not really be printing here ... */
+
+   if ^open_file_in_queue then do;
+      pj_partition = substr (before (p_job_info->spl$info.pathname, '>'), 2);
+      if ^gp$check_pacl (pj_partition, null, code) then
+         call err$ (err$warning_et + err$user_et, 'Warning:  Partition '
+                    ||pj_partition||' does not have a PrintMaster priority ACL.', 0, 0, 0);
+      end;
+
+   if we_did_initialization then
+      call gp$terminate;
+
+   return (true);                           /* success */
+
+
+abnormal_return:
+
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+   return (false);                          /* failure */
+
+
+
+   /* internal procedure to cleanup if an error occurs */
+
+   cleanup: proc;
+
+   dcl
+      x                             bin,
+      nwr                           bin;
+
+      /* NOTE:  SPL$INFO should not be modified here, since it may trash
+         the user's structure on a version mismatch */
+
+      p_job_info->spl$info.job_id = -1;
+      if kw_e_unit ^= 0 then do;         /* If we got far enough to open */
+         x = kwl$kwl_incomplete;         /*   the kwl, invalidate it. */
+         call prwf$$ (k$writ+k$prea, kw_e_unit, addr(x), 1, 0, nwr, code);
+         call gp$close (kw_e_unit);
+         end;
+      call gp$close (pj_unit);
+      call gp$close (file_unit);
+      call kwl$destroy_kwl (p_kwl);
+
+      end cleanup;
+%page;
+/* spl$aj.do_data, PrintMaster, Jeff Hostetler, November 17, 1983             */
+/******************************************************************************/
+
+   do_data: proc;
+
+      dcl
+         code              bin,
+         rnw               bin,
+         pos               bin(31),
+         file_size_wds     bin(31),
+         x                 bit,
+         kw_sd_unit        bin,
+         expand_info       like kwl$expand_info,
+         flags             like kwl$flags;
+
+
+      if open_file_in_queue then
+         if special_copy (0, file_unit, pj_unit, 10) then /* timed copy */
+            call gp$close (pj_unit);
+         else do;
+
+            /* we have a big file, so CACC on kwl from W to R, complete the
+               copy, then CACC on kwl from R to W. */
+
+            call gp$open_file (k$cacc + k$read, '', kw_e_unit);
+            x= special_copy (1, file_unit, pj_unit, -1); /* continue copy */
+            call gp$close (pj_unit);
+            call gp$open_file (k$cacc + k$writ, '', kw_e_unit);
+            end;
+      else do;
+         call prwf$$ (k$posn+k$prea, file_unit, null, 0, maxint31, 0, code);
+         if code ^= e$eof then
+            call err$ (err$primos_et, 'Positioning to bottom of print file',
+                       code, 0, 0);
+         end;
+
+      /* this assumes we are at the end of the source file */
+
+      call prwf$$ (k$rpos, file_unit, null, 0, file_size_wds, 0, code);
+      if file_size_wds = 0 then
+         p_job_info->spl$info.file_size = 0;
+      else if file_size_wds < 512 then
+         p_job_info->spl$info.file_size = 1;
+      else
+         p_job_info->spl$info.file_size = divide(file_size_wds + 512, 1024, 31); /* divide with round */
+
+      string(expand_info) = kwl$accept_as_is_ei;
+      string(flags) = kwl$default_flags;
+      flags.wp = true;
+      flags.info = true;
+      kwl.in_edit_kwl = true;
+      call kwl$insert_kw (kw$size, p_kw, p_kwl, expand_info, flags, flags);
+      call kwl$add_value (p_kw, trim(char(p_job_info->spl$info.file_size), '11'b));
+      kwl.in_edit_kwl = false;
+
+      end do_data;
+
+%page;
+/* spl$aj.special_copy, PrintMaster, Jeff Hostetler, August 27, 1984          */
+/* key=  0)  Copy a file until the time limit is exceeded.                    */
+/*       1)  Continue copy already started.                                   */
+/******************************************************************************/
+
+   special_copy: proc (keys, sunit, tunit, tl)
+                 returns (bit);
+
+      dcl
+         keys              bin,
+         (sunit, tunit)    bin,             /* source & destination units (in) */
+         tl                bin(31),         /* time limit */
+
+         eof               bit,
+         time_expired      bit,
+         p_rb              ptr,
+         rb    (dr_size)   bin,
+         code              bin,
+         clock_time        bin(31),
+         rtime             bin(31),
+         tl_rtime          bin(31),
+         (words_read, words_written)   bin;
+
+
+      on condition (CLEANUP$)
+         begin;
+         call prwf$$ (k$trnc + k$prea, tunit, null, 0, 0, 0, code);
+         end;
+
+      clock_time = gp$ticks();
+      if keys = 0 then do;
+         rtime = clock_time;
+         tl_rtime = tl * psv.ticks_per_sec;
+
+         call prwf$$ (k$trnc + k$prea, tunit, null, 0, 0, 0, code); /* rewind & truncate destination */
+         if code ^= 0 then
+            call err$ (err$primos_et, 'Error truncating queue file', code, 0, 0);
+         end;
+
+      p_rb = addr (rb);
+      eof = false;
+      time_expired = false;
+      do while (^eof  &  ^time_expired);
+         call prwf$$ (k$read, sunit, p_rb, dr_size, 0, words_read, code);
+         if code ^= 0 then
+            if code = e$eof
+               then eof = true;
+               else call err$ (err$primos_et, 'Error reading source',
+                               code, 0, 0);
+
+         call prwf$$ (k$writ, tunit, p_rb, words_read, 0, words_written, code);
+         if code ^= 0 then
+            call err$ (err$primos_et, 'Error writing queue file',
+                       code, 0, 0);
+         if keys = 0 then do;
+            rtime = gp$ticks();
+            time_expired = (rtime - clock_time > tl_rtime);
+            end;
+         end;
+
+      return (^time_expired);
+      end special_copy;
+
+   end spl$aj;

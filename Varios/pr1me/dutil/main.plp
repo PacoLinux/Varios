@@ -1,0 +1,133 @@
+/* Main.plp, Dutil, JEW, 21-Mar-81
+   Top level Dutil routine.  Performs initialization and calls command
+   processor.
+*/
+
+Main: proc options (nocopy);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>condition.plp.ins
+/* Cldata insert file should be monitored for change */
+$Insert *>insert>cldata.plp.ins
+
+dcl
+   command_processor  entry,
+   disk_init entry,
+   ioa$ entry options (variable);
+
+dcl
+   p              ptr;
+
+
+   /* set flag if using the debugger.  This is not a very nice way to
+      do this, but command line is wrong when using DBG */
+
+   in_dbg_mode = cldata.flags.dbg_mode;
+
+   cpartition = -1;
+
+   spool_info.spool_active = false;
+   mode_flags.update_rat = false;
+   mode_flags.verify_changes = true;
+   mode_flags.write_protect = false;
+
+   /* allocate disk blocks, control blocks */
+
+   call disk_init;
+
+   /* initialize the default output format */
+
+   def_format.picture = '%6:0o %$';    /* unsigned octal */
+   def_format.mode    = 3;         /* says octal */
+   def_format.words   = 1;
+   def_format.els_per_line = 10;
+
+   /* initialize read/write keys */
+
+   read_key = '0a'b4;      /* read, do checksums, ecc, check cra */
+   write_key = '8a'b4;     /* write, ... */
+
+   /* setup current command level */
+
+   com_level = 0;
+   first_quit_signal = true;
+
+   /* setup onunit unless debugging */
+
+   if ^in_dbg_mode then
+      call mkonu$ ('ANY$', any_);
+
+   /* tell everybody hello */
+
+   call ioa$ ('[Dutil rev 2.0]%.', -1);
+   if in_dbg_mode then
+      call ioa$ ('WARNING: Disk buffers will not be updated on fatal errors.%.', -1);
+   call ioa$ ('%/HELP command is available.%/%.', -1);
+
+   /* off into command processor (which never returns) */
+
+   call command_processor;
+
+
+Any_: proc (cfp);
+
+   /* Dutil on-unit - attempts to update disk buffers on fatal conditions. */
+
+dcl
+   cfp   ptr;
+
+dcl
+   disk_update entry,
+   ioa$er entry options (variable);
+
+dcl
+   cnp  ptr,
+   cv32  char(32) var based;
+
+dcl
+   in_any_  bit static init (false);
+
+
+   if modified_recs = 0 then
+      return;     /* no problem here */
+
+   cnp = cfp -> cfh.cond_name_ptr;
+
+   /* is this a recursive call?  If so, we may have a problem */
+
+   if in_any_ then
+      do;
+      call ioa$er ('Condition %v signalled while in ANY$ onunit.%.', -1,
+                  cnp -> cv32);
+      call ioa$ ('%d disk buffers still in memory!%.', -1, modified_recs);
+      call ioa$ ('Type Start to continue.%.', -1);
+      end;
+
+   else
+      do;
+      in_any_ = true;
+      call ioa$er ('Condition %v signalled...%$', -1, cnp -> cv32);
+      select (cfp -> cfh.cond_name_ptr -> cv32);
+         when ('ACCESS_VIOLATION$', 'ARITH$', 'BAD_NONLOCAL_GOTO$',
+               'ERRRTN$', 'ILLEGAL_INST$', 'ERROR', 'ILLEGAL_SEGNO$',
+               'LINKAGE_FAULT$', 'NO_AVAIL_SEGS$', 'NULL_POINTER$',
+               'OUT_OF_BOUNDS$', 'PAGE_FAULT_ERR$', 'POINTER_FAULT$',
+               'RESTRICTED_INST$', 'R0_ERR$', 'STACK_OVF$',
+               'UNDEFINED_GATE$', 'UII$')
+            do;
+               call disk_update;    /* about all we can do */
+               call ioa$ ('%/Disk buffers successfully written.%.', -1);
+               call ioa$ ('Continuing signal.%.', -1);
+            end;
+
+         otherwise
+            call ioa$ ('cannot be handled, %d buffers in memory.%.', -1, modified_recs);
+         end;      /* Select */
+      end;
+
+   in_any_ = false;
+   return;
+
+end;      /* Any_ */
+
+end;    /* Main */

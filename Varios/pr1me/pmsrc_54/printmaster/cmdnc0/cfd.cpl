@@ -1,0 +1,148 @@
+/* CFD.CPL, PrintMaster, Jeff Hostetler, June 21, 1984                        */
+/* This program creates form description files.                               */
+/*                                                                            */
+/* Usage:  CFD [system_partition] [-FORM form_type]                           */
+/*    or:  CFD -HELP                                                          */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+&args partition: entry; ~
+      form_sw:   -form form_type; ~
+      help_sw:   -help
+
+&s rev := 5.4
+type '[Create Form Def '%rev%']'
+type 'Copyright (C) 1984-1988 Merit Software, Inc.'
+type
+
+&if ^ [null %help_sw%] &then &do
+   type 'Usage:  CFD system_partition [-FORM form_type]'
+   type '   or:  CFD -HELP'
+   type
+   type 'SYSTEM_PARTITION is the partition name of the system directory PRINTMASTER*.'
+   type
+   &return
+   &end
+
+
+&s status := 0
+&s pgm := CFD
+&s pmsd := PRINTMASTER*
+&s prog := PRINTMASTER*>PROGRAMS
+&s flib := PRINTMASTER*>LIBRARY
+&s maxlen := 29
+
+&s partition := [r %prog%>GET_PARTITION_NAME %partition%]
+&if [null %partition%] &then &return
+
+
+/* Let's see if they have enough rights to the system directory.
+/* Bomb if not.
+
+R %prog%>CPL$CALAC$ <%partition%>%pmsd% DALURW -PRINT
+
+&severity &error &ignore
+
+type 'Enter form description.  A form description consists of a form'
+type 'type, synonyms for the form, the number of print lines per page,'
+type 'and the number of print columns per line.  The name of the form'
+type 'must be a valid filename and less than '[calc %maxlen% + 1]' characters.'
+type
+
+&s x := [R %prog%>GET_FILENAME -INITIAL %form_type% ~
+                               -PROMPT 'Enter form name (blank to stop)' ~
+                               -MAX %maxlen% -MIN 0]
+&if [null %x%] &then &return
+
+&if %x% = %form_type% &then &do
+   type Creating form description %form_type%.
+   type
+   &end
+&s form_type := %x%
+
+&s first_time_through := TRUE
+&s sev := 0
+&do &while [length %form_type%] > 0  &  %sev% = 0
+   &s nr_syn := 0
+   &if %first_time_through% &then &do
+      type 'A form can have synonyms to allow users to use different'
+      type 'names for the same form.  This is especially useful if'
+      type 'current forms do not have valid file system names, for'
+      type 'example ''8 x 11''.  Whenever the main form is loaded'
+      type 'on a device, all jobs queued with the main form or any'
+      type 'synonym will be printed.  Enter synonyms one per line'
+      type 'with a blank line after the last one.'
+      type
+      &end
+   &else &do
+      type 'Enter synonyms one per line with a blank line after the last one.'
+      type
+      &end
+
+   &s x := [translate [response 'Synonym (blank to stop)' '']]
+   &do &while [length %x%] > 0
+      &s nr_syn := [calc %nr_syn% + 1]
+      &s syn_%nr_syn% := %x%
+      &s x := [translate [response 'Synonym (blank to stop)' '']]
+      &end
+   type
+
+   &do &until %x% > 0
+      &do &until [verify %x% 0123456789] = 0  &  [length %x%] > 0
+         &s x := [response 'How many lines per page are there (66)' 66 -tty]
+         &end
+      &end
+   &s lines_per_page := %x%
+
+   &do &until %x% > 0
+      &do &until [verify %x% 0123456789] = 0  &  [length %x%] > 0
+         &s x := [response 'How many characters per line are there (132)' 132 -tty]
+         &end
+      &end
+   &s chars_per_line := %x%
+
+   COMO <%partition%>%flib%>%form_type%.TF -NTTY
+   type [quote -FORM %form_type%]
+   &do i := 1 &to %nr_syn%
+      type [quote [unquote [get_var syn_%i%]]]
+      &end
+   type [quote -LINES_PER_PAGE %lines_per_page%]
+   type [quote -CHARS_PER_LINE %chars_per_line%]
+
+   COMO -END -TTY
+
+   &if [exists <%partition%>%flib%>%form_type%.KF] &then ~
+      DELETE <%partition%>%flib%>%form_type%.KF -NQ -NVFY
+
+   EKF <%partition%>%flib%>%form_type% -CREATE <%partition%>%flib%>%form_type%.TF
+   &s sev := %severity$%
+
+   &if %sev% = 0 &then ~
+       &if [query 'Do you want to add any other keywords to this form (no) ' ~
+                  FALSE] &then &do
+           EKF <%partition%>%flib%>%form_type% -EDIT
+           &s sev := %severity$%
+           &end
+
+   &if %sev% ^= 0 &then &do
+      &if [exists <%partition%>%flib%>%form_type%.KF] &then ~
+         DELETE <%partition%>%flib%>%form_type%.KF -NQ -NVFY
+      type Form description %form_type% not created.
+      &end
+    &else type Form description %form_type% created.
+
+   DELETE <%partition%>%flib%>%form_type%.TF -nq -nvfy
+   type
+
+   &s form_type := ''
+   &if %sev% = 0 &then ~
+      &if [null %form_sw%] &then ~
+         &s form_type := [R %prog%>GET_FILENAME -PROMPT 'Enter form name (blank to stop)' ~
+                                                -MAX %maxlen% -MIN 0]
+      &else type
+
+   &s first_time_through := FALSE
+   &end
+
+&return %sev%

@@ -1,0 +1,129 @@
+/* SQ$SET_UP_KWL.SPL, PrintMaster, Jeff Hostetler, November 17, 1983          */
+/* Procedure to set up the kwl for a new job.                                 */
+/* NOTE:  Flags are set explicitly on manditory kw's, their values should     */
+/*        match the values given to flags in KWL$LOAD_IKWL.                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+sq$set_up_kwl: proc (job_system, pathname, dt_mod, dt_backed_up,
+                     kw_cl, p_kwl, nr_copies, job_name);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      job_system        char(*) var,        /* (in) */
+      pathname          char(*) var,        /* (in) */
+      dt_mod            char(*) var,        /* (in) */
+      dt_backed_up      char(*) var,        /* (new at 19.2) (in) */
+      kw_cl             char(*) var,        /* (in) */
+      p_kwl             ptr,                /* (out) */
+      nr_copies         bin,                /* (out) */
+      job_name          char(*) var,        /* (in/out) */
+
+      expand_info    like kwl$expand_info,
+      flags          like kwl$flags,
+      b              bit,
+      p_kw           ptr,
+      code           bin,
+      dow            bin,
+      value_buffer   char(kwl$chars_in_value) var,
+      date_          char(28) var;
+
+   p_kwl = null;
+
+   /* Now, add the kw's specific to this user and job. */
+
+   string (expand_info) = kwl$accept_as_is_ei;
+   string (flags) = kwl$default_flags;
+   flags.wp = true;
+   flags.info = true;
+
+   /* NOTE: on calls to "KWL$INSERT_KW" the acl flags will not be needed */
+   /*       so simply pass a dummy set (below, I just duplicated the first */
+   /*       (associated with the kw) set) */
+
+   call kwl$insert_kw (kw$user_id, p_kw, p_kwl, expand_info, flags, flags);
+   call kwl$add_value (p_kw, gbl.my_user_id);
+
+   call kwl$insert_kw (kw$unique_id, p_kw, p_kwl, expand_info, flags, flags);
+   call kwl$add_value (p_kw, gp$uid());
+
+   if length (psv.my_system_id) ^= 0 then do;
+      call kwl$insert_kw (kw$user_system, p_kw, p_kwl, expand_info, flags, flags);
+      call kwl$add_value (p_kw, psv.my_system_id);
+      end;
+
+   /* hold a spot so user will get an error if they try to insert this */
+   call kwl$insert_kw (kw$size, p_kw, p_kwl, expand_info, flags, flags);
+   call kwl$add_value (p_kw, '32767');
+
+   call kwl$insert_kw (kw$project_id, p_kw, p_kwl, expand_info, flags, flags);
+   call kwl$add_value (p_kw, gbl.my_project_id);
+
+   if length (job_system) ^= 0 then do;
+      call kwl$insert_kw (kw$job_system, p_kw, p_kwl, expand_info, flags, flags);
+      call kwl$add_value (p_kw, job_system);   /* system of original file */
+      end;
+
+   if length (pathname) ^= 0 then do;
+      call kwl$insert_kw (kw$pathname, p_kw, p_kwl, expand_info, flags, flags);
+      call kwl$add_value (p_kw, pathname);     /* Pathname of original file */
+      end;
+
+   call kwl$insert_kw (kw$dt_spooled, p_kw, p_kwl, expand_info, flags, flags);
+   call cv$fdv (date$ (), dow, date_);
+   call kwl$add_value (p_kw, date_);
+
+   call kwl$insert_kw (kw$dt_modified, p_kw, p_kwl, expand_info, flags, flags);
+   call kwl$add_value (p_kw, dt_mod);
+
+/******************************************************************************/
+/* ... This must wait for 19.3 ....                                           */
+/*call kwl$insert_kw(kw$dt_backed_up, p_kw, p_kwl, expand_info, flags, flags);*/
+/* call kwl$add_value (p_kw, dt_backed_up);                                   */
+/******************************************************************************/
+
+   call kwl$get_default_kwl (p_kwl);        /* get default kw's imposed by SA */
+
+   string (expand_info)      = kwl$default_expand_info;
+   expand_info.special_kwl   = false;
+   expand_info.expand        = true;
+   expand_info.wp_use_acl    = true;
+   expand_info.info_use_skwl = true;
+
+   /* check for global variable and add to job keyword list */
+
+   call gv$get (gbl$apj_defaults_gv, value_buffer, kwl$chars_in_value, code);
+   if code = 0 then
+      call kwl$cl_to_kwl (value_buffer, p_kwl, expand_info);
+
+   /* finally, add command line keywords to job */
+
+   call kwl$cl_to_kwl (kw_cl, p_kwl, expand_info);
+
+   if kwl$find_kw (kw$job_name, p_kwl, p_kw) then /* if user put it in then */
+      b = kwl$get_nth_value (p_kw, 1, job_name);  /* return it to caller */
+   else do;                                       /* otherwise set to using */
+      string (expand_info) = kwl$accept_as_is_ei; /* the value given */
+      string (flags) = kwl$default_flags;
+      flags.info = true;
+      call kwl$insert_kw (kw$job_name, p_kw, p_kwl, expand_info, flags, flags);
+      call kwl$add_value (p_kw, job_name);
+      end;
+
+   call kwl$edit_certain_kws (p_kwl, true); /* t <==> check for expired dates */
+
+   /* we need value of COPIES to return to the caller */
+
+   if kwl$find_kw (kw$copies, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value_buffer) then
+         nr_copies = bin(value_buffer);
+
+   return;
+   end sq$set_up_kwl;

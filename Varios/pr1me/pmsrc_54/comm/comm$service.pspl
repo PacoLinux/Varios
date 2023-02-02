@@ -1,0 +1,355 @@
+/* COMM$SERVICE.SPL, PrintMaster, Jim Wilcoxson, August 15, 1983              */
+/* Polling loop of the network communications procedures.                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+comm$service : procedure;
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>comm.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$.ins.spl';
+%include '*>entry>comm$create_cb.ins.spl';
+%include '*>entry>comm$destroy_msg.ins.spl';
+%include '*>entry>comm$find_cb.ins.spl';
+%include '*>entry>comm$free_io_buffers.ins.spl';
+%include '*>entry>comm$get_receive_buffer.ins.spl';
+%include '*>entry>comm$msg_length.ins.spl';
+%include '*>entry>comm$my_system_id.ins.spl';
+%include '*>entry>comm$queue_message.ins.spl';
+%include '*>entry>comm$send.ins.spl';
+%include '*>entry>comm$xmit.ins.spl';
+%list;
+
+dcl
+   cbp            ptr,
+   next_cbp       ptr,
+   status         bin,
+   temp_id        char(32) var,             /* temporary system name */
+   time_left      bin;
+
+   /* don't have to do anything if no network exists */
+
+   if ^psv.network_exists then
+      return;
+
+   /* if networks should exist, but haven't been started yet, check
+      periodically for NET_START, which will cause COMM$MY_SYSTEM_ID
+      to return true.  However, since we want psv.my_system_id to the
+      last known Primenet system name, even if STOP_NET is given, use
+      a dummy variable (COMM$MY_SYSTEM_ID returns '' if networks are
+      not started) */
+
+   if ^psv.network_started then
+      if comm$my_system_id (temp_id) then do;
+
+         /* the network came up */
+
+         psv.network_started = true;
+         psv.my_system_id = temp_id;
+
+         if gbl.I_am_monitor then do;
+            call x$clra;                       /* for safety */
+
+            /* assign the Primenet monitor port */
+
+            call x$asgn (psv.primenet_port, 0, status);
+            do time_left = psv.time_limit to 0 by -1 while (status = xs$mem);
+               call sleep$ (one_cycle);
+               call x$asgn (psv.primenet_port, 0, status);
+               end;
+            select (status);
+               when (xs$cmp)                /* everything okay */
+                  ;
+               when (xs$que)                /* monitor already running */
+                  call err$ (err$user_et, 'Monitor port already in use.',
+                             err$monitor_already_running_ue, 0, 0);
+               otherwise
+                  call err$ (err$network_et,
+                             'Monitor can''t assign port', status, 0, 0);
+               end;  /* select */
+            end;  /* I_am_monitor */
+
+         end;  /* if */
+
+   if gbl.I_am_monitor | gbl.I_am_master then
+      call incoming_call_requests;
+
+   do cbp = comm.cb_list repeat next_cbp while (cbp ^= null);
+      next_cbp = cbp->cb.next;              /* in case cb is freed */
+      call service_this_connection;
+      end;
+
+   if comm.buffer_bol ^= null then do;
+      call check_xmit_buffers;
+      call comm$free_io_buffers;
+      end;
+
+%page;
+
+/* INCOMING_CALL_REQUESTS : accept, clear, or pass all call requests */
+
+incoming_call_requests : procedure;
+
+dcl
+   status      bin,                         /* regular status code */
+   1  gcon_status,                          /* "get connection" status */
+      2  status bin,                        /* regular circuit status */
+      2  call_type      bin,                /* 1 = new call, 2 = passed call */
+   vcid        bin,                         /* virtual circuit id */
+   port        bin,                         /* Primenet port of this call */
+   caller      char(32),                    /* name of system making call */
+   caller_len  bin,                         /* actual length of system_id */
+   dummy       bin,
+   time_left   bin,                         /* time-out counter */
+   system_id   char(32) var;                /* name of system making call */
+
+   call xlgcon (xk$nam,vcid,port,caller,length(caller),caller_len,
+                dummy,0,dummy,              /* facilities */
+                dummy,0,dummy,              /* protocol id */
+                dummy,0,dummy,              /* user data */
+                gcon_status);
+   do while (gcon_status.status = xs$cmp);
+
+      system_id = trim (substr (caller, 1, caller_len), '11'b);
+
+      /* is there already a pending connection to this system?
+         if so, then compare system names to resolve the call collision
+         if my name is greater, remote's call is cleared; otherwise,
+         remote's call is accepted and my call is cleared */
+
+      if comm$find_cb (system_id, cbp) then
+         if cbp->cb.connect_in_progress then
+            if psv.my_system_id > system_id then do; /* clear remote's call */
+               call err$ (err$log_event_et, 'Call collision', 0, 0, 0);
+               call ioa$ ('%21xRemote system %v''s call cleared%.', -1, system_id);
+               call x$clr (vcid, 0, status);
+               goto next_call;
+               end;
+            else do;                        /* accept remote's call below */
+               call x$clr (cbp->cb.vcid, 0, status); /* and clear mine now */
+               call err$ (err$log_event_et, 'Call collision', 0, 0, 0);
+               call ioa$ ('%21xLocal call cleared rather than remote system %v''s%.',
+                           -1, system_id);
+               cbp->cb.connect_in_progress = false;
+               end;
+         else if cbp->cb.connected then
+            call err$ (err$coding_et, 'Call collision?', 0, 0, 0);
+         else                               /* must be disconnected */
+            cbp->cb.connection_id = gp$uid(); /* ensure different id */
+      else
+         cbp = comm$create_cb (system_id);
+
+      cbp->cb.vcid = vcid;
+      call x$acpt (vcid, cbp->cb.vcstatus);
+      do time_left = psv.time_limit to 0 by -1
+                           while (cbp->cb.vcstatus.circuit_status = xs$mem);
+         call sleep$ (one_cycle);
+         call x$acpt (vcid, cbp->cb.vcstatus);
+         end;
+      select (cbp->cb.vcstatus.circuit_status);
+         when (xs$cmp, xs$idl) do;
+            call comm$get_receive_buffer (cbp);
+            cbp->cb.flags.connected = true;
+            end;
+         otherwise do;
+            call err$ (err$network_et+err$warning_et,
+                       'Couldn''t accept call',
+                       cbp->cb.vcstatus.circuit_status, 0,
+                       cbp->cb.vcstatus.clearing_codes);
+            call x$clr (vcid, 0, status);
+            end;
+         end;  /* select */
+
+next_call:
+      call xlgcon (xk$nam,vcid,port,caller,length(caller),caller_len,
+                   dummy,0,dummy,           /* facilities */
+                   dummy,0,dummy,           /* protocol id */
+                   dummy,0,dummy,           /* user data */
+                   gcon_status);
+
+      end; /* do while */
+
+   if gcon_status.status = xs$net then      /* network went down */
+      psv.network_started = false;
+
+end incoming_call_requests;
+
+%page;
+
+check_xmit_buffers : procedure;
+
+dcl
+   cbp         ptr,
+   msgp        ptr;
+
+
+   do msgp = comm.buffer_bol repeat msgp->msg.next while (msgp ^= null);
+
+      if comm$find_cb (msgp->msg.target_system, cbp) then
+
+check_this_buffer:
+         select (msgp->msg.status.buffer_status);
+
+            when (xs$ip, xs$cmp, xs$bvc, xs$ill, xs$clr) ; /* do nothing */
+
+            when (xs$mem, xs$max, xs$rst)        /* retransmit */
+               call x$tran (cbp->cb.vcid, msgp->msg.buffer_level,
+                            msgp->msg.header.next, msgp->msg.buffer_length,
+                            msgp->msg.buffer_status);
+
+            otherwise
+               call err$ (err$network_et, 'unknown X$TRAN status',
+                          cbp->cb.vcstatus.circuit_status,
+                          msgp->msg.status.buffer_status,
+                          cbp->cb.vcstatus.clearing_codes);
+
+            end; /* select */
+      else
+         call err$ (err$coding_et, 'Msg''s CB disappeared', 0, 0, 0);
+
+      end; /* do */
+
+end check_xmit_buffers;
+
+%page;
+
+/* SERVICE_THIS_CONNECTION : handle all necessary servicing of the single
+                             connection "cbp" */
+
+service_this_connection : procedure;
+
+dcl
+   msgp        ptr,
+   status      bin;
+
+   if cbp->cb.vcstatus.circuit_status = xs$clr then do;
+      cbp->cb.connected = false;
+      cbp->cb.connect_in_progress = false;
+      return;
+      end;
+
+   if cbp->cb.connect_in_progress then
+      select (cbp->cb.vcstatus.circuit_status);
+         when (xs$cmp) do;                  /* connected */
+            cbp->cb.connect_in_progress = false;
+            cbp->cb.connected = true;
+            call comm$get_receive_buffer (cbp);
+            end;
+
+         when (xs$ip) ;                     /* just wait */
+
+         when (xs$mem, xs$rst, xs$max)      /* retry */
+            call xlconn (xk$nam+xk$any+xk$fct, cbp->cb.vcid, psv.primenet_port,
+                 (cbp->cb.system_id), length(cbp->cb.system_id), '', 0, '',
+                 0,0,0,cbp->cb.vcstatus);
+
+         /* because all system lists must be identical, some networks
+            configurations may cause the monitor to attempt connections
+            to nodes not visible, therefore, xs$unk is not treated as
+            an error */
+
+         when (xs$dwn, xs$clr, xs$unk) do;  /* connect not successful */
+            cbp->cb.connect_in_progress = false;
+            cbp->cb.connected = false;
+            end;
+
+         when (xs$net) do;                  /* network went down */
+            cbp->cb.connect_in_progress = false;
+            cbp->cb.connected = false;
+            psv.network_started = false;
+            end;
+
+         when (xs$bpm)                      /* shouldn't occur */
+            call err$ (err$network_et,
+                       'Error encountered during connection attempt',
+                       cbp->cb.vcstatus.circuit_status, 0,
+                       cbp->cb.vcstatus.clearing_codes);
+
+      otherwise do;
+         cbp->cb.connect_in_progress = false;
+         cbp->cb.connected = false;
+         call err$ (err$network_et+err$warning_et,
+                     'Error encountered during connection attempt',
+                     cbp->cb.vcstatus.circuit_status, 0,
+                     cbp->cb.vcstatus.clearing_codes);
+
+         call x$clr (cbp->cb.vcid, 0, status);
+         end;
+      end;  /* select */
+
+   msgp = cbp->cb.rcv_bufp;
+   if msgp = null then
+      return;
+
+check_this_buffer:
+      select (msgp->msg.status.buffer_status);
+         when (xs$cmp) do;
+            call have_received_msg;
+            goto check_this_buffer;
+            end;
+
+         when (xs$bvc, xs$ip, xs$ill, xs$clr) ; /* can't do anything */
+
+         when (xs$mem, xs$rst) do;          /* need to retry receive */
+            call x$rcv (cbp->cb.vcid, msgp->msg.header, max_msg_length,
+                        msgp->msg.status);
+            goto check_this_buffer;
+            end;
+
+         otherwise
+            call err$ (err$network_et, 'unknown X$RCV status',
+                       cbp->cb.vcstatus.circuit_status,
+                       msgp->msg.status.buffer_status,
+                       cbp->cb.vcstatus.clearing_codes);
+
+         end; /* select */
+
+have_received_msg : procedure;
+
+dcl
+   okay        bit,
+   heap_msgp   ptr;
+
+
+   /* create a local message (can't use the network receive buffer) */
+
+   alloc_msg_length = msgp->msg.msg_length;
+   allocate msg set(heap_msgp);
+   call gp$copy (msgp, heap_msgp, comm$msg_length (msgp));
+
+   /* start another receive on this buffer */
+
+   call x$rcv (cbp->cb.vcid, msgp->msg.header, max_msg_length,
+               msgp->msg.status);
+
+   /* was message was sent to me? */
+
+   if heap_msgp->msg.target_system = psv.my_system_id
+    & (heap_msgp->msg.target_id = gbl.my_id
+      | (heap_msgp->msg.target_id = 'user' & heap_msgp->msg.target_user_nr = gbl.my_user_nr)
+      | (heap_msgp->msg.target_id = 'master' & gbl.I_am_monitor)) then
+      call comm$queue_message (comm.receive_list_bol,
+                               comm.receive_list_eol, heap_msgp);
+   else
+
+      /* a message was given to me, but I'm not the correct destination;
+         if I am the monitor, route the msg to the correct destination;
+         otherwise, ignore the message */
+
+      if gbl.I_am_monitor then
+         if comm$xmit (heap_msgp) then ;
+         else
+            call comm$destroy_msg (heap_msgp);
+      else do;
+         call err$ (err$log_event_et, 'Message lost?', 0, 0, 0);
+         call comm$destroy_msg (heap_msgp);
+         end;
+
+end have_received_msg;
+end service_this_connection;
+end comm$service;

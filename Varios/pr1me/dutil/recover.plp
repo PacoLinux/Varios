@@ -1,0 +1,559 @@
+/* Recover.plp, Dutil, JEW, 9-May-81
+   Recover command handler.
+
+   RECOVER [<ra> | <treename>] [-NVFY] [-NCHK]
+
+   -NVFY    don't verify file before recovering (default is to do verify).
+   -NCHK    don't check file records against rat.  Rat should indicate records
+            are free, otherwise a file's records have already been used
+            by a different file.  (default is to do check).
+
+*/
+
+Recover: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>ufd_ent.plp.ins
+
+dcl
+   findbra     entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                      3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                      char(*) var, bin(31), bit, bin),
+   findecw     entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                      3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                      bin(31), bin(31), bit, 1, 2 bin(31), 2 bin) returns (bit),
+   help        entry (char(*) var, bit),
+   ioa$        entry options (variable),
+   ioa$er      entry options (variable),
+   rd_entry    entry options (variable) returns (bit);
+
+dcl
+   check_rat         bit,
+   1  cw             based,
+      2  type        bit(8),
+      2  length      bit(8),
+   1  ecwpos,
+      2  ra          bin(31),
+      2  wn          bin,
+   1  ent like ufd_entry,
+   key               bit(16),     /* read_key with demote bit set */
+   level             bin,
+   1  my_rec like disk_record,
+   ra                bin(31),
+   verify_file       bit;
+
+
+   verify_file = true;
+   level = 0;
+   check_rat = true;
+   key = read_key | demote_bit;
+   ra = rec.cra;
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.oct_number then
+      do;
+      ra = info.oct_val;
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      end;
+   else if ^info.eol & ^info.keyword then
+      do;
+      call findbra (my_rec, token, ra, '0'b, status);
+      if status ^= 0 then
+         do;
+         call ioa$ ('"%v" not found.%.', -1, token);
+         return;
+         end;
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      end;
+
+   do while (info.flags.keyword);
+
+      select (token);
+
+         when ('-NVFY')
+            verify_file = false;
+
+         when ('-NCHK')
+            check_rat = false;
+
+         otherwise
+            call ioa$er ('Unrecognized keyword "%v" ignored.%.', -1, token);
+         end;     /* select */
+
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+
+   end;
+
+   if info.flags.eol then
+      do;
+
+      /* print msg if updating the rat but not verifying the files */
+
+      if ^verify_file & update_rat then
+         call ioa$er ('Warning: -NVFY should not be used when updating the RAT.%.', -1);
+
+      /* ra is bra of file to recover...get first record of file */
+
+      call diskio (read_key, ra, cpartition, my_rec, status);
+      if status ^= 0 then return;
+
+      if my_rec.back = 0 then       /* have first record */
+         if findecw (my_rec, (my_rec.cra), (my_rec.bra), '0'b, ecwpos) then
+            do;
+
+            /* get ufd entry from parent ufd */
+
+            call diskio (read_key, (ecwpos.ra), cpartition, my_rec, status);
+            if status ^= 0 then return;
+            if rd_entry (my_rec, (ecwpos.ra), (ecwpos.wn), ent, '0'b, ecwpos) then
+               if file_recover (ent) then
+                  do;
+
+                  /* fix ecw in parent ufd */
+
+                  call diskio (read_key, (ecwpos.ra), cpartition, my_rec, status);
+                  if status ^= 0 then return;
+                  addr(my_rec.data(ecwpos.wn)) -> cw.type = '03'b4;
+                  call diskio (write_key, (ecwpos.ra), cpartition, my_rec, status);
+                  if status ^= 0 then return;
+                  call ioa$ ('Recovery complete.%.', -1);
+                  end;
+               else
+                  call ioa$ ('Recovery aborted.%.', -1);
+            else
+               call ioa$er ('Unable to re-read ufd entry.%.', -1);
+            end;
+         else
+            do;
+            call ioa$er ('Entry not found in parent directory.%.', -1);
+            call ioa$er ('Check for bad CRA in file''s record header%.', -1);
+            call ioa$er ('or wrong FILEBRA in parent''s ufd entry.%.', -1);
+            end;
+      else
+         call ioa$ ('Not at bof, file''s bra is %:3o.%.', -1, my_rec.bra);
+      end;
+   else
+      call help ('RECOVER', false);
+
+/**/
+
+/* Internal procedure to recover a single file.  Branches to appropriate
+   file handler depending on the file type. */
+
+File_recover: proc (ent) returns (bit);
+
+dcl
+   1  ent like ufd_entry;
+
+dcl
+   ok    bit;
+
+
+   /* if entry is deleted or is a ufd, everything is cool */
+
+   if ent.ecw.type = '02'b4 | ent.filetype.type = '04'b4 then
+      do;
+
+      call ioa$ ('%#xRecovering %a%.', -1, level, ent.filename, 32);
+      level = level + 1;
+      select (ent.filetype.type);
+
+         when (0)
+            ok = sam_recover (ent);
+
+         when (1)
+            ok = dam_recover (ent);
+
+         when (2, 3)
+            ok = seg_recover (ent);
+
+         when (4)
+            ok = ufd_recover (ent);
+
+         otherwise
+            do;
+            call ioa$ ('%#xBad filetype (%3w) for %a%.', -1, level,
+                       bin(ent.filetype.type), ent.filename, 32);
+            ok = false;
+            end;
+         end;     /* select */
+
+      level = level - 1;
+      return (ok);
+      end;
+   else
+      do;
+      call ioa$ ('%#x%a is  not deleted.%.', -1, level, ent.filename, 32);
+      return (false);
+      end;
+
+/**/
+
+/* Recover.File_recover.Do_a_record
+
+   Procedure to read a record, check or update the rat, and return
+   a status.  */
+
+Do_a_record: proc (ra, test_only) returns (bit);
+
+$Insert *>insert>query.plp.ins
+
+dcl
+   ra          bin(31),
+   test_only   bit;
+
+dcl
+   findpath    entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                      3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                      bin(31)) returns (char(160) var),
+   free_rec    entry (bin(31)) returns (bit),
+   set_rat     entry (bin(31), bit) returns (bit);
+
+dcl
+   status      bin;
+
+
+   call diskio (key, ra, cpartition, my_rec, status);
+   if status ^= 0 then goto freturn;
+   if test_only then
+      if ^free_rec (ra) then
+         do;
+         call ioa$ ('%#xRecord %:3o is in use by another file (%v).%.',
+                    -1, level, ra, findpath (my_rec, (my_rec.cra)));
+         if ^verify_file then goto freturn;
+
+         /* file was previously verified.  This has probably happened because
+            a delete was interrupted or something...  */
+
+         call ioa$ ('%#x%$', -1, level);
+         if ^query ('Continue recovery? ', no_def) then goto freturn;
+         end;
+      else ;
+   else
+      if ^set_rat (ra, '0'b) then     /* mark record not available */
+         do;
+         call ioa$ ('%#xCannot change rat for record %:3o.%.', -1, level, ra);
+         goto freturn;
+         end;
+
+   return (true);
+
+freturn:
+   return (false);
+
+end;     /* Do_a_record */
+
+/**/
+
+/* Recover.File_recover.Sam_recover
+
+   Procedure to recover a sam file */
+
+Sam_recover: proc (ent) returns (bit);
+
+dcl
+   1  ent like ufd_entry;
+
+dcl
+   sam_ok   entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                   3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                   bin(31), bit, bit, bin(31)) returns (bit);
+
+dcl
+   nr       bin(31);     /* number of records verified */
+
+   if verify_file then
+      if ^sam_ok (my_rec, (ent.filebra), '0'b, '0'b, nr) then
+         do;
+         call ioa$ ('%#xVerify error.%.', -1, level);
+         return (false);
+         end;
+
+   if check_rat then
+      if ^test_rat (ent.filebra) then
+         do;
+         call ioa$ ('%#xSome file records are in use by another file.%.', -1,
+                     level);
+         return (false);
+         end;
+
+   if update_rat then
+      if ^fix_rat (ent.filebra) then
+         do;
+         call ioa$ ('%#xRat could not be corrected.%.', -1, level);
+         return (false);
+         end;
+
+   return (true);
+
+
+   /* Internal procedures to check and fix the RAT */
+
+   test_rat: proc (file_bra) returns (bit);
+
+   dcl
+      file_bra bin(31);
+
+   dcl
+      ra       bin(31),
+      testing  bit;
+
+      testing = true;
+      goto scan_file;
+
+   Fix_rat: entry (file_bra) returns (bit);
+
+      testing = false;
+
+   scan_file:
+
+      ra = file_bra;
+
+      do until (ra = 0);
+
+         if ^do_a_record (ra, testing) then return (false);
+         ra = my_rec.next;
+
+      end;
+      return (true);
+
+   end;     /* Test_rat */
+
+end;     /* Sam_recover */
+
+/**/
+
+/* Recover.File_recover.Dam_recover
+
+   Procedure to recover all records in a dam file. */
+
+Dam_recover: proc (ent) returns (bit);
+
+dcl
+   1  ent like ufd_entry;
+
+dcl
+   dam_ok   entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                   3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                   bin(31), bit, bit, bin(31)) returns (bit);
+
+dcl
+   nr       bin(31);
+
+
+/* if verify_file then
+      if ^dam_ok (my_rec, (ent.filebra), '0'b, '0'b, nr) then
+         do;
+         call ioa$ ('%#xVerify error.%.', -1, level);
+         return (false);
+         end;
+*/
+
+   if check_rat then
+      if ^test_rat (ent.filebra) then
+         do;
+         call ioa$ ('%#xSome file records are in use by another file.%.', -1,
+                     level);
+         return (false);
+         end;
+
+   if update_rat then
+      if ^fix_rat (ent.filebra) then
+         do;
+         call ioa$ ('%#xRat could not be corrected.%.', -1, level);
+         return (false);
+         end;
+
+   return (true);
+
+
+   /* Internal procedures to check and fix the RAT for a dam file */
+
+   Test_rat: proc (file_bra) returns (bit);
+
+   dcl
+      file_bra bin(31);
+
+   dcl
+      current_level  bin,
+      data_string_ra bin(31),
+      ra             bin(31),
+      testing        bit;
+
+      testing = true;
+      goto scan_file;
+
+   Fix_rat: entry (file_bra) returns (bit);
+
+      testing = false;
+
+   scan_file:
+
+      ra = file_bra;
+      call diskio (key, ra, cpartition, my_rec, status);
+      if status ^= 0 then
+         return (false);
+
+      current_level = my_rec.level;
+      if current_level ^> 0 then
+         do;
+         call ioa$er ('Bad dam file (Scan_file).%.', -1);
+         return (false);
+         end;
+
+      data_string_ra = addr(my_rec.data(0)) -> fb31;
+
+      do until (current_level = -1);
+
+         do until (ra = 0);
+
+            if ^do_a_record (ra, testing) then return (false);
+            ra = my_rec.next;
+
+         end;
+
+         /* setup for next level */
+
+         current_level = current_level - 1;
+         if current_level >= 0 then
+            do;
+
+            ra = data_string_ra;
+            call diskio (key, ra, cpartition, my_rec, status);
+            if status ^= 0 then
+               return (false);
+            data_string_ra = addr(my_rec.data(0)) -> fb31;
+
+            end;
+
+      end;     /* do until (current_level = -1) */
+
+      return (true);
+
+   end;     /* Test_rat */
+
+end;     /* Dam_recover */
+
+/**/
+
+/* Recover.File_recover.Seg_recover
+
+   Recovers segment directory files.
+
+   Segment directories cannot be totally recovered once deleted because
+   the BRA pointers in the segment directory have been set to 0.  Although
+   a search of the entire partition for all files with BRA equal to the segment
+   directory's will find all subfiles, there is no way to determine which
+   subfile goes where in the directory.  Therefore, Dutil will recovery
+   the directory, but no subfiles underneath.  */
+
+Seg_recover: proc (ent) returns (bit);
+
+dcl
+   1  ent like ufd_entry;
+
+dcl
+   ok    bit;
+
+   if ent.filetype.type = 2 then     /* Sam seg dir */
+      ok = sam_recover (ent);
+   else
+      ok = dam_recover (ent);
+
+   call ioa$ ('%#xSubfiles in segdirs cannot be recovered.%.', -1, level);
+   return (ok);
+
+end;     /* Seg_recover */
+
+/**/
+
+/* Recover.File_recover.Ufd_recover
+
+   Recovers all files in a ufd (all levels are scanned). */
+
+Ufd_recover: proc (ent) returns (bit);
+
+dcl
+   1  ent like ufd_entry;
+
+dcl
+   1  ecwpos,
+      2  ra       bin(31),
+      2  wn       bin,
+   1  my_ent like ufd_entry,
+   nextwd         bin,
+   ra             bin(31);
+
+
+   /* Since this routine may be called with a ufd that is not deleted,
+      check whether ufd itself needs to be recovered.  */
+
+   if ent.ecw.type = 2 then
+      if ^sam_recover (ent) then
+         do;
+         call ioa$ ('%#xCould not recover directory.%.', -1, level);
+         return (false);
+         end;
+
+   /* ufd is now non-deleted, recover all entries within */
+
+   nextwd = -1;
+   ra = ent.filebra;
+
+   do while (rd_entry (my_rec, ra, nextwd, my_ent, '0'b, ecwpos));
+
+      /* is entry deleted? */
+
+      if my_ent.ecw.type = 2 then
+         do;
+
+         /* yes, attempt recovery */
+
+         if file_recover (my_ent) then
+            if change_entry_type (ecwpos, '03'b4) then
+                  call ioa$ ('%#xRecovery complete.%.', -1, level);
+            else
+               return (false);    /* change_entry_type prints error message */
+         else
+            call ioa$ ('%#xRecovery aborted.%.', -1, level);
+
+         /* re-locate ufd record since file_recover probably bombed it */
+
+         call diskio (read_key, ra, cpartition, my_rec, status);
+         if status ^= 0 then
+            return (false);
+
+         end;
+
+   end;
+   return (true);
+
+
+   /* Internal procedure to change an ECW given its address */
+
+   Change_entry_type: proc (ecwpos, new_type) returns (bit);
+
+   dcl
+      1  ecwpos,
+         2  ra       bin(31),
+         2  wn       bin,
+      new_type       bit(8);
+
+      call diskio (read_key, ecwpos.ra, cpartition, my_rec, status);
+      if status = 0 then
+         do;
+         addr(my_rec.data(ecwpos.wn)) -> cw.type = new_type;
+         call diskio (write_key, ecwpos.ra, cpartition, my_rec, status);
+         end;
+
+      return (status = 0);
+
+   end;      /* Change_entry_type */
+
+end;     /* Ufd_recover */
+
+end;     /* File_recover */
+
+end;     /* Recover */

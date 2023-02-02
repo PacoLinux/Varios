@@ -1,0 +1,210 @@
+/* MON$SCAN_JOB_LIST.SPL, PrintMaster, Jim Wilcoxson, December 28, 1983       */
+/* Checks for jobs and resets "is_open" flag if they have been closed.        */
+/* Checks deferred date and start deadline; sends jobs to the master if       */
+/* necessary.                                                                 */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$scan_job_list : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>msg$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>mon$destroy_job.ins.spl';
+%include '*>entry>mon$queue_job.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$send_to_master.ins.spl';
+%include '*>entry>mon$unattach.ins.spl';
+%list;
+
+%replace
+   rescan_interval by 15;                   /* quadseconds = 60 secs = 1 min */
+
+dcl
+   master_down    bit,
+   time_now       bin(31),
+   next_jep       ptr,
+   prev_jep       ptr,
+   kwbp           ptr,
+   1  kwb         based,
+      2  size     bin,                      /* size of buffer in words */
+      2  kwdata   bin,                      /* (this is really an array) */
+   jep            ptr,
+   need_to_requeue bit,
+   status         bin;
+
+   time_now = date$();
+
+scan_loop:
+
+   prev_jep = null;
+   do jep = mon.job_bol repeat next_jep while (jep ^= null);
+      next_jep = jep->je.next;
+      need_to_requeue = false;
+      if jep->je.deferred_date <= time_now then
+         if jep->je.is_open then
+            if jep->je.time_scanned + mon.scan_quadsecs < time_now then
+               if job_closed() then
+                  need_to_requeue = true;
+
+      /* check for expired deadline */
+
+      if jep->je.start_deadline <= time_now
+       & jep->je.priority ^= maxint then do; /* requeue with high priority */
+         jep->je.priority = maxint;
+         need_to_requeue = true;
+         end;
+
+      /* if job needs to be requeued, do it, then try to
+         schedule the job (if I am the master) */
+
+      if need_to_requeue then do;
+         call mon$queue_job (jep);
+         if gbl.I_am_master then
+            call mon$schedule_job (jep);
+         end;
+
+     /*  If the job stayed in the same place in the list, update PREV_JEP.
+         If job moved either left or right, PREV_JEP still points to the entry
+         before NEXT_JEP, so it (PREV_JEP) is not changed */
+
+      if jep->je.next = next_jep then       /* job hasn't moved */
+         prev_jep = jep;
+   end;  /* do jep */
+
+   /* since scan completed with no queue in use errors, a "slow scan" can be
+      made next time (longer delay before next scan) */
+
+   mon.need_fast_scan = false;
+
+
+end_of_queue_scan:
+
+   if gbl.I_am_master then
+      goto return_from_scan;
+
+   /* if I am a monitor, send all jobs ready for scheduling to the master */
+
+   master_down = false;
+   do jep = mon.job_bol repeat next_jep while (jep ^= null);
+      next_jep = jep->je.next;
+      if ^jep->je.is_open & jep->je.deferred_date <= time_now then do;
+         call kwl$kwl_to_buf (jep->je.kwlp, kwbp);
+         if ^mon$send_to_master (mt$job, kwbp, kwbp->kwb.size*2 + 2) then
+            master_down = true;
+         call kwl$free_buffer (kwbp);
+         if master_down then
+            goto return_from_scan;          /* stop scanning (master down) */
+         call mon$destroy_job (jep);
+         end;
+
+      end;  /* do jep */
+
+return_from_scan:
+   call mon$unattach;
+   return;
+
+/**********************************************************************/
+
+   job_closed : procedure returns (bit);
+
+   dcl
+      file_size_wds     bin(31),            /* print job size in words */
+      pj_sd_unit        bin,                /* print job segdir unit */
+      pj_file_unit      bin,                /* print job data file unit */
+      status            bin;                /* tsrc$$ status */
+
+      pj_sd_unit = 0;
+      pj_file_unit = 0;
+
+      on condition (cleanup$)
+         begin;
+         call gp$close (pj_sd_unit);
+         call gp$close (pj_file_unit);
+         end;
+
+      on condition (err$condition_before_msg)
+         begin;
+         status = err$es.status1;
+         goto tried_open;
+         end;
+
+      status = 0;
+
+      if jep->je.in_queue then
+         begin;
+
+         /* abort the entire scan if queue in use or not found */
+
+         on condition (err$condition_before_msg)
+            begin;
+            if err$es.type = err$primos_et
+             & (err$es.status1 = e$fius | err$es.status1 = e$nfas) then do;
+               call err$ (err$primos_et+err$warning_et, 'Job scan aborted.',
+                          err$es.status1, 0, 0);
+               mon.need_fast_scan = true;
+               goto end_of_queue_scan;
+               end;
+            else
+               call cnsig$ (status);
+            end;
+
+         call gp$open_pde (k$read+k$getu+k$$no_wait, jep->je.queue_partition,
+                           gbl$spool_queue, sq$q_pj_excl_name, pj_sd_unit);
+         revert condition (err$condition_before_msg);
+
+         /* queue is open; try to open job, letting previous on-unit
+            handle this condition (outside begin block) */
+
+         call sq$open_entry (k$read+k$getu+k$$no_wait, pj_sd_unit,
+                             jep->je.job_id, pj_file_unit);
+         end;
+      else
+         call gp$open_path (k$read+k$getu+k$$no_wait,
+                            jep->je.pathname_ptr->based_path, pj_file_unit);
+
+
+tried_open:
+
+      revert condition (err$condition_before_msg);
+
+      select (status);
+         when (0) do;
+            jep->je.is_open = false;
+
+            /* get job's actual size now */
+
+            call prwf$$ (k$posn+k$prea, pj_file_unit, null, 0, maxint31, 0, status);
+            if status ^= e$eof then
+               call err$ (err$primos_et, 'Positioning to EOF', status, 0, 0);
+            call prwf$$ (k$rpos, pj_file_unit, null, 0, file_size_wds, 0, status);
+            if status ^= 0 then
+               call err$ (err$primos_et, 'Getting position', status, 0, 0);
+            if file_size_wds = 0 then
+               jep->je.size = 0;
+            else if file_size_wds < 512 then
+               jep->je.size = 1;
+            else
+               jep->je.size = divide(file_size_wds + 512, 1024, 31); /* divide with round */
+            end;
+
+         when (e$fius)
+            jep->je.time_scanned = time_now;
+         otherwise
+            jep->je.deferred_date = date$() + rescan_interval; /* try later */
+         end;  /* select status */
+
+      call gp$close (pj_file_unit);
+      call gp$close (pj_sd_unit);
+      return (^jep->je.is_open);            /* return true if job was closed */
+
+  end job_closed;
+
+end mon$scan_job_list;

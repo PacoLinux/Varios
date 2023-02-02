@@ -1,0 +1,218 @@
+/* KWL$KWL_TO_TEXT.SPL, PrintMaster, Jeff Hostetler, September 12, 1983       */
+/* Procedure to convert a kwl (in internal format) to text format and write it*/
+/* to the pathname given in "text_path_name", (if blank, to tty).             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$kwl_to_text: proc (text_path_name, p_kwl, indent_count);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>kwl$flags_to_string.ins.spl';
+%include '*>entry>kwl$sort_kwl.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      dash              by '-';
+
+   dcl
+      text_path_name    char(*) var,
+      p_kwl             ptr,
+      indent_count      bin,
+
+      indent_str        char (indent_count),
+      value_indent      char(3) var,
+      flags             like kwl$flags,
+      lines_printed     bin,
+      (p_kw, pv)        ptr,
+      new_path          char(128) var,
+      (code, rnw, unit) bin,
+
+      /* for buf = "-<kw>:<flags> <value>" */
+      buf char(indent_count + kwl$chars_in_kw + kwl$chars_in_flags
+               + kwl$chars_in_value + 3) var;
+
+   unit = 0;
+   on condition(CLEANUP$)
+      call gp$close (unit);
+
+%page;
+
+   indent_str = '';
+   if indent_count = 0
+      then value_indent = '';
+      else value_indent = '   ';
+   lines_printed = 0;
+   if length (trim (text_path_name, '11'b)) = 0 then
+      unit = 0;                             /* output to terminal */
+   else do;
+      call apsfx$ (text_path_name, new_path, kwl$text_suffix, code);
+      if code > 0 then
+         call err$ (err$primos_et, 'Appending text suffix.', code, 0, 0);
+      call gp$open_path (k$writ + k$getu + k$$no_wait, new_path, unit);
+      call prwf$$ (k$trnc, unit, null, 0, (0), rnw, code);
+      end;
+
+   if unit = 0 then do;
+
+      /* for output on the terminal sort the keywords alphabetically and
+         divide into two groups */
+
+      call kwl$sort_kwl (p_kwl);
+
+      /* first, display the abbreviations */
+
+      do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+         if p_kw->kw_entry.abbrev then
+            call display_it;
+         end;
+
+      /* next, display the non-scheduling keywords */
+
+      do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+         if ^p_kw->kw_entry.abbrev  &  p_kw->kw_entry.info then
+            call display_it;
+         end;
+
+      /* next, display the scheduling keywords */
+
+      do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+         if ^p_kw->kw_entry.abbrev  &  ^p_kw->kw_entry.info then
+            call display_it;
+         end;
+      end;
+
+   else do;
+
+      /* write it to a file without changing the order of the keywords,
+         (this is important so that they may EDit them (and re-create
+         them later) without affecting the order) */
+
+      do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+         call display_it;
+         end;
+
+      end;
+
+end_display:
+
+   call gp$close (unit);
+   return;
+   /* logical end of kwl$kwl_to_text */
+
+%page;
+/* kwl$kwl_to_text.display_it, PrintMaster, Jeff Hostetler, April 16, 1984    */
+/* output the keyword given                                                   */
+/******************************************************************************/
+
+   display_it: proc;
+
+      dcl
+         lines_required    bin;
+
+      if p_kw->kw_entry.kw = kw$unique_id then /* value of uid is unprintable*/
+         return;
+
+      call format_kw (p_kw);             /* formatted kw in "buf" */
+      if unit = 0 & ^gbl.command_file_active then do;
+         if p_kw->kw_entry.pf_value = null then
+            lines_required = 1;
+         else do;
+            lines_required = 0;
+            do pv = p_kw->kw_entry.pf_value repeat pv->value_entry.next
+                                            while (pv ^= null);
+               lines_required = lines_required + 1;
+               end;
+            end;
+         if lines_required + lines_printed > 20 then
+            if ysno$a ('More', 4, a$dyes) = ftn_true then
+               lines_printed = 0;
+            else
+               goto end_display;
+         lines_printed = lines_printed + lines_required;
+         end;
+
+      if p_kw->kw_entry.pf_value = null then
+         call gp$write_line (unit, buf);
+      else do;
+         pv = p_kw->kw_entry.pf_value;
+         if pv->value_entry.next = null then /* 1 value, put on same line */
+            call gp$write_line (unit, buf || ' ' || cquote(pv->value_entry.value));
+         else do;
+            call gp$write_line (unit, buf);
+            do pv = pv repeat pv->value_entry.next while (pv ^= null);
+               call gp$write_line (unit, indent_str || value_indent
+                                         || cquote(pv->value_entry.value));
+               end;
+            end;
+         end;
+
+      return;
+      end display_it;
+
+%page;
+/* kwl$kwl_to_text.format_kw, PrintMaster, Jeff Hostetler, March 28, 1984     */
+/* format kw "-<kw>[:<flags>]"                                                */
+/******************************************************************************/
+
+   format_kw: proc (p_kw);
+
+      dcl
+         p_kw  ptr,
+
+         vs    char(kwl$chars_in_flags) var;
+
+      buf = indent_str || dash || p_kw->kw_entry.kw;
+      if string (p_kw->kw_entry.flags) ^= kwl$default_flags then do;
+         call kwl$flags_to_string (vs, p_kw->kw_entry.flags);
+         buf = buf || kwl$kw_end_marker || vs;
+         end;
+
+      return;
+      end format_kw;
+
+%page;
+/* kwl$kwl_to_text.cquote, PrintMaster, Jeff Hostetler, April 26, 1984        */
+/* conditionally quotes a string (if it has leading/trailing blanks or quotes */
+/* or is null)                                                                */
+/******************************************************************************/
+
+   cquote: proc (s)
+           returns (char(kwl$chars_in_value) var);
+
+      dcl
+         s        char(*) var,
+
+         t        char(kwl$chars_in_value) var,
+         (i, l)   bin;
+
+      if length(s) = 0 then
+         return ('''''');                   /* return "''" */
+
+      i = index(s, '''');                   /* if string contains quotes, we */
+      if i > 0 then do;                     /* quote the string and double */
+         t = '''';                          /* all quotes found */
+         l = 1;
+         do while (i > 0);
+            t = t || substr(s, l, i) || '''';
+            l = l+i;
+            if l > length(s)
+               then i = 0;                  /* avoids string range */
+               else i = index(substr(s, l), '''');
+            end;
+         t = t || substr(s, l) || '''';
+         return (t);
+         end;
+
+      if substr(s, 1, 1) = ' ' |  substr(s, length(s)) = ' ' then
+         return ('''' || s || '''');
+
+      return (s);
+      end cquote;
+
+   end kwl$kwl_to_text;

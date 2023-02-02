@@ -1,0 +1,165 @@
+/* Rd_entry.plp, Dutil, JEW, 10-Feb-81
+   Read a ufd entry.
+
+   Call Rd_entry (my_rec, ra, nextwd, entry, del_flag)
+
+   My_rec is a disk record buffer
+   Ra is the record address of the ufd record
+   Nextwd is the word number offset within the record of the next entry
+          (this should be set to -1 on the first call)
+   Entry is the returned ufd entry
+   Del_flag = '1'b => ignore deleted ufd entries
+            = '0'b => return deleted entries
+   Ecwpos is a structure, first component is ra of ecw, 2nd is word number
+
+*/
+
+rd_entry: proc (my_rec, ra, nextwd, ent, ignore_del, ecwpos) returns (bit);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>ufd_ent.plp.ins
+
+dcl
+   1 my_rec like disk_record,
+   ra       bin(31),
+   nextwd   bin,
+   ent(0:27) bin,
+   ignore_del bit,
+   1  ecwpos,
+      2  ra    bin(31),
+      2  wn    bin;
+
+dcl
+   bin15    bin based,
+   1  cw,            /* entry control word of ufd */
+      2  type     bit(8),
+      2  length   bit(8),
+   done     bit,
+   entx     bin,     /* index into ent array */
+   status   bin;
+
+
+
+   if nextwd = -1 then
+      do;
+
+      /* initial call, read record and verify that type is correct */
+
+      call diskio (read_key, ra, cpartition, my_rec, status);
+      if status ^= 0 then goto eof;
+      if my_rec.back ^= 0 | my_rec.type ^= 4 | my_rec.count < 24 then goto eof;
+      nextwd = 0;
+      end;
+
+   /* read next entry, ignoring ufd headers and old types */
+
+   done = false;
+   call getword ( addr (cw)->bin15 );
+   do until (done);
+
+      if ((cw.type = 2 & ^ignore_del) | cw.type = 3)
+      &  12 < cw.length & cw.length < 29 then
+         do;
+
+         /* this is a good entry, return it's address in ecwpos */
+
+         ecwpos.ra = ra;
+         ecwpos.wn  = nextwd - 1;
+
+         ent = 'a0a0'b4;       /* fill entry with blanks */
+         ent(0) = addr (cw)->bin15;
+         do entx = 1 to cw.length - 1;
+            call getword (ent(entx));
+         end;
+
+         /* check entry for validity... */
+
+         if valid_entry () then
+            done = true;
+         else
+            do;
+
+            /* oops...entry was bad, restore to where we left off */
+
+            ra = ecwpos.ra;
+            nextwd = ecwpos.wn + 1;    /* point to just after ecw */
+
+            call diskio (read_key, ra, cpartition, my_rec, status);
+            if status ^= 0 then
+               goto eof;
+            call getword (addr(cw) -> fb15);
+
+            end;
+         end;
+      else
+
+         /* strange type;  if the ecw looks bad, step to the next word
+            (this will attempt to find an ecw).  If it is a known ecw
+            type, skip the entry */
+
+         if (cw.type = 1 | cw.type = 2) & 12 < cw.length & cw.length < 29 then
+            do entx = 1 to cw.length;
+               call getword ( addr (cw)->bin15 );
+            end;
+         else
+            call getword ( addr (cw)->bin15 );
+   end;
+   return (true);
+
+eof:
+   return (false);
+
+
+   /* Internal procedure to get 1 word and cross record boundaries */
+
+   getword: proc (dataword) options (shortcall);
+
+   dcl
+      dataword    bin;
+
+      if nextwd < my_rec.count then
+         do;
+         dataword = my_rec.data(nextwd);
+         nextwd = nextwd + 1;
+         end;
+      else
+
+         /* end of data in this record, step to next */
+
+         if my_rec.next ^= 0 then
+            do;
+            ra = my_rec.next;
+            call diskio (read_key, ra, cpartition, my_rec, status);
+            if status ^= 0 then goto eof;
+            nextwd = 1;
+            dataword = my_rec.data (0);
+            end;
+
+         else
+            goto eof;      /* forward pointer is zero */
+
+   end;     /* getword */
+
+
+   /* Internal procedure to attempt to validate a ufd entry.
+      Uses heuristics:
+
+         1) length of filename must be >1 & <17
+         2) scw.size + 11 must equal ecw.size
+         3) scw.type must be zero
+
+   */
+
+   valid_entry: proc returns (bit);
+
+      if 1 < addr(ent) -> ufd_entry.scw.size & addr(ent) -> ufd_entry.scw.size <= 17
+      &  addr(ent) -> ufd_entry.scw.size + 11 = addr(ent) -> ufd_entry.ecw.size
+      &  addr(ent) -> ufd_entry.scw.type = 0 then
+         return (true);
+      else
+         return (false);
+
+   end;    /* valid_entry */
+
+end;     /* rd_entry */

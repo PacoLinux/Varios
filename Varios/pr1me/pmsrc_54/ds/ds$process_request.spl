@@ -1,0 +1,956 @@
+/* DS$PROCESS_REQUEST.SPL, PrintMaster, Jeff Hostetler, March 14, 1984        */
+/* Fetches messages from COMM$, calls level 1 & 2 request handlers.           */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$process_request: proc (currently_printing)
+                    returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>ds$completion_codes.ins.spl';
+%include '*>insert>ds$keys.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>insert>ds$device_states.ins.spl';
+%include '*>entry>ds$change_copy_status.ins.spl';
+%include '*>entry>ds$change_state.ins.spl';
+%include '*>entry>ds$open_job.ins.spl';
+%include '*>entry>ds$send_kwl.ins.spl';
+%include '*>entry>ds$write_device_kwl.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%list;
+
+   dcl
+      currently_printing   bit,
+
+      ei                   like kwl$expand_info,
+      flags                like kwl$flags,
+      had_a_request        bit,
+      reject_flag          bit,
+      tried_cleanup        bit,
+      reply                char(80) var,    /* level 1 responses */
+      status               bin,
+      state                bin,
+      p_kwl                ptr,
+      bvcs                 char(maxint) var based,
+      ticks_between_calls  bin(31),
+      rt_ticks             bin(31),         /* real time ticks (1/330th sec) */
+      (msg_p, user_msg_p)  ptr;
+
+   had_a_request = false;
+
+   rt_ticks = gp$ticks();
+   ticks_between_calls = rt_ticks - ds.time_of_last_request_call;
+   ds.time_of_last_request_call = rt_ticks;
+
+   if currently_printing then do;
+
+      /* compute elapsed print time; check for a large discrepancy in the time
+         between samples, which probably indicates the printer was turned
+         off or something.  In this case, add the average sample time rather
+         than the actual sample time. */
+
+
+      if ticks_between_calls > 15*psv.ticks_per_sec   /* > 15 seconds */
+       & ds.time_samples > 50 then
+         ticks_between_calls = divide (ds.elapsed_print_time,
+                                       ds.time_samples, 31);
+
+      ds.elapsed_print_time = ds.elapsed_print_time + ticks_between_calls;
+      ds.total_elapsed_print_time = ds.total_elapsed_print_time
+                                           + ticks_between_calls;
+      ds.time_samples = ds.time_samples + 1;
+      end;
+
+   string(ei) = kwl$accept_as_is_ei;        /* don't verify */
+   ei.expand = true;                        /* and expand */
+   string(flags) = kwl$default_flags;
+
+   /* if the monitor's unique id has changed, then send our state & kwl */
+
+   if ds.monitor_uid ^= psv.monitor_uid then do;
+      ds.monitor_uid = psv.monitor_uid;
+      ds.monitors_device_state = ds$invalid_st;
+      call ds$send_kwl;
+      end;
+
+   do while (comm$fetch_msg (msg_p, user_msg_p)); /* we have a request */
+
+      /* mt$device_idle is not really a request...don't return true
+         on this message type */
+
+      if msg_p->msg.msg_type ^= mt$device_idle then
+         had_a_request = true;
+
+      reject_flag = false;
+      select (msg_p->msg.msg_type);
+         when (mt$device_command, mt$startup_device) do;
+            p_kwl = null;
+            call kwl$buf_to_kwl (user_msg_p, p_kwl, ei, flags);
+            do ds.req_kwp = p_kwl repeat ds.req_kwp while (ds.req_kwp ^= null);
+               if ds.req_kwp->kw_entry.kw = 'STATUS' then
+                  call status_handler;
+               else if ds.req_kwp->kw_entry.kw = 'LIST' then
+                  call config_handler;
+               else do;
+                  call request_handler (status, reply);
+                  call ds.level_2_driver (ds$request);
+                  call send_response (ds.req_kwp->kw_entry.kw, status,
+                                      ds.error_status, reply,
+                                      ds.error_msgp->bvcs);
+                  end;
+               if ds.req_kwp->kw_entry.kw = 'EDIT' then
+                  ds.req_kwp = null;
+               else
+                  ds.req_kwp = ds.req_kwp->kw_entry.next;
+               end;
+            call send_a_response ('', ds$request_completed, '');
+            call kwl$destroy_kwl (p_kwl);
+            call ds.level_2_driver (ds$request);/* w/ null kwl ptr */
+            end;
+
+         when (mt$start_job)
+            call print_job;
+
+         when (mt$delete_job)
+            if user_msg_p->ms$delete_job.uid = ds.unique_id
+             & ds.device_state = ds$printing_st then
+               ds.completion_code = ds$drop_copy_cc;
+            else                            /* send current state */
+               ds.monitors_device_state = ds$invalid_st;
+
+         when (mt$device_idle)
+
+            /* change state to idle if currently ready */
+
+            if ds.device_state = ds$ready_st then do;
+               ds.monitors_device_state = ds$idle_st;
+               ds.device_state = ds$idle_st;
+               ds.ticks_until_timeout = ds.idle_time_limit;
+               end;
+
+         otherwise
+            call err$ (err$coding_et, 'Invalid message type received "'
+                       || char(msg_p->msg.msg_type) || '"', 0, 0, 0);
+         end;        /* select */
+
+next_msg:
+      call comm$destroy_msg (msg_p);
+      end;
+
+   if ds.device_state = ds$idle_st then do;
+      call do_idle_requests;
+
+      /* above may change device's state; make sure it's still idle */
+
+      if ds.device_state = ds$idle_st then do;
+         if ds.idle_time_limit >= 0 then do;
+            ds.ticks_until_timeout = ds.ticks_until_timeout - ticks_between_calls;
+            if ds.ticks_until_timeout < 0 then
+               ds.device_state = ds$timed_out_st;
+            end;
+         end;
+      end;
+
+   /* if currently printing and a request was processed, reset timer to
+      avoid counting the request handling time as print time */
+
+   if currently_printing & had_a_request then do;
+      rt_ticks = gp$ticks();
+      ds.time_of_last_request_call = rt_ticks;
+      end;
+
+   /* if printing, make sure monitor has correct state now */
+
+   if ds.device_state = ds$printing_st
+    & ds.monitors_device_state ^= ds.device_state then
+      call ds$change_state (ds.device_state, ds.completion_code,
+                            ds.unique_id, ds.tranid);
+
+   return (had_a_request);
+
+   /* end of ds$process_request */
+
+%page;
+
+/* ds$process_request.print_job, PrintMaster, Jim Wilcoxson, July 2, 1986     */
+/* Handles a print_job request.                                               */
+/******************************************************************************/
+
+print_job: proc;
+
+   /* monitor already thinks I'm printing */
+
+   ds.monitors_device_state = ds$printing_st;
+
+   /* if something happens while printing, try to clean up
+      the job, but don't bomb */
+
+   tried_cleanup = false;
+
+   on condition (err$condition_after_msg)
+      begin;
+      call print_cleanup;
+      goto return_from_print_job;
+      end;
+
+   on condition (cleanup$)
+      call print_cleanup;
+
+
+   if ds.device_state = ds$idle_st
+    | ds.device_state = ds$ready_st then
+      if ds$open_job (user_msg_p->ms$start_job.partition,
+                      user_msg_p->ms$start_job.job_nr,
+                      user_msg_p->ms$start_job.uid) then do;
+
+         call ds.level_2_driver (ds$print_job);
+         tried_cleanup = true;
+         call clean_up_after_job;
+         end;
+      else
+
+         /* could not open job; send state here, since it is
+            either idle or ready */
+
+         call ds$change_state (ds.device_state, ds.completion_code,
+                               user_msg_p->ms$start_job.uid, 0);
+   else
+
+      /* start job cannot be accepted because device is not idle */
+
+      ds.monitors_device_state = ds$invalid_st;
+
+
+return_from_print_job:
+
+   return;
+
+
+
+   print_cleanup: proc;
+
+      if ^tried_cleanup & ds.device_state = ds$printing_st then do;
+         tried_cleanup = true;
+         ds.completion_code = ds$suspended_cc;
+         call clean_up_after_job;
+         end;
+
+      /* had a problem with the job; force state to be sent
+         to the monitor and handle the next message */
+
+      ds.monitors_device_state = ds$invalid_st;
+
+      end print_cleanup;
+
+
+end print_job;
+
+%page;
+/* ds$process_request.status_handler, PrintMaster, Jim Wilcoxson, June 5, 1984*/
+/* Handles a device status request.
+/******************************************************************************/
+
+   status_handler: proc;
+
+      dcl
+         current_position     bin(31),
+         disk_words_left      bin(31),
+         disk_words_done      bin(31),
+         display_len          bin,          /* bytes in level2 status display */
+         elapsed_mins         float,        /* since reset */
+         i                    bin,
+         words_per_minute     float,
+         words_per_page       float,        /* average words per printed page */
+         p                    ptr,
+         pos                  bin(31),
+         rnw                  bin,          /* prwf$$ returned number wds */
+         status               bin,          /* prwf$$ status code */
+         ml                   bin,          /* message length (bytes) */
+         smsgp                ptr,          /* status message pointer */
+         status_msg like ms$device_status_reply based (smsgp);
+
+      /* setup variables controlling message lengths */
+
+      alloc_status_lines = ds.status_display.sd_lines;
+      alloc_status_width = ds.status_display.sd_width;
+      alloc_load_names = 0;
+      do p = ds.kwls_to_load repeat p->ds$load_list.next while (p ^= null);
+         alloc_load_names = alloc_load_names + 1;
+         end;
+      allocate status_msg set (smsgp);
+
+      /* initialize all system-level fields in message */
+
+      status_msg.version = rev_number;
+      status_msg.device_id = ds.device_name;
+      status_msg.system_id = psv.my_system_id;
+      status_msg.state = ds.device_state;
+      status_msg.current_job_uid = ds.unique_id;
+      status_msg.job_queue = ds.q_partition;
+      status_msg.job_id = ds.job_id;
+      status_msg.job_name = ds.job_name;
+      status_msg.job_pathname = ds.job_pathname;
+      status_msg.copies_requested = ds.copies.requested;
+      status_msg.copy_printing = ds.copies.copy_nr;
+      status_msg.file_size = ds.file_size;
+      if ds.device_state ^= ds$printing_st then
+         goto setup_level2_display;
+
+      current_position = bio$get_position (ds.pfbp);
+      if ds.copyfile & ds.inuse_ok then do;
+         call prwf$$ (k$posn+k$prea, ds.print_file_unit, null, 0,
+                      maxint31, 0, status);
+         if status = e$eof then do;
+            call prwf$$ (k$rpos, ds.print_file_unit, null, 0,
+                         ds.file_size_words, 0, status);
+            call prwf$$ (k$posn+k$prea, ds.print_file_unit, null, 0,
+                         current_position, 0, status);
+            if status ^= 0 then
+               call err$ (err$primos_et, 'Repositioning print file', status, 0, 0);
+            status_msg.file_size = divide (ds.file_size_words+1023,1024,31);
+            end;
+         end;
+
+      disk_words_left = ds.file_size_words - current_position;
+
+      status_msg.current_record = divide (current_position+1023, 1024, 31);
+      status_msg.current_page = ds.current_pc_mark;
+      status_msg.elapsed_print_time = divide (ds.total_elapsed_print_time,
+                                              psv.ticks_per_sec*60, 31);
+
+      /* now for the estimated stuff (some may be REALLY off) */
+
+      if ds.current_pc_mark > 3 then do;
+         words_per_page = divide (ds.current_page_file_pos,
+                                  ds.current_pc_mark-1, 31);
+         disk_words_done = current_position - ds.starting_file_position;
+         elapsed_mins = float(ds.elapsed_print_time,23) / float(psv.ticks_per_sec*60,23);
+         words_per_minute = float (disk_words_done, 23) / elapsed_mins;
+         status_msg.estimated_pages_left = float(disk_words_left, 23)/words_per_page;
+         status_msg.estimated_time_left = ceil (float(disk_words_left,23)/words_per_minute);
+         status_msg.pages_per_minute = words_per_minute / words_per_page;
+         end;
+      else do;                              /* don't return anything yet */
+         status_msg.estimated_pages_left = 0;
+         status_msg.estimated_time_left = 0;
+         status_msg.pages_per_minute = 0;
+         end;
+
+setup_level2_display:
+
+      status_msg.status_display_size.width = ds.status_display.sd_width;
+      status_msg.status_display_size.lines = ds.status_display.sd_lines;
+      call ds.level_2_driver (ds$request); /* level 2 creates status display */
+      display_len = (ds.sd_width+2)*ds.sd_lines;
+      call gp$copy (ds.sd_display, addr(status_msg.status_display), display_len);
+
+      /* pass info on pending loads and actions */
+
+      status_msg.action_when_idle = ds.action_when_idle;
+      status_msg.action_after_eoj = ds.action_after_eoj;
+      status_msg.reinit_pending = ds.reinit_kwl;
+      status_msg.when_loads_pending = ds.when_to_load;
+      status_msg.number_loads_pending = alloc_load_names;
+      p = ds.kwls_to_load;
+      do i = 1 to alloc_load_names;
+         status_msg.load_pathnames(i) = p->ds$load_list.pathname;
+         p = p->ds$load_list.next;
+         end;
+      ml =  alloc_load_names*130 + display_len - ml$device_status_reply;
+      if comm$reply (msg_p, mt$device_status_reply, smsgp, ml) then ;
+      free smsgp->status_msg;
+
+   end status_handler;
+
+   config_handler: proc;
+
+      dcl
+         kwbp                 ptr,          /* keyword buffer pointer */
+         ml                   bin,
+         cmsgp                ptr,
+         config_msg like ms$device_config_reply based (cmsgp);
+
+      /* convert device's current keyword list to buffer */
+
+      call kwl$kwl_to_buf (ds.p_device_kwl, kwbp);
+
+      /* setup variables controlling message lengths */
+
+      alloc_kwl_size = kwbp->fb15 + 1;   /* first word of kwl is length */
+      allocate config_msg set (cmsgp);
+
+      /* put device's current keyword list in message */
+
+      config_msg.version = rev_number;
+      config_msg.device_id = ds.device_name;
+      config_msg.system_id = psv.my_system_id;
+      call gp$copy (kwbp, addr(config_msg.kwl_buf), alloc_kwl_size*2);
+      call kwl$free_buffer (kwbp);
+      ml = alloc_kwl_size*2 - ml$device_config_reply;
+      if comm$reply (msg_p, mt$device_config_reply, cmsgp, ml) then ;
+      free cmsgp->config_msg;
+
+   end config_handler;
+
+%page;
+/* ds$process_request.request_handler, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   request_handler: proc (status, reply);
+
+      dcl
+         status      bin,
+         reply       char(*) var,
+         ei          like kwl$expand_info,
+         backup      ptr;
+
+      string(ei) = kwl$default_expand_info; /* verify */
+      ei.expand = true;
+      ei.wp_use_acl = true;
+      ei.info_use_skwl = true;
+      status = ds$request_okay;
+      reply = '';
+
+dcl select_hack char(32); /*
+      select (ds.req_kwp->kw_entry.kw);
+*/    select_hack =  (ds.req_kwp->kw_entry.kw);
+      select (select_hack);
+         when ('EDIT') do;
+            backup = kwl$copy_kwl (ds.p_device_kwl);
+
+            on condition (err$condition_before_msg)
+               begin;
+               status = ds$request_invalid;
+               goto after_merge;
+               end;
+
+            call kwl$merge_kwl (ds.req_kwp->kw_entry.next, ds.p_device_kwl, ei);
+
+after_merge:
+            revert condition (err$condition_before_msg);
+            if status = ds$request_okay then do;
+               call ds$send_kwl;
+               if ds.auto_restart then
+                  call ds$write_device_kwl;
+               call kwl$destroy_kwl (backup);
+               call ds.level_2_driver (ds$device_reinit);
+               end;
+            else do;
+               call kwl$destroy_kwl (ds.p_device_kwl);
+               ds.p_device_kwl = backup;
+               reply = err$es.user_message;
+               if substr(reply, length(reply)) = '.' then
+                  reply = substr(reply, 1, length(reply)-1);
+               end;
+            end;
+
+         when ('INIT_EOJ', 'INIT') do;
+            if ds.kwls_to_load ^= null then
+               if ds.when_to_load = ds$do_at_eoj then do;
+                  call free_kwls_to_load;
+                  ds.reinit_kwl = true;
+                  reply = 'Previous EOJ load(s) will be ignored';
+                  end;
+               else do;
+                  status = ds$request_invalid;
+                  reply = 'Idle loads pending';
+                  end;
+            else do;
+               ds.reinit_kwl = true;
+               ds.when_to_load = ds$do_at_eoj;
+               end;
+            if ds.device_state ^= ds$printing_st then
+               call load_the_list;
+            end;
+
+         when ('INIT_IDLE') do;
+            if ds.kwls_to_load ^= null then
+               if ds.when_to_load = ds$do_when_idle then do;
+                  call free_kwls_to_load;
+                  ds.reinit_kwl = true;
+                  reply = 'Previous IDLE load(s) will be ignored';
+                  end;
+               else do;
+                  status = ds$request_invalid;
+                  reply = 'EOJ loads pending';
+                  end;
+            else do;
+               ds.reinit_kwl = true;
+               ds.when_to_load = ds$do_when_idle;
+               end;
+            if ds.device_state = ds$idle_st then
+               call load_the_list;
+            end;
+
+         when ('LOAD') do;
+            if ds.device_state = ds$printing_st then
+               reply = 'Load will be held until end of current job';
+            goto do_load_eoj_action;
+            end;
+
+         when ('LOAD_EOJ') do;
+
+do_load_eoj_action:
+
+            if ds.kwls_to_load ^= null then
+               if ds.when_to_load = ds$do_at_eoj then
+                  call insert_load_at_end (status, reply);
+               else do;
+                  status = ds$request_invalid;
+                  reply = 'Idle loads pending';
+                  end;
+            else do;
+               ds.when_to_load = ds$do_at_eoj;
+               call insert_load_at_end (status, reply);
+               end;
+            if ds.device_state ^= ds$printing_st then
+               call load_the_list;
+            end;
+
+         when ('LOAD_IDLE') do;
+            if ds.kwls_to_load ^= null then
+               if ds.when_to_load = ds$do_when_idle then
+                  call insert_load_at_end (status, reply);
+               else do;
+                  status = ds$request_invalid;
+                  reply = 'EOJ loads pending';
+                  end;
+            else do;
+               ds.when_to_load = ds$do_when_idle;
+               call insert_load_at_end (status, reply);
+               end;
+            if ds.device_state = ds$idle_st then
+               call load_the_list;
+            end;
+
+         when ('STOP_EOJ', 'STOP')
+            if ds.device_state = ds$printing_st then
+               ds.action_after_eoj = ds$shutdown_action;
+            else
+               ds.device_state = ds$shutdown_st;
+
+         when ('STOP_IDLE')
+            if ds.device_state = ds$idle_st then
+               ds.device_state = ds$shutdown_st;
+            else
+               ds.action_when_idle = ds$shutdown_action;
+
+         when ('PAUSE')
+            if ds.device_state = ds$printing_st then
+               status = ds$request_invalid;
+            else
+               ds.device_state = ds$paused_st;
+
+         when ('PAUSE_EOJ')
+            if ds.device_state = ds$printing_st then
+               ds.action_after_eoj = ds$pause_action;
+            else
+               ds.device_state = ds$paused_st;
+
+         when ('PAUSE_IDLE')
+            if ds.device_state = ds$idle_st then
+               ds.device_state = ds$paused_st;
+            else
+               ds.action_when_idle = ds$pause_action;
+
+         when ('CONTINUE')
+            if ds.device_state = ds$printing_st then
+               status = ds$request_invalid;
+            else if ds.device_state = ds$paused_st then
+               ds.device_state = ds$ready_st;
+            else if ds.device_state = ds$idle_st then
+               reply = 'Device idle';
+            else if ds.device_state = ds$ready_st then
+               reply = 'Device ready';
+            else call err$ (err$log_event_et,
+                            'Device received "CONTINUE(_now)" when in state '
+                            || char(ds.device_state), 0, 0, 0);
+
+         when ('CONTINUE_EOJ') do;
+            if ds.device_state = ds$paused_st then
+               ds.device_state = ds$ready_st;
+            ds.action_after_eoj = ds$no_action;
+            if ds.when_to_load = ds$do_at_eoj then do;
+               ds.reinit_kwl = false;
+               call free_kwls_to_load;
+               end;
+            end;
+
+         when ('CONTINUE_IDLE') do;
+            if ds.device_state = ds$paused_st then
+               ds.device_state = ds$ready_st;
+            ds.action_when_idle = ds$no_action;
+            if ds.when_to_load = ds$do_when_idle then do;
+               ds.reinit_kwl = false;
+               call free_kwls_to_load;
+               end;
+            end;
+
+         otherwise
+            status = ds$request_unrecognized;
+
+         end;     /* select */
+
+      return;
+      end request_handler;
+
+%page;
+/* ds$process_request.free_kwls_to_load, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   free_kwls_to_load: proc;
+
+      dcl
+         pp    ptr;
+
+      do pp = ds.kwls_to_load repeat ds.kwls_to_load while (pp ^= null);
+         ds.kwls_to_load = pp->ds$load_list.next;
+         free pp->ds$load_list;
+         end;
+      return;
+      end free_kwls_to_load;
+
+%page;
+/* ds$process_request.insert_load_at_end, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   insert_load_at_end: proc (status, reply);
+
+      dcl
+         status         bin,
+         reply          char(*) var,
+
+         code           bin,
+         unit           bin,
+         value          char(kwl$chars_in_value) var,
+         (p, pl, q)     ptr;
+
+      if ^kwl$get_nth_value (ds.req_kwp, 1, value) then do;
+         status = ds$request_invalid;
+         reply = 'Load pathname missing';
+         end;
+      else do;
+         on condition (err$condition_before_msg)
+            begin;
+               if err$es.type = err$primos_et then do;
+                  reply = err$es.system_message;
+                  status = ds$request_invalid;
+                  goto cant_open_it;
+                  end;
+               call cnsig$ (code);
+            end;
+
+         call kwl$open_kwl (k$read+k$getu, value, unit, flags);
+         call gp$close (unit);
+         revert condition (err$condition_before_msg);
+
+         q = null;                          /* previous */
+         do p =  ds.kwls_to_load repeat p->ds$load_list.next while (p ^= null);
+            q = p;
+            end;
+         allocate ds$load_list set (p);
+         if q = null then                   /* empty list */
+            ds.kwls_to_load = p;
+         else
+            q->ds$load_list.next = p;
+
+         p->ds$load_list.next = null;
+         p->ds$load_list.pathname = value;
+         end;
+
+      return;
+
+cant_open_it:
+
+      return;
+      end insert_load_at_end;
+
+%page;
+/* ds$process_request.send_response, PrintMaster, Jeff Hostetler, March 22, 1984*/
+/******************************************************************************/
+
+   send_response: proc (kw, l1_status, l2_status, l1_reply, l2_reply);
+
+      dcl
+         kw                      char(*) var,
+         (l1_status, l2_status)  bin,
+         (l1_reply,  l2_reply)   char(*) var;
+
+      if l1_status = ds$request_okay then
+         if length (l1_reply) ^= 0 then
+            call send_a_response (kw, l1_status, l1_reply);
+
+      if l2_status = ds$request_okay then
+         if length (l2_reply) ^= 0 then
+            call send_a_response (kw, l2_status, l2_reply);
+
+      if l1_status = ds$request_okay  |  l2_status = ds$request_okay then
+         return;
+
+
+      if l1_status = ds$request_unrecognized
+         &  l2_status = ds$request_unrecognized then do;
+         call send_a_response (kw, ds$request_unrecognized, '');
+         return;
+         end;
+
+
+      if l1_status = ds$request_invalid then
+         if length (l1_reply) ^= 0 then
+            call send_a_response (kw, l1_status, l1_reply);
+
+      if l2_status = ds$request_invalid then
+         if length (l2_reply) ^= 0 then
+            call send_a_response (kw, l2_status, l2_reply);
+
+      if l1_status = ds$request_invalid
+         & l2_status = ds$request_invalid
+         & length (l1_reply) = 0
+         & length (l2_reply) = 0 then
+         call send_a_response (kw, l1_status, '');
+
+      return;
+      end send_response;
+
+%page;
+/* ds$process_request.send_a_response, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   send_a_response: proc (kw, status, reply);
+
+      dcl
+         kw             char(*) var,
+         status         bin,
+         reply          char(*) var,
+
+         pm             ptr;
+
+      alloc_text_length = length(reply);
+      allocate ms$device_response set (pm);
+      pm->ms$device_response.command_status = status;
+      pm->ms$device_response.kw = kw;
+      pm->ms$device_response.message = reply;
+      if comm$reply (msg_p, mt$device_response, pm,
+                     alloc_text_length + abs(ml$device_response)) then;
+      free pm->ms$device_response;
+
+      return;
+      end send_a_response;
+
+%page;
+/* ds$process_request.do_idle_requests, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   do_idle_requests: proc;
+
+      dcl
+         p        ptr;
+
+      /* if we're idle, it's obviously end of job - do these also */
+
+      call do_eoj_requests;
+
+      if ds.action_when_idle = ds$shutdown_action then do;
+         ds.device_state = ds$shutdown_st;
+         ds.action_when_idle = ds$no_action;
+         return;
+         end;
+      else if ds.action_when_idle = ds$pause_action then do;
+         ds.device_state = ds$paused_st;
+         ds.action_when_idle = ds$no_action;
+         end;
+
+      if ds.when_to_load = ds$do_when_idle then
+         call load_the_list;
+
+      return;
+      end do_idle_requests;
+
+%page;
+/* ds$process_request.do_eoj_requests, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   do_eoj_requests: proc;
+
+      dcl
+         p           ptr;
+
+      if ds.action_after_eoj = ds$shutdown_action then do;
+         ds.action_after_eoj = ds$no_action;
+         ds.device_state = ds$shutdown_st;
+         end;
+      else if ds.action_after_eoj = ds$timeout_action then do;
+         ds.action_after_eoj = ds$no_action;
+         ds.device_state = ds$timed_out_st;
+         end;
+      else if ds.action_after_eoj = ds$pause_action then do;
+         ds.action_after_eoj = ds$no_action;
+         ds.device_state = ds$paused_st;
+         end;
+
+      if ds.when_to_load = ds$do_at_eoj then
+         call load_the_list();
+
+      end do_eoj_requests;
+
+%page;
+/* ds$process_request.load_the_list, PrintMaster, Jeff Hostetler, May 8, 1984 */
+/* function the load the load list and return true if the list was changed    */
+/******************************************************************************/
+
+   load_the_list: proc;
+
+      dcl
+         ei       like kwl$expand_info,
+         flags    like kwl$flags,
+         changed  bit,
+         backup   ptr,
+         p        ptr;
+
+      changed = false;
+      string(ei) = kwl$default_expand_info; /* verify */
+      ei.expand = true;
+      ei.wp_use_acl = true;
+      ei.info_use_skwl = true;
+      string(flags) = kwl$default_flags;
+
+
+      if ds.reinit_kwl then do;
+         call kwl$destroy_kwl (ds.p_device_kwl);
+         ds.p_device_kwl = kwl$copy_kwl (ds.initial_kwl);
+         end;
+
+      if ds.kwls_to_load ^= null then do;
+         backup = kwl$copy_kwl (ds.p_device_kwl);
+
+         on condition (err$condition_after_msg)
+            begin;
+               do p = ds.kwls_to_load repeat ds.kwls_to_load while (p ^= null);
+                  ds.kwls_to_load = p->ds$load_list.next;
+                  free p->ds$load_list;
+                  end;
+               call kwl$destroy_kwl (ds.p_device_kwl);
+               ds.p_device_kwl = backup;
+               goto end_of_procedure;
+            end;
+
+         do while (ds.kwls_to_load ^= null);
+            p = ds.kwls_to_load;
+            call kwl$expand_value (p->ds$load_list.pathname, ds.p_device_kwl, ei);
+            ds.kwls_to_load = p->ds$load_list.next;
+            free p->ds$load_list;
+            changed = true;
+            end;
+
+         call kwl$destroy_kwl (backup);
+         end;
+
+end_of_procedure:
+
+      changed = changed | ds.reinit_kwl;
+      ds.reinit_kwl = false;
+      if changed then do;
+         call ds$send_kwl;
+         if ds.auto_restart then
+            call ds$write_device_kwl;
+         call ds.level_2_driver (ds$device_reinit);
+         end;
+
+      end load_the_list;
+
+%page;
+/* ds$process_request.clean_up_after_job, PrintMaster, Jeff Hostetler, March 19, 1984*/
+/******************************************************************************/
+
+   clean_up_after_job : proc;
+
+      dcl
+         key      bin,                      /* prwf$$ truncate key */
+         dummy    bin,
+         code     bin;
+
+      on condition (cleanup$)
+         begin;
+         call at$hom (dummy);
+         if ds.device_state = ds$printing_st then
+            ds.device_state = ds$ready_st;
+         call gp$close (ds.page_control_unit);
+         end;
+
+      call bio$close_file (ds.pfbp);
+
+      if ^ds.resume_ok then
+         key = k$trnc+k$prea;               /* truncate whole file */
+      else                                  /*        or           */
+         key = k$trnc;                      /* truncate at current position */
+
+      ds.tranid = 0;
+      select (ds.completion_code);
+         when (ds$aborted_cc) do;
+            call prwf$$ (k$trnc+k$prea, ds.page_control_unit, null, 0, 0, 0,
+                         code);
+            if code ^= 0 then
+               goto truncate_err;
+            call ds$change_copy_status (sq$copy_not_started, ds.tranid);
+            end;
+
+         when (ds$completed_cc, ds$drop_copy_cc) do;
+            call prwf$$ (k$trnc, ds.page_control_unit, null, 0, 0, 0, code);
+            if code ^= 0 then
+               goto truncate_err;
+            call ds$change_copy_status (sq$copy_completed, ds.tranid);
+            end;
+
+         when (ds$resend_job_cc) do;
+            call prwf$$ (key, ds.page_control_unit, null, 0, 0, 0, code);
+            if code ^= 0 then
+               goto truncate_err;
+            call ds$change_copy_status (sq$copy_not_started, ds.tranid);
+            end;
+
+         when (ds$suspended_cc, ds$timed_out_cc) do;
+            call prwf$$ (key, ds.page_control_unit, null, 0, 0, 0, code);
+            if code ^= 0 then
+               goto truncate_err;
+            call ds$change_copy_status (sq$copy_not_started, ds.tranid);
+            end;
+
+         when (ds$drop_job_cc) do;
+            call gp$close (ds.page_control_unit);
+            if spl$dj (true, ds.q_partition, ds.job_id, ds.job_name) then;
+            end;
+
+         otherwise
+            call err$ (err$coding_et,
+                      'Level 2 driver returned invalid completion code', 0, 0, 0);
+         end;     /* select */
+
+      if ds.device_state = ds$printing_st then
+         ds.device_state = ds$ready_st;
+
+      call kwl$destroy_kwl (ds.p_job_kwl);
+
+      ds.q_partition = '';
+      ds.job_id = -1;
+      call at$hom (dummy);
+      call do_eoj_requests;
+      return;
+
+      /* the queue probably went down or something */
+
+   truncate_err:
+
+      call err$ (err$primos_et, 'Truncating page control', code, 0, 0);
+
+      end clean_up_after_job;
+
+   end ds$process_request;

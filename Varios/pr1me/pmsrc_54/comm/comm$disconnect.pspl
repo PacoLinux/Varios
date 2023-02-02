@@ -1,0 +1,54 @@
+/* COMM$DISCONNECT.SPL, PrintMaster, Jim Wilcoxson, August 17, 1983           */
+/* Disconnect a Primenet communication path.                                  */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+comm$disconnect : procedure (system_id);
+
+dcl
+   system_id   char(*) var;                 /* Primenet system id (in) */
+
+dcl
+   cbp         ptr;                         /* connection block ptr */
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>comm.ins.spl';
+%include '*>entry>comm$find_cb.ins.spl';
+%include '*>entry>comm$free_io_buffers.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   (p,q)          ptr,
+   time_left      bin,                      /* time-out counter */
+   status         bin;
+
+   if ^comm$find_cb (system_id, cbp) then
+      return;
+
+   if cbp->cb.connected | cbp->cb.connect_in_progress then do;
+      call x$clr (cbp->vcid, 0, status);
+      if status ^= xs$cmp then              /* xs$bvc, etc. */
+         cbp->cb.vcstatus.circuit_status = xs$clr;
+      cbp->cb.connected = false;
+      cbp->cb.connect_in_progress = false;
+
+      /* wait for circuit to actually clear */
+
+      do while (cbp->cb.vcstatus.circuit_status ^= xs$clr);
+         call x$wait (10);
+         end;
+      end;
+
+   /* free all I/O buffers associated with this system */
+
+   do p = comm.buffer_bol repeat p->msg.next while (p ^= null);
+      if p->msg.target_system = cbp->cb.system_id then
+         p->msg.status.buffer_status = xs$clr;
+      end;
+
+   call comm$free_io_buffers;
+
+end comm$disconnect;

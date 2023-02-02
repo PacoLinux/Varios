@@ -1,0 +1,160 @@
+/* MON$SEND_TO_DEVICE.SPL, PrintMaster, Jim Wilcoxson, March 10, 1984         */
+/* Route message on to a device.                                              */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$send_to_device : procedure (msgp) returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$create_device.ins.spl';
+%include '*>entry>mon$destroy_device.ins.spl';
+%include '*>entry>mon$find_device.ins.spl';
+%include '*>entry>mon$start_device.ins.spl';
+%list;
+
+dcl
+   msgp           ptr;                      /* ptr to msg for device (in/out) */
+
+dcl
+   created        bit,                      /* true if device was created */
+   devp           ptr,
+   errtext        char(80) var,
+   job_uid        char(uid_len),            /* in case start_job sent to dev */
+   mt             bin,                      /* local message type */
+   reason         bin,                      /* error code why device not up */
+   reply          char(80) var,
+   sender_id      char(32) var,
+   status         bin,
+   was_queued     bit;
+
+   was_queued = false;
+   created = false;
+   reply = '';
+   if ^mon$find_device (msgp->msg.target_id, psv.my_system_id, devp) then do;
+      devp = mon$create_device (msgp->msg.target_id, psv.my_system_id);
+      created = true;
+      end;
+
+   if msgp->msg.msg_type ^= mt$startup_device
+    & devp->device_info.device_state = ds$shutdown_st then do;
+      if created then
+         reply = 'Device '||msgp->msg.target_id||' doesn''t exist.';
+      else
+         reply = 'Device '||msgp->msg.target_id||' is not started up.';
+      goto send_reply;
+      end;
+
+   if msgp->msg.msg_type = mt$startup_device
+    | devp->device_info.device_state = ds$timed_out_st then
+      if ^mon$start_device (devp, reason) then do;
+         if reason = e$fntf then
+            reply = 'Device '||msgp->msg.target_id||' doesn''t exist.';
+         else do;
+            reply = 'Device '||msgp->msg.target_id||' won''t startup (';
+            call err$primos_error_text (reason, errtext);
+            reply = reply || errtext || ').';
+            end;
+         goto send_reply;
+         end;
+
+   select (devp->device_info.device_state);
+
+      when (ds$maxusr_st) do;
+         call queue_msg_for_device;
+         reply = 'Message queued for '||msgp->msg.target_id||
+                 '; waiting for available phantom.';
+         end;
+
+      when (ds$timed_out_st, ds$logging_in_st)
+         call queue_msg_for_device;         /* start has been issued */
+
+      when (ds$shutdown_st)
+         ;
+      otherwise do;
+         msgp->msg.target_id = 'user';
+         msgp->msg.target_user_nr = devp->device_info.user_nr;
+         mt = msgp->msg.msg_type;
+         job_uid = addr(msgp->msg.user_data)->ms$start_job.uid;
+         if comm$xmit (msgp) then do;
+            if devp->device_info.semaphore ^= 0 then do;
+               call sem$nf (devp->device_info.semaphore, status);
+               if status ^= 0 then
+                  call err$ (err$primos_et, 'Notifying device sem', status, 0, 0);
+               end;
+            if mt = mt$start_job then do;
+               devp->device_info.device_state = ds$printing_st;
+               devp->device_info.current_job_uid = job_uid;
+               end;
+            return (true);
+            end;
+         else do;
+            call err$ (err$log_event_et, 'Shutting down device in MON$SEND_TO_DEVICE', 0, 0, 0);
+            call mon$change_device_state  (devp, '', ds$none_cc, 0,
+                                           ds$shutdown_st);
+            reply = 'Device '||msgp->msg.target_id||' has shutdown.';
+            end;
+         end;
+
+      end;  /* select */
+
+send_reply:
+   if length (reply) ^= 0 then do;
+      alloc_text_length = length (reply);
+      call send_response;
+      end;
+   if was_queued then                       /* don't let anybody destroy msg */
+      msgp = null;
+
+   if created & devp->device_info.device_state = ds$shutdown_st then
+      call mon$destroy_device (devp);
+   return (false);
+
+
+send_response : procedure;
+
+dcl
+   user_msg like ms$device_response;
+
+   if msgp->msg.sender_id = 'user' then do;
+      if devp->device_info.device_state = ds$maxusr_st then
+         user_msg.command_status = ds$reply_from_monitor;
+      else
+         user_msg.command_status = ds$request_aborted_by_monitor;
+      user_msg.kw = '';
+      user_msg.message = reply;
+      if comm$reply (msgp, mt$device_response, addr(user_msg),
+                     alloc_text_length-ml$device_response) then ;
+      end;
+   else                                     /* assume it was my master */
+      call mon$change_device_state (devp, devp->device_info.current_job_uid,
+                                    ds$none_cc, 0,
+                                    devp->device_info.device_state);
+end send_response;
+
+
+queue_msg_for_device : procedure;
+
+dcl
+   (p,q)    ptr;
+
+   q = null;
+   do p = devp->device_info.msg_list repeat p->msg.next while (p ^= null);
+      q = p;
+      end;
+   if q = null then
+      devp->device_info.msg_list = msgp;
+   else
+      q->msg.next = msgp;
+   msgp->msg.next = null;
+   was_queued = true;
+
+end queue_msg_for_device;
+
+end mon$send_to_device;

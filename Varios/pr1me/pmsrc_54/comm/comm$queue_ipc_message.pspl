@@ -1,0 +1,58 @@
+/* COMM$QUEUE_IPC_MESSAGE.SPL, PrintMaster, Jim Wilcoxson, August 5, 1983     */
+/* Queue a message in the Inter-Process Communication shared queue.           */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+comm$queue_ipc_message : procedure (msgp, user_nr) returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>comm.ins.spl';
+%include '*>entry>comm$destroy_msg.ins.spl';
+%include '*>entry>comm$msg_length.ins.spl';
+%include '*>entry>comm$queue_message.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   msgp           ptr,                      /* pointer to msg (in) */
+   user_nr        bin;                      /* target user (in) */
+
+dcl
+   ipc_msgp       ptr,
+   mlen           bin,                      /* message length (in bytes) */
+   msize          bin(31),                  /* message size (in words) */
+   status         bin,
+   temp_msgp      ptr,
+   time_left      bin,
+   1  saved_swi like swi_switches;
+
+   if user_nr < 1 | user_nr > max_users then
+      call err$ (err$coding_et, 'User number out of range', 0, 0,  0);
+
+   /* get a ipc msg buffer */
+
+   mlen = comm$msg_length (msgp);
+   msize = divide (mlen+1, 2, 15);
+
+   call gp$lock_shared_area (saved_swi);
+   ipc_msgp = ar$alc (psv.shared_area, msize);
+   if ipc_msgp = null then do;              /* no room in area */
+      call err$ (err$user_et+err$warning_et, 'Shared area full.', 0, 0, 0);
+      goto end_of_procedure;
+      end;
+
+   /* at this point, ipc queue is still locked */
+
+   call gp$copy (msgp, ipc_msgp, mlen);
+   call comm$queue_message (psv.user_msg_bol(user_nr),
+                            psv.user_msg_eol(user_nr),
+                            ipc_msgp);
+
+end_of_procedure:
+   call gp$unlock_shared_area (saved_swi);
+   return (ipc_msgp ^= null);
+
+end comm$queue_ipc_message;

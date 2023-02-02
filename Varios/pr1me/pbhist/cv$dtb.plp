@@ -1,0 +1,93 @@
+/* cv$dtb, convert ascii to file system date, BEH, 03/28/78
+   Converts string of form "[mm/dd/yy ]hhmm[.d]" to fs date.
+
+03/27/78 BEH Removed refs to pl1 "bin" bif for better err handling.
+03/20/78 BEH Initial coding.  */
+
+cv$dtb: proc (asc_date, fsdate, code) options (nocopy);
+
+dcl    asc_date char(32) var,  /* input date string */
+       fsdate fixed bin(31),  /* result in binary form */
+       code fixed bin;
+
+dcl    timdat entry (char(6), bin),  /* nonstandard usage */
+       ch$fx1 entry (char(*) var, bin, bin),
+       1 fsd based,  /* a file system date */
+           2 year bit(7) unal,
+           2 month bit(4) unal,
+           2 day bit(5) unal,
+           2 time fixed bin,
+       ix fixed bin,
+       values(5) fixed bin,
+       str char(32) var,
+       stre char(32) var,
+       bit16 bit(16) based aligned,
+       today char(6) aligned,
+       (hrs, mins) fixed bin,
+       delims(5) char(1) static aligned;
+
+%replace e$bpar by 6;
+
+delims(1)='/'; delims(2)='/'; delims(3)=' '; delims(4)='.'; delims(5)=' ';
+
+stre = asc_date;
+
+do ix = 1 to 5;
+   str = before (stre, delims(ix));
+   stre = after (stre, delims(ix));
+   if stre ^= '' then do;
+       call ch$fx1 (str, values(ix), code);
+       if code ^= 0 then return;
+       end;
+   else if ix = 1 then do;  /* date omitted */
+       call timdat (today, 3);
+       call ch$fx1 (substr (today, 1, 2), values(1), code);
+       call ch$fx1 (substr (today, 3, 2), values(2), code);
+       call ch$fx1 (substr (today, 5, 2), values(3), code);
+       ix = 3;  /* pretend this was yy */
+       stre = str;  /* the rest of the string -- time */
+       end;
+   else if ix = 2 then do;  /* yy omitted */
+bad_date:  code = e$bpar;
+       return;
+       end;
+   else if ix = 3 then do;  /* time omitted */
+       call ch$fx1 (str, values(3), code);
+       if code ^= 0 then return;
+       values(4) = 0;  values(5) = 0;  /* time is 0000.0 */
+       ix = 5;  /* pretend this was tmin */
+       end;
+   else if ix = 4 then do;  /* tmin omitted */
+       call ch$fx1 (str, values(4), code);
+       if code ^= 0 then return;
+       values(5) = 0;
+       ix = 5;  /* pretend this was tmin */
+       end;
+   else if ix = 5 then do;  /* normal end of string */
+       call ch$fx1 (str, values(5), code);
+       if code ^= 0 then return;
+       end;
+   end;  /* of do ix */
+
+/* Now format the fsdate from values(*). */
+
+hrs = divide (values(4), 100, 15);
+mins = mod (values(4), 100);
+
+/* Do a gullibility check on the results of the conversions. */
+
+if hrs < 0 | hrs > 23 | mins > 59 | mins < 0 | values(5) < 0
+   | values(5) > 9 | values(1) > 12 | values(1) < 0 | values(2) > 31
+   | values(2) < 0 | values(3) > 99 | values(3) < 0
+   then do;
+       code = e$bpar;
+       return;
+       end;
+
+addr (fsdate)->fsd.time = 900 * hrs + 15 * mins + divide (6 * values(5), 4, 15);
+addr (fsdate)->fsd.year = substr (addr (values(3))->bit16, 10, 7);
+addr (fsdate)->fsd.month = substr (addr (values(1))->bit16, 13, 4);
+addr (fsdate)->fsd.day = substr (addr (values(2))->bit16, 12, 5);
+
+return;
+end;

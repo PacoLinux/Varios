@@ -1,0 +1,151 @@
+/* Find_partitions.plp, Dutil, JEW, 2-May-81
+   Finds all file system partitions within the assigned partition.  */
+
+Fp: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>diskio.plp.ins
+
+dcl
+   help  entry (char(*) var, bit),
+   ioa$  entry options (variable);
+
+dcl
+   found_some     bit,
+   key            bit(16),
+   max_dvno       bin,
+   max_offset     bin,
+   1  my_rec like disk_record,
+   ra             bin(31),
+   rel_head       bin;
+
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.eol then
+      do;
+
+      /* must turn off CRA checking for this */
+
+      key = read_key;
+      addr(key) -> diskio_key.check_cra = false;
+
+      rel_head = 0;
+      max_offset = 0;
+      max_dvno = 0;
+      found_some = false;
+      ra = 0;
+
+      /* this loop sets ra to be sector zero of each track on cylinder zero */
+
+      do ra = 0 by 9 while (ra <= (cpartition_info.nr_heads+1) * 9);
+
+         if fs_partition (ra) then
+            call print_part_info (ra);
+         rel_head = rel_head + 1;
+
+      end;
+
+      if ^found_some then
+         call ioa$ ('No file system partitions.%.', -1);
+      end;
+
+   else
+      call help ('FP', false);
+
+
+   /* Internal procedure to determine if a partition is a file system
+      partition.  */
+
+   fs_partition: proc (ra) returns (bit);
+
+   dcl
+      ra       bin(31);
+
+   dcl
+      status   bin;
+
+
+      /* read mfd record */
+
+      call diskio (key, ra+1, cpartition, my_rec, status);
+      if status ^= 0 then goto freturn;
+      if my_rec.cra ^= 1 then goto freturn;
+
+      /* read rat record */
+
+      call diskio (key, ra+2, cpartition, my_rec, status);
+      if status ^= 0 then goto freturn;
+      if my_rec.cra = 2 & my_rec.bra = 1 & my_rec.data(1) = 1040
+      &  0 <= my_rec.data(0) & my_rec.data(0) <= 448 & my_rec.back = 0 then
+         return (true);
+
+freturn:
+      return (false);
+
+   end;  /* fs_partition */
+
+
+   Print_part_info: proc (ra);
+
+   dcl
+      ra                bin(31);
+
+   dcl
+      actual_recs       bin(31),
+      bit16             bit(16) based,
+      1  dvno,
+         2  head_off_div_2 bit(4),
+         2  heads1      bit(4),
+         2  controller  bit,
+         2  type        bit(4),
+         2  unit        bit(2),
+         2  heads2      bit,
+      head_offset       bin,
+      nr_heads          bit(16),
+      page_recs         bin(31),
+      physical_recs     bin(31);
+
+
+      /* construct a device number from all information */
+
+      addr(dvno) -> fb15 = cpartition;
+      head_offset = rel_head + cpartition_info.head_offset;
+      dvno.head_off_div_2 = substr (addr(head_offset) -> bit16, 12, 4);
+      nr_heads = addr(my_rec.data(4)) -> bit16;
+      dvno.heads1 = substr (nr_heads, 12, 4);
+      dvno.heads2 = substr (nr_heads, 16, 1);
+
+      if ^found_some then
+         do;
+         call ioa$ ('Partitions:%.', -1);
+         found_some = true;
+         end;
+
+      call ioa$ ('%/%3x%6:0ro begins on head %d and spans %d heads.%.', -1,
+                  dvno, head_offset, nr_heads);
+      physical_recs = 823*9*nr_heads;
+      actual_recs = addr(my_rec.data(2)) -> fb31;
+      if actual_recs = physical_recs then
+         call ioa$ ('%10xPartition contains %:2d records (decimal).%.', -1,
+                     actual_recs);
+      else
+         do;
+         page_recs = physical_recs - actual_recs;
+         call ioa$ ('%10xPartition is split, with %:2d file system records%.',
+                    -1, actual_recs);
+         call ioa$ ('%10xand %:2d paging records (decimal).%.', -1, page_recs);
+         end;
+
+      if head_offset < max_offset then
+         call ioa$ ('%10xWarning: this partition overlaps partition %6w.%.',
+                     -1, max_dvno);
+      else
+         do;
+         max_offset = head_offset + nr_heads;
+         max_dvno = addr(dvno) -> fb15;
+         end;
+
+   end;     /* Print_part_info */
+
+end;     /* Fp */

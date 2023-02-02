@@ -1,0 +1,205 @@
+/* GP$PARTIAL_INIT.SPL, PrintMaster, Jim Wilcoxson, April 11, 1986            */
+/* Sets the address of the external structure PSV.  A pointer to this per-    */
+/* system structure is then stored in GBL.  The address is stored in a file,  */
+/* PRINTMASTER*>EPF_LIBRARIES>PSV_ADDRESS.  The procedure returns true if     */
+/* the shared segment existed, false otherwise.  If called by the             */
+/* initialization program, the shared segment will be allocated.              */
+/* After the address of PSV is determined, named semaphores for the monitor   */
+/* and shared segment are initialized, and stored in GBL.                     */
+/* Copyright (C) 1985 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+gp$partial_init : procedure (initing, full_init, system_version) returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+%replace
+   first_subsystem_seg by 1408;             /* segment '2600 */
+
+dcl
+   initing        bit(1) aligned,           /* true if called by INIT (in) */
+   full_init      bit(1) aligned,           /* true if wants a full init */
+                             /* true on return if full init needed (in/out) */
+   system_version char (10) var,            /* PrintMaster version (in) */
+
+
+   bit16          bit(16) based,
+   cleanup$       condition,
+   access_violation$ condition,
+   illegal_segno$ condition,
+   funit          bin,                      /* file unit for address file */
+   key            bin,
+   psv_segment    bit(12),
+   rnw            bin,
+   segno          bin,                      /* segment number returned */
+   segs_found     bin,                      /* number segments returned */
+   status         bin,                      /* file system status code */
+   type           bin;                      /* type code returned by SRCH$$ */
+
+
+   funit = 0;
+
+   on condition (cleanup$)
+      goto cleanup;
+
+   call at$ (k$setc, gbl$epf_libraries_path, status);
+   if status ^= 0 then
+      call error ('Attaching to system directory.'); /* print error,return false */
+
+   if initing then
+      key = k$rdwr+k$getu;
+   else
+      key = k$read+k$getu;
+
+   call srch$$ (key, gbl$psv_address_name, length (gbl$psv_address_name), funit,
+                type, status);
+   if status = e$fntf then                  /* no address file */
+      goto create_new_segment;              /* will print "not initialized" */
+   if status ^= 0 then
+      call error ('Opening address file.');
+
+   /* now file is there, or has just been created.   Read segment number */
+
+   call prwf$$ (k$read, funit, addr (psv_segment), 1, 0, rnw, status);
+   if status = e$eof then
+      goto create_new_segment;
+   if status ^= 0 then
+      call error ('Reading address file.');
+
+   /* now we know the address of the shared segment.  Make sure the segment
+      is really shared, and that PrintMaster owns it (there's a tag word 0
+      of the segment */
+
+   gbl.psv_address_pointer = ptr (psv_segment, 0);
+   on condition (illegal_segno$)
+      goto create_new_segment;
+   on condition (access_violation$)
+      goto create_new_segment;
+
+   /* if the segment is there, and we can read it, but the tag is wrong,
+      then someone has written over the segment.  */
+
+   if psv.segment_tag ^= gbl$segment_tag then
+      goto create_new_segment;
+
+   /* now try writing the tag back, to make sure the segment is shared
+      for writing as well as reading */
+
+   psv.segment_tag = gbl$segment_tag;
+
+   /* check the versions; if a new version is installed, a full init
+      is required. */
+
+   if psv.system_version ^= system_version then
+      if ^initing then do;                  /* can't do full init here! */
+         call ioa$er ('PrintMaster version mismatch.%.', -1);
+         call ioa$er ('EPF is version %v, shared segment is version %v.%.', -1,
+                      system_version, psv.system_version);
+         call ioa$er ('Use the ICE command to remove old EPF.%.', -1);
+         goto cleanup;
+         end;
+      else
+         full_init = true;
+
+   /* a full init is also required if the system is not currently initialized */
+
+   if ^psv.system_inited then
+      if ^initing then do;
+         call ioa$er ('The PrintMaster system has not been initialized.%.', -1);
+         goto cleanup;
+         end;
+      else
+         full_init = true;
+
+   /* everything good - if initing, display segment being used */
+
+   if initing then
+      if ^full_init then
+         call ioa$ ('Shared segment %o already allocated.%.', -1,
+                    bin (psv_segment, 15));
+      else do;
+
+         /* return old PrintMaster segment */
+
+         call rtnsg$ (bin (psv_segment, 15), status);
+         if status = 0 then
+            call ioa$ ('Shared segment %o deleted.%.', -1, bin (psv_segment, 15));
+         else
+            call error ('Deleting old dynamic segment');
+
+         goto create_new_segment;
+         end;
+
+
+okay:                                       /* jump here from create */
+
+   /* initialize 2 named semaphores now, one for monitor, one for area,
+      and init them to -1.  This is really only required for the area
+      semaphore, but it won't hurt the monitor.
+      NOTE: monitor_semaphore and area_semaphore are contigious in GBL */
+
+   call sem$ou (funit, 2, gbl.monitor_semaphore, -1, status);
+   if status ^= 0 then
+      call error ('Initializing semaphores.');
+
+   call srch$$ (k$clos, 0, 0, funit, 0, status);
+   call at$hom (status);
+   return (true);                           /* everything okay */
+
+
+create_new_segment:
+
+   if ^initing then do;
+      call ioa$er ('The PrintMaster system has not been initialized.%.', -1);
+      goto cleanup;
+      end;
+
+   /* if segment is created, a full init is required */
+
+   full_init = true;
+
+   /* allocate a new segment and put our tag in it.  Access rights should
+      already be set to RWX for ring 3 */
+
+   call getsn$ (k$up, first_subsystem_seg, 1, segno, segs_found, status);
+   if status ^= 0 then
+      call error ('Allocating segment.');
+   if segs_found ^= 1 then do;
+      status = e$nosg;
+      call error ('Allocating segment.');
+      end;
+
+   psv_segment = substr (addr(segno)->bit16, 5);
+   gbl.psv_address_pointer = ptr (psv_segment, 0);
+   psv.segment_tag = gbl$segment_tag;
+   psv.system_version = system_version;
+
+   call prwf$$ (k$writ+k$prea, funit, addr (psv_segment), 1, 0, rnw, status);
+   if status ^= 0 then
+      call error ('Writing address file.');
+
+   call ioa$ ('Shared segment %o allocated.%.', -1, segno);
+   goto okay;
+
+
+cleanup:
+
+   call srch$$ (k$clos, 0, 0, funit, 0, status);
+   call at$hom (status);
+   return (false);
+
+
+   error: proc (msg);
+
+   dcl
+      msg      char(*);
+
+      call errpr$ (k$irtn, status, msg, length (msg), '', 0);
+      goto cleanup;
+
+   end error;
+
+end gp$partial_init;

@@ -1,0 +1,62 @@
+/* MON$NEW_MON_DISK_LIST.SPL, PrintMaster, Jim Wilcoxson, January 27, 1984    */
+/* Called when a new disk list comes in from a remote monitor (I'm master)    */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$new_mon_disk_list : procedure (user_msgp, monp);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>msg$.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$shutdown_queue.ins.spl';
+%list;
+
+dcl
+   (user_msgp, monp)       ptr;             /* message pointers (in) */
+
+dcl
+   user_msg like ms$disk_list based (user_msgp),
+   1  odl (0:max_ldevs) like mon.my_disks based (mon_diskp),
+   mon_diskp               ptr,             /* pointer to monitor's disk info */
+   i                       bin;
+
+   alloc_disk_entries = user_msg.nr_disks-1;
+   mon_diskp = addr(monp->monitor_info.disks);
+
+
+   /* update monitor's disk list.  If a local (on the monitor's system)
+      partition is shut down, delete all jobs on that partition (they
+      are no longer printable) */
+
+   do i = 0 to max_ldevs;
+
+      if i > alloc_disk_entries then do;    /* no new disk here */
+         if length (odl(i).disk_name) ^= 0 then do; /* had an old disk here, though */
+            if length (odl(i).system_name) = 0 then /* was local, so delete jobs */
+               call mon$shutdown_queue (odl(i).disk_name);
+            odl(i).disk_name = '';
+            odl(i).system_name = '';
+            end;
+         end;
+      else                                  /* ldev "i" is now started */
+
+         /* check disk name and system name for a match; if match, do
+            nothing; if no match, shutdown old partition (if it existed and
+            was local) and update partition name to new ldev */
+
+         if odl(i).disk_name ^= user_msg.partition(i)
+          | odl(i).system_name ^= user_msg.system_id(i) then do;
+            if length (odl(i).disk_name) ^= 0
+             & length (odl(i).system_name) = 0 then
+               call mon$shutdown_queue (odl(i).disk_name);
+            odl(i).disk_name = user_msg.partition(i);
+            odl(i).system_name = user_msg.system_id(i);
+            end;
+
+      end;
+
+   call mon$schedule_all;
+
+end mon$new_mon_disk_list;

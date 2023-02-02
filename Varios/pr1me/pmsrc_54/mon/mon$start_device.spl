@@ -1,0 +1,130 @@
+/* MON$START_DEVICE.SPL, PrintMaster, Jim Wilcoxson, March 10, 1984           */
+/* Starts up a timed-out or shutdown device, if possible.                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$start_device : procedure (devp, status) returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$unattach.ins.spl';
+%list;
+
+dcl
+   devp           ptr;                      /* pointer to device info (in) */
+
+dcl
+   cpl_file       char(32) var,
+   cpl_unit       bin,
+   device_already_started bit,
+   new_state      bin,
+   sem$_status    bin,
+   spawn_ds like sds,                       /* spawn$ data structure */
+   status         bin,                      /* Primos error status */
+   status2        bin,
+   tried_phntm$   bit,
+   user_nr        bin;
+
+   status = 0;
+   cpl_unit = 0;
+   device_already_started = false;
+
+   if ^gp$attach_system_dir (status) then
+      return (false);
+
+   call at$rel (k$seth, gbl$device_dir_name, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'Attaching to device directory', status, 0, 0);
+
+   /* does CPL file exist for this device? */
+
+   on condition (err$condition_before_msg)
+      begin;
+      status = err$es.status1;
+      if err$es.type = err$primos_et & err$es.status1 = e$fius then
+         if devp->device_info.user_nr ^= 0 then
+            device_already_started = true;
+      goto return;
+      end;
+
+   status = e$fntf;
+   cpl_file = devp->device_info.device_id||'.CPL';
+   if ^gp$file_exists (cpl_file) then
+      goto return;
+
+   /* if file can't be opened for writing, device must be up */
+
+   call gp$open_file (k$writ+k$getu, cpl_file, cpl_unit);
+   call gp$close (cpl_unit);
+
+   /* initialize args for spawn */
+
+   spawn_ds.version = spawn$_version;
+   spawn_ds.user_id = devp->device_info.device_id;
+   spawn_ds.project_id = '';                /* same project */
+   spawn_ds.utype =  u$cph;                 /* CPL phantom */
+   spawn_ds.priority = psv.device_priority; /* priority */
+   spawn_ds.prvl = '0'b;                    /* not privileged */
+   spawn_ds.ts = 0;                         /* default timeslice */
+   spawn_ds.num_grps = 1;
+   spawn_ds.groups(1) = gbl$spool_acl_group;
+
+   /* the key argument says this is a CPL phantom, and that attributes
+      should not be inherited */
+
+   tried_phntm$ = false;
+   call spawn$ ('0001'b4, addr(spawn_ds), cpl_file, 126, '', user_nr, status);
+
+check_status:
+
+   if status = 0 then do;
+      call sem$op ((cpl_file), length(cpl_file), 1,
+                   devp->device_info.semaphore, sem$_status);
+      if sem$_status ^= 0 then
+         call err$ (err$primos_et, 'Opening semaphore', sem$_status, 0, 0);
+      devp->device_info.user_nr = user_nr;
+      goto return;
+      end;
+
+   if status = e$npha then
+      goto return;
+
+   /* this code allows starting devices if unprivileged (running monitor
+      from terminal for debugging) */
+
+    if status = e$nrit & ^tried_phntm$ then do;
+      call phntm$ ('0001'b4, (cpl_file), length(cpl_file), 6, user_nr,
+                   status, '', 0);
+      tried_phntm$ = true;
+      goto check_status;
+      end;
+   else
+      call err$ (err$primos_et, '', status, 0, 0);
+
+return:
+   call gp$close (cpl_unit);
+   call mon$unattach;
+   if device_already_started then
+      return (true);                        /* device was already started */
+
+   select (status);
+      when (0)
+         new_state = ds$logging_in_st;
+      when (e$npha)
+         new_state = ds$maxusr_st;
+      otherwise
+         new_state = ds$shutdown_st;
+      end;
+
+   if new_state = ds$shutdown_st & devp->device_info.device_state ^= ds$shutdown_st then
+      call err$ (err$log_event_et, 'Changing device to shutdown in SEND_TO_DEVICE', 0, 0, 0);
+   call mon$change_device_state (devp, '', ds$none_cc, 0, new_state);
+   return (new_state ^= ds$shutdown_st);    /* true if not shutdown */
+
+end mon$start_device;

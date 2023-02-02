@@ -1,0 +1,123 @@
+/* MON$QUEUE_JOB.SPL, PrintMaster, Jim Wilcoxson, January 1, 1984             */
+/* Queue a job onto the job list.                                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$queue_job : procedure (jep);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>mon$destroy_job.ins.spl';
+%include '*>entry>err$.ins.spl';
+%list;
+
+dcl
+   jep         ptr;                         /* job entry pointer (in) */
+
+dcl
+   job_size    bin(31),
+   (p,q,r)     ptr;                         /* current, prev, next ptrs */
+
+   /* jobs are queued by deadline (oldest first), then priority (high first),
+      then file size (smallest first); equal jobs are queued fifo;
+      priority zero jobs are queued by date queued rather than by file
+      size */
+
+
+   if mon.job_bol = null then do;               /* easy case */
+
+empty_list:
+
+      mon.job_bol = jep;
+      jep->je.next = null;
+      return;
+      end;
+
+   /* remove any duplicate jobs from the job list.  It is possible to call
+      this procedure with a job already on the job list, in which case it
+      should not be destroyed.  However, if a duplicate is found and is closed,
+      clear "is_open" on the new job.  Even if the new job has -OPENED in it,
+      it is not really open, since the old job had already been checked and
+      was closed */
+
+   q = null;                                /* previous job */
+
+
+remove_duplicates:
+
+   do p = mon.job_bol repeat r while (p ^= null);
+      r = p->je.next;
+      if p->je.uid = jep->je.uid then do;   /* p and jep may be equal */
+         jep->je.is_open = p->je.is_open;
+
+         /* if this job is being re-queued, remove it from the job list,
+            but don't destroy it.  If it is a duplicate, destroy it (this
+            removes it from the job list also) */
+
+         if p = jep then do;
+            if q = null then                /* remove from list */
+               mon.job_bol = p->je.next;
+            else
+               q->je.next = p->je.next;
+            p->je.next = null;
+            end;
+         else                               /* remove and destroy */
+            call mon$destroy_job (p);
+         leave remove_duplicates;
+         end;
+      else
+         q = p;
+      end;
+
+   if mon.job_bol = null then
+      goto empty_list;
+
+   /* queue job by deadline then priority then size */
+
+   job_size = jep->je.size * jep->je.copies_left;
+   q = null;
+   do p = mon.job_bol repeat p->je.next while (p ^= null);
+
+      if jep->je.priority > p->je.priority then goto insert;
+      if jep->je.priority < p->je.priority then goto next;
+
+      /* priorities are equal; check deadline if priority = maxint */
+
+      if jep->je.priority = maxint then do;
+         if jep->je.start_deadline < p->je.start_deadline then goto insert;
+         if jep->je.start_deadline > p->je.start_deadline then goto next;
+         end;
+
+      /* priorities are equal; deadlines have been checked if necessary;
+         queue by file size now unless priority is zero */
+
+      if jep->je.priority ^= 0 then do;
+         if job_size < p->je.size * p->je.copies_left then goto insert;
+         if job_size > p->je.size * p->je.copies_left then goto next;
+         end;
+
+      /* queue by date queued */
+
+      if jep->je.date_queued < p->je.date_queued then goto insert;
+      goto next;                            /* queued later than job p */
+
+
+insert:
+
+      jep->je.next = p;
+      if q = null then
+         mon.job_bol = jep;
+      else
+         q->je.next = jep;
+      return;
+
+next:
+
+      q = p;
+      end;  /* do p */
+
+   q->je.next = jep;                        /* biggest job */
+   jep->je.next = null;
+
+end mon$queue_job;

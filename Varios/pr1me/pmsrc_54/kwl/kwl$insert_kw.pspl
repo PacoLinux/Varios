@@ -1,0 +1,155 @@
+/* KWL$INSERT_KW.SPL, PrintMaster, Jeff Hostetler, September 12, 1983         */
+/* Procedure to insert a kw in a kwl.                                         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$insert_kw: proc (user_kw, p_kw_ret, p_kwl, expand_info, flags_kw, flags_acl);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>entry>kwl$delete_kw.ins.spl';
+%include '*>entry>kwl$find_kw.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      user_kw        char(*),               /* (in) */
+      p_kw_ret       ptr,                   /* (out) */
+      p_kwl          ptr,                   /* (in/out) */
+      expand_info    like kwl$expand_info,  /* (in) */
+      flags_kw       like kwl$flags,        /* (in) */
+      flags_acl      like kwl$flags,        /* (in) */
+
+      kw             char(kwl$chars_in_kw) var,
+      p_ikw          ptr,
+      p_kw           ptr,
+      p_kw0          ptr,
+      saved_swi      like swi_switches,
+      flags_s        like kwl$flags;
+
+
+
+%page;
+   p_kw_ret = null;
+
+   kw = user_kw;
+   if kwl.check_wp_from_ikwl_only then do;
+
+      /* Assumptions:  We have been called by SPL$CJ. */
+      /*               Keywords of the following categories cannot be */
+      /*                 changed after a job has been queued: */
+      /*                   1)  Identification of job (ex: -USER, -PROJECT) */
+      /*                   2)  Information about job (ex: -PATHNAME) */
+      /*                   3)  Queueing Instructions on job (ex: -COPYFILE)*/
+      /*               All of the above keywords are in the INTERNAL KWL */
+      /*                 and are PROTECTED. */
+
+      if kwl$find_kwv (kw, psv.internal_kwl, p_ikw) then
+         if p_ikw->kw_entry.wp then
+            call err$ (err$user_et, 'Keyword -' || kw || ' cannot be changed.',
+                       err$kw_wp_ue, 0, 0);
+      end;
+
+
+   call verify_kw (kw, expand_info, flags_s);
+
+
+
+   if kwl$find_kwv (kw, p_kwl, p_kw) then      /* if it is already present and */
+      if p_kw->kw_entry.nr_value = 0 then do; /*   doesn't have any values, */
+         p_kw_ret = p_kw;                     /*   then we can re-use it. */
+         goto set_the_flags;
+         end;
+      else
+         call kwl$delete_kw (p_kw, p_kwl);    /* delete it (we must make a new one) */
+
+   /* Find the end of the list and allocate a new kw. */
+   p_kw0 = null;
+   do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+      p_kw0 = p_kw;                         /* save previous kw */
+      end;
+
+   if expand_info.special_kwl then do;
+      call gp$lock_shared_area (saved_swi);
+      p_kw_ret = ar$alc (psv.shared_area, kw_entry_size);
+      call gp$unlock_shared_area (saved_swi);
+      if p_kw_ret = null then
+         call err$ (err$primos_et, 'No room in shared area', e$room, 0, 0);
+      end;
+   else
+      allocate kw_entry set (p_kw_ret);
+
+   p_kw_ret->kw_entry.kw       = kw;
+   p_kw_ret->kw_entry.next     = null;
+   p_kw_ret->kw_entry.nr_value = 0;
+   p_kw_ret->kw_entry.pf_value = null;
+
+   if p_kw0 = null then                     /* if this is the first (and only)*/
+      p_kwl = p_kw_ret;                     /*    set the list header */
+   else                                     /* otherwise */
+      p_kw0->kw_entry.next = p_kw_ret;      /*    append to the end of list */
+
+set_the_flags:
+
+   /* If we are using the ACL for WP, OR it with the value from */
+   /*   the Special kwl's, Otherwise we should accept it as is. */
+
+   /* 1) from the flags from the acl, set the write-protected bit */
+   /* 2) from the Special kwl's defining all kw's, set the info (non- */
+   /*    scheduling) bit */
+
+   p_kw_ret->kw_entry.flags = flags_kw;
+   if expand_info.wp_use_acl then
+      p_kw_ret->kw_entry.flags.wp = flags_acl.wp  |  flags_s.wp;
+   if expand_info.info_use_skwl then
+      p_kw_ret->kw_entry.flags.info = flags_s.info;
+
+   return;
+   /* logical end of kwl$insert_kw */
+
+%page;
+/* kwl$insert_kw.verify_kw, PrintMaster, Jeff Hostetler, September 12, 1983   */
+/* Procedure to verify that the kw given is defined.                          */
+/* It also returns the flags of the kw in the special kwl.                    */
+/* NOTE:  For a kw to be defined, it must be on a special kwl ("internal_kwl" */
+/*        or "master_kwl") unless, of course, we're currently defining them.  */
+/******************************************************************************/
+
+   verify_kw: proc (kw, expand_info, flags_s);
+
+      dcl
+         kw             char(*) var,           /* (in/out) */
+         expand_info    like kwl$expand_info,  /* (in) */
+         flags_s        like kwl$flags,        /* set to kw in special kwl (out) */
+
+         (p_ikw, p_mkw) ptr;
+
+      if ^expand_info.verify_kws & expand_info.info_use_skwl then
+         call err$ (err$coding_et, 'In Expand_Info: No Verify & Use Skwl', 0, 0, 0);
+
+      string (flags_s) = kwl$default_flags;
+      if ^expand_info.verify_kws then       /* no verify, simply return */
+         return;
+
+      if ^expand_info.special_kwl then      /* If a user reference to a kw */
+         if kwl$find_kwv (kw, psv.master_kwl, p_mkw) then
+            flags_s = p_mkw->kw_entry.flags;/* it's in "master_kwl" */
+         else
+            if kwl$find_kwv (kw, psv.internal_kwl, p_ikw) then;
+               /* Ideally this should return all of the flags in the
+                  internal keyword EXCEPT for WP; WP cannot be set
+                  because of the problem with -COPYFILE when adding
+                  a job.  (Currently, these are set right before the
+                  job kwl is written to the queue.)
+               */
+            else
+               call err$ (err$user_et, 'Undefined keyword -' || kw || '.',
+                          err$ill_kw_ue, 0, 0);
+
+      return;
+      end verify_kw;
+
+   end kwl$insert_kw;

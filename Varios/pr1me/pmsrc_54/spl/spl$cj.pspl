@@ -1,0 +1,304 @@
+/* SPL$CJ.SPL, PrintMaster, Jeff Hostetler, June 10, 1984                     */
+/* Procedure to change the KWL of a job.                                      */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spl$cj: proc (no_verify_flag, partition, job_id, kw_cl, p_spl)
+        returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      no_verify_flag bit,                   /* (in) */
+      partition      char(*) var,           /* (in) */
+      job_id         bin,                   /* (in) */
+      kw_cl          char(*) var,           /* (in) */
+      p_spl          ptr,                   /* to spl$info (in) */
+
+      kwl_sd_unit    bin,
+      kwl_e_unit     bin,
+      pc_sd_unit     bin,
+      pc_sd_sd_unit  bin,
+      pc_e_unit   bin,
+      we_did_initialization bit,
+      (p_buf, p_kw, p_kwl) ptr,
+      (entrya, entryb)  bin,
+      (old_copies_req,
+      new_copies_req)   bin,
+      ei                like kwl$expand_info,
+      flags             like kwl$flags,
+      pc_hdr (sq$pc_hdr_len) bin,
+      file_pos          bin(31),
+      (code, rnw)       bin,
+      value_buffer      char(kwl$chars_in_value) var,
+      system_job_is_on  char(32) var;
+
+%page;
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+
+   kwl_sd_unit = 0;
+   kwl_e_unit = 0;
+   pc_sd_unit = 0;
+   pc_sd_sd_unit = 0;
+   pc_e_unit = 0;
+   p_buf = null;
+   p_kwl = null;
+
+   /* following 3 lines should be moved to below (currently duplicated below) */
+
+   kwl.check_wp_from_ikwl_only = false;
+   string(ei) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et
+            &  err$es.status1 = err$kwl_incomplete_ue then
+         goto job_not_found;
+
+      if (err$es.type = err$primos_et)  &  (err$es.status1 = e$fnts) then
+         goto job_not_found;
+
+      if we_did_initialization then
+         goto abnormal_return;
+
+      call cnsig$ (code);                   /* ANY$ onunit does not exist */
+      end;
+
+   on condition (CLEANUP$)
+      call cleanup;
+
+   if p_spl->spl$info.version ^= spl$info_version then
+      call err$ (err$user_et, 'Version mismatch.', err$version_mismatch_ue, 0, 0);
+
+   /* initialize output structure */
+
+   p_spl->spl$info.job_id = job_id;
+   p_spl->spl$info.job_name = '';
+   p_spl->spl$info.pathname = '';
+   p_spl->spl$info.file_size = -1;
+   p_spl->spl$info.q_partition = trim(partition, '11'b);
+
+   /* open the queue */
+
+   call gp$open_pde (k$read + k$getu, p_spl->spl$info.q_partition,
+                     gbl$spool_queue, sq$q_kwl_name, kwl_sd_unit);
+   p_spl->spl$info.q_partition = gp$partition_name (kwl_sd_unit); /* in case blank partition given */
+
+   /* lock the job */
+   /* this returns only if it exists */
+
+   call sq$open_entry (k$exst + k$iseg, kwl_sd_unit, job_id, kwl_e_unit);
+   call sq$open_entry (k$rdwr+k$getu+k$iseg, kwl_sd_unit, job_id, kwl_e_unit);
+   call gp$close (kwl_sd_unit);
+
+   system_job_is_on = gp$system_name (kwl_e_unit);
+
+   /* read the job kwl */
+
+   string(ei) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   call kwl$read_disk_buffer (kwl_e_unit, p_buf);
+   call kwl$buf_to_kwl (p_buf, p_kwl, ei, flags);
+   call kwl$free_buffer (p_buf);
+
+   if gbl.I_am_opr then do;
+      if ^ no_verify_flag then
+         call is_job_yours (p_kwl);
+      end;
+   else
+      call is_job_yours (p_kwl);
+
+   string(ei) = kwl$default_expand_info;
+   ei.info_use_skwl = true;
+   ei.expand = true;
+   ei.wp_use_acl = true;
+
+   if gbl.I_am_opr then
+      kwl.check_wp_from_ikwl_only = true;   /* allow operator to change SA protected KW's */
+   call kwl$cl_to_kwl (kw_cl, p_kwl, ei);
+   kwl.check_wp_from_ikwl_only = false;
+
+   call kwl$edit_certain_kws (p_kwl, false);
+
+   new_copies_req = -1;
+   if kwl$find_kw (kw$copies, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value_buffer) then
+         new_copies_req = bin (value_buffer);
+   if new_copies_req = -1 then
+      call err$ (err$coding_et, 'Can''t get new number of copies.', 0, 0, 0);
+
+   /* change successful; update TRANSACTION_ID and KWL */
+
+   call gp$open_pde (k$read + k$getu, p_spl->spl$info.q_partition,
+                     gbl$spool_queue, sq$q_pc_name, pc_sd_unit);
+   call sq$open_entry (k$rdwr+k$getu+k$iseg, pc_sd_unit, job_id, pc_sd_sd_unit);
+   call gp$close (pc_sd_unit);
+
+   call sq$open_entry (k$rdwr+k$getu+k$iseg, pc_sd_sd_unit, 0, pc_e_unit);
+   call prwf$$ (k$read, pc_e_unit, addr(pc_hdr), sq$pc_hdr_len, 0,
+                rnw, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Reading Page Control Header', code, 0, 0);
+
+   /* check for changing number of copies */
+
+   call prwf$$ (k$posn+k$prea, pc_e_unit, null, 0, maxint31, 0, code);
+   if code ^= e$eof then
+      call err$ (err$primos_et, 'Positioning to eof', code, 0, 0);
+
+   call prwf$$ (k$rpos, pc_e_unit, null, 0, file_pos, 0, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Reading page control position', code, 0, 0);
+
+   old_copies_req = file_pos-sq$pc_hdr_len;
+   if old_copies_req ^= new_copies_req then begin;
+
+      dcl
+         i                 bin,
+         last_active_copy  bin,
+         buf (max(old_copies_req, new_copies_req)) bin;
+
+      /* backup and read copy status words */
+
+      call prwf$$ (k$read+k$prea, pc_e_unit, addr(buf),
+                   old_copies_req, sq$pc_hdr_len, rnw, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Reading copy status', code, 0, 0);
+
+      if new_copies_req > old_copies_req then do;
+         pc_hdr(sq$copies_left_wd) = pc_hdr(sq$copies_left_wd)
+                                     + new_copies_req - old_copies_req;
+         do i = old_copies_req + 1 to new_copies_req;
+            buf(i) = sq$copy_not_started;
+            end;
+         call prwf$$ (k$writ+k$prea, pc_e_unit, addr(buf),
+                      new_copies_req, sq$pc_hdr_len, rnw, code);
+         if code ^= 0 then
+            call err$ (err$primos_et, 'Extending page control', code, 0, 0);
+         end;
+      else do;                              /* decreasing number of copies */
+         last_active_copy = old_copies_req;
+         do i = old_copies_req to new_copies_req+1 by -1
+                       while (buf(i) = sq$copy_not_started);
+            last_active_copy = i - 1;
+            end;
+         pc_hdr(sq$copies_left_wd) = pc_hdr(sq$copies_left_wd)
+                                       - (old_copies_req - last_active_copy);
+         new_copies_req = last_active_copy;
+         call prwf$$ (k$trnc+k$prea, pc_e_unit, null, 0,
+                      sq$pc_hdr_len+new_copies_req, 0, code);
+         if code ^= 0 then
+            call err$ (err$primos_et, 'Truncating page control', code, 0, 0);
+         end;
+      call sgdr$$ (k$msiz, pc_sd_sd_unit, new_copies_req+1, entryb, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Modifying page control dir', code, 0, 0);
+      end;
+
+   pc_hdr(sq$tsn_wd) = pc_hdr(sq$tsn_wd) + 1;
+   call prwf$$ (k$writ+k$prea, pc_e_unit, addr(pc_hdr), sq$pc_hdr_len,
+                0, rnw, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Writing Page Control Header', code, 0, 0);
+
+   call sq$write_job_kwl (p_kwl, kwl_e_unit);
+
+   /* unlock the job. */
+
+   call gp$close (pc_e_unit);
+   call gp$close (pc_sd_sd_unit);
+   call gp$close (kwl_e_unit);
+
+   /* tell the monitor */
+
+   call sq$part_2 (p_kwl, job_id, p_spl->spl$info.q_partition, system_job_is_on,
+                   pc_hdr(sq$copies_left_wd), pc_hdr(sq$tsn_wd));
+
+   /* set up return structure */
+
+   if kwl$find_kw (kw$job_name, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, p_spl->spl$info.job_name) then;
+   if kwl$find_kw (kw$pathname, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, p_spl->spl$info.pathname) then;
+   if kwl$find_kw (kw$size, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value_buffer) then
+         if verify(value_buffer, digits) = 0 then
+            p_spl->spl$info.file_size = bin(value_buffer);
+
+   call kwl$destroy_kwl (p_kwl);
+
+   if we_did_initialization then
+      call gp$terminate;
+   return (true);
+
+
+job_not_found:
+
+   call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+              || ' not found in queue ' || p_spl->spl$info.q_partition || '.',
+              err$job_not_found_ue, 0, 0);
+
+abnormal_return:
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+   return (false);
+
+
+cleanup: procedure;
+
+   call gp$close (kwl_sd_unit);
+   call gp$close (kwl_e_unit);
+   call gp$close (pc_sd_unit);
+   call gp$close (pc_sd_sd_unit);
+   call gp$close (pc_e_unit);
+   call kwl$destroy_kwl (p_kwl);
+   call kwl$free_buffer (p_buf);
+   p_spl->spl$info.job_id = -1;
+
+end cleanup;
+
+%page;
+/* spl$cj.is_job_yours, PrintMaster, Jeff Hostetler, June 12, 1984            */
+/******************************************************************************/
+
+   is_job_yours: proc (p_kwl);
+
+      dcl
+         kwv_user_id       char(32) var,
+         job_name          char(kwl$chars_in_value) var,
+         (p_kw, p_kwl)     ptr;
+
+      kwv_user_id = '';
+      if kwl$find_kw (kw$user_id, p_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, kwv_user_id) then;
+
+      if kwv_user_id ^= gbl.my_user_id then do;
+         if gbl.I_am_opr then do;
+            if kwl$find_kw (kw$job_name, p_kwl, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, job_name) then;
+            call ioa$ ('%/Job %d %v belongs to %v.%.', -1, job_id,
+                       job_name, kwv_user_id);
+            if ysno$a ('Job is not yours, okay to change', 32, a$dno) = ftn_true then
+               return;
+            end;
+         call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+                    || ' does not belong to you.', err$not_your_job_ue, 0, 0);
+         end;
+
+      end is_job_yours;
+
+   end spl$cj;

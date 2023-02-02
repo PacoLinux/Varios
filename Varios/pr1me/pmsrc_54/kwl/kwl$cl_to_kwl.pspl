@@ -1,0 +1,190 @@
+/* KWL$CL_TO_KWL.SPL, PrintMaster, Jeff Hostetler, September 12, 1983         */
+/* Procedure to merge kw's from Command Line given into the kwl given.        */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$cl_to_kwl: proc (cl, p_kwl, expand_info);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>insert>cl$par_info.ins.spl';
+%include '*>entry>kwl$add_value.ins.spl';
+%include '*>entry>kwl$delete_kw.ins.spl';
+%include '*>entry>kwl$expand_abbrev.ins.spl';
+%include '*>entry>kwl$expand_value.ins.spl';
+%include '*>entry>kwl$find_kw.ins.spl';
+%include '*>entry>kwl$format_kw.ins.spl';
+%include '*>entry>kwl$insert_kw.ins.spl';
+%include '*>entry>kwl$parse_kw.ins.spl';
+%Include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      max_token   by 128,
+      not_char    by '-^',
+      dash        by '-';
+
+   dcl
+      cl             char(*) var,           /* command line to convert   (in) */
+      p_kwl          pointer,               /* kwl to add kw's to    (in/out) */
+      expand_info    like kwl$expand_info,  /* (in) */
+
+      token       char(max_token) var,
+      next_ch     bin,                      /* cl$par index, must be left alone */
+      flags       like kwl$flags,
+      flags_acl   like kwl$flags,
+      p_kw        ptr,
+      printed_flag_msg bit,
+      code        bin,                      /* not used */
+      no_kw_flag  bit,                      /* has a kw just been added */
+      using_flag  bit,                      /* are we expanding a "using" file*/
+      eol         bit;                      /* have we reached end of cl */
+
+%page;
+   on condition (err$condition_after_msg)
+      begin;
+      if (err$es.type = err$primos_et) & (err$es.status1 = e$fntf) then
+         signal condition (kwl$expand_print_info_cond); /* Trace history. */
+      if (err$es.type = err$user_et) & (err$es.status1 = err$kw_wp_ue) then
+         signal condition(kwl$expand_print_info_cond); /* Trace history. */
+      call cnsig$ (code);
+      end;
+
+   on condition (kwl$expand_print_info_cond)
+      goto command_line_error;
+
+%page;
+   p_kw = null;
+   next_ch = 1;
+   no_kw_flag = true;
+   using_flag = false;
+   eol = false;
+   printed_flag_msg = false;
+   string(cl$keys) = '0000'b4;
+   cl$keys.keep_quotes = true;
+   string (flags_acl) = kwl$default_flags;           /* dummy flags */
+   do while (^eol);
+      call cl$par (string (cl$keys), cl, token, max_token, cl_info, next_ch, code);
+      if cl_info.flags.eol then
+         eol = true;
+      else
+         if ^ handle_kw () then
+            call handle_value;              /* it's not a keyword */
+      end;
+
+   return;
+   /* logical end of kwl$cl_to_kwl */
+
+command_line_error:
+
+   call err$ (err$user_et, '', err$cl_ue, 0, 0);
+   /* does not return */
+
+%page;
+/* kwl$cl_to_kwl.handle_kw, PrintMaster, Jeff Hostetler, September 12, 1983   */
+/* Examine token, if it is a keyword (i.e. starts with "-") return true.      */
+/******************************************************************************/
+
+   handle_kw: proc returns (bit);
+
+      dcl
+         p        ptr,
+         kw       char(kwl$chars_in_kw) var,
+         p_ikw    ptr;
+
+
+      if cl_info.flags.decimal_number then
+         return (false);
+
+      if length(token) > length(not_char) then
+         if substr(token, 1, length(not_char)) = not_char then do;/* Negated kw, */
+            call kwl$parse_kw (substr(token, length(not_char)+1), kw, flags);
+            call kwl$format_kw (kw);
+            if ^expand_info.special_kwl & ^flags.abbrev then
+               call kwl$expand_abbrev (kw, kw);
+            if kwl.check_wp_from_ikwl_only then do;       /* See if it's */
+               if kwl$find_kwv (kw, psv.internal_kwl, p_ikw) then /* a reserved  */
+                  if p_ikw->kw_entry.wp then                   /*protected kw */
+                     call err$ (err$user_et, 'Keyword "'||token
+                                || '" cannot be changed.',
+                                err$kw_wp_ue, 0, 0);
+               end;
+            using_flag = false;
+            no_kw_flag = true;                      /* a VALUE following this is invalid */
+            if kwl$find_kwv (kw, p_kwl, p) then
+               call kwl$delete_kw (p, p_kwl); /* remove from list  */
+            return (true);
+            end;
+
+      if length(token) = length(not_char) then
+         if token = not_char then
+            call err$ (err$user_et, 'Negated null keyword "' || not_char
+                       || '" not allowed.', err$cl_ue, 0, 0);
+
+      if substr(token, 1, 1) = dash then do; /* otherwise add it */
+         if length(token) = 1 then
+            call err$ (err$user_et, 'Null keyword "-" not allowed.',
+                       err$cl_ue, 0, 0);
+         call kwl$parse_kw (substr(token, 2), kw, flags);
+         call kwl$format_kw (kw);
+         no_kw_flag = false;
+         if (kw = kw$using) & expand_info.expand then
+            using_flag = true;
+         else do;
+            using_flag = false;
+            if ^expand_info.special_kwl
+                  &  string(flags) ^= kwl$default_flags then
+               if kwl.in_edit_kwl then
+                  if ^printed_flag_msg then do;
+                     call err$ (err$user_et + err$warning_et,
+                        'Flags accepted, but are ignored on all but the system MASTER keyword file.',
+                        err$flags_not_valid_here_ue, 0, 0);
+                     printed_flag_msg = true;
+                     end;
+                  else ;
+               else
+                  call err$ (err$user_et, 'Flags are not valid here "' || token || '".',
+                             err$flags_not_valid_here_ue, 0, 0);
+
+            if ^expand_info.special_kwl & ^flags.abbrev then
+               call kwl$expand_abbrev (kw, kw);
+            call kwl$insert_kw ((kw), p_kw, p_kwl, expand_info, flags, flags_acl);
+            end;
+
+         return (true);
+         end;
+
+      return (false);                       /* not a keyword */
+      end handle_kw;
+
+%page;
+/* kwl$cl_to_kwl.handle_value, PrintMaster, Jeff Hostetler, September 12, 1983*/
+/******************************************************************************/
+
+   handle_value: proc;
+
+      dcl
+         value          char(kwl$chars_in_value) var;
+
+      if no_kw_flag then                    /* if no kw preceeded this, error */
+         call err$ (err$user_et, 'No keyword for value "' || token || '".',
+                    err$cl_ue, 0, 0);
+
+      value = token;
+      call gp$unquote (value);
+      if using_flag & expand_info.expand then
+         call kwl$expand_value (value, p_kwl, expand_info);
+      else
+         if expand_info.special_kwl  &  ^p_kw->kw_entry.flags.abbrev then
+            call err$ (err$user_et, 'Values are not permitted here.',
+                       err$cl_ue, 0, 0);
+         else
+            call kwl$add_value (p_kw, value);
+
+      return;
+      end handle_value;
+
+   end kwl$cl_to_kwl;

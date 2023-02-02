@@ -1,0 +1,115 @@
+/* MON$UPDATE_DISK_LIST.SPL, PrintMaster, Jim Wilcoxson, October 27, 1983     */
+/* Update list of all disks this monitor can see, check for spool queue.      */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$update_disk_list : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$scan_job_list.ins.spl';
+%include '*>entry>mon$send_disk_list.ins.spl';
+%include '*>entry>mon$startup_queue.ins.spl';
+%include '*>entry>mon$shutdown_queue.ins.spl';
+%include '*>entry>mon$unattach.ins.spl';
+%list;
+
+dcl
+   1  ldisk$_list like disk_list,
+   ldev              bin,
+   i                 bin,
+   disks_have_changed bit,
+   is_shutdown (0:max_ldevs) bit aligned,
+   status            bin;
+
+
+   ldisk$_list.version = ldisk_version;
+   call ldisk$ (k$all, '', addr(ldisk$_list), max_ldevs, status);
+   if status ^= 0 then
+      if status = e$room then
+         call ioa$ ('Disk table overflow; only %d recognized.%.',
+                     ldisk$_list.count);
+      else
+         call err$ (err$primos_et, 'From ldisk$', status, 0, 0);
+
+   disks_have_changed = false;
+
+   /* find all ldevs that have been shutdown */
+
+   is_shutdown = true;                      /* assume all */
+   do i = 1 to ldisk$_list.count;
+      ldev = ldisk$_list.info(i).ldevno;
+      if mon.my_disks(ldev).disk_name = ldisk$_list.info(i).disk_name then
+         is_shutdown(ldev) = false;
+      end;
+
+   /* for all changed/down ldevs, change my disk list; in addition, if
+      a local partition was shutdown, delete all jobs on it.  Don't delete
+      jobs on remote partitions, since I may be a master.  Just because
+      it's not visible to me doesn't mean it's not visible to anyone */
+
+   do ldev = 0 to max_ldevs;
+      if is_shutdown(ldev) & length (mon.my_disks(ldev).disk_name) ^= 0 then do;
+         disks_have_changed = true;
+         mon.my_disks(ldev).disk_name = '';
+         if length (mon.my_disks(ldev).system_name) = 0 then /* local partition */
+            call mon$shutdown_queue (mon.my_disks(ldev).disk_name);
+         end;
+      end;
+
+   /* now add new partitions */
+
+   do i = 1 to ldisk$_list.count;
+      ldev = ldisk$_list.info(i).ldevno;
+      if mon.my_disks(ldev).disk_name ^= ldisk$_list.info(i).disk_name then do;
+         disks_have_changed = true;
+         mon.my_disks(ldev).disk_name = ldisk$_list.info(i).disk_name;
+         mon.my_disks(ldev).system_name = ldisk$_list.info(i).system_name;
+         if length (mon.my_disks(ldev).system_name) = 0 /* local disk */
+          & length (mon.my_disks(ldev).disk_name) ^= 0 then /* not just a shutdown */
+            call startup_new_queue;         /* check for new print queue */
+         end;
+
+   end;  /* do i */
+
+   call mon$unattach;
+
+   if disks_have_changed then do;
+      if ^gbl.I_am_master then
+         call mon$send_disk_list;
+      call mon$scan_job_list;               /* also runs scheduler if master */
+      end;
+
+%page;
+
+startup_new_queue : procedure;
+
+
+   /* check for a priority ACL on this disk; this could be done for
+      remote partitions later */
+
+   if gbl.trace_on then
+      if ^gp$check_pacl (mon.my_disks(ldev).disk_name, null, status) then
+         call ioa$ ('Warning: partition %v has no PrintMaster priority ACL.%.',
+                    -1, mon.my_disks(ldev).disk_name);
+
+   /* is there a print queue on this disk? */
+
+   call at$abs (k$setc, mon.my_disks(ldev).disk_name, gbl$spool_queue, status);
+   select (status);
+      when (e$fntf, e$ninf, e$nfas) ;
+      when (0)
+         call mon$startup_queue (mon.my_disks(ldev).disk_name);
+      otherwise
+         call err$ (err$primos_et+err$warning_et,
+                    'Attaching to possible print queue on disk '||
+                    mon.my_disks(ldev).disk_name, status, 0, 0);
+      end;
+
+end startup_new_queue;
+
+end mon$update_disk_list;

@@ -1,0 +1,254 @@
+/* MON$SCHEDULE.SPL, PrintMaster, Jim Wilcoxson, January 18, 1984             */
+/* Schedules jobs/devices; called by master.                                  */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$schedule_all : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$destroy_job.ins.spl';
+%include '*>entry>mon$partition_visible.ins.spl';
+%list;
+
+dcl
+   debug_flag  bit,                         /* true if debugging */
+   dt          bin(31),                     /* current date and time */
+   first_devp  ptr,
+   last_devp   ptr,
+   first_jep   ptr,
+   last_jep    ptr,
+   devp        ptr,
+   next_jep    ptr,                         /* next jep */
+   jep         ptr,
+   t0          bin(31) static;              /* ticks since last schedule */
+
+
+   first_devp = mon.device_bol;
+   last_devp  = null;
+   first_jep  = mon.job_bol;
+   last_jep   = null;
+   goto common;
+
+
+
+mon$schedule_device: entry (devp_arg);
+
+dcl
+   devp_arg    ptr;
+
+   first_devp = devp_arg;
+   last_devp = devp_arg->device_info.next;
+   first_jep = mon.job_bol;
+   last_jep = null;
+   goto common;
+
+
+
+mon$schedule_job: entry (jep_arg);
+
+dcl
+   jep_arg     ptr;
+
+   first_devp = mon.device_bol;
+   last_devp  = null;
+   first_jep  = jep_arg;
+   last_jep   = jep_arg->je.next;
+   goto common;
+
+
+
+common:
+
+   debug_flag = (psv.debug_scheduler ^= 0);
+   if debug_flag then
+      t0 = gp$message ('Beginning job schedule', t0);
+
+
+   dt = date$();
+   do devp = first_devp repeat devp->device_info.next while (devp ^= last_devp);
+
+      if ^device_is_ready() then
+         goto next_device;
+
+      /* find a job that matches this device */
+
+      do jep = first_jep repeat next_jep while (jep ^= last_jep);
+         next_jep = jep->je.next;
+         if job_is_ready() then
+            if job_matches_device() then do;
+               call start_job;
+               goto next_device;
+               end;
+
+         end; /* do jep */
+
+      /* device was ready or idle, but no jobs were available for it, so
+         it is now idle */
+
+      if devp->device_info.device_state = ds$ready_st
+       & devp->device_info.kwlp ^= null then do;
+         devp->device_info.device_state = ds$idle_st;
+         if comm$send (mt$device_idle, devp->device_info.system_id,
+                       devp->device_info.device_id, null, ml$device_idle) then
+            ;
+         end;
+
+next_device:
+
+      end;  /* do devp */
+   return;
+
+%page;
+
+
+device_is_ready : procedure returns (bit);
+
+   if debug_flag then
+      call ioa$ (' Device %v:%.', -1, devp->device_info.device_id);
+
+   if devp->device_info.system_id ^= psv.my_system_id then
+      if ^comm$connected (devp->device_info.system_id) then do;
+         if debug_flag then call debug ('  Not connected to device''s system');
+         return (false);
+         end;
+
+   if devp->device_info.device_state = ds$idle_st
+    | devp->device_info.device_state = ds$timed_out_st
+    | devp->device_info.device_state = ds$ready_st then do;
+      if debug_flag then call debug ('  Device is available');
+      return (true);
+      end;
+   else do;
+      if debug_flag then
+         call ioa$ ('  Device not available - state is %d%.', -1,
+                    devp->device_info.device_state);
+      return (false);
+      end;
+
+end device_is_ready;
+
+
+job_is_ready : procedure returns (bit);
+
+dcl
+   devp              ptr,
+   copies_printing   bin;
+
+
+   if debug_flag then
+      call ioa$ ('  Checking job %d in queue %v:%.', -1, jep->je.job_id,
+                 jep->je.queue_partition);
+   if jep->je.is_open then do;
+      if debug_flag then call debug ('   Job is still open');
+      return (false);
+      end;
+   if jep->je.deferred_date > dt then do;
+      if debug_flag then call debug ('   Job is still deferred');
+      return (false);
+      end;
+
+   copies_printing = 0;
+   do devp = mon.device_bol repeat devp->device_info.next while (devp ^= null);
+      if devp->device_info.device_state = ds$printing_st
+       & devp->device_info.current_job_uid = jep->je.uid  then
+         copies_printing = copies_printing + 1;
+      end;
+
+   if copies_printing = 0 & jep->je.copies_left = 0 then do;
+      call mon$destroy_job (jep);
+      if debug_flag then call debug ('   No copies left to print - job destroyed');
+      return (false);
+      end;
+
+   if copies_printing = 0 | jep->je.parallel_ok then
+      if jep->je.copies_left - copies_printing > 0 then
+         return (true);
+      else do;
+         if debug_flag then call debug ('   All copies printing');
+         return (false);
+         end;
+   else do;
+      if debug_flag then call debug ('   Copy printing, no parallel');
+      return (false);                       /* must print 1 copy at a time */
+      end;
+
+end job_is_ready;
+
+
+job_matches_device : procedure returns (bit);
+
+dcl
+   job_partition  char(32) var;
+
+
+   if jep->je.size ^= maxint then
+      if jep->je.size > devp->device_info.job_size_limit then do;
+         if debug_flag then call debug ('   Job is too big');
+         return (false);                    /* job is too big for this device */
+         end;
+
+   if ^mon$partition_visible (jep->je.queue_partition,
+                             devp->device_info.system_id) then do;
+      if debug_flag then call debug ('   Queue''s partition not visible');
+      return (false);                       /* queue not visible */
+      end;
+
+   if ^jep->je.in_queue then do;
+      job_partition = substr(jep->je.pathname_ptr->based_path, 2,
+                             index (jep->je.pathname_ptr->based_path, '>') - 2);
+      if ^mon$partition_visible (job_partition,
+                                 devp->device_info.system_id) then do;
+         if debug_flag then call debug ('   Job''s partition not visible');
+         return (false);                    /* file not visible */
+         end;
+      end;
+
+   if ^kwl$match_kwl (jep->je.kwlp, devp->device_info.kwlp) then do;
+      if debug_flag then call debug ('   Job doesn''t match device');
+      return (false);                       /* kwls don't match */
+      end;
+
+   if debug_flag then call debug ('   Job matches device');
+   return (true);
+
+end job_matches_device;
+
+
+start_job : procedure;
+
+dcl
+   user_msg like ms$start_job;
+
+   user_msg.partition = jep->je.queue_partition;
+   user_msg.job_nr = jep->je.job_id;
+   user_msg.uid = jep->je.uid;
+   if comm$send (mt$start_job, devp->device_info.system_id,
+                 devp->device_info.device_id, addr(user_msg), ml$start_job) then do;
+      if debug_flag then call debug ('   Job sent to device');
+      devp->device_info.current_job_uid = jep->je.uid;
+      devp->device_info.device_state = ds$printing_st;
+      end;
+   else
+      if debug_flag then call debug ('   Job send unsuccessful');
+
+end start_job;
+
+
+debug: procedure (msg);
+
+dcl
+   msg      char(*);
+
+   call ioa$ ('%c%.', -1, msg, length(msg));
+
+end debug;
+
+end mon$schedule_all;

@@ -1,0 +1,181 @@
+/* Rat.plp, Dutil, JEW, 8-Feb-81
+   Rat command handler.  Writes a new R.A.T.
+
+   RAT [<records>]
+
+   If <records> is given, it will override Dutil's computation for how
+   many records are in the partition.  This would have to be done
+   for example if the partition was split.
+
+*/
+
+rat: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>query.plp.ins
+$Insert *>insert>cl.plp.ins
+
+dcl
+   help entry (char(*) var, bit),
+   ioa$ entry options (variable);
+
+
+dcl
+   bin31          bin(31) based,
+   i              bin,
+   last_rat_rec   bin,
+   1 my_rec like disk_record,
+   nr_records     bin(31),
+   rat_bits_left  bin(31),
+   rat_length     bin;
+
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.flags.dec_number then
+      do;
+
+      /* user specified nr_records, validate it */
+
+      nr_records = info.dec_val;
+      if 0 <= nr_records & nr_records <= maxra + 1 then
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      else
+         do;
+         call ioa$ ('<records> must be 0-%d 1040 word records.%.', -1, maxra);
+         return;
+         end;
+      end;
+   else
+      nr_records = maxra + 1;
+
+   if ^info.flags.eol then
+      goto help_me;
+
+   call ioa$ ('Partition has %d heads, %:3d records (decimal).%.', -1, nr_heads,
+               nr_records);
+   rat_length = recs_in_rat (nr_records);
+   call ioa$ ('Rat will be %d record(s) long, and will be written %$', -1,
+               rat_length);
+
+   if rat_length = 1 then
+      call ioa$ ('at record 2.%.', -1);
+   else
+      call ioa$ ('from record 2 to record %d.%.', -1, rat_length+1);
+
+   /* since we could possibly screw up the partition, ask if these
+      computations are ok */
+
+   if ^query ('Do you still want to write a RAT?', no_def) then return;
+
+
+   /* he says it's ok...CHARGE */
+
+   last_rat_rec = rat_length + 1;
+   rat_bits_left = nr_records;
+
+   /* we write a rat indicating a full disk.  This can then be corrected
+      by Fixrat.  Setup rec for first rat record */
+
+   do i=-16 to -1;     /* zero the record header */
+      my_rec.data(i) = 0;
+   end;
+   my_rec.data = 0;       /* zero the data words */
+
+   my_rec.cra = 2;
+   my_rec.bra = 1;     /* the rat is in the mfd */
+   my_rec.type = '8000'b4;     /* special file */
+   if rat_length ^= 1 then
+      do;
+      my_rec.next = 3;
+      my_rec.count = 1024;
+      rat_bits_left = rat_bits_left - 16256;   /* bits in RAT record 1 */
+      end;
+   else
+      do;      /* only 1 rat record */
+      my_rec.next = 0;
+      my_rec.count = 8 + divide (nr_records+15, 16, 15);
+      end;
+
+   /* init the rat header (not to be confused with the record header) */
+
+   my_rec.data(0) = 8;     /* RAT header length */
+   my_rec.data(1) = 1040;  /* Partition record size */
+   addr (my_rec.data(2)) -> bin31 = nr_records;    /* records in partition */
+   my_rec.data(4) = nr_heads;
+   call diskio (write_key, 2, cpartition, my_rec, status);
+   if status ^= 0 then
+      do;
+      call ioa$ ('RAT command aborted.%.', -1);
+      return;
+      end;
+
+   if rat_length ^= 1 then
+      do;
+
+      /* have a multi-record RAT, setup rec for subsequent records */
+
+      do i = 0 to 4;    /* zero old rat header */
+         my_rec.data(i) = 0;
+      end;
+
+      my_rec.bra = 2;      /* now points to beginning of rat */
+
+      /* write the rest of the RAT */
+
+      do i = 3 to last_rat_rec;
+
+         my_rec.back = i-1;
+         my_rec.cra = i;
+         if i = last_rat_rec then
+            do;
+            my_rec.next = 0;
+            my_rec.count = divide (rat_bits_left+15, 16, 15);
+            end;
+         else
+            do;
+            my_rec.next = i + 1;
+            my_rec.count = 1024;
+            rat_bits_left = rat_bits_left - (1024*16);
+            end;
+
+         call diskio (write_key, bin(i,31), cpartition, my_rec, status);
+         if status ^= 0 then
+            do;
+            call ioa$ ('RAT command aborted.%.', -1);
+            return;
+            end;
+      end;
+      end;
+
+   call ioa$ ('RAT written.%.', -1);
+
+   return;
+
+
+help_me:
+   call help ('RAT', false);
+
+
+/* Internal procedures to help RAT do his job */
+
+recs_in_rat: proc (nr_records) returns (bin) options (shortcall);
+
+/* Computes the number of records necessary for a RAT of nr_records records.
+   The computations look crazy, but basically, there are 1016 data words
+   available in the first rat record (16256 bits), and 1024 words in all
+   other rat records (16384 bits).  Therefore, if there are more than
+   16256 records, the rat will be more than 1 record long.  */
+
+dcl
+   nr_records bin(31);
+
+   if nr_records > 16256 then   /* multi-record rat */
+      return (divide (nr_records-16256+16383, 16384, 15) + 1);
+   else
+      return (1);
+
+end;   /* recs_in_rat */
+
+
+end;    /* rat */

@@ -1,0 +1,100 @@
+/* SQ$OPEN_ENTRY.SPL, PrintMaster, Jeff Hostetler, November 3, 1983           */
+/* Procedure to open entry given in the segment directory open on "sd_unit"   */
+/* according to the keys specified.  (Segment directory may be extended, if   */
+/* necessary.)  (Entry will be TRUNCATED if opened for WRITING only.)         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+sq$open_entry: proc (keys, sd_unit, entry, e_unit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%Include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      getu_bit_nr    by 2,                  /* k$getu = :040000 */
+      iseg_bit_nr    by 10;                 /* k$iseg = :000100 */
+
+   dcl
+      keys     bin,                         /* for SRCH$$ */
+      keys_bt  bit(16) defined keys,
+      sd_unit  bin,                         /* (in) */
+      entry    bin,                         /* (in) */
+      e_unit   bin,                         /* (in/out) */
+
+      k_bt     bit(16),
+      action   bin,
+      type     bin,
+      no_wait  bit,
+      (code, code1)  bin,
+      cycles_waited  bin;
+
+
+   if substr(keys_bt, getu_bit_nr, 1) then
+      e_unit = 0;
+
+   action = keys_bt & '0007'b4;
+
+position_segdir:
+
+   call sgdr$$ (k$spos, sd_unit, entry, code1, code);
+   if code ^= 0 then do;
+      if code = e$eof then do;
+         if action = k$exst  |  action = k$read then do;
+            code = e$fnts;
+            goto entry_error;
+            end;
+         call sgdr$$ (k$msiz, sd_unit, divide (entry+511,512,15)*512, 0, code);
+         if code = 0 then
+            goto position_segdir;
+         end;
+      goto segdir_error;
+      end;
+
+   if (action = k$exst | action = k$read)
+            &  (code1 ^= sgdr$$file_present) then do;
+      code = e$fnts;
+      goto entry_error;
+      end;
+
+   k_bt = keys_bt;                          /* don't change arg */
+   substr(k_bt, iseg_bit_nr, 1) = true;     /* add k$iseg */
+   no_wait = substr(k_bt, no_wait_bit_nr, 1);/* was "no_wait" given */
+   substr(k_bt, no_wait_bit_nr, 1) = false; /* cannot be passed to SRCH$$ */
+   call srch$$ (k_bt, sd_unit, 0, e_unit, type, code);
+
+   do cycles_waited = 1 to psv.time_limit while (code = e$fius  &  ^no_wait);
+      call sleep$ (one_cycle);
+      call srch$$ (k_bt, sd_unit, 0, e_unit, type, code);
+      end;
+
+   if code ^= 0 then
+      goto entry_error;
+
+   if action = k$writ then do;              /* if write only */
+      call prwf$$ (k$trnc, e_unit, null, 0, 0, 0, code);
+      if code ^= 0 then
+         goto entry_error;
+      end;
+
+   return;
+
+
+
+
+entry_error:
+   call gp$close (e_unit);
+   call err$ (err$primos_et,
+              'Error encountered opening entry in segment directory', code, 0, 0);
+
+
+
+segdir_error:
+   call gp$close (e_unit);
+   call err$ (err$primos_et, 'Error encountered manipulating segment directory',
+              code, 0, 0);
+
+   end sq$open_entry;

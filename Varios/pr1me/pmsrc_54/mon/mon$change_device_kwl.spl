@@ -1,0 +1,107 @@
+/* MON$CHANGE_DEVICE_KWL.SPL, PrintMaster, Jim Wilcoxson, January 26, 1984    */
+/* Changes a device's keyword list and informs the master.                    */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$change_device_kwl : procedure (devp, kwlp);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$send_device_kwl.ins.spl';
+%list;
+
+dcl
+   devp           ptr,                      /* pointer to device info block (in) */
+   kwlp           ptr;                      /* device's new kwl (in) */
+
+dcl
+   kwp            ptr,
+   (p,prev)       ptr,
+   searching      bit;
+
+   if devp->device_info.kwlp ^= kwlp then
+      call kwl$destroy_kwl (devp->device_info.kwlp);
+   else
+      if kwlp ^= null then
+         call err$ (err$coding_et, 'Old and new kwl identical?', 0, 0, 0);
+
+   devp->device_info.kwlp = kwlp;
+
+   devp->device_info.speed = 0;
+   if kwl$find_kw (kw$device_speed, kwlp, kwp) then
+       if verify (kwp->kw_entry.pf_value->value_entry.value, digits) = 0 then
+         devp->device_info.speed = kwp->kw_entry.pf_value->value_entry.value;
+
+   /* thread device into list based on it's speed.  First remove from
+      list */
+
+   prev = null;
+   p = mon.device_bol;
+   searching = true;
+   do while (p ^= null & searching);
+      if p = devp then
+         searching = false;
+      else do;
+         prev = p;
+         p = p->device_info.next;
+         end;
+      end;
+
+   if p = null then
+      call err$ (err$coding_et, 'Device not found?', 0, 0, 0);
+   else
+      if prev = null then
+         mon.device_bol = p->device_info.next;
+      else
+         prev->device_info.next = p->device_info.next;
+   devp->device_info.next = null;
+
+   /* now re-add to list */
+
+   prev = null;
+   searching = true;
+   p = mon.device_bol;
+   do while (p ^= null & searching);
+      if devp->device_info.speed > p->device_info.speed then do;
+         if prev = null then
+            mon.device_bol = devp;
+         else
+            prev->device_info.next = devp;
+         devp->device_info.next = p;
+         searching = false;
+         end;
+      else do;
+         prev = p;
+         p = p->device_info.next;
+         end;
+      end;  /* do while */
+
+   /* if still searching, this is the lowest speed device; insert
+      at end of list (forward pointer already null from above) */
+
+   if searching then
+      if prev = null then
+         mon.device_bol = devp;
+      else
+         prev->device_info.next = devp;
+
+
+   devp->device_info.job_size_limit = maxint;
+   if kwl$find_kw (kw$size_limit, kwlp, kwp) then
+      if verify (kwp->kw_entry.pf_value->value_entry.value, digits) = 0 then do;
+         devp->device_info.job_size_limit =
+                                   kwp->kw_entry.pf_value->value_entry.value;
+         if devp->device_info.job_size_limit <= 0 then
+            devp->device_info.job_size_limit = maxint;
+         end;
+
+   if gbl.I_am_master then
+      call mon$schedule_device (devp);
+   else
+      call mon$send_device_kwl (devp);
+
+end mon$change_device_kwl;

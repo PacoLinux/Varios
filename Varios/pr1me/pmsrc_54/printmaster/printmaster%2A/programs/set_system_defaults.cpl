@@ -1,0 +1,174 @@
+/* SET_SYSTEM_DEFAULTS.CPL, PrintMaster, Jeff Hostetler, June 24, 1984        */
+/* PrintMaster procedure to help the user to Enable/Disable features and to   */
+/* Set System Job Defaults.                                                   */
+/*                                                                            */
+/* Usage:  SET_SYSTEM_DEFAULTS <system_partition>                             */
+/*    or:  SET_SYSTEM_DEFAULTS -HELP                                          */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+&args partition: entry; ~
+      help_sw:   -help
+
+&s rev := 5.4
+type '[Set System Defaults '%rev%']'
+type
+
+&if ^ [null %help_sw%] &then &do
+   type 'Usage:  SET_SYSTEM_DEFAULTS <system_partition>'
+   type '   or:  SET_SYSTEM_DEFAULTS -HELP'
+   type
+   type 'SYSTEM_PARTITION is the partition name of the system directory PRINTMASTER*.
+   type
+   &return
+   &end
+
+
+/* Initialize variables used throughout.
+
+&s pgm := SET_SYSTEM_DEFAULTS
+&s pmsd := PRINTMASTER*
+&s prog := PRINTMASTER*>PROGRAMS
+&s sd := SYSTEM_DEFAULTS
+&s pmdd := PRINTMASTER*>DEVICES
+
+&s partition := [r %prog%>GET_PARTITION_NAME %partition%]
+&if [null %partition%] &then &return
+
+
+/* Let's see if they have enough rights to the system directory.
+
+&severity &error &ignore
+r %prog%>CPL$CALAC$ <%partition%>%pmsd% DALURW
+&if %severity$% > 0 &then &do
+   &s sev := %severity$%
+   type Insufficient access rights.  This program requires DALURW access
+   type rights to the PrintMaster system directory.
+   type
+   &return %sev%
+   &end
+
+type 'Please answer the following questions regarding which PrintMaster features'
+type 'users are allowed to use.  For some features you will be asked'
+type 'whether or not all jobs should use this feature by default.'
+type
+
+/* Group 1.
+
+&s deadline_wanted := [query 'Allow print deadline dates to be placed on jobs (yes)' TRUE]
+&s accounting_wanted := [query 'Should paper usage accounting be performed on all jobs (no)' FALSE]
+
+/* Group 2.
+
+type 'Allow jobs to begin printing while open for writing.'
+&s nowait_wanted := [query  '   This is useful for RJE jobs. (yes)' TRUE]
+&if %nowait_wanted% ~
+   &then &s nowait_is_default := [query '   Should all jobs default to this (no)' FALSE]
+   &else &s nowait_is_default := FALSE
+
+&s parallel_wanted := [query 'Allow devices to print different copies of a job simultaneously (yes)' TRUE]
+&if %parallel_wanted% ~
+   &then &s parallel_is_default := [query '   Should all jobs default to this (yes)' TRUE]
+   &else &s parallel_is_default := FALSE
+
+type 'Allow copies printed back-to-back on a device to have a single banner page.'
+&s single_banner_wanted := [query '   This is how Prime''s spooler prints multiple copies. (yes)' TRUE]
+&if %single_banner_wanted% ~
+   &then &s single_banner_is_default := [query '   Should all jobs default to this (yes)' TRUE]
+   &else &s single_banner_is_default := FALSE
+
+
+&s suspendable_wanted := [query 'Allow jobs to be suspended and resumed later at the last page printed. (yes)' TRUE]
+&if %suspendable_wanted% ~
+   &then &s suspendable_is_default := [query '   Should all jobs default to this (yes)' TRUE]
+   &else &s suspendable_is_default := FALSE
+
+type
+type 'Each job must have a priority associated with it.  This is used in determining'
+type 'the order jobs are printed.  Priorities may range from 0 to 999.'
+&s priority_p := ^ [query 'Should users be allowed to set their own job priority (no)' FALSE]
+&do &until [verify %default_priority% 0123456789] = 0  &  [length %default_priority%] < 4
+   &s default_priority := [response 'What is the default job priority (5)' 5]
+   &end
+
+type
+type 'What is the default form name?  This will be supplied when'
+type 'jobs are queued without -FORM option.  A form name must be'
+type 'a valid filename.'
+&do &until [length %default_form%] > 0
+   &s default_form := [translate [response 'Default form name' '']]
+   R %prog%>CPL$FNCHK$ [quote [unquote %default_form%]]
+   &if %severity$% ^= 0 &then &do
+      type 'This must be a valid filename, please reenter'
+      &s default_form := ''
+      &end
+   &end
+
+type
+type 'When a job is queued, it is not necessary to copy the print file to the'
+type 'queue; devices may print from either the print queue or the original file.'
+&s copyfile_is_default := [query 'By default should all files be copied to the print queue. (yes)' TRUE]
+&if %copyfile_is_default% ~
+   &then &s copyfile_p := ^ [query 'Should users be able to override this (yes)' TRUE]
+   &else &s copyfile_p := FALSE
+
+
+/* Modify MASTER keyword list to reflect these requests.
+
+&s l := -FORM -DEFER:i -DL:i -NOTIFY:i -QUIET:i -WRAP:i
+&if %copyfile_p%      &then &s l := -COPYFILE:ip
+                      &else &s l := -COPYFILE:i
+&if %priority_p%      &then &s l := %l% -PRIORITY:ip
+                      &else &s l := %l% -PRIORITY:i
+&if %deadline_wanted% &then &s l := %l% -DEADLINE:i
+                      &else &s l := %l% -^DEADLINE
+&if %nowait_wanted%   &then &s l := %l% -NO_WAIT:i
+                      &else &s l := %l% -^NO_WAIT
+&if %parallel_wanted% &then &s l := %l% -PARALLEL:i
+                      &else &s l := %l% -^PARALLEL
+&if %single_banner_wanted% &then &s l := %l%  -SINGLE_BANNER:i
+                           &else &s l := %l% -^SINGLE_BANNER
+&if %suspendable_wanted%   &then &s l := %l%  -SUSPENDABLE:i
+                           &else &s l := %l% -^SUSPENDABLE
+
+/* remember only 160 character command line.
+EKF -M -E %l%
+
+/* edit level 2 driver keywords (L2)
+
+&if %single_banner_wanted% &then &s l :=      -SINGLE_BANNER
+                           &else &s l :=     -^SINGLE_BANNER
+&if %suspendable_wanted%   &then &s l := %l%  -SUSPENDABLE
+                           &else &s l := %l% -^SUSPENDABLE
+
+EKF <%partition%>%pmdd%>L2 -E %l%
+
+/* create keyword list SYSTEM_DEFAULTS
+
+COMO <%partition%>%pmsd%>%sd%.TF -NTTY
+type [quote -PRIORITY %default_priority%]
+type [quote -FORM %default_form%]
+&if %accounting_wanted%   &then type -ACCOUNTING
+&if %copyfile_is_default% &then type -COPYFILE
+&if %nowait_is_default%   &then type -NO_WAIT
+&if %parallel_is_default% &then type -PARALLEL
+&if %single_banner_is_default% &then type -SINGLE_BANNER
+&if %suspendable_is_default%   &then type -SUSPENDABLE
+COMO -END -TTY
+
+&if [exists <%partition%>%pmsd%>%sd%.KF] &then ~
+   DELETE <%partition%>%pmsd%>%sd%.KF -NQ -NVFY
+
+EKF <%partition%>%pmsd%>%sd% -CREATE <%partition%>%pmsd%>%sd%.TF
+&if %severity$% ^= 0 &then &do
+   &if [exists <%partition%>%pmsd%>%sd%.KF] &then ~
+      DELETE <%partition%>%pmsd%>%sd%.KF -NQ -NVFY
+   type 'PrintMaster job defaults not created.'
+   &end
+&else type 'PrintMasters job defaults created.'
+
+DELETE <%partition%>%pmsd%>%sd%.TF
+
+type
+&return

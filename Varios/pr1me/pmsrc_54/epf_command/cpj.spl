@@ -1,0 +1,245 @@
+/* CHANGE_PRINT_JOB.SPL, PrintMaster, Jeff Hostetler, June 10, 1984           */
+/* Command to modify the KWL of a print job.                                  */
+/*                                                                            */
+/* CPJ -Job x1 [x2 ... x10] -Queue [<queue_partition>] <edit_keywords> -help  */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+cpj: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      uncl_length       by 160,
+      max_job_list      by 10;
+
+   dcl
+      cl          char(max_cl) var,         /* (in) */
+      com_status  bin,                      /* (out) */
+      job_list(max_job_list)            bin,
+      1  struc,
+         2  kw_cl             char(uncl_length) var, /* for edit keywords */
+         2  job_id1 (max_job_list)      bin(31),
+         2  job_given         bit(1) aligned,
+         2  job_id2  (max_job_list)     bin(31),
+         2  queue_given       bit(1) aligned,
+         2  partition         char(32) var,
+         2  help_given        bit(1) aligned,
+         2  nq_given          bit(1) aligned,
+
+      we_did_initialization   bit,
+      error_encountered       bit,
+      (current_attach_point, d)  char(128) var,
+      f                       char(32) var,
+      spl_info                like spl$info,
+      (nr_of_changes, i, code) bin;
+
+%page;
+
+   spl_info.version = spl$info_version;
+   spl_info.job_id = -1;
+   spl_info.job_name = '';
+   spl_info.pathname = '';
+   spl_info.file_size = 0;
+   spl_info.q_partition = '';
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+
+   call gp$version ('Change Print Job');
+
+   on condition (err$condition_after_msg)
+      begin;
+      error_encountered = true;
+
+      if err$es.type = err$user_et then do;
+         if err$es.status1 = err$job_not_found_ue then
+            goto do_next_job;
+         if err$es.status1 = err$not_your_job_ue then
+            goto do_next_job;
+         end;
+
+      if spl_info.job_id ^= -1 then
+         call ioa$ ('Job %d not changed in queue %v.%.', -1, spl_info.job_id,
+                    spl_info.q_partition);
+
+      if we_did_initialization then
+         call gp$any;
+      else
+         call cnsig$ (code);
+      end;
+
+   error_encountered = false;
+
+   call parse_cl;
+
+   if length (struc.partition) = 0 then
+      call at$any (k$setc, gbl$spool_queue, code);
+   else
+      call at$abs (k$setc, struc.partition, gbl$spool_queue, code);
+   if code ^= 0 then do;
+      if length (struc.partition) ^= 0 then
+         call ioa$ ('No print queue on this partition.%.', -1);
+      else
+         call ioa$ ('No print queues found.%.', -1);
+      goto abnormal_return;
+      end;
+
+   /* open the current directory, get partition & system name */
+
+   call gpath$ (k$cura, 0, addr(current_attach_point)->bvs.chars, 128,
+                addr(current_attach_point)->bvs.len, code);
+   call gp$split_pathname (current_attach_point, struc.partition, d, f);
+   call at$hom (code);
+
+   spl_info.version = spl$info_version;
+
+   nr_of_changes = 0;
+   do i = 1 to max_job_list while (job_list(i) >= 0);
+      if spl$cj (nq_given, struc.partition, job_list(i), kw_cl, addr(spl_info)) then
+         if length (spl_info.job_name) = 0 then
+            call ioa$ ('Job %d changed in queue %v.%.', -1, spl_info.job_id,
+                       spl_info.q_partition);
+         else
+            call ioa$ ('Job %d %v changed in queue %v.%.', -1, spl_info.job_id,
+                       spl_info.job_name, spl_info.q_partition);
+      else
+         call err$ (err$coding_et, 'SPL$CJ returned to main with an error', 0, 0, 0);
+      nr_of_changes = nr_of_changes + 1;
+
+do_next_job:
+      end;
+
+   if nr_of_changes > 0 then
+      if psv.monitor_user = 0 & gbl.I_am_opr then
+         call ioa$ ('Warning: the monitor is down - your job may not be printed immediately.%.', -1);
+
+normal_return:
+   if we_did_initialization then
+      call gp$terminate;
+   if error_encountered
+      then com_status = severity$error;
+      else com_status = severity$ok;
+   return;
+
+help_wanted:
+   call display_help;
+   goto normal_return;
+
+abnormal_return:
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+   /* logical end of CHANGE_PRINT_JOB. */
+%page;
+/* change_print_job.parse_cl, PrintMaster, Jeff Hostetler, June 10, 1984      */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys       by '000A'b4,
+         caller_name       by 'change_print_job',
+         pixel_size        by 89;
+
+      dcl
+         pic char(pixel_size) var static init
+          ('uncl; 10 * dec = -1; -j, -job 10 * dec = -1; -q, -queue entry; -help; -nq, -no_query; end'),
+
+         pix_index   bin,
+         bad_index   bin,
+         ns_code     bin,
+         i           bin;
+
+      call cl$pix (cl$pix_keys, caller_name, addr(pic), pixel_size, cl,
+                   addr(struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ ('');
+
+      if help_given then
+         goto help_wanted;
+
+      do i = 1 to max_job_list;
+         if job_given then
+            job_list(i) = job_id2(i);
+         else
+            job_list(i) = job_id1(i);
+         end;
+
+      if job_list(1) < 0 then
+         call error_ ('Job id missing.');
+
+      if length(struc.kw_cl) = 0 then
+         call error_ ('No edit keywords given; no changes will be made.');
+
+      return;
+      end parse_cl;
+
+%page;
+/* change_print_job.error_, PrintMaster, Jeff Hostetler, June 10, 1984        */
+/******************************************************************************/
+
+   error_: proc (error_msg);
+
+      dcl
+         error_msg   char(*) var;
+
+      if length (error_msg) ^= 0 then
+         call ioa$er ('%v%.', -1, error_msg);
+      call ioa$er ('Type CPJ -HELP or HELP APJ for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+
+      return;
+      end error_;
+
+%page;
+/* change_print_job.display_help, PrintMaster, Jeff Hostetler, June 10, 1984  */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage: CPJ -Job j1 j2 ... j10  options  edit_keywords%.', -1);
+      call ioa$ ('   or: CPJ -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('OPTIONS may be blank or any combination of the following:%.', -1);
+      call ioa$ ('   -Queue partition  -- Change jobs in queue on PARTITION instead of first%.', -1);
+      call ioa$ ('                        queue found%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('   -NQ               -- Don''t ask for verification when changing another%.', -1);
+      call ioa$ ('                        user''s job (operators only).%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('EDIT_KEYWORDS must be a list of keywords each with the following form:%.', -1);
+      call ioa$ ('   -keyword                       -- INSERT keyword with no values%.', -1);
+      call ioa$ ('   -keyword -value_1 ... -value_N -- INSERT keyword with these values%.', -1);
+      call ioa$ ('                                       or CHANGE the keyword''s values%.', -1);
+      call ioa$ ('   -^keyword                      -- DELETE keyword from the list%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('Users may INSERT/CHANGE or DELETE any keyword unless it is protected (:p) or%.', -1);
+      call ioa$ ('reserved, and may only change their own jobs.  Operators may INSERT/CHANGE or%.', -1);
+      call ioa$ ('DELETE any keyword unless it is reserved, and may change the job of any user.%.', -1);
+      call ioa$ ('Examples of reserved keywords are -USER, -PROJECT, -COPYFILE, -NOWAIT, etc.%.', -1);
+      call ioa$ ('%.', -1);
+
+      return;
+      end display_help;
+
+   end cpj;

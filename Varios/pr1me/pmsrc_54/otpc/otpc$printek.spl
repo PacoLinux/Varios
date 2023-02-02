@@ -1,0 +1,223 @@
+/* OTPC$PRINTEK.SPL, PrintMaster, Jim Wilcoxson, April 21, 1986               */
+/* Device Driver for the Printek serial printer.                              */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+otpc$printek: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   key         bin,
+   data_line   char(*),                     /* only valid when key = print */
+   number      bin;                         /* skip count or channel */
+
+dcl
+   default_esc       ptr static,            /* default (first) escape seq */
+   reset_esc         char(80) var static,   /* reset escape sequence (line 1) */
+   esc_list          ptr static,            /* list of escape sequences */
+   1  esc            based,                 /* an escape sequence */
+      2  next        ptr,                   /* ptr to next escape sequence */
+      2  name        char (16) var,         /* its name */
+      2  page_width  bin,                   /* paginate page width */
+      2  page_length bin,                   /* paginate page length */
+      2  cpl         bin,                   /* physical chars per line */
+      2  lpp         bin,                   /* physical lines per page */
+      2  esc_seq     char (80) var,         /* the escape sequence */
+
+   value          char (kwl$chars_in_value) var;
+
+
+   select (key);
+      when (l2$device_init)
+         return (device_init());
+      when (l2$job_init)
+         return (job_init());
+      when (l2$job_terminate)
+         return (job_terminate());
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of Printek device driver */
+
+
+
+device_init: proc returns (bin);
+
+dcl
+   esc_path char(128) var,                  /* pathname of esc seq file */
+   esc_text char(80) var,                   /* line from escape seq file */
+   esc_unit bin,                            /* unit for escape sequences */
+   func     bin,
+   kwp      ptr,
+   p        ptr;
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = ' ';                      /* pad with space if necessary */
+   l23.scan_key = l2$trim_key;              /* trim trailing blanks */
+   do func = l2$job_init, l2$job_terminate; /* we handle these */
+      l23.func_implemented (func) = true;
+      end;
+
+   /* open device escape sequence based on device name */
+
+   esc_unit = 0;
+   on condition (cleanup$)
+      begin;
+      call gp$close (esc_unit);
+      end;
+
+   reset_esc = '';
+   default_esc = null;
+   esc_list = null;                         /* no escape sequences yet */
+   esc_path = gbl$device_dir || '>ESCAPES>' || ds.device_name;
+
+   /* open escape sequence file if it exists */
+
+   on condition (err$condition_after_msg)
+      goto no_esc_file;
+   call gp$open_path (k$read+k$getu, esc_path, esc_unit);
+   revert condition (err$condition_after_msg);
+
+   /* read reset escape sequence first (first line in file) */
+
+   if ^gp$read_line (esc_unit, reset_esc) then
+       reset_esc = '';
+
+   /* read escape sequence text into data structure */
+
+   do while (gp$read_line (esc_unit, esc_text));
+
+      allocate esc set (p);
+
+      /* line 1 contains escape sequence name followed by colon */
+
+      p->esc.name = translate (before (esc_text, ':'), uppercase, lowercase);
+      p->esc.name = trim (p->esc.name, '11'b);
+
+      if p->esc.name = '' then
+         goto esc_error;
+
+      /* line 2 contains page width, length, chars per line, lines per page */
+
+      if ^gp$read_line (esc_unit, esc_text) then
+         goto esc_error;
+      esc_text = trim (esc_text, '10'b) || ' ';
+      p->esc.page_width = num_parse (esc_text);
+      p->esc.page_length = num_parse (esc_text);
+      p->esc.cpl = num_parse (esc_text);
+      p->esc.lpp = num_parse (esc_text);
+
+      /* line 3 contains the escape sequence */
+
+      if ^gp$read_line (esc_unit, esc_text) then
+         goto esc_error;
+      p->esc.esc_seq = esc_text;
+
+      /* add this sequence to the list */
+
+      p->esc.next = esc_list;
+      esc_list = p;
+      if default_esc = null then            /* first esc is default */
+         default_esc = p;
+      end;
+
+   call gp$close (esc_unit);
+
+
+no_esc_file:
+
+   return (l2$func_handled_rc);
+
+
+
+   num_parse: proc (text) returns (bin);
+
+   dcl
+      text     char (80) var,
+      n        bin;
+
+      on error goto esc_error;
+      n = bin (before (text, ' '), 15);
+      text = trim (after (text, ' '), '10'b);
+      return (n);
+
+   end num_parse;
+
+
+
+esc_error:
+
+   call err$ (err$user_et, 'Escape sequence file format incorrect.', 0, 0, 0);
+
+end device_init;
+
+
+
+job_init: proc returns (bin);
+
+dcl
+   p        ptr;
+
+   call setup_esc (default_esc);
+   call l2$print_banner;
+
+   if kwl$find_kw ('AT', ds.p_job_kwl, p) then
+      if kwl$get_nth_value (p, 1, value) then do;
+
+         /* "value" now contains escape sequence name.  Look it up in escape
+            sequence list */
+
+         do p = esc_list repeat p->esc.next while (p ^= null)
+                                            until (p->esc.name = value);
+            end;
+
+         /* activate escape sequence */
+
+         call setup_esc (p);
+
+         end;  /* if kwl$get_nth_value */
+
+   return (l2$func_handled_rc);
+
+
+   setup_esc: proc (p);
+
+   dcl
+      p     ptr;
+
+      if p ^= null then do;
+         l2.chars_per_line = p->esc.cpl;
+         l2.lines_per_page = p->esc.lpp;
+         l2.pm_lines_per_page = p->esc.page_length;
+         l2.pm_chars_per_line = p->esc.page_width;
+         call l2$io (l2$output_string, (p->esc.esc_seq), 0);
+         end;
+
+   end setup_esc;
+
+
+end job_init;
+
+
+job_terminate: proc returns (bin);
+
+   if length (reset_esc) ^= 0 then
+      call l2$io (l2$output_string, (reset_esc), 0);
+   return (l2$func_handled_rc);
+
+end job_terminate;
+
+end otpc$printek;

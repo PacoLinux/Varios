@@ -1,0 +1,49 @@
+/* MON$SCAN_DEVICE_LIST.SPL, PrintMaster, Jim Wilcoxson, July 31, 1984        */
+/* Scans device list looking for devices with MAXUSR status, and tries to     */
+/* resubmit them.  Shutdown devices are also deleted here IFF they were not   */
+/* started by the monitor (indicated by a zero semaphore number).             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$scan_device_list : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$destroy_device.ins.spl';
+%include '*>entry>mon$start_device.ins.spl';
+%list;
+
+dcl
+   devp        ptr,
+   next_devp   ptr,
+   status      bin;
+
+   do devp = mon.device_bol repeat next_devp while (devp ^= null);
+
+      next_devp = devp->device_info.next;
+      select (devp->device_info.device_state);
+         when (ds$maxusr_st)
+            if ^mon$start_device (devp, status) then
+               if status ^= e$npha then do; /* no longer no phantoms */
+                  call err$ (err$primos_et+err$warning_et,
+                             'Can''t start device ' ||
+                             devp->device_info.device_id, status, 0, 0);
+                  call mon$change_device_state (devp, '', ds$none_cc,
+                                                   '', ds$shutdown_st);
+                  end;
+         when (ds$shutdown_st)
+            if devp->device_info.semaphore = 0 then do;
+               call err$ (err$log_event_et, 'Destroying device in MON$SCAN_DEVICE_LIST', 0, 0, 0);
+               call mon$destroy_device (devp);
+               end;
+         otherwise
+            ;
+         end;  /* select device_state */
+      end;  /* do devp */
+
+end mon$scan_device_list;

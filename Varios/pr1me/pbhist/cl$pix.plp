@@ -1,0 +1,768 @@
+/* cl$pix, command utility, OS GROUP, 02/01/79.
+   Parse command line according to a picture specifier.
+   Copyright (C) 1979 by Prime Computer Inc., Wellesley, MA  02181
+
+   dcl cl$pix entry (bit(16) aligned, char(*) var, ptr, fixed bin,
+   char(*) var, ptr, fixed bin, fixed bin, fixed bin);
+
+   call cl$pix (keys, caller, ptr_pix_array, pix_size, comline, ptr_struc,
+   bad_pix_idx, bad_idx, code);
+
+   02/01/79 Hampson Added repeat count for control arg groups.
+   01/26/79 Hampson Now allows control args mixed w/ object args on comline.
+   01/05/79 Hampson Initial coding.  */
+
+cl$pix:
+        proc (keys, caller, pixptr_arg, pixsize, comline, strucp_arg, pixidx, badidx,
+                    code) options (nocopy);
+dcl 1 keys,
+        2 mbz bit(14),
+        2 pl1_flag bit(1),                       /* use bit(1) FLAGs */
+        2 no_print bit(1),                       /* do not print errors */
+    caller char(32) var,                         /* name of caller */
+    pixptr_arg ptr,                              /* ptr to pictures (*) char(pixsize) var */
+    pixsize fixed bin,                           /* size of each "pixel", chars */
+    comline char(256) var,
+    strucp_arg ptr,                              /* output structure ptr */
+    pixidx fixed bin,                            /* index into array of bad picture */
+    badidx fixed bin,                            /* char index of bad elt */
+    code fixed bin;                              /* nonstd error code */
+
+$INSERT gtpar.ins.plp
+
+$INSERT clpar.ins.plp
+
+dcl gt$par entry (bit(16) aligned, char(*) var, char(*) var, char(*) var, char(*) var,
+            char(*) var, fixed bin, 1, 2, 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(
+            1), 3 bit(1), 2 char(1) aligned, fixed bin);
+dcl 1 info like gtpar,
+    aloc$s entry (fixed bin, ptr, bit(1) aligned) options (shortcall (4)),
+    token char(128) var,                         /* current token text */
+    ctoken char(128) var,                        /* phase two working token */
+    break_ch char(7) var static init (' ,;*=()'),
+    quote_ch char(1) var static init (''''),
+    white_ch char(1) var static init (' ');
+dcl next fixed bin,                              /* char posn in current pix */
+    start_this_tok fixed bin,                    /* posn in pix of curr token */
+    state fixed bin,                             /* current FSM state */
+    pixp ptr,                                    /* ptr to current pixel */
+    group_count fixed bin,                       /* number of <arg>s in this repeat grp */
+    contig bit(1) aligned,                       /* for aloc$s, not used */
+    ap ptr,                                      /* working ptr to <arg> strucs */
+    argsp ptr,                                   /* list tail ptr for <arg> strucs */
+    arghp ptr,                                   /* ptr to 1st <arg> */
+    gap ptr,                                     /* ptr to <arg> that heads this repeat group */
+    np ptr,                                      /* working ptr for <nlist> strucs */
+    pp ptr,                                      /* working ptr for phase 2 */
+    struc_next fixed bin,                        /* next avail offset in output struc */
+    based_flag bit(16) aligned based,
+    based_pl1_flag bit(1) aligned based,
+    rpt_count fixed bin,                         /* requested size of curr repeat group */
+    ctrl_repeat fixed bin,                       /* req. repeat for control arg */
+    multiple_ctrl bit(1) aligned,                /* duplicate control arg seen */
+    save_next fixed bin,                         /* lexcial state save for ctrl arg repeat */
+    save_pixidx fixed bin,                       /* ditto */
+    ch$fx1 entry (char(*) var, fixed bin, fixed bin),   /* char => fb15 */
+    ch$fx2 entry (char(*) var, fixed bin(31), fixed bin),
+    ch$oc2 entry (char(*) var, fixed bin(31), fixed bin),
+    icode fixed bin,
+    dti fixed bin,                               /* datatype table index */
+    tp ptr,                                      /* working ptr */
+    control_arg_seen bit(1) aligned,
+    based_char char(80) var based,
+    based_dec fixed bin(31) based,
+    based_tree char(128) var based,
+    based_entry char(32) var based,
+    based_ptr ptr based;
+dcl cl$par entry (bit(16) aligned, char(*) var, char(*) var, fixed bin, 1, 2, 3 bit(8), 3
+            bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1),
+            2 fixed bin(31), 2 fixed bin(31), 2 (5) fixed bin, fixed bin, fixed bin),
+    1 pinfo like clpar,
+    1 cinfo like clpar,
+    cv$dtb entry (char(*) var, fixed bin(31), fixed bin),
+    ioa$er entry options (variable);
+
+%replace dt_tbl_end by 7;
+
+dcl dt_tbl(0:dt_tbl_end) char(6) var static init ('CHAR', 'TREE', 'DEC', 'OCT', 'DATE',
+            'ENTRY', 'HEX', 'PTR'),
+    dt_sizes(0:dt_tbl_end) fixed bin static init (41, 65, 2, 2, 2, 17, 2, 2),
+    dt_long(0:dt_tbl_end) char(20) var static init ('string', 'treename',
+            'decimal integer', 'octal integer', 'calendar date', 'file entryname',
+            'hexadecimal integer', 'pointer');
+
+%replace dt_char by 0,
+         dt_tree by 1,
+         dt_dec by 2,
+         dt_oct by 3,
+         dt_date by 4,
+         dt_entry by 5,
+         dt_hex by 6,
+         dt_ptr by 7;
+
+%replace s_start_of_grp by 0,
+         s_ctrl_list_1 by 1,
+         s_ctrl_list_n by 2,
+         s_repeat by 3,
+         s_dataspec by 4,
+         s_ds_rpt by 5,
+         s_ds_norpt by 6,
+         s_dt by 7,
+         s_default_val by 8,
+         s_set_val by 9,
+         s_end by 10;
+
+%replace er_ill_grp by 1,
+         er_format by 2,
+         er_ill_ctrl by 3,
+         er_rpt_count by 4,
+         er_bad_dt by 5,
+         er_bad_state by 6,
+         er_trunc by 7,
+         er_ctrl_order by 8;
+%replace er_too_many_args by 10,
+         er_too_many_obj by 11,
+         er_unimp_control by 12,
+         er_data_fmt by 13,
+         er_df_data_fmt by 14,
+         er_df_ill by 15,
+         er_dup_ctrl by 16;
+%replace file_ill_chars by ' <>[](){}!"?''&@`|,:;';
+dcl 1 arg based,                                 /* each argument spec gets one of these */
+        2 next ptr,
+        2 parm ptr,                              /* pointer to <plist> parameter specs */
+        2 nlist_ptr ptr,                         /* pointer to <nlist> list */
+        2 dtype fixed bin,                       /* dti of datatype */
+        2 flags,
+            3 control bit(1),
+            3 presence bit(1),
+            3 mbz bit(14),
+        2 soffset fixed bin;                     /* offset in output struc of value */
+dcl 1 nlist based,                               /* each control arg name gets one of these */
+        2 next ptr,
+        2 name char(32) var;
+dcl 1 plist based,                               /* each control arg param gets one of these */
+        2 next ptr,
+        2 dtype fixed bin,                       /* dti of datatype */
+        2 soffset fixed bin;                     /* offset in output struc of value */
+
+%replace size_arg by 9,
+         size_nlist by 19,
+         size_plist by 4;
+
+/* D E S C R I P T I O N.
+   This program proceeds in two phases.  The first phase is a Finite State
+   Parser for the <picture> that describes the command line.  The result of
+   this phase is a threaded list of <arg> structures, one for each possible
+   argument on the command line, and a partioning of the output structure
+   according to the <picture>, with the default values set for all its members.
+   The second phase parses the input command line, locates the corresponding
+   argument in the <arg> list, and fills in the output struc.  Datatype checking and
+   so on occurs during this operation.  The final result of a valid picture parse
+   is the output structure filled in and returned to the caller.  */
+
+/* B E G I N   P H A S E   O N E. */
+
+/* Initialize prior to reading the first token. */
+
+        code = 0;
+        pixidx = 1;                              /* in 1st pixel */
+        struc_next = 0;                          /* at start of output struc */
+        next = 1;                                /* start of pixel */
+        state = s_start_of_grp;                  /* FSM init */
+        pixp = pixptr_arg;                       /* 1st pixel ptr */
+        arghp = null();
+        control_arg_seen = '0'b;
+        ctrl_repeat = 0;                         /* not in repeat mode yet */
+
+/* Following in the state-transition loop for the FSM Parser. */
+
+        do while (state ^= s_end);
+            if state = s_start_of_grp
+                then do;
+
+/* STATE: beginning next argument group. */
+
+                group_count = 1;                 /* assume no repeat count */
+                if ctrl_repeat > 1
+                    then do;                     /* repeat a control arg group */
+                    ctrl_repeat = ctrl_repeat - 1;   /* remember we've done it */
+                    next = save_next;            /* restore lexical state to start of control arg */
+                    pixidx = save_pixidx;        /* ditto */
+                    state = s_ctrl_list_1;       /* force FSM to start of control arg state */
+                    call get_token;              /* read 1st name token back */
+                    end;
+                else do;                         /* not repeating a control arg */
+                    call get_token;              /* read next token */
+                    if length (token) = 0
+                        then do;
+                        call error (er_ill_grp);   /* should not be any null tokens */
+                        return;
+                        end;
+                    if token = 'END'
+                        then state = s_end;      /* all done */
+                    else if substr (token, 1, 1) = '-'
+                        then do;
+                        ctrl_repeat = 1;         /* default repeat count */
+                        state = s_ctrl_list_1;
+                        end;
+                    else if control_arg_seen
+                        then do;
+                        call error (er_ctrl_order);
+                        return;
+                        end;
+                    else if info.delimiter = '*'
+                        then state = s_repeat;
+                    else state = s_ds_norpt;
+                    end;
+
+/* Unless at the end, allocate a group-header <arg> struc */
+
+                if state ^= s_end
+                    then do;
+                    call aloc$s (size_arg, ap, contig);
+                    ap -> arg.next = null();
+                    if arghp = null()            /* first <arg> on chain */
+                        then arghp = ap;
+                    else argsp -> arg.next = ap;   /* else thread onto end */
+                    ap -> arg.flags.control = '0'b;   /* assume not a ctrl list */
+                    ap -> arg.flags.presence = '0'b;
+                    ap -> arg.dtype = -1;        /* initialize rest */
+                    ap -> arg.soffset = -1;
+                    ap -> arg.nlist_ptr = null();
+                    ap -> arg.parm = null();
+                    argsp = ap;                  /* set tail ptr */
+                    gap = ap;                    /* set group head ptr */
+                    end;
+                end;                             /* STATE s_start_of_grp */
+            else if state = s_ctrl_list_1
+                then do;
+
+/* STATE: start of control-arg list recognized */
+
+                control_arg_seen = '1'b;
+                ap -> arg.flags.control = '1'b;  /* is control arg */
+                call aloc$s (size_nlist, np, contig);   /* allocate space for name */
+                np -> nlist.next = null();
+                np -> nlist.name = token;
+                ap -> arg.nlist_ptr = np;
+                ap -> arg.soffset = struc_next;  /* alloc space for presence flag */
+                if keys.pl1_flag
+                    then addrel (strucp_arg, struc_next) -> based_pl1_flag = '0'b;
+                else addrel (strucp_arg, struc_next) -> based_flag = '0'b;   /* initialize */
+                struc_next = struc_next + 1;     /* use up space */
+                if info.delimiter = ';'
+                    then state = s_start_of_grp;   /* end of grp */
+                else if info.delimiter = ' '
+                    then state = s_dataspec;     /* end of names */
+                else if info.delimiter = ','
+                    then state = s_ctrl_list_n;  /* more names */
+                else do;
+                    call error (er_format);      /* bad delim */
+                    return;
+                    end;
+                end;                             /* STATE s_ctrl_list_1 */
+            else if state = s_ctrl_list_n
+                then do;
+
+/* STATE: ready for next elt of control arg list */
+
+                call get_token;
+                if length (token) = 0
+                    then do;
+                    call error (er_ill_ctrl);
+                    return;
+                    end;
+                call aloc$s (size_nlist, np, contig);   /* allocate space for name */
+                np -> nlist.next = ap -> arg.nlist_ptr;   /* thread in */
+                np -> nlist.name = token;
+                ap -> arg.nlist_ptr = np;
+                if info.delimiter = ','
+                    then;                        /* stay in this state */
+                else if info.delimiter = ';'
+                    then state = s_start_of_grp;
+                else if info.delimiter = ' '
+                    then state = s_dataspec;
+                else do;
+                    call error (er_format);
+                    return;
+                    end;
+                end;                             /* STATE s_ctrl_list_n */
+            else if state = s_repeat
+                then do;
+
+/* STATE: <repeat count> in front of <dataspec> or <control arg>. */
+
+                call ch$fx1 (token, rpt_count, icode);
+                if icode ^= 0 | rpt_count < 0 | rpt_count > 1000
+                    then do;
+                    call error (er_rpt_count);
+                    return;
+                    end;
+                save_pixidx = pixidx;            /* save lexical state for possible repeat */
+                save_next = next;
+                call get_token;                  /* read next token */
+                if length (token) = 0
+                    then do;
+                    call error (er_format);
+                    return;
+                    end;
+                if substr (token, 1, 1) = '-'
+                    then do;                     /* control arg group */
+                    ctrl_repeat = rpt_count;     /* set its repeat count */
+                    state = s_ctrl_list_1;
+                    end;
+                else state = s_dt;               /* noncontrol arg */
+                end;                             /* STATE s_repeat */
+            else if state = s_dataspec
+                then do;
+
+/* STATE: now expecting start of a <dataspec> */
+
+                call get_token;
+                if length (token) = 0
+                    then do;
+                    call error (er_format);
+                    return;
+                    end;
+                if info.delimiter = '*'
+                    then state = s_ds_rpt;
+                else state = s_ds_norpt;
+                end;                             /* STATE s_dataspec */
+            else if state = s_ds_rpt
+                then do;
+
+/* STATE: <repeat count> in a <dataspec> recognized */
+
+                call ch$fx1 (token, rpt_count, icode);   /* convert to fb15 */
+                if icode ^= 0 | rpt_count < 0 | rpt_count > 1000
+                    then do;                     /* conversion no good */
+                    call error (er_rpt_count);
+                    return;
+                    end;
+                call get_token;                  /* get rest of <dataspec> */
+                state = s_dt;
+                end;                             /* STATE s_ds_rpt */
+            else if state = s_ds_norpt
+                then do;
+
+/* STATE: <dataspec> with no <repeat count> found */
+
+                rpt_count = 1;
+                state = s_dt;
+                end;                             /* STATE s_ds_norpt */
+            else if state = s_dt
+                then do;
+
+/* STATE: <datatype> of a <dataspec> recognized */
+
+                do dti = 0 to dt_tbl_end;
+                    if token = dt_tbl(dti)
+                        then goto found_dt;
+                    end;
+                call error (er_bad_dt);
+                return;
+found_dt:
+                if info.delimiter = '='
+                    then state = s_default_val;
+                else do;                         /* no specified default */
+                    token = '';
+                    state = s_set_val;
+                    end;
+                end;                             /* STATE s_dt */
+            else if state = s_default_val
+                then do;
+
+/* STATE: next token is default value */
+
+                call get_token;
+                state = s_set_val;
+                end;                             /* STATE s_default_val */
+            else if state = s_set_val
+                then do;
+
+/* STATE: dti contains <datatype> and token contains <default value>. */
+
+/* If the group-header <arg> is a control arg, then add these <datatype>s
+   to that <arg>'s parameter list.  Else, create multiple <arg>s.  */
+
+                if ^(gap -> arg.flags.control)
+                    then do group_count = group_count to group_count + rpt_count - 1;
+                    if group_count > 1
+                        then do;                 /* allocate rest of <arg>s */
+                        call aloc$s (size_arg, ap, contig);
+                        ap -> arg.next = null();
+                        ap -> arg.parm = null();
+                        ap -> arg.nlist_ptr = null();
+                        argsp -> arg.next = ap;
+                        argsp = ap;
+                        end;
+                    ap -> arg.dtype = dti;
+                    ap -> arg.flags.control = '0'b;
+                    call set_default_val;
+                    end;
+                else do group_count = group_count to group_count + rpt_count - 1;
+                    call aloc$s (size_plist, ap, contig);
+                    ap -> plist.next = null();
+                    if group_count = 1
+                        then do;
+                        gap -> arg.parm = ap;
+                        np = ap;
+                        end;
+                    else do;
+                        np -> plist.next = ap;
+                        np = ap;
+                        end;
+                    ap -> plist.dtype = dti;
+                    call set_default_val;
+                    end;
+
+                if info.delimiter = ';'
+                    then state = s_start_of_grp;
+                else if gap -> arg.flags.control & info.delimiter = ' '
+                    then state = s_dataspec;
+                else do;
+                    call error (er_format);
+                    return;
+                    end;
+                end;                             /* STATE s_set_val */
+
+            else do;
+                call error (er_bad_state);
+                return;
+                end;
+
+            end;                                 /* FSM state transition loop */
+
+/* ********* DEBUGGING *************
+
+dcl ioa$ entry options (variable);
+        icode = 0;
+        do tp = arghp repeat tp -> arg.next while (tp ^= null());
+            icode = icode + 1;
+            if ^(tp -> arg.flags.control)
+                then call ioa$ ('Arg #%d: type= %v, offset= %o%.', 100, icode, dt_tbl(tp
+                            -> arg.dtype), tp -> arg.soffset);
+            else do;
+                call ioa$ ('Control arg #%d: Flag offset= %o.%/%5xNames= %$', 100, icode,
+                            tp -> arg.soffset);
+                do ap = tp -> arg.nlist_ptr repeat ap -> nlist.next while (ap ^= null());
+                    call ioa$ ('%v %$', 100, ap -> nlist.name);
+                    end;
+                call ioa$ ('%/%5xParameters are:%.', 100);
+                do ap = tp -> arg.parm repeat ap -> plist.next while (ap ^= null());
+                    call ioa$ ('%8xtype= %v, offset= %o%.', 100, dt_tbl (ap -> plist.
+                                dtype), ap -> plist.soffset);
+                    end;
+                end;
+            end;
+
+/* ******** END DEBUG ******** */
+
+/* B E G I N   P H A S E   T W O */
+
+/* Parse the command line and compare it against the arg list from Phase 1. */
+
+        ap = arghp;                              /* init working arg list ptr */
+        next = 1;                                /* init com line parse */
+        cinfo.flags.eol = '0'b;
+
+        do while (^cinfo.flags.eol);
+            start_this_tok = next;               /* save parse position */
+            call cl$par ('0'b, comline, ctoken, 128, cinfo, next, icode);
+            if cinfo.flags.eol
+                then;
+            else if ^(cinfo.flags.keyword)
+                then do;                         /* NONCONTROL arg */
+
+/* Pluck the next argument descriptor, and make sure it is non-control. */
+
+                if ap = null()
+                    then do;                     /* no more args */
+                    call cerror (er_too_many_args, 0);
+                    return;
+                    end;
+                if ap -> arg.flags.control
+                    then do;                     /* no more noncontrol args */
+                    call cerror (er_too_many_obj, 0);
+                    return;
+                    end;
+                call set_value (ctoken, ap -> arg.dtype, ap -> arg.soffset, addr (cinfo))
+                            ;
+                ap = ap -> arg.next;             /* use up arg */
+                end;
+            else do;                             /* CONTROL arg */
+                multiple_ctrl = '0'b;            /* duplicate not seen */
+                do tp = ap repeat tp -> arg.next while (tp ^= null());   /* search */
+                    if tp -> arg.flags.control
+                        then do np = tp -> arg.nlist_ptr repeat np -> nlist.next while (
+                                    np ^= null());
+                        if ctoken = np -> nlist.name
+                            then if ^(tp -> arg.flags.presence)
+                                then goto found_name;   /* empty slot for this arg */
+                            else multiple_ctrl = '1'b;   /* remember we've seen it before... */
+                        end;
+                    end;
+                if multiple_ctrl
+                    then call cerror (er_dup_ctrl, 0);   /* duplicate found */
+                else call cerror (er_unimp_control, 0);   /* not found at all */
+                return;
+
+found_name:
+                if keys.pl1_flag
+                    then addrel (strucp_arg, tp -> arg.soffset) -> based_pl1_flag = '1'b;
+                else addrel (strucp_arg, tp -> arg.soffset) -> based_flag = '0001'b4;   /* presence */
+                tp -> arg.flags.presence = '1'b;   /* remember in convenient place too */
+
+/* If there are any parameters, process them. */
+
+parm_loop:
+                do pp = tp -> arg.parm repeat pp -> plist.next while (pp ^= null());
+                    start_this_tok = next;
+                    call cl$par ('0'b, comline, ctoken, 128, pinfo, next, icode);
+                    if pinfo.flags.eol | pinfo.flags.keyword
+                        then do;                 /* no parameter there */
+                        next = start_this_tok;   /* back up to where we were in comline */
+                        leave parm_loop;         /* and stop looking for parameters */
+                        end;
+                    call set_value (ctoken, pp -> plist.dtype, pp -> plist.soffset, addr
+                                (pinfo));
+
+                    end;                         /* parm_loop */
+
+                end;
+            end;                                 /* comline loop */
+
+        return;                                  /* we are all done */
+
+/* **********************************************************
+   Proc to set structure element to (converted) data value.
+   (Uses values in the structure "pinfo".)
+   ********************************************************** */
+
+set_value:
+            proc (data_tok, data_type, struc_of, infop_arg) options (shortcall);
+
+dcl data_tok char(128) var,
+    data_type fixed bin,
+    struc_of fixed bin,                          /* offset in output struc */
+    infop_arg ptr;                               /* ptr to a clpar info struc */
+
+dcl ip ptr,
+    infop ptr;
+
+            ip = addrel (strucp_arg, struc_of);  /* points to output value */
+            infop = infop_arg;
+
+            select (data_type);
+                when (dt_dec)
+                    do;
+                        if ^(infop -> clpar.flags.dec_number)
+                            then do;
+                            call cerror (er_data_fmt, data_type);
+                            goto emergency;
+                            end;
+                        ip -> based_dec = infop -> clpar.dec_val;   /* use preconverted value */
+                        end;
+                when (dt_oct)
+                    do;
+                        if ^(infop -> clpar.flags.oct_number)
+                            then do;
+                            call cerror (er_data_fmt, data_type);
+                            goto emergency;
+                            end;
+                        ip -> based_dec = infop -> clpar.oct_val;   /* use preconverted value */
+                        end;
+                when (dt_char)
+                    ip -> based_char = data_tok;
+                when (dt_tree)
+                    ip -> based_tree = data_tok;
+                when (dt_entry)
+                    do;
+                        if length (data_tok) > 32 | search (data_tok, file_ill_chars) ^=
+                                    0
+                            then do;
+                            call cerror (er_data_fmt, data_type);
+                            goto emergency;
+                            end;
+                        ip -> based_entry = data_tok;
+                        end;
+                when (dt_date)
+                    do;
+                        call cv$dtb (data_tok, ip -> based_dec, icode);
+                        if icode ^= 0
+                            then do;
+                            call cerror (er_data_fmt, data_type);
+                            goto emergency;
+                            end;
+                        end;
+                when (dt_ptr)
+                    do;
+                        if ^(infop -> clpar.flags.oct_pair)
+                            then do;
+                            call cerror (er_data_fmt, data_type);
+                            goto emergency;
+                            end;
+                        ip -> based_ptr = addr (infop -> clpar.oct_val) -> based_ptr;
+                        end;
+                end;
+
+            end;                                 /* set_value */
+
+/* **********************************************************
+   Proc to handle errors in command line processing.
+   ********************************************************** */
+
+cerror:
+            proc (ecode, bad_dt) options (shortcall);
+
+dcl ecode fixed bin,                             /* error code, local */
+    bad_dt fixed bin;                            /* datatype index of what it should have been */
+
+            if keys.no_print
+                then;
+            else select (ecode);
+                when (er_too_many_args)
+                    call ioa$er ('Too many arguments. %v (%v)%.', 100, ctoken, caller);
+                when (er_too_many_obj)
+                    call ioa$er ('Too many object arguments specified. %v (%v)%.', 100,
+                                ctoken, caller);
+                when (er_unimp_control)
+                    call ioa$er ('Control argument "%v" not implemented. (%v)%.', 100,
+                                ctoken, caller);
+                when (er_dup_ctrl)
+                    call ioa$er ('More instances of "%v" than are supported. (%v)%.',
+                                100, ctoken, caller);
+                when (er_data_fmt)
+                    call ioa$er ('Argument "%v" is not a valid %v. (%v)%.', 100, ctoken,
+                                dt_long(bad_dt), caller);
+                end;
+
+            code = ecode;
+            pixidx = 0;                          /* indicate err is in comline */
+            badidx = start_this_tok;             /* point to bad token */
+            return;
+
+            end;                                 /* cerror */
+emergency:
+        return;
+
+/* *********************************************************
+   Proc to set error code and bad character index.
+   ********************************************************* */
+
+error:
+            proc (ecode) options (shortcall);
+dcl ecode fixed bin;
+            code = ecode;
+            badidx = start_this_tok;
+            end;                                 /* error */
+
+/* *********************************************************
+   Proc to get the next token from the input picture array.
+   Switch to succeeding pixels is handled herein.
+   ********************************************************* */
+
+get_token:
+            proc options (shortcall);
+retry_get:
+            start_this_tok = next;               /* save starting index */
+            call gt$par ('0'b, white_ch, quote_ch, break_ch, pixp -> based_char, token,
+                        128, info, next);
+            if info.flags.eol
+                then do;                         /* end of pixel */
+                pixp = addrel (pixp, divide (pixsize + 1, 2, 15) + 1);
+                next = 1;                        /* start with new pixel */
+                pixidx = pixidx + 1;
+                goto retry_get;
+                end;
+            if info.flags.delimiter_eol
+                then info.delimiter = ' ';
+            if info.flags.truncated
+                then do;
+                call error (er_trunc);
+                goto emergency;
+                end;
+            end;                                 /* get_token */
+
+/* ********************************************************
+   Proc to set up default value for an output structure element.
+   This proc also allocates space in the output structure.
+   ******************************************************** */
+
+set_default_val:
+            proc options (shortcall);
+
+/* Set soffset field of <arg> or <plist> as needed. */
+
+            if gap -> arg.flags.control
+                then ap -> plist.soffset = struc_next;
+            else ap -> arg.soffset = struc_next;
+            tp = addrel (strucp_arg, struc_next);
+            struc_next = struc_next + dt_sizes(dti);   /* ... */
+            if length (token) = 0                /* no default specified */
+                then select (dti);
+                when (dt_char)
+                    tp -> based_char = '';
+                when (dt_dec, dt_oct, dt_hex, dt_date)
+                    tp -> based_dec = 0;
+                when (dt_tree)
+                    tp -> based_tree = '';
+                when (dt_entry)
+                    tp -> based_entry = '';
+                when (dt_ptr)
+                    tp -> based_ptr = null();
+                end;
+            else select (dti);                   /* default was given */
+                when (dt_char)
+                    tp -> based_char = token;
+                when (dt_tree)
+                    tp -> based_tree = token;
+                when (dt_entry)
+                    do;
+                        if length (token) > 32 | search (token, file_ill_chars) ^= 0
+                            then do;
+                            call error (er_df_data_fmt);
+                            goto emergency;
+                            end;
+                        tp -> based_entry = token;
+                        end;
+                when (dt_dec)
+                    do;
+                        call ch$fx2 (token, tp -> based_dec, icode);
+                        if icode ^= 0
+                            then do;
+                            call error (er_df_data_fmt);
+                            goto emergency;
+                            end;
+                        end;
+                when (dt_oct)
+                    do;
+                        call ch$oc2 (token, tp -> based_dec, icode);
+                        if icode ^= 0
+                            then do;
+                            call error (er_df_data_fmt);
+                            goto emergency;
+                            end;
+                        end;
+                when (dt_ptr)
+                    do;
+                        call error (er_df_ill);
+                        goto emergency;
+                        end;
+                when (dt_date)
+                    do;
+                        call cv$dtb (token, tp -> based_dec, icode);
+                        if icode ^= 0
+                            then do;
+                            call error (er_df_data_fmt);
+                            goto emergency;
+                            end;
+                        end;
+                end;
+
+            end;                                 /* set_default_val */
+
+        end;                                     /* cl$pix */
+
+ENB WILL BE COLDSTARTED AT 1200 FOR INSTALLATION OF NEW OPSYS.

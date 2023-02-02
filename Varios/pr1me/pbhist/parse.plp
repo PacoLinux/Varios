@@ -1,0 +1,220 @@
+/* PARSE.PL1, PRI400>PBHIST, OS GROUP, 07/20/79
+/* Parse a seg "map 10" map file for symbols to use in histogram.
+/* Copyright (C) 1979 by Prime Computer Inc., Wellesley, MA  02181
+
+   dcl parse entry (char(*) var, fixed bin);
+
+   call parse (treename, code);
+
+   07/20/79 Hampson Changed to do treenames; increased map size.
+   08/../78 Dosani Initial coding.  */
+
+parse:
+        proc(file_name, err_code) options(nocopy);
+
+$INSERT clpar.ins.plp
+
+$INSERT syscom>keys.pl1
+
+dcl (ioa$, ioa$er) entry options (variable),
+    cl$par entry (bit(16) aligned, char(*) var, char(*) var, fixed bin, 1, 2, 3 bit(8), 3
+            bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1), 3 bit(1),
+            2 fixed bin(31), 2 fixed bin(31), 2 (5) fixed bin, fixed bin, fixed bin);
+dcl file_name char(128) varying;
+dcl count fixed bin external,
+    max_length fixed bin;
+dcl (type, code) fixed bin,
+    i fixed bin;
+dcl value(2) fixed bin (31);
+dcl good_line bit(1);
+dcl 1 newmap(4000) ext,
+        2 sym_name char(8) varying,
+        2 segno fixed bin(15),
+        2 wordno fixed bin(15);
+dcl 1 temp,
+        2 sym_name char(8) varying,
+        2 segno fixed bin(15),
+        2 wordno fixed bin(15);
+dcl token(6) char(80) varying;
+dcl 1 info like clpar;
+dcl 1 bvs based,
+        2 len fixed bin,
+        2 chars char(80) aligned;
+
+dcl next fixed bin;
+dcl tsarg(2) fixed bin,
+    close_by_unit char(2) aligned,
+    word fixed bin based;
+dcl unit fixed bin;
+
+dcl err_code fixed bin;
+
+dcl tsrc$$ entry (fixed bin, char(*), fixed bin, (2) fixed bin, fixed bin, fixed bin);
+dcl srch$$ entry (fixed bin, char(*), fixed bin, fixed bin, fixed bin, fixed bin);
+dcl rdlin$ entry (fixed bin, char(80), fixed bin, fixed bin);
+dcl buff char(80),
+    cl_buff char(128) varying;
+
+        type = 0;
+        addr (close_by_unit) -> word = 0;
+        count = 1;
+        max_length = 4000;
+        err_code = 0;
+
+        tsarg(1) = 0;
+        tsarg(2) = length (file_name);
+        call tsrc$$ (k$read + k$getu, addr (file_name) -> bvs.chars, unit, tsarg, type,
+                    code);
+        if (code ^= 0)
+            then do;
+            err_code = 2;                        /* could not open map for reading   */
+            return;
+            end;
+        cl_buff = ' ';
+main_loop:
+        do while (length(cl_buff) ^= 0);
+            if (code = 0)
+                then call rdlin$(unit, buff, 40, code);
+            if (code ^= 0)
+                then do;
+                if (code = 1)
+                    then leave main_loop;
+                else do;
+                    err_code = 3;                /* rdlin$ call failed   */
+                    return;
+                    end;
+                end;
+
+
+            next = 1;
+            cl_buff = trim(buff, '01'b);
+            if length(cl_buff) = 0
+                then leave;
+            call cl$par ('0'b, cl_buff, newmap(count).sym_name, 8, info, next, code);
+            good_line = ^(info.flags.null_tk | info.flags.oct_pair | info.flags.
+                        oct_number | info.flags.dec_number);
+            do i = 2 to 3 while (info.flags.eol = '0'b & good_line = '1'b);
+                call cl$par ('0'b, cl_buff, token(i), 80, info, next, code);
+                if (info.flags.oct_number = '0'b)
+                    then good_line = '0'b;
+                value(i - 1) = info.oct_val;
+                if (i = 2)
+                    then newmap(count).segno = info.oct_val;
+                else newmap(count).wordno = info.oct_val;
+                end;
+            if (good_line = '0'b | info.flags.eol = '1'b)
+                then goto end_mainloop;
+            call cl$par ('0'b, cl_buff, token(4), 80, info, next, code);
+            if (info.flags.oct_number = '1'b)
+                then do;
+                newmap(count).segno = info.oct_val;
+                call cl$par ('0'b, cl_buff, token(5), 80, info, next, code);
+                if (info.flags.oct_number = '1'b)
+                    then newmap(count).wordno = info.oct_val;
+                else do;
+                    if (token(5) = 'COMMON')
+                        then do;
+                        newmap(count).segno = value(1);
+                        newmap(count).wordno = value(2);
+                        end;
+                    else goto end_mainloop;
+                    end;
+                end;
+            else if token(4) = 'OTHER'
+                then do;
+                newmap(count).segno = value(1);
+                newmap(count).wordno = value(2);
+                end;
+            else if token(4) = 'COMMON'
+                then do;
+                newmap(count).segno = value(1);
+                newmap(count).wordno = value(2);
+                end;
+            else if (token(4) = 'DIRECT')
+                then do;
+                call cl$par ('0'b, cl_buff, token(6), 80, info, next, code);
+                if (token(6) = 'ENTRY')
+                    then do;
+                    newmap(count).segno = value(1);
+                    newmap(count).wordno = value(2);
+                    end;
+                else goto end_mainloop;
+                end;
+            else goto end_mainloop;
+
+/* line parsed ok  */
+
+
+            temp.sym_name = newmap(count).sym_name;
+            temp.segno = newmap(count).segno;
+            temp.wordno = newmap(count).wordno;
+srt:
+                proc options (nocopy);
+dcl (k, m) fixed bin;
+dcl lt_wordno fixed bin(31);
+dcl ln_wordno fixed bin(31);
+dcl not_sorted bit(1);
+dcl first bit(1);
+                not_sorted = '1'b;
+                if (count = 1)
+                    then return;
+                lt_wordno = long(temp.wordno);
+                ln_wordno = long(newmap(count - 1).wordno);
+                if ((temp.segno = newmap(count - 1).segno) & (lt_wordno > ln_wordno)) | (
+                            temp.segno > newmap(count - 1).segno)
+                    then not_sorted = '0'b;
+                first = ((temp.segno = newmap(1).segno) & (lt_wordno <= long(newmap(1).
+                            wordno))) | (temp.segno < newmap(1).segno);
+                do k = 1 to (count - 2) while (not_sorted);
+                    if (first | ((temp.segno = newmap(k).segno & lt_wordno > long(newmap(
+                                k).wordno)) | temp.segno > newmap(k).segno) & ((temp.
+                                segno = newmap(k + 1).segno & lt_wordno <= long(newmap(k
+                                + 1).wordno)) | temp.segno < newmap(k + 1).segno))
+                        then do;
+                        if (first)
+                            then k = 0;
+                        not_sorted = '0'b;
+                        do m = count to (k + 2) by - 1;
+                            newmap(m).sym_name = newmap(m - 1).sym_name;
+                            newmap(m).segno = newmap(m - 1).segno;
+                            newmap(m).wordno = newmap(m - 1).wordno;
+                            end;
+                        newmap(k + 1).sym_name = temp.sym_name;
+                        newmap(k + 1).segno = temp.segno;
+                        newmap(k + 1).wordno = temp.wordno;
+                        end;
+                    end;
+                return;
+                end;                             /* end srt */
+            call srt;
+            count = count + 1;
+            if (count > max_length)
+                then do;
+                call ioa$('map file too long %.', 100);
+                err_code = 4;                    /* map file too long   */
+                leave main_loop;
+                end;
+end_mainloop:
+            end;
+        count = count - 1;
+
+/*
+   do i = 1 to count;
+   call ioa$ ('%v %w %w%.', 100, newmap(i).sym_name, newmap(i).segno, newmap(i).wordno);
+   end;
+   */
+
+        call srch$$(k$clos, close_by_unit, 2, unit, type, code);
+long:
+            proc(a) options (nocopy) returns (fixed bin(31));
+dcl a fixed bin,
+    b fixed bin(31),
+    word(2) fixed bin based;
+            b = a;
+            addr(b) -> word(1) = 0;
+
+
+            return (b);
+            end;
+        return;
+        end;

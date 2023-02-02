@@ -1,0 +1,136 @@
+/* L2$ACCOUNTING.SPL, PrintMaster, Jeff Hostetler, April 26, 1984             */
+/* Example accounting procedure.                                              */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$accounting: proc;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>l2.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+
+%replace
+   accounting_version   by 1,
+   max_buf_length       by 552;          /* length of accounting record */
+
+dcl
+   buffer               char(max_buf_length) var,
+   date_now             char(14) var,
+   dow                  bin,
+   form_type            char(16) var,
+   iso_date             char(21),
+   acct_msg             char(kwl$chars_in_value) var,
+   kwp                  ptr,
+   (unit, code, rnw)    bin,
+
+   cc_table (ds$first_cc : ds$last_cc) char(1) var static
+      init ('I', 'I', 'I',                  /* Invalid, (shouldn't get these) */
+            'A',                            /* Aborted */
+            'C',                            /* Completed */
+            'S',                            /* Suspended */
+            'J',                            /* Job Dropped */
+            'T',                            /* -NOWAIT job Timed-out */
+            'D');                           /* Copy Dropped */
+%page;
+
+   unit = 0;
+
+   /* See if accounting is to be done for this job. */
+
+   if ^ kwl$find_kw ('ACCOUNTING', ds.p_job_kwl, kwp) then
+      return;
+
+   form_type = '';
+   if kwl$find_kw ('FORM', ds.p_job_kwl, kwp) then
+      if kwl$get_nth_value (kwp, 1, form_type) then ;
+
+   acct_msg = '';
+   if kwl$find_kw ('ACCT_INFO', ds.p_job_kwl, kwp) then
+      if kwl$get_nth_value (kwp, 1, acct_msg) then ;
+
+   call cv$fda (date$(), dow, iso_date);
+   date_now = substr(iso_date,1,14);
+
+   call ioa$rs (addr(buffer)->bvs.chars, max_buf_length, addr(buffer)->bvs.len,
+       '%2zd%6(%32v%)%5:0d%32v%128v%3(%5:0d%)%14v%16v%14v%5:4d%v%v%$', -1,
+
+      /* accounting record version */
+
+      accounting_version,
+
+      /* info about user spooling the job */
+
+      ds.system_id,
+      ds.user_project,
+      ds.user_id,
+
+      /* info about the device printing the job */
+
+      psv.my_system_id,
+      ds.device_name,
+
+      /* info about the job */
+
+      ds.q_partition,
+      ds.job_id,
+      ds.job_name,
+      ds.job_pathname,
+      ds.file_size,
+      ds.copies.copy_nr,                    /* copy # printed */
+      ds.copies.requested,                  /* # copies requested */
+      dtm(ds.dates.spooled),
+
+      /* accounting info */
+
+      form_type,
+      dtm(ds.dates.started),
+      l2.total_pages_printed,
+      cc_table(ds.completion_code),         /* job's  completion status */
+      acct_msg);                            /* user message for accounting */
+
+   /* Open accounting file and write the buffer. */
+
+   on condition (err$condition_before_msg)
+      begin;
+      call err$ (err$log_event_et, 'Can''t open accounting file.', 0, 0, 0);
+      goto end_;
+      end;
+   call gp$open_pde (k$writ+k$ndam+k$getu, '', gbl$system_dir,
+                     'ACCOUNTING.DATA', unit);
+   revert condition (err$condition_before_msg);
+
+   call prwf$$ (k$posn+k$prea, unit, null, 0, maxint31, 0, code);
+   if code = e$eof then                     /* If we reached the end of the */
+      call gp$write_line (unit, buffer);    /*   file, write the buffer. */
+   else                                     /*   Otherwise, record an error. */
+      call err$ (err$log_event_et, 'Advancing "ACCOUNTING.DATA".', code, 0, 0);
+
+end_:
+   call gp$close (unit);
+   return;
+
+
+   dtm : procedure (date) returns (char(14) var);
+
+   dcl
+      fs_date  bin(31),
+      status   bin,
+      date     char(28) var;
+
+      call cv$dtb (date, fs_date, status);
+      if status ^= 0 then
+         return ('*invalid date*');
+      call cv$fda (fs_date, dow, iso_date);
+      return (substr (iso_date, 1, 14));
+
+   end dtm;
+
+end l2$accounting;

@@ -1,0 +1,93 @@
+/* GP$ANY.SPL, PrintMaster, Jim Wilcoxson, January 15, 1984                   */
+/* This is the ANY$ on-unit that replaces static on-units (SOU's get wiped    */
+/* out if CP$ is called, and have other nasty features).                      */
+/* NOTE:  This procedure cannot be compiled in debug mode, or attempts to     */
+/*        single step in DBG will cause an infinite loop.                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+gp$any : procedure;
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>cond_fr_hdr.ins.spl';
+%include '*>insert>stack_fr_hdr.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   count          bin,                      /* stack frame counter */
+   cfp            ptr;                      /* condition frame pointer */
+
+   /* find condition frame for this condition */
+
+   cfp = stackptr()->cfh.ret_sb;
+   do count = 1 to 100 while (cfp ^= null);
+      if cfp->cfh.flags.cond_fr then        /* this is it */
+         leave;
+      else
+         cfp = cfp->cfh.ret_sb;             /* step back one frame */
+      end;
+
+   if cfp = null | count >= 100 then
+      call errpr$ (k$srtn, e$stks, '', 0, 'gp$any', 0);
+
+   if gbl.user_inited & gbl.trace_on then
+      if (gbl.using_debugger
+            & cfp->cfh.cond_name_ptr->bcv ^= 'ILLEGAL_INST$'
+            & cfp->cfh.cond_name_ptr->bcv ^= 'NONLOCAL_GOTO$')
+       | ^gbl.using_debugger then
+            call ioa$ ('TRACE: GP$ANY handling condition %v%.', -1,
+                       cfp->cfh.cond_name_ptr->bcv);
+
+dcl select_hack char(32); /*
+   select (cfp->cfh.cond_name_ptr->bcv);
+*/ select_hack =  (cfp->cfh.cond_name_ptr->bcv);
+   select (select_hack);
+      when (err$condition_before_msg_name) do;
+         cfp->cfh.cflags.continue_sw = false;
+         call err$print_error_message;
+         signal condition (err$condition_after_msg);
+         end;
+
+      when (err$condition_after_msg_name)
+         cfp->cfh.cflags.continue_sw = false;
+
+      when ('QUIT$', 'LOGOUT$')
+         if ^gbl.using_debugger & ^gbl.system_condition_signalled then do;
+            call ioa$er ('%/PrintMaster aborted.%.', -1);
+            if gbl.user_inited then
+               goto gbl.abort_label;
+            else
+               call cmlv$e;
+            end;
+
+      when ('ACCESS_VIOLATION$','AREA', 'BAD_NONLOCAL_GOTO$', 'CONVERSION',
+            'ERROR', 'ILLEGAL_INST$', 'ILLEGAL_SEGNO$', 'NO_AVAIL_SEGS$',
+            'NULL_POINTER$', 'OUT_OF_BOUNDS$', 'POINTER_FAULT$',
+            'RESTRICTED_INST$', 'UII$', 'BAD_PASSWORD$', 'R0_ERR$')
+         if gbl.user_inited then
+            if ^gbl.using_debugger then
+               if ^gbl.system_condition_signalled then do;
+                  gbl.system_condition_signalled = true;
+                  call print_system_error;
+                  call err$abort_program;
+                  end;
+
+      otherwise ;
+      end;  /* select */
+
+
+print_system_error: procedure;
+
+dcl
+   status      bin;
+
+   call ioa$er ('%/System condition %v raised at %p.%.', -1,
+                cfp->cfh.cond_name_ptr->bcv, cfp->cfh.ms_ptr->cfh.ret_pb);
+
+end print_system_error;
+
+end gp$any;

@@ -1,0 +1,134 @@
+/* ERR$.SPL, PrintMaster, Jim Wilcoxson, August 19, 1983                      */
+/* Error handler for spool subsystem.                                         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+err$ : procedure (key, user_msg, status1, status2, clearing_codes);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>err.ins.spl';
+%include '*>insert>stack_fr_hdr.ins.spl';
+%include '*>insert>ecb.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$primos_error_text.ins.spl';
+%include '*>entry>err$net_error_text.ins.spl';
+%include '*>entry>err$abort_program.ins.spl';
+%include '*>entry>err$display_error.ins.spl';
+%include '*>entry>err$print_error_message.ins.spl';
+%list;
+
+dcl
+   key               bit(16),               /* error type */
+   user_msg          char(*),               /* additional error message */
+   status1           bin,                   /* Primos error code (err$primos_et)
+                                  -OR- virtual circuit status (err$network_et)
+                                  -OR- user error status (err$user_et) */
+   status2           bin,                   /* Primenet buffer status */
+   1  clearing_codes,                       /* Primenet clearing codes */
+      2  ccode       bit(8),                /* clearing code */
+      2  cdiag       bit(8);                /* clearing diagnostic */
+
+dcl
+   1  bvc  based,
+      2  len         bin,
+      2  chars       char(32),
+   callers_sfh       ptr,
+   subr              char(32) var,          /* subr causing error */
+   status            bin;
+
+   if key = err$log_event_et then do;
+      call log_event;
+      return;
+      end;
+
+   if err$es.type ^= err$no_et then         /* error on error has occurred */
+      call err$print_error_message;         /* process previous error first */
+
+   /* setup external structure for new error */
+
+   err$es.warning = substr (key, 1, 1);
+   err$es.type = key & '7FFF'b4;
+
+   callers_sfh = stackptr()->sfh.ret_sb;
+   if callers_sfh->sfh.flags.user_proc then
+      err$es.subr = callers_sfh->sfh.owner_ptr->based_ecb.ecb_name;
+   else
+      /* see description below with procedure */
+      call ioa$rs (addr(err$es.subr)->bvc.chars, 32,
+                     addr(err$es.subr)->bvc.len, 'Caller''s LB%% = %p%$', -1,
+                     stackptr()->sfh.ret_lb);
+
+   err$es.user_message = user_msg;
+
+   /* do key-dependent stuff */
+
+   select (err$es.type);
+
+      when (err$primos_et) do;
+         call err$primos_error_text (status1, err$es.system_message);
+         err$es.status1 = status1;          /* Primos error status */
+         end;
+
+      when (err$network_et) do;
+         call err$net_error_text (status1, err$es.system_message);
+         err$es.status1 = status1;       /* VC status */
+         err$es.status2 = status2;       /* buffer status */
+         err$es.clearing_codes.ccode = clearing_codes.ccode;
+         err$es.clearing_codes.cdiag = clearing_codes.cdiag;
+         end;
+
+        when (err$user_et)
+         err$es.status1 = status1;
+
+      when (err$coding_et) do;              /* these can't be caught */
+         call err$print_error_message;
+         call err$abort_program;
+         end;
+
+      otherwise
+         call err$ (err$primos_et, 'Bad key in ERR$ call', e$bkey, 0,
+                    clearing_codes);        /* clearing codes aren't used */
+      end;
+
+   on condition(cleanup$)                   /* if anybody goes past me */
+      err$es.type = err$no_et;              /* they must have handled the cond */
+
+   if gbl.trace_on then
+      call err$print_error_message;
+
+   /* if nobody else handles the condition, GP$ANY
+      prints an error message and signals err$condition_after_msg;
+      If nobody catches that condition, GP$ANY returns here,
+      which returns to the caller on warnings, and halts otherwise;
+      if an error occurs before environment has been initialized,
+      print error message and halt */
+
+   if gbl.user_inited & ^err$es.warning then
+      signal condition (err$condition_before_msg);
+   else
+      call err$print_error_message;
+
+   /* if error was a warning, return to program; otherwise, abort.
+
+      NOTE: there should be a check here to see if control returned from
+            the signal statement BEFORE the error message was printed...
+            this is sort of a coding error (EX: catching err$cond_before_msg
+            then returning will cause call to err$abort_program WITHOUT any
+            error msg being printed */
+
+   if err$es.warning then
+      err$es.type = err$no_et;
+   else
+      call err$abort_program;               /* doesn't return */
+   return;
+
+log_event : procedure;
+
+   call err$display_error (user_msg);
+   return;
+
+end;
+
+end err$;

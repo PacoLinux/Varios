@@ -1,0 +1,424 @@
+/* L2$PRINT_BANNER.SPL, PrintMaster, Jim Wilcoxson, January 11, 1985          */
+/* Prints the banner for line oriented level 2 driver L2$MAIN.                */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$print_banner: proc;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>l2.ins.spl';
+%include '*>entry>l2$expand_string.ins.spl';
+%include '*>entry>l2$io.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      lc             bin,
+      line           char(l23.chars_per_line) var,
+      date_          bin(31),
+      code           bin,
+      form_type      char(32) var,
+      destination    char(32) var,
+      quiet_save     bit aligned,
+      max_option_len bin,
+      accounting_save   bit aligned,
+      print_stars       bit aligned,
+      empty_file        bit aligned,
+      i                 bin,
+      value_buffer      char(kwl$chars_in_value) var,
+      1  banner_format_info,
+         2  no_banner   bit,
+         2  no_stars    bit,
+         2  no_filename bit,
+         2  no_userid   bit,
+         2  no_copies   bit;
+
+
+   /* only print banner once; L3 may request it early */
+
+   if l2.banner_printed then
+      return;
+
+   l2.banner_printed = true;
+   quiet_save = l2.quiet;
+   l2.quiet = false;
+   accounting_save = l2.suppress_accounting;
+   l2.suppress_accounting = true;
+   print_stars = false;
+   line = '';
+   lc = 0;
+
+   on condition (cleanup$)
+      begin;
+      l2.suppress_accounting = accounting_save;
+      l2.quiet = quiet_save;
+      end;
+
+   call get_banner_info;
+
+   empty_file = (ds.pfbp->bio$fb.status = e$eof);
+
+   if ^empty_file & (l2.no_header  |  banner_format_info.no_banner) then
+      goto skip_header;
+
+   call skip_line (1);                      /* start on line 2 */
+
+   /* put out info about owner */
+
+   call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line, addr(line)->bin15,
+                'Queued by %v in project %v%$', -1,
+                ds.user_id, ds.user_project);
+   if length (ds.system_id) ^= 0 then
+      line = line || ' on ' || ds.system_id;
+   call print_line (line);
+
+   /* tell where the print file came from */
+
+   if length (ds.job_pathname) = 0 then    /* file opened in queue */
+      line = 'Job opened in print queue.';
+   else do;                                 /* have job's pathname */
+      line = ds.job_pathname;
+      if length (ds.job_system) ^= 0 then   /* job is remote */
+         line = line || ' on ' || ds.job_system;
+      end;
+   call print_line (line);
+
+   /* tell how big it is, when last modified and if it was copied */
+
+   if ds.file_size ^= maxint then do;
+      call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line,
+                   addr(line)->bin15, 'File is %d disk record%$', -1,
+                   ds.file_size);
+      if ds.file_size ^= 1 then
+         line = line || 's';
+      end;
+   else
+      line = 'File size is unknown';
+
+   if substr (ds.dates.modified_then, 1, 2) ^= '**' then
+      line = line || ', last modified ' || ds.dates.modified_then;
+   call print_line (line);
+
+   if ds.dates.modified_then ^= ds.dates.modified_now then do;
+      line = 'File has been modified since spooled; new modification date is '
+             || ds.dates.modified_now;
+      call print_line (line);
+      end;
+   else
+      call skip_line(1);
+
+
+   print_stars = ^banner_format_info.no_stars;
+   max_option_len = l23.chars_per_line;
+   if print_stars then
+      max_option_len = max_option_len - 5;  /* don't forget the stars */
+
+   call skip_line (2);
+
+   if ^banner_format_info.no_userid then do;
+      call large_letters (ds.user_id);
+      call skip_line (2);
+      end;
+
+   if length (ds.job_name) ^= 0  &  ^banner_format_info.no_filename then do;
+      call large_letters (ds.job_name);
+      call skip_line (2);
+      end;
+
+   call skip_line (1);
+
+   /* give the job's id and queue */
+
+   call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line, addr(line)->bin15,
+                'Job %d %v in queue %v%$', -1, ds.job_id, ds.job_name,
+                ds.q_partition);
+   if psv.network_started then
+      line = line || ' on ' || gp$system_name (ds.page_control_unit);
+   call print_line (line);
+
+   /* give the date spooled and the defer date (if given) */
+
+   line = 'Queued on ' || ds.dates.spooled;
+   if length (ds.dates.deferred) ^= 0 then
+      line = line || ' and deferred until ' || ds.dates.deferred;
+   call print_line (line);
+
+   /* print job options (since -PRIORITY is required, there will
+      always be at least one option */
+
+   line = 'Options:';
+   call print_options;
+   call print_line (line);               /* print last option line */
+
+   call skip_line (1);
+
+   /* tell when this copy started and device's name */
+
+   if ds.copies.requested = 1 then
+      call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line, addr(line)->bin15,
+                   'Copy began printing %v by %v rev %c%$', -1,
+                   ds.dates.started, ds.device_name,
+                   rev_number, length(rev_number));
+   else
+      call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line, addr(line)->bin15,
+                   'Copy %d of %d began printing %v by %v rev %c%$', -1,
+                   ds.copies.copy_nr, ds.copies.requested,
+                   ds.dates.started, ds.device_name,
+                   rev_number, length(rev_number));
+
+   if length (psv.my_system_id) ^= 0 then
+      line = line || ' on ' || psv.my_system_id;
+   call print_line (line);
+   call skip_line (1);
+
+   /* tell copy number and number requested */
+
+   if ds.copies.requested > 1  &  ^banner_format_info.no_copies then do;
+      call ioa$rs (addr(line)->bvs.chars, l23.chars_per_line, addr(line)->bin15,
+                   'Copy %d of %d%$', -1, ds.copy_nr, ds.copies.requested);
+      call skip_line (2);
+      call large_letters (line);
+      call skip_line (1);
+      end;
+
+   /* print the device's banner message (if given) */
+
+   call print_banner_msg (ds.p_device_kwl);
+
+skip_header:
+
+   /* print user's banner message (if given) even if -NO_BANNER requested */
+
+   call print_banner_msg (ds.p_job_kwl);
+
+   if empty_file then do;
+      call skip_line (l23.lines_per_page - lc - 11);
+      call large_letters ('EMPTY FILE!');
+      end;
+   else
+      if print_stars then
+         call skip_line (l23.lines_per_page-4 - lc);
+
+   if lc ^= 0 then
+      call l2$io (l2$skip_channel, '', 1);
+   l2.quiet = quiet_save;
+   l2.suppress_accounting = accounting_save;
+   return;
+%page;
+
+   print_banner_msg: proc (p);
+
+      dcl
+         p        ptr,
+
+         p_bnr_kw ptr;
+
+      if kwl$find_kw ('BANNER', p, p_bnr_kw) then do;
+         i = 1;
+         do while (kwl$get_nth_value(p_bnr_kw, i, value_buffer));
+            if length(value_buffer) > 0 then
+               if substr(value_buffer,1,1)= '!' then do;
+                  if length(value_buffer) > 1 then do;
+                     call skip_line (1);
+                     call large_letters (substr(value_buffer,2));
+                     call skip_line (1);
+                     end;
+                  end;
+               else
+                  call print_line (value_buffer);
+            else
+               call skip_line (1);
+            i = i+1;
+            end;
+         end;
+
+      return;
+      end print_banner_msg;
+%page;
+
+
+   print_options: procedure;
+
+   dcl
+      keyword     char(kwl$chars_in_kw) var,
+      value       char(kwl$chars_in_value) var,
+      p_kw        ptr,
+      sorted_kwl  ptr;
+
+
+   sorted_kwl = kwl$copy_kwl (ds.p_job_kwl);
+   call kwl$sort_kwl (sorted_kwl);
+
+   do p_kw = sorted_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+
+      keyword = p_kw->kw_entry.kw;
+dcl select_hack char(32); /*
+      select (keyword);
+*/    select_hack = keyword;
+      select (select_hack);
+         when (kw$copies, 'BANNER', 'NOTE', 'ACCT_INFO',
+               kw$copies_left, kw$copies_started, kw$copies_completed,
+               kw$dt_spooled, kw$dt_modified, kw$dt_backed_up,
+               kw$job_id, kw$job_name, kw$job_system, kw$pathname,
+               kw$project_id, kw$q_partition, kw$size, kw$user_system,
+               kw$tran_id, kw$unique_id, kw$user_id,
+               'DEVICE_INIT_STRING', 'DEVICE_TERMINATE_STRING',
+               'JOB_INIT_STRING', 'JOB_TERMINATE_STRING')
+            ;
+         otherwise
+            call print_keyword;
+         end;
+
+      end;                               /* do p_kw */
+
+      call kwl$destroy_kwl (sorted_kwl);
+
+
+
+      print_keyword: procedure;
+
+      dcl
+         required_len      bin,
+         pv                ptr;
+
+         required_len = 2 + length(keyword);
+         do pv = p_kw->kw_entry.pf_value repeat pv->value_entry.next
+                                         while (pv ^= null);
+            required_len = required_len + 1 + length (pv->value_entry.value);
+            end;
+
+         if required_len + 9 <= max_option_len then /* will fit on one line */
+            if required_len + length(line) > max_option_len then
+               call dump_option_line;    /* but not on current line */
+
+         call stuff_option (' -' || keyword);
+         do pv = p_kw->kw_entry.pf_value repeat pv->value_entry.next
+                                         while (pv ^= null);
+            call stuff_option (' ' || pv->value_entry.value);
+            end;
+
+
+
+         dump_option_line: procedure;
+
+            call print_line (line);
+            line = '        ';           /* same length as 'Options:' */
+
+            end dump_option_line;
+
+
+
+         stuff_option: procedure (s);
+
+            dcl
+               s     char(*) var;
+
+            if length (line) + length(s) > max_option_len then
+               call dump_option_line;
+            line = line || s;
+
+            end stuff_option;
+
+         end print_keyword;
+
+      end print_options;
+
+
+   large_letters: proc (message);
+
+      dcl
+         message           char(*) var,
+
+         (p, p0)           ptr,
+         line_length       bin,
+         1  bnr_line       based,
+            2  next        ptr,
+            2  line        char(line_length) var;
+
+
+      do p = l2$expand_string (message, max_option_len)
+                       repeat p0 while (p ^= null);
+         line_length = length(p->bnr_line.line);
+         call print_line (p->bnr_line.line);
+         p0 = p->bnr_line.next;
+         free p->bnr_line;
+         end;
+
+   end large_letters;
+
+
+
+   skip_line: procedure (n);
+
+   dcl
+      n     bin,
+
+      i     bin;
+
+      if print_stars then
+         do i = 1 to n;
+            call l2$io (l2$print_line, '****', 0);
+            call l2$io (l2$skip_line, '', 1);
+            end;
+      else
+         call l2$io (l2$skip_line, '', n);
+      lc = lc + n;
+      if lc > l23.lines_per_page then
+         lc = lc - l23.lines_per_page;
+
+   end skip_line;
+
+
+
+   print_line : procedure (line_to_print);
+
+   dcl
+      line_to_print  char(*) var;
+
+      if print_stars then
+         call l2$io (l2$print_line, '**** ' || line_to_print, 0);
+      else
+         call l2$io (l2$print_line, (line_to_print), 0);
+
+      call l2$io (l2$skip_line, '', 1);
+      lc = lc + 1;
+      if lc > l23.lines_per_page then
+         lc = lc - l23.lines_per_page;
+
+   end print_line;
+
+   get_banner_info: proc;
+
+   dcl
+      pbf      ptr,
+      i        bin;
+
+      string(banner_format_info) = false;   /* turn all bits off */
+
+      if ds$find_kw ('BANNER_FORMAT', pbf) then do;
+         i = 1;
+         do while (kwl$get_nth_value(pbf, i, value_buffer));
+dcl select_hack char(32); /*
+            select (value_buffer);
+*/          select_hack =  (value_buffer);
+            select (select_hack);
+               when('NO_BANNER')   banner_format_info.no_banner = true;
+               when('NO_STARS')    banner_format_info.no_stars = true;
+               when('NO_FILENAME') banner_format_info.no_filename = true;
+               when('NO_USERID')   banner_format_info.no_userid = true;
+               when('NO_COPIES')   banner_format_info.no_copies = true;
+               otherwise;
+               end;                         /* of select */
+            i = i + 1;
+            end;
+         end;
+
+   end get_banner_info;
+end l2$print_banner;

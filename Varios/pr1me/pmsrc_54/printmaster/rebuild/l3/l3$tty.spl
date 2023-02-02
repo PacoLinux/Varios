@@ -1,0 +1,136 @@
+/* L3$TTY.SPL, PrintMaster, Jeff Hostetler, March 20, 1984                    */
+/* Device Driver for a tty printer.                                           */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l3$tty: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      key         bin,
+      data_line   char(*),                  /* only valid when key = print */
+      number      bin,                      /* skip count or channel */
+
+      need_eject  bit static,               /* true for first job */
+      pause_eject bit static,               /* pause on page eject */
+      ring_bell   bit static;               /* ring bell before pause */
+
+
+   select (key);
+
+      when (l2$device_init)
+         return (device_init());
+      when (l2$job_init)
+         return (job_init());
+      when (l2$skip_channel)
+         return (skip_channel());
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of TTY Device Driver. */
+
+%page;
+
+
+skip_channel: proc returns (bin);
+
+   dcl
+      ch             bin,
+      old_config     bit(16),            /* old terminal config */
+      dummy          bit(16),
+      status         bin;
+
+
+    if number = 1 then
+      if gbl.using_debugger then
+          call l2$io (l2$output_string, '<top of form>', 0);
+      else
+         call l2$io (l2$output_string, byte(140), 0);      /* formfeed */
+   else                                     /* skip line if out of range */
+      call l2$io (l2$output_string, byte(138), 0);         /* linefeed */
+
+   if pause_eject then do;
+      if ring_bell then
+         call l2$io (l2$output_string, byte(135), 0);
+      old_config = duplx$('ffff'b4);     /* read current config */
+      on condition (cleanup$)
+         begin;
+         old_config = duplx$ (old_config);
+         end;
+      call tty$rs ('01'b, status);          /* flush input buffer */
+      dummy = duplx$ (old_config | 'c'b4);  /* set to half duplex, nolf */
+      call c1in (ch);
+      dummy = duplx$ (old_config);
+      end;
+
+   return (l2$func_handled_rc);
+
+end skip_channel;
+
+%page;
+
+
+device_init: proc returns (bin);
+
+dcl
+   func     bin;
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = ' ';
+   l23.scan_key = l2$trim_key;
+   do func = l2$skip_channel, l2$job_init;
+      l23.func_implemented (func) = true;
+      end;
+
+   /* cause a page eject before the first job */
+
+   need_eject = true;
+   return (l2$func_handled_rc);
+
+end device_init;
+
+%page;
+
+
+job_init: proc returns (bin);
+
+   dcl
+      value char(1) var,
+      p_kw  ptr;
+
+
+   /* was PAUSE_EJECT given in device or job keyword list?
+      Ring bell on ejects if keyword has a value */
+
+   pause_eject = ds$find_kw ('PAUSE_EJECT', p_kw);
+   if pause_eject then
+      ring_bell = kwl$get_nth_value (p_kw, 1, value);
+
+   /* if this is the very first job since this device started, do a
+      page eject.  This must be done after -PAUSE_EJECT has been handled,
+      so that this eject will pause if necessary */
+
+   if need_eject then do;
+      call l2$io (l2$output_string, byte(141), 0);
+      call l2$io (l2$skip_channel, '', 1);
+      need_eject = false;
+      end;
+
+   return (l2$func_handled_rc);
+
+end job_init;
+
+end l3$tty;

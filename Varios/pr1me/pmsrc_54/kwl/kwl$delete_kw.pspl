@@ -1,0 +1,117 @@
+/* KWL$DELETE_KW.SPL, PrintMaster, Jeff Hostetler, August 24, 1983            */
+/* Procedure to delete a kw from a kwl.                                       */
+/* NOTE:  It is not an error if kw is not in kwl.                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$delete_kw: proc (p_kw_given, p_kwl);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$find_kw.ins.spl';
+%include '*>entry>kwl$load_ikwl.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      p_kw_given           pointer,         /* ptr to kw to delete (in) */
+      p_kwl                pointer,         /* ptr to header of kwl (in/out) */
+
+      p_kw                 pointer,         /* next node */
+      p_kw0                pointer,         /* last node */
+
+      saved_swi            like swi_switches;
+
+
+   if p_kwl = null | p_kw_given = null then
+      return;
+
+   /* Assumes the master keyword list has been loaded */
+
+   p_kw0 = null;                            /* back pointer */
+   do p_kw = p_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+      if p_kw_given = p_kw then do;
+         call delete_entry;                 /* delete p_kw->kw_entry */
+         return;
+         end;
+      else                                  /* it's not it, keep looking... */
+         p_kw0 = p_kw;                      /*   save current */
+      end;
+
+   /* alas... we have failed, say nothing and return */
+   return;
+   /* logical end of kwl$delete_kw */
+
+%page;
+/* kwl$delete_kw.delete_entry, PrintMaster, Jeff Hostetler, August 22, 1983   */
+/******************************************************************************/
+
+   delete_entry: proc;
+
+      dcl pik ptr;
+
+      if kwl.check_wp_from_ikwl_only then do;
+         if kwl$find_kwv (p_kw->kw_entry.kw, psv.internal_kwl, pik) then
+            if pik->kw_entry.wp then
+               call err$ (err$user_et, 'Keyword "-' || p_kw->kw_entry.kw
+                          || '" cannot be changed.', err$kw_wp_ue, 0, 0);
+         end;
+      else
+         if ^kwl.in_edit_kwl then         /* ignore wp bit if in EDIT_KWL */
+            if p_kw->kw_entry.flags.wp then    /* kw is write protected */
+               call err$ (err$user_et, 'Keyword "-' || p_kw->kw_entry.kw
+                          || '" cannot be removed or overwritten.',
+                          err$kw_wp_ue, 0, 0);
+
+      /* remove it, (unlink it & free it) */
+
+      if p_kw0 = null then
+         p_kwl = p_kw->kw_entry.next;
+      else
+         p_kw0->kw_entry.next = p_kw->kw_entry.next;
+      call free_kw_entry (p_kw);
+
+      return;
+      end delete_entry;
+
+%page;
+/* kwl$delete_kw.free_kw_entry, PrintMaster, Jeff Hostetler, August 16, 1983  */
+/* procedure to free kw entry at p_kw                                         */
+/******************************************************************************/
+
+   free_kw_entry: proc (p_kw);
+
+      dcl
+         p_kw     pointer,                  /* ptr to kw entry to be removed  */
+
+         pv       pointer,                  /* ptr to value entry */
+         pv0      pointer;
+
+      pv = p_kw->kw_entry.pf_value;   /* save ptr to value list */
+      if segno(p_kw) < '4000'b3 then do;
+         call gp$lock_shared_area (saved_swi);
+         call ar$fre (psv.shared_area, p_kw);
+         call gp$unlock_shared_area (saved_swi);
+         end;
+      else
+         free p_kw->kw_entry;
+
+      do while (pv ^= null);                /* Now, free each value */
+         pv0 = pv->value_entry.next;
+         if segno(pv) < '4000'b3 then do;
+            call gp$lock_shared_area (saved_swi);
+            call ar$fre (psv.shared_area, pv);
+            call gp$unlock_shared_area (saved_swi);
+            end;
+         else
+            free pv->value_entry;
+         pv = pv0;
+         end;
+
+      return;
+      end free_kw_entry;
+
+   end kwl$delete_kw;

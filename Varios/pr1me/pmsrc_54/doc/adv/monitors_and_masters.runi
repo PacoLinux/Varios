@@ -1,0 +1,128 @@
+.dn  {{MONITORS}}
+Monitors are phantom processes that run on every PrintMaster system.
+The PrintMaster monitor is started when INIT_PRINTMASTER is run from
+the system console.  It runs under the user-id PRINTMASTER_MONITOR;
+this id does NOT have to be added to the user profile database (SAD).
+The monitor periodically checks for disk partition startups and
+shutdowns, and schedules print jobs.  It is idle 99%% of the time if
+there is no job or device activity.  INIT_PRINTMASTER will not start
+another monitor if one is already active; it must be logged out first.
+.dd  {{Monitoring Disk Partitions}}
+The monitor checks for disk partition startups and shutdowns once
+every minute.  If any partitions have been started, it checks for a
+print queue on the partition (PRINTMASTER_QUEUE* directory), and
+reads all jobs from the queue.  Once the queue has been read, it is
+never referenced again by the monitor during normal operation.
+.dn  {{Monitoring Job Activity}}
+When a user queues a job, a message is sent to the monitor with the
+keyword list describing it.  If -OPEN was used, the monitor
+periodically checks to see if the job has been closed; if so, it is
+ready to be printed.  Monitors are also notified if a job is changed
+or deleted.
+.dn  {{Monitoring Device Activity}}
+The monitor is responsible for communication and management of all
+devices connected to its system.  This includes submitting the device
+phantoms, and resubmitting devices that have timed-out when there is
+work available for them.  Devices have the same user-id as their
+device name.  Whenever a device changes state, (i.e., finishes a job,
+logs out, etc.) it sends a message to the monitor with the new state.
+If the device is now idle, the monitor will try to find a job for the
+device to print.  If the keyword list representing the device has
+changed by the operator (e.g., a new form type is mounted), a message
+is also sent to the monitor with the device's new keyword list.
+.dn  {{The Job Scheduling Algorithm}}
+The algorithm used to schedule jobs and devices is rather complex, so
+it will be easier to understand if the EFFECT is explained rather
+than exactly how it works.  Five steps will be used to explain the
+scheduler:
+
+    1)   determine eligible devices
+    2)   determine eligible jobs
+    3)   order jobs from highest to lowest priority
+    4)   match eligible jobs to eligible devices
+    5)   select the "best" matches
+
+.dd  {{Determining Eligible Devices}}
+This step is quite simple - a device is eligible if it is timed-out,
+or is idle.  This is checked for every device, no matter where it is
+located on the network.
+.dn  {{Determining Eligible Jobs}}
+There are four conditions for a job to be eligible for printing:
+
+    1)  it must not be deferred, or the deferred date must have
+        already passed
+
+    2)  the job must not still be open, or the -NO_WAIT keyword must
+        be included in the job
+
+    3)  the job must have more copies left to print
+
+    4)  the job must not be already be printing, or the -PARALLEL
+        keyword must be included in the job (this allows different
+        printers to print multiple copies simultaneously)
+.dn  {{Ordering Jobs}}
+This is the step that is not actually performed by the scheduler;
+jobs are always maintained in the correct order when queued.  However,
+the algorithm is easier to understand if this step is visualized as
+ordering or prioritizing all eligible jobs.  PrintMaster's ordering
+algorithm considers five job characteristics: the job's priority,
+file size, number of copies left to print, starting deadline, and
+time the job was spooled.  The easiest way to describe it is to
+divide eligible jobs into three classes: jobs with a deadline that
+has passed, jobs without a deadline (or one that hasn't passed), and
+jobs with a priority of zero.
+.dd  {{Class 1 Jobs}}
+Deadlines are put on jobs with the -DEADLINE keyword.  Jobs with an
+elapsed deadline have the highest priority, and will be printed as
+soon as possible; they show up with a priority "hi" in a queue
+listing.  The job with the oldest deadline prints first.  No other
+characteristics (file size, priority, time spooled, etc.) are
+checked.
+.dn  {{Class 2 Jobs}}
+If a job has no deadline, or its deadline hasn't elapsed, it is in
+the second class.  These are ordered first by priority (highest
+priority first), then by job size within the same priority level
+(smaller jobs first), then by time spooled within the same job size
+(jobs spooled earlier print sooner).  The job size is computed by
+multiplying the file size by the number of copies left to print.
+This prevents a 10 record job with 100 copies from completely
+printing before a 20 record job.  Jobs with a deadline that has not
+passed are also in the second class.  When the deadline expires, the
+job priority is changed to the largest possible priority, and is
+moved to the first class (this is why the deadline is a STARTING
+deadline, not a finishing deadline).
+.dn  {{Class 3 Jobs}}
+The third class is for priority zero jobs.  These show up with a
+priority "low" in a queue listing.  Jobs with this priority are
+printed strictly first-in first-out without regard to file size or
+any other characteristics.  This means that it is not possible to put
+a deadline on a priority zero job, since this may violate the
+first-in first-out nature when the deadline elapses.
+.du
+.dn  {{Matching Eligible Jobs to Eligible Devices}}
+There are four test that must be satisfied before an eligible device
+can print an eligible job:
+
+    1)  the disk partition of the job's print queue must be accessible
+        to the device
+
+    2)  the disk partition of the job's print file must be accessible
+        to the device if -COPYFILE was not used
+
+    3)  the job's file size (value of -SIZE keyword) must not be
+        greater than the device's job size limit (value of
+        -JOB_SIZE_LIMIT keyword).
+
+    4)  the job's keyword list must "match" the device's, as
+        described under the keyword list matching operation in the
+        KEYWORD chapter.  Briefly, this means that all of the job's
+        scheduling keywords are in the device's keyword list, and the
+        corresponding values also match.  Values match if either the
+        device or job keyword has no values, or one of the job
+        keyword's values is listed among the device keyword's values.
+.dn  {{Selecting the "best" matches}}
+The job scheduler always picks the fastest device that matches a job.
+In the future, the job and device location may also be taken into
+account, i.e., match  local jobs to local devices whenever possible).
+.du 2
+

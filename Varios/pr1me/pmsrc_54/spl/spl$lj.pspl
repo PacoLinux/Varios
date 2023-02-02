@@ -1,0 +1,318 @@
+/* SPL$LJ.SPL, PrintMaster, Jeff Hostetler, February 11, 1984                 */
+/* User callable procedure to return the kwl of a job.                        */
+/* NOTE:  This procedure must catch all errors and return {true | false}.     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spl$lj: proc (partition, job_id, kwlp, in_lpq)
+        returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      partition   char(*) var,              /* (in/out) */
+      job_id      bin,                      /* (in) */
+      kwlp        ptr,                      /* (out) */
+      in_lpq      bit,                      /* (in) */
+
+      kwp                  ptr,             /* pointer to keyword inserted */
+      kwlb                 ptr,             /* pointer to keyword buffer */
+      size_kwp             ptr,
+      hold_in_edit_kwl     bit,
+      expand_info          like kwl$expand_info,
+      flags                like kwl$flags,
+      file_size            char(5) var,
+      we_did_initialization bit,
+      kwl_sd_unit          bin,
+      kwl_file_unit        bin,             /* unit for keyword file */
+      pc_sd_unit           bin,
+      pc_sdsd_unit         bin,             /* page control segdir for job */
+      pc_file_unit         bin,             /* page control file for job */
+      pj_sd_unit           bin,             /* print job segdir */
+      pj_unit              bin,             /* print job entry */
+      q_system             char(32) var,    /* system queue/job is on */
+      i                    bin,
+      (t0, t1)             bin(31),
+      pc_hdr (sq$pc_hdr_len) bin,
+      copies_started       bin,
+      copies_completed     bin,
+      status               bin,
+      rnw                  bin,
+      copy_status_page (128) bin;
+
+   kwl_sd_unit = 0;
+   kwl_file_unit = 0;
+   pc_sd_unit = 0;
+   pc_sdsd_unit = 0;
+   pc_file_unit = 0;
+   pj_sd_unit = 0;
+   pj_unit = 0;
+
+   kwlp = null;
+   kwlb = null;
+   hold_in_edit_kwl = kwl.in_edit_kwl;
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if (err$es.type = err$user_et)
+         &  (err$es.status1 = err$kwl_incomplete_ue) then
+         goto job_not_found;
+
+      if (err$es.type = err$primos_et)
+         &  (err$es.status1 = e$fnts) then
+         goto job_not_found;
+
+      if we_did_initialization then
+         goto abnormal_return;
+
+      call cnsig$ (status);                 /* ANY$ onunit does not exist */
+      end;
+
+   on condition (CLEANUP$)
+      call cleanup;
+
+%page;
+
+   /* if called from LPQ, don't attach or get partition name */
+
+   if in_lpq then do;
+      call gp$open_file (k$read + k$getu, sq$q_kwl_name, kwl_sd_unit);
+      q_system = '';
+      end;
+   else do;
+      call gp$open_pde (k$read + k$getu, partition, gbl$spool_queue,
+                         sq$q_kwl_name, kwl_sd_unit);
+      partition = gp$partition_name (kwl_sd_unit);
+      q_system = gp$system_name (kwl_sd_unit);
+      end;
+
+   call sq$open_entry (k$read+k$getu+k$iseg, kwl_sd_unit, job_id, kwl_file_unit);
+   call gp$close (kwl_sd_unit);
+
+   call kwl$read_disk_buffer (kwl_file_unit, kwlb);
+   string(expand_info) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   kwlp = null;
+   call kwl$buf_to_kwl (kwlb, kwlp, expand_info, flags);
+   call kwl$free_buffer (kwlb);
+
+   /* read copies left from the page control directory for this job */
+
+   call gp$open_file (k$read + k$getu, sq$q_pc_name, pc_sd_unit);
+   call sq$open_entry (k$read+k$getu+k$iseg, pc_sd_unit, job_id, pc_sdsd_unit);
+   call gp$close (pc_sd_unit);
+   call sq$open_entry (k$read+k$getu+k$iseg, pc_sdsd_unit, 0, pc_file_unit);
+   call gp$close (pc_sdsd_unit);
+
+   call prwf$$ (k$read, pc_file_unit, addr(pc_hdr), sq$pc_hdr_len, 0,
+                rnw, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'Reading Page Control Header', status, 0, 0);
+
+   copies_started = 0;
+   copies_completed = 0;
+   call prwf$$ (k$read+k$conv, pc_file_unit, addr(copy_status_page), 128, 0,
+                rnw, status);
+   do while (rnw ^= 0);
+      do i = 1 to rnw;
+         if copy_status_page(i) = sq$copy_in_progress then
+            copies_started = copies_started + 1;
+         else
+            if copy_status_page(i) = sq$copy_completed then
+               copies_completed = copies_completed + 1;
+         end;
+      call prwf$$ (k$read+k$conv, pc_file_unit, addr(copy_status_page), 128, 0,
+                   rnw, status);
+      end;
+   if status ^= e$eof then
+      call err$ (err$primos_et, 'Reading copy status file', status, 0, 0);
+
+   call gp$close (pc_file_unit);
+   call gp$close (kwl_file_unit);
+
+   /* add keywords COPIES_LEFT, COPIES_STARTED, COPIES_COMPLETED, TRANID,
+      JOBID, QUEUE */
+
+   kwl.in_edit_kwl = true;
+   flags.wp = true;
+   flags.info = true;                       /* not a scheduling parameter */
+   call kwl$insert_kw (kw$copies_left, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, trim(char(pc_hdr(sq$copies_left_wd)), '11'b));
+
+   call kwl$insert_kw (kw$copies_started, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, trim(char(copies_started), '11'b));
+
+   call kwl$insert_kw (kw$copies_completed, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, trim(char(copies_completed), '11'b));
+
+   call kwl$insert_kw (kw$job_id, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, trim(char(job_id), '11'b));
+
+   call kwl$insert_kw (kw$q_partition, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, partition);
+
+   if length (q_system) ^= 0 then do;
+      call kwl$insert_kw (kw$q_system, kwp, kwlp, expand_info, flags, flags);
+      call kwl$add_value (kwp, q_system);
+      end;
+
+   call kwl$insert_kw (kw$tran_id, kwp, kwlp, expand_info, flags, flags);
+   call kwl$add_value (kwp, trim(char(pc_hdr(sq$tsn_wd)), '11'b));
+
+   /* if job's size is unknown (maxint) and job was copied to the queue
+      get the current job size */
+
+   if kwl$find_kw (kw$size, kwlp, size_kwp) then
+      if kwl$get_nth_value (size_kwp, 1, file_size) then
+         if bin(file_size) = maxint then
+            if kwl$find_kw (kw$copyfile, kwlp, kwp) then
+               call get_job_size;
+
+   kwl.in_edit_kwl = hold_in_edit_kwl;
+   if ^in_lpq then
+      call at$hom (status);
+   if we_did_initialization then
+      call gp$terminate;
+   return (true);
+
+
+
+job_not_found:
+   call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+              || ' not found in queue ' || partition || '.',
+              err$job_not_found_ue, 0, 0);
+
+abnormal_return:
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+   return (false);
+
+
+
+cleanup: procedure;
+
+   kwl.in_edit_kwl = hold_in_edit_kwl;
+   call gp$close (kwl_sd_unit);
+   call gp$close (pc_sd_unit);
+   call gp$close (kwl_file_unit);
+   call gp$close (pc_sdsd_unit);
+   call gp$close (pc_file_unit);
+   call gp$close (pj_unit);
+   call gp$close (pj_sd_unit);
+   call kwl$free_buffer (kwlb);
+   call kwl$destroy_kwl (kwlp);
+   if ^in_lpq then
+      call at$hom (status);
+
+end cleanup;
+
+
+
+/* internal procedure to size a job in the UPDT queue.  If the job is not
+   closed, the size is returned with a leading + sign.
+   WARNING: this procedure assumes the print queue is the current directory */
+
+get_job_size : procedure;
+
+dcl
+   file_words        bin(31),
+   file_recs         bin,
+   in_updt_queue     bit,
+   size              char(6) var,
+   status            bin,
+   type              bin,
+   rnw               bin,
+   ei                like kwl$expand_info,
+   flags             like kwl$flags,
+   old_size_flags    like kwl$flags;
+
+
+   pj_unit = 0;
+   pj_sd_unit = 0;
+
+   on condition (CLEANUP$)
+      begin;
+      call gp$close (pj_sd_unit);
+      call gp$close (pj_unit);
+      end;
+
+   in_updt_queue = kwl$find_kw (kw$inuse_ok, kwlp, kwp);
+   if in_updt_queue then
+      call gp$open_pde (k$read + k$getu, partition, gbl$spool_queue,
+             sq$q_pj_updt_name, pj_sd_unit);
+   else
+      call gp$open_pde (k$read + k$getu, partition, gbl$spool_queue,
+             sq$q_pj_excl_name, pj_sd_unit);
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$primos_et & err$es.status1 = e$fius then do;
+         call gp$close (pj_sd_unit);
+         call gp$close (pj_unit);
+         goto exit;
+         end;
+      call cnsig$ (status);
+      end;
+
+   call sq$open_entry (k$read + k$getu + k$iseg + k$$no_wait, pj_sd_unit,
+                       job_id, pj_unit);
+   call gp$close (pj_sd_unit);
+   revert condition (err$condition_before_msg);
+
+   call prwf$$ (k$posn+k$prea, pj_unit, null, 0, maxint31, rnw, status);
+   if status ^= e$eof then
+      call err$ (err$primos_et, 'Sizing print job', status, 0, 0);
+   call prwf$$ (k$rpos, pj_unit, null, 0, file_words, 0, status);
+
+   /* try to change access to read/write if job is in the updt queue
+      to determine if file size is correct, or if file is growing; if
+      not possible to open for writing, job is still being written */
+
+   if in_updt_queue then
+      call srch$$ (bin(k$rdwr+k$cacc,15), 0, 0, pj_unit, type, status);
+   else
+      status = 0;
+
+   call gp$close (pj_unit);                 /* we are through with the file */
+
+   /* remove the old size keyword and insert the new one;  if the file
+      couldn't be opened for writing, put a + sign in front of the size */
+
+   string(old_size_flags) = string(size_kwp->kw_entry.flags);
+
+   if file_words = 0 then
+      file_recs = 0;
+   else if file_words < 512 then
+      file_recs = 1;
+   else
+      file_recs = divide (file_words + 512, 1024, 31);
+
+   size = trim (char (file_recs), '10'b);
+   if status = e$fius then
+      size = '+' || size;
+
+   string(ei) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   call kwl$insert_kw (kw$size, size_kwp, kwlp, ei, flags, flags);
+   call kwl$add_value (size_kwp, size);
+   string(size_kwp->kw_entry.flags) = string(old_size_flags);
+
+exit:
+
+   return;
+   end get_job_size;
+
+   end spl$lj;

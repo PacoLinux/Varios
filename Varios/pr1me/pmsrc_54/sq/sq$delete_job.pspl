@@ -1,0 +1,250 @@
+/* SQ$DELETE_JOB.SPL, PrintMaster, Jeff Hostetler, February 2, 1984           */
+/* Deletes a job from the print queue if not in use.                          */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+sq$delete_job: proc (kwl_e_unit, pc_sd_sd_unit, partition, job_id, kwlp);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>sq.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>sq$open_entry.ins.spl';
+%include '*>entry>sq$delete_entry.ins.spl';
+%include '*>entry>sq$position.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      kwl_e_unit        bin,                /* kwl entry unit (in) */
+      pc_sd_sd_unit     bin,                /* page control segdir unit (in) */
+      partition         char(32) var,       /* queue partition (in) */
+      job_id            bin,                /* job id (in) */
+      kwlp              ptr,                /* pointer to job's kwl (in) */
+
+      pc_sd_unit        bin,
+      kwl_sd_unit       bin,
+      pj_file_name      char(32) var,       /* updt or excl queue filename */
+      rtime             bin(31),            /* for use with stat's */
+      kwp               ptr,                /* keyword pointer */
+
+      (x, rnw, code)    bin,
+      pj_sd_unit        bin,
+      pj_e_unit         bin,
+      (entry, unit)     bin;                /* for use with scan of pc_sd_sd */
+
+
+/* If the job is not in use:
+       Mark kwl incomplete, delete the banner, message, print job, all
+          entries in the page control directory (1 for each copy), then
+           delete the kwl and page control entries
+
+   If the job is in use:
+      Set the number of copies left to print to zero.
+
+   Since it is not known whether we can successfully delete a job until after
+   we have already started (i.e. files may be in use), we must do it the hard
+   way.
+
+   Assumptions:
+
+   1) upon entry kwl entry and page control sub-dir are open for
+                   reading and writing (i.e. the job is "locked")
+   2) the kwl and page control queue directories are NOT open
+
+   If all page control entries can be opened for read/write, the job is not
+   being printed and can be deleted:
+
+   1) Mark job incomplete in kwl in case we are aborted (i.e. logout, break),
+      or queue entry is read by LPQ.
+   2) Change kwl file to read access, to allow the queue to be read (e.g. LPQ)
+      but prevent the entry from being changed
+   3) Delete print job
+   4) Delete all entries in page control sub-dir
+   5) Close kwl and page control segdir units
+      This is necessary because the queue directories cannot be opened
+      after the entries are open to prevent deadlock
+   6) Open kwl for reading/writing and verify that job is incomplete
+      This is necessary since the kwl unit was closed and verify queue
+      could have cleaned up the entry
+   7) Close kwl entry
+   8) Open page control queue
+   9) Delete page control entry
+  10) Close page control queue
+  11) Delete kwl entry
+  12) Close kwl queue
+
+   NOTES:
+
+      This procedure assumes that you have the "right" to delete
+      the job.
+
+      This procedure does an explicit attach to the spool directory.
+*/
+
+
+   pj_sd_unit = 0;
+   pj_e_unit = 0;
+   unit = 0;
+   kwl_sd_unit = 0;
+   pc_sd_unit = 0;
+
+   on condition (CLEANUP$)
+      begin;
+         call gp$close (pj_e_unit);
+         call gp$close (pj_sd_unit);
+         call gp$close (unit);
+         call gp$close (kwl_e_unit);
+         call gp$close (kwl_sd_unit);
+         call gp$close (pc_sd_sd_unit);
+         call gp$close (pc_sd_unit);
+      end;
+
+%page;
+
+   /* see if we can open each non-empty entry in page control for read/write;
+   /* if so, the job is not being printed */
+
+   on condition (err$condition_before_msg)
+      begin;
+         if (err$es.type = err$primos_et)  &  (err$es.status1 = e$fius) then
+            goto job_in_use;
+         call cnsig$ (code);
+      end;
+
+   entry = 1;                               /* no need to check e0 */
+   do while (sq$position (k$full, pc_sd_sd_unit, entry));
+      call sq$open_entry (k$rdwr + k$getu + k$iseg + k$$no_wait, pc_sd_sd_unit,
+                          entry, unit);
+      call gp$close (unit);
+      entry = entry + 1;
+      end;
+
+   revert condition (err$condition_before_msg);
+
+
+   /* The job can now be deleted; mark the job incomplete */
+
+   x = kwl$kwl_incomplete;
+   call prwf$$ (k$writ + k$prea, kwl_e_unit, addr(x), 1, 0, rnw, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Could not update kwl status word', code, 0, 0);
+
+   /* change kwl to read access to allow LPQ to read this entry; this
+      will still prevent anything else from modifying the job */
+
+   call gp$open_file (k$cacc+k$read, '', kwl_e_unit);
+
+   /* if the print file was copied to the queue, delete this entry */
+
+   if kwl$find_kw (kw$copyfile, kwlp, kwp) then do;
+      if kwl$find_kw (kw$inuse_ok, kwlp, kwp) then
+         pj_file_name = sq$q_pj_updt_name;
+      else
+         pj_file_name = sq$q_pj_excl_name;
+
+      /* don't hold print job queues open while file is being deleted; open
+         segdir for read/write, open entry for read/write, close segdir,
+         truncate entry, open segdir for read/write, delete entry. */
+
+      call gp$open_pde (k$rdwr + k$getu + k$nsgs, partition, gbl$spool_queue,
+                        pj_file_name, pj_sd_unit);
+
+      on condition (err$condition_before_msg)
+         begin;
+            if (err$es.type = err$primos_et)  &  (err$es.status1 = e$fius) then
+               goto print_file_in_use;
+            call cnsig$ (code);
+         end;
+      call sq$open_entry (k$rdwr + k$getu + k$iseg + k$$no_wait, pj_sd_unit,
+                          job_id, pj_e_unit);
+      revert condition (err$condition_before_msg);
+
+      call gp$close (pj_sd_unit);
+      call prwf$$ (k$trnc, pj_e_unit, null, 0, 0, 0, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Truncating print job', code, 0, 0);
+      call gp$close (pj_e_unit);
+      call gp$open_file (k$rdwr + k$getu + k$nsgs, pj_file_name, pj_sd_unit);
+      call sq$delete_entry (pj_sd_unit, job_id);
+      call gp$close (pj_sd_unit);
+      end;
+
+   /* delete all the entries in the page control sub-directory */
+
+   call dl$sgu (pc_sd_sd_unit, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Could not delete page control information', code, 0, 0);
+
+   /* delete the kwl and page control entries.  These units have to be
+      closed and reopened to prevent a deadlock */
+
+   call gp$close (pc_sd_sd_unit);
+   call gp$close (kwl_e_unit);
+   call gp$open_pde (k$rdwr + k$getu + k$nsgs, partition, gbl$spool_queue,
+                      sq$q_kwl_name, kwl_sd_unit);
+
+   /* make sure job is still incomplete, since queue and job were unlocked */
+
+   call sq$open_entry (k$read + k$getu + k$nsgs + k$iseg, kwl_sd_unit, job_id,
+                       kwl_e_unit);
+   call prwf$$ (k$read, kwl_e_unit, addr(x), 1, 0, rnw, code);
+   call gp$close (kwl_e_unit);
+
+   if code = 0 & x = kwl$kwl_incomplete then do;
+      call gp$open_file (k$rdwr + k$getu + k$nsgs, sq$q_pc_name, pc_sd_unit);
+      call sq$delete_entry (pc_sd_unit, job_id);
+      call gp$close (pc_sd_unit);
+      call sq$delete_entry (kwl_sd_unit, job_id);
+      end;
+
+   call gp$close (kwl_sd_unit);
+
+   return;
+
+%page;
+
+print_file_in_use:
+
+   /* at this point:
+         1)  the kwl_e is incomplete and open for R
+         2)  the pc_sd_sd is open
+         3)  the pj_sd is open
+
+      simply close the files and stop, the job will not appear in the queue
+      and will be deleted later (when the monitor is started) */
+
+   revert condition (err$condition_before_msg);
+   call gp$close (pj_sd_unit);
+   call gp$close (pc_sd_sd_unit);
+   call gp$close (kwl_e_unit);
+   return;
+
+%page;
+
+job_in_use:
+
+   revert condition (err$condition_before_msg);/* so that an error on the */
+                                               /* following open_entry call */
+                                               /* doesn't cause us to loop */
+
+   /* Set the number of copies left to print to zero. */
+
+   /* NOTE:  THIS ASSUMES SOMETHING ABOUT THE FORMAT OF THE PAGE CONTROL HEADER. */
+
+   x = 0;
+   call sq$open_entry (k$rdwr + k$getu + k$iseg, pc_sd_sd_unit, 0, unit);
+   call prwf$$ (k$writ, unit, addr(x), 1, 0,  rnw, code);
+   call gp$close (unit);
+   if code ^= 0 then
+      call err$ (err$primos_et,
+                 'Job is currently in use  (Error setting COPIES_LEFT)',
+                 code, 0, 0);
+   call gp$close (pc_sd_sd_unit);
+   call gp$close (kwl_e_unit);
+   return;
+
+   end sq$delete_job;

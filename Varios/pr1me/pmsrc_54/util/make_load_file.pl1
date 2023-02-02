@@ -1,0 +1,139 @@
+/* MAKE_LOAD_FILE.SPL, PrintMaster, Jim Wilcoxson, April 1, 1984              */
+/* Creates a load template for a program.                                     */
+/******************************************************************************/
+
+make_load_file : procedure;
+
+%nolist;
+%include '*>insert>gbl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   trnc$a entry (bin);
+
+dcl
+   load_tree         ptr options (short),
+   main_name         char(32) var,
+   status            bin,
+   single_seg_load   bit,
+   comi_file_name    char(32) var,
+   comi_unit         bin;
+
+   load_tree = null;
+   call ioa$ ('Main program name? %$', -1);
+   if gp$read_line (0, main_name) then;
+   call gp$open_file (k$writ+k$getu, '', '', main_name||'.COMI', comi_unit);
+   call gp$write_line (comi_unit, 'SEG32 -LOAD');
+   call gp$write_line (comi_unit, 'MIX');
+   call gp$write_line (comi_unit, 'SYMBOL CLDATA 6002 6');
+   call gp$write_line (comi_unit, 'SYMBOL PERSYSVARS 2020 0');
+   call gp$write_line (comi_unit, 'SYMBOL CPS_SEGMENT 2077 0');
+   call gp$write_line (comi_unit, 'ST 177774');
+   call at$rel (k$setc, 'bin', status);
+   if status ^= 0 then
+      stop;
+   call gen (main_name, 0);
+   call gp$write_line (comi_unit, 'LO *>BIN>GP$DYNTS');
+   call gp$write_line (comi_unit, 'LI VAPPLB');
+   call gp$write_line (comi_unit, 'LI VNETLB');
+   call gp$write_line (comi_unit, 'LI');
+   call gp$write_line (comi_unit, 'QUIT');
+   call gp$write_line (comi_unit, 'CO -END');
+   call trnc$a (comi_unit);
+   call gp$close (comi_unit);
+   call at$hom (status);
+
+gen : procedure (name, level);
+
+dcl
+   name  char(32) var,
+   1 node based,
+      2  name  char(32) var,
+      2  left  ptr options(short),
+      2  right  ptr options(short),
+   level    bin,
+   1 ch,
+      2  l  char,
+      2  r  char,
+   c1in  entry options (variable),
+   bin_unit bin,
+   bsw   bin,
+   rnw   bin,
+   status   bin,
+   buf   (256) bin,
+   bufc  char(512)  defined buf,
+   blk_size bin,
+   grp_type  bin,
+   grp_size bin,
+   bufcp bin,
+   bufwp  bin;
+
+   name = trim(name, '01'b);
+   if findname (name, load_tree) then
+      return;
+   if ^gp$file_exists (name||'.BIN') then
+      return;
+   call ioa$ ('%#x%v? %$', -1, level, name);
+   call c1in (ch);
+   if ch.r = 'n' | ch.r = 'N' then
+      do;
+         call ioa$ ('%.');
+         return;
+      end;
+   call addname (name, load_tree);
+   call gp$write_line (comi_unit, 'LOAD *>BIN>'||name);
+   call gp$open_file (k$read+k$getu, '', '', name||'.BIN', bin_unit);
+   call prwf$$ (k$read, bin_unit, addr(bsw), 1, 000000, rnw, status);
+   do while (status = 0);
+      call prwf$$ (k$read, bin_unit, addr(buf), bsw, 000000, rnw, status);
+      if status ^= 0 then
+         stop;
+      blk_size = rank(substr(bufc,2,1));
+      do bufwp = 2 repeat bufwp+grp_size+1 while (bufwp < blk_size);
+         bufcp = bufwp*2-1;
+         grp_type = rank (substr (bufc,bufcp,1));
+         grp_size = rank (substr (bufc,bufcp+1,1));
+         if grp_type = 35 then
+            call gen (substr (bufc, bufcp+2, grp_size*2), level+1);
+      end;
+      call prwf$$ (k$read, bin_unit, addr(bsw), 1, 000000, rnw, status);
+   end;
+
+   call gp$close (bin_unit);
+
+findname : procedure (name, tree) returns (bit);
+dcl
+   name     char(32) var,
+   tree     ptr options(short);
+
+   if tree = null then
+      return (false);
+   else if name < tree->node.name then
+      return (findname (name, tree->node.left));
+   else if name > tree->node.name then
+      return (findname (name, tree->node.right));
+   else
+      return (true);
+end findname;
+
+addname : procedure (name, tree);
+dcl
+   name     char(32) var,
+   tree     ptr options(short);
+
+   if tree = null then
+      do;
+         allocate node set(tree);
+         tree->node.name = name;
+         tree->node.left = null;
+         tree->node.right = null;
+      end;
+   else if name < tree->node.name then
+      call addname (name, tree->node.left);
+   else
+      call addname (name, tree->node.right);
+end addname;
+end gen;
+end make_load_file;

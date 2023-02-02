@@ -1,0 +1,261 @@
+/* SPOOL.CPL, PrintMaster, Jeff Hostetler, April 4, 1984                      */
+/* PrintMaster SPOOL command to simulate the Prime SPOOL command.             */
+/*                                                                            */
+/* Usage: SPOOL {<path> | -Open} [<options>] -CANcel [PRT]<nr1> .. [PRT]<nr10>*/
+/*              -LISt [{* | OWn | DEfer | FOrm [type]}] [<pm_options>]        */
+/*    or: SPOOL <prime_command_line> -PRIME                                   */
+/*                                                                            */
+/* If -PRIME is given command will be passed to the Prime SPOOL command.      */
+/* Otherwise equivalent PrintMaster commands will be issued.                  */
+/*                                                                            */
+/* <options> := [-AliaS <alias>] [-AT <dest>] [-COPies <nr>] [-DEFer <date>]  */
+/*         [-FOrm <formtype>] [-Ftn] [-Lnum] [-NOFmt] [-NOHead] [-TUnit unit] */
+/*         [-Type <formtype>] [-Plot x]                                       */
+/*                                                                            */
+/* Options not supported: -Cobol, -Expand, -Funit, -Home, -Noj,               */
+/*                        -LISt {PLOT | PRINT | ALL}                          */
+/*                                                                            */
+/* <pm_options> are any printmaster keywords.                                 */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+/* first see if -PRIME was given
+
+&args x: uncl; prime_: -PRIME
+&if ^ [null %prime_%] &then &do
+   &severity &error &ignore
+   SPOOL.PRIME_VERSION %x%
+   &return %severity$%
+   &end
+
+/* WARNING:  To insure compability with prime SPOOL command, the
+/*           following &ARGS statement SHOULD NOT BE MODIFIED.
+/*           The complexity of it is due to the manner inwhich the
+/*           arguments are parsed in the program.
+
+&args pm_kws: uncl; ~
+filename: char; ~
+noj_: -n, -no, -noj; ~
+ftn_: -f, -ft, -ftn; ~
+expand_: -e, -ex, -exp, -expand; ~
+ln_: -l, -ln, -lnu, -lnum; ~
+nohdr_: -noh, -nohead; ~
+open_: -o, -op, -ope, -open unit: dec = 2; ~
+nofmt_: -nof, -nofmt; ~
+cobol_: -c, -co, -cob, -cobol; ~
+plot_: -p, -pl, -plo, -plot plot: dec = 128; ~
+defer_: -d, -de, -def, -defer defer_date: char; ~
+home_: -h, -ho, -hom, -home; ~
+at_: -a, -at dest: char; ~
+as_: -as alias: char; ~
+copies_: -cop, -copies copies_wanted: dec = 1; ~
+nfy_: -nf, -nfy, -not, -notify; ~
+form_: -fo, -for, -form form_type: char; ~
+type_: -t, -ty, -typ, -type paper_type: char; ~
+funit_: -fu, -fun, -funit funit: dec = 0; ~
+tunit_: -tu, -tun, -tunit tunit: dec = -1; ~
+modify_: -m, -mo, -mod, -modify m1 m2 m3 m4 m5 m6 m7 m8 m9 m10; ~
+cancel_: -ca, -can, -cancel c1 c2 c3 c4 c5 c6 c7 c8 c9 c10; ~
+list_: -li, -lis, -list l1 l2: char; ~
+disk_: -di, -dis, -disk disk_name: char; ~
+rush_: -r, -ru, -rus, -rush; ~
+norush_: -nor, -norush; ~
+trun_: -tr, -tru, -truncate; ~
+nodefer_: -nod, -nodefer;
+
+/* Print warning about unsupported options.
+
+&if ^ [null %noj_%] &then    type 'Option: -NOJ unsupported; item ignored.'
+&if ^ [null %expand_%] &then type 'Option: -EXPAND unsupported; item ignored.'
+&if ^ [null %cobol_%] &then  type 'Option: -COBOL unsupported; item ignored.'
+&if ^ [null %home_%] &then   type 'Option: -HOME unsupported; item ignored.'
+&if ^ [null %funit_%] &then  type 'Option: -FUNIT unsupported; item ignored.'
+
+/*
+/* Format defer date properly.  Prime's SPOOL command will accept -DEFER hhmm
+/* or -DEFER hh:mm.  The second form can be parsed with an args, but the first
+/* cannot.
+/*
+&if ^ [null %defer_%] &then ~
+   &if [length %defer_date%] = 4 & [verify %defer_date% 0123456789] = 0 ~
+      &then &s defer_date := [substr %defer_date% 1 2]:[substr %defer_date% 3 2]
+      &else &args x:uncl; defer_: -d, -de, -def, -defer defer_date:date
+
+/* parse -DISK parameters */
+
+&s q :=
+&if ^ [null %disk_%] &then &do
+
+   /* convert disk number to disk name if necessary */
+
+   &if [verify %disk_name% 0123456789] = 0 &then &do
+      &s disk_name := [pathname <%disk_name%>MFD]
+      &s disk_name := [before [after %disk_name% <] >]
+      &end
+
+   &s q := -QUEUE %disk_name%
+   &end
+/*
+/* Save the greatest severity code returned.
+/*
+&severity &error &ignore
+&s sev := 0
+/*
+/* Echo commands to user if automated re-training desired.
+/*
+&if [exists PRINTMASTER*>TEACH_PRINTMASTER] &then &do
+   type 'PrintMaster command(s) to perform similiar action:'
+   &debug &echo com
+   &end
+
+
+/******************************************************************************/
+/*
+/*                                ADD section
+/*
+/******************************************************************************/
+
+&if [length %filename%] ^= 0  |  ^ [null %open_%] &then &do
+   &s opt :=
+   &if ^ [null %open_%] &then &do
+      &if ^ [null %tunit_%] &then &do
+         &if %tunit% ^= -1 &then &s unit := %tunit%
+                           &else &s unit := 2
+         &end
+      &s opt := -OPEN %unit%
+      &if [length %filename%] ^= 0 &then &do
+         &s opt := %opt% -JOB_NAME [quote %filename%]
+         &s filename := ''
+         &end
+      &end
+   &if ^ [null %ftn_%]    &then &s opt := %opt% -FTN
+   &if ^ [null %ln_%]     &then &s opt := %opt% -LINE_NUMBERS
+   &if ^ [null %nohdr_%]  &then &s opt := %opt% -NO_BANNER
+   &if ^ [null %nofmt_%]  &then &s opt := %opt% -NO_FORMAT
+   &if ^ [null %plot_%]   &then &s opt := %opt% -PLOT %plot%
+   &if ^ [null %defer_%]  &then &s opt := %opt% -DEFER %defer_date%
+   &if ^ [null %at_%] & ^ [null %dest%] &then &s opt := %opt% -AT [quote %dest%]
+   &if ^ [null %as_%]     &then &s opt := %opt% -JOB_NAME [quote %alias%]
+   &if ^ [null %copies_%] &then &s opt := %opt% -COPIES %copies_wanted%
+   &if ^ [null %form_%] & ^ [null %form_type%] &then &s opt := %opt% -FORM [quote %form_type%]
+   &if ^ [null %type_%] & ^ [null %paper_type%] &then &s opt := %opt% -FORM [quote %paper_type%]
+   &if ^ [null %nfy_%]    &then &s opt := %opt% -NOTIFY NOW
+   &if ^ [null %trun_%]   &then &s opt := %opt% -TRUNCATE
+
+   /* remove imbedded blanks in filename, like old SPOOL command does */
+
+   &if [index %filename% ' '] ^= 0 &then &do
+      &s rest := [trim [after %filename% >]]
+      &s filename := [trim [before %filename% >]]
+      &do &while [length %rest%] > 0
+         &s filename := %filename%>[trim [before %rest% >]]
+         &s rest := [trim [after %rest% >]]
+         &end
+      &end
+
+   &if [null %open_%] &then APJ %filename% [unquote %opt%] %pm_kws% %q%
+                        &else APJ [unquote %opt%] %pm_kws% %q%
+   &s sev := %severity$%
+   &end /* of ADD job.
+
+
+/******************************************************************************/
+/*
+/*                           CANCEL section
+/*
+/******************************************************************************/
+
+&if ^ [null %cancel_%] &then &do
+   &do i := 1 &to 10
+       &if [substr [get_var c%i%] 1 3] = PRT &then ~
+          &s c%i% := [substr [get_var c%i%] 4]
+       &end
+
+DPJ [unquote %c1% %c2% %c3% %c4% %c5% %c6% %c7% %c8% %c9% %c10%] %q%
+   &if %severity$% > %sev% &then &s sev := %severity$%
+   &end
+
+
+/******************************************************************************/
+/*
+/*                            MODIFY section
+/*
+/******************************************************************************/
+
+&if ^ [null %modify_%] &then &do
+   &do i := 1 &to 10
+       &if [substr [get_var m%i%] 1 3] = PRT &then ~
+          &s m%i% := [substr [get_var m%i%] 4]
+       &end
+
+   &s opt :=
+   &if ^ [null %ftn_%]    &then &s opt := %opt% -FTN -^NO_FORMAT
+   &if ^ [null %ln_%]     &then &s opt := %opt% -LINE_NUMBERS
+   &if ^ [null %nohdr_%]  &then &s opt := %opt% -NO_BANNER
+   &if ^ [null %nofmt_%]  &then &s opt := %opt% -NO_FORMAT -^FTN
+   &if ^ [null %plot_%]   &then &s opt := %opt% -PLOT %plot%
+   &if ^ [null %defer_%]  &then &s opt := %opt% -DEFER %defer_date%
+   &if ^ [null %at_%] & ^ [null %dest%] &then &s opt := %opt% -AT [quote %dest%]
+   &if ^ [null %as_%]     &then &s opt := %opt% -JOB_NAME [quote %alias%]
+   &if ^ [null %copies_%] &then &s opt := %opt% -COPIES %copies_wanted%
+   &if ^ [null %nfy_%]    &then &s opt := %opt% -NOTIFY NOW
+   &if ^ [null %form_%]   &then &s opt := %opt% -FORM [quote %form_type%]
+   &if ^ [null %type_%]   &then &s opt := %opt% -FORM [quote %paper_type%]
+   &if ^ [null %rush_%]   &then &s opt := %opt% -DEADLINE NOW
+   &if ^ [null %norush_%] &then &s opt := %opt% -^DEADLINE
+   &if ^ [null %trun_%]   &then &s opt := %opt% -TRUNCATE
+   &if ^ [null %nodefer_%] &then &s opt := %opt% -^DEFER
+
+CPJ [unquote %m1% %m2% %m3% %m4% %m5% %m6% %m7% %m8% %m9% %m10%] %opt% %q%
+   &if %severity$% > %sev% &then &s sev := %severity$%
+   &end
+
+
+/******************************************************************************/
+/*
+/*                             LIST section
+/*
+/******************************************************************************/
+
+&if ^ [null %list_%] &then &do
+   &if [length %l1%] = 0 &then LPQ %q%
+   &else &do /* -LIST *
+      &if [quote %l1%] = [quote *] &then LPQ -ALL
+      &else &do /* try -LIST {OWn DEfer FOrm}
+         &if [length %l1%] < 2 &then &do
+            type Unrecognized list option %l1% ignored.
+LPQ %q%
+            &end
+         &else &do
+            &s x := [substr %l1% 1 2]
+            &select %x%
+               &when AT
+LPQ -SJ -AT %l2% %q%
+               &when OW
+LPQ -SJ -USER %q%
+               &when DE
+LPQ -SJ -DEFER %q%
+               &when FO
+                  &if [length %l2%] = 0 &then LPQ -SJ -FORM ' ' %q%
+                                        &else LPQ -SJ -FORM %l2% %q%
+               &otherwise
+                  &do
+                     type Unrecognized list option %l1% ignored.
+LPQ %q%
+                     &end
+               &end /* of select
+            &end /* of length(l1) < 2
+         &end /* of l1 = *
+      &end /* of length(l1) > 0
+   &end /* of list given
+
+
+/******************************************************************************/
+/*
+/* Return the greatest severity received.
+/*
+/******************************************************************************/
+
+&if %sev% >= %severity$% &then &return %sev%
+                         &else &return %severity$%

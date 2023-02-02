@@ -1,0 +1,619 @@
+/* LIST_PRINT_QUEUE.SPL, PrintMaster, Jeff Hostetler, February 14, 1984       */
+/* Queue List Command.                                                        */
+/*                                                                            */
+/*   LIST_PRINT_QUEUE {-HELP | [-Queue [<partition>]] | -All}                 */
+/*                    [-SJ <selection_kwl>] [-SK <print_kwl>]                 */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+lpq: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>ldisk_dcl.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%list;
+
+   %replace
+      uncl_length by 160;                   /* cl$pix limit */
+
+   dcl
+      cl          char(max_cl) var,
+      com_status  bin,
+
+      p_selection_kwl      ptr,
+      p_print_kwl          ptr,
+
+      ld$         like disk_list,
+      ld_ix       bin,
+      queue_found bit,
+      status      bin,
+      time_now    bin(31),                  /* for deadline checking */
+      we_did_initialization   bit,
+      1  struc,
+         2  uncl              char(uncl_length) var,
+         2  queue_given       bit(1) aligned,
+         2  partition         char(32) var,
+         2  all_given         bit(1) aligned,
+         2  help_given        bit(1) aligned;
+
+
+   com_status = severity$error;
+
+   p_selection_kwl = null;
+   p_print_kwl = null;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   we_did_initialization =  gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+   call gp$version ('List Print Queue');
+
+   call parse_cl;
+   time_now = date$();
+
+   queue_found = false;
+   if all_given then do;
+      ld$.version = ldisk_version;
+      call ldisk$ (k$all, '', addr(ld$), max_ldevs, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'From ldisk$', status, 0, 0);
+      do ld_ix = 1 to ld$.count;
+         call at$abs (k$setc, ld$.info(ld_ix).disk_name, gbl$spool_queue, status);
+         if status = 0 then
+            queue_found = list_this_queue (partition);
+         end;
+      end;
+   else do;
+      if length (partition) = 0 then
+         call at$any (k$setc, gbl$spool_queue, status);
+      else
+         call at$abs (k$setc, partition, gbl$spool_queue, status);
+      if status = 0 then
+         queue_found = list_this_queue (partition); /* partition is returned */
+      end;
+
+   if ^queue_found then do;
+      if length (partition) ^= 0 then
+         call ioa$ ('No print queue on this partition.%.', -1);
+      else
+         call ioa$ ('No print queues found.%.', -1);
+      goto abnormal_return;
+      end;
+
+normal_return:
+
+   call kwl$destroy_kwl (p_selection_kwl);
+   call kwl$destroy_kwl (p_print_kwl);
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+help_wanted:
+   call display_help;
+   goto normal_return;
+
+abnormal_return:
+   com_status = severity$error;
+   call kwl$destroy_kwl (p_selection_kwl);
+   call kwl$destroy_kwl (p_print_kwl);
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+%page;
+/* list_print_queue.list_this_queue, PrintMaster, Jeff Hostetler, September 1, 1984*/
+/* List the queue that we are currently attached to.                          */
+/******************************************************************************/
+
+   list_this_queue: proc (partition)
+                    returns (bit);
+
+      dcl
+         partition               char(*) var,
+
+         code                    bin,
+         nr_jobs                 bin,
+         (job_id, last_job_id)   bin,
+
+         max_jobs                bin,
+         job_list_longwords      bin,
+         job_listp               ptr,
+         job_list (0:max_jobs)   bit unal based (job_listp),
+         job_list_bin (1:job_list_longwords) bin(31) based (job_listp),
+
+         file_size               char(5) var,
+         priority                char(5) var,
+         system_queue_is_on      char(32) var,
+         (user_id, last_user_id) char(32) var,
+         job_name                char(25) var,
+         form_name               char(6) var,
+         opts                    char(3) var,
+         (copies_left, copies_printing, copies_completed) char(5) var,
+         destination             char(9) var,
+         opts_line_needed        bit,
+         (need_d_opt,
+         need_h_opt,
+         need_n_opt,
+         need_s_opt,
+         need_o_opt)             bit aligned,
+         x              bin,
+         kwl_sd_unit    bin,
+         keys           bin,
+         jobp           ptr,
+         auxp           ptr;
+
+      nr_jobs = 0;
+      jobp = null;
+      auxp = null;
+      kwl_sd_unit = 0;
+      job_listp = null;
+      last_job_id = -1;
+
+      on condition (CLEANUP$)
+         begin;
+         call gp$close (kwl_sd_unit);
+         if job_listp ^= null then
+            free job_list;
+         end;
+
+/******************************************************************************/
+/*                                                                            */
+/* Temporary section until SPL$LQ is finished...                              */
+/*                                                                            */
+/******************************************************************************/
+
+/* JOB_LIST is a bit string where job_list(i) = '1'b if job i exists */
+
+      call gp$open_file (k$read+k$getu, sq$q_kwl_name, kwl_sd_unit);
+      partition = gp$partition_name (kwl_sd_unit);
+      system_queue_is_on = gp$system_name (kwl_sd_unit);
+
+      /* find out the size of the segment directory (maximum capacity) */
+
+      call sgdr$$ (k$gond, kwl_sd_unit, 0, max_jobs, code); /* get nr entries */
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Positioning Segment Directory', code, 0, 0);
+      if max_jobs > 0 then                  /* make it entry# of last entry */
+         max_jobs = max_jobs - 1;
+
+      /* compute number of 32-bit words to allocate and adjust max_jobs to
+         a multiple of 32 */
+
+      job_list_longwords = divide (max_jobs, 32, 15) + 1;
+      max_jobs = job_list_longwords * 32 - 1;
+
+      /* allocate job list (0:max_jobs) and clear by 32-bit words */
+
+      allocate job_list set (job_listp);
+      do x = 1 to job_list_longwords;
+         job_list_bin(x) = 0;
+         end;
+
+      /* now read the queue to determine which slots have jobs */
+
+      do job_id = 0 to max_jobs while (sq$position (k$full, kwl_sd_unit, job_id));
+         job_list(job_id) = '1'b;
+         last_job_id = job_id;
+         end;
+      call gp$close (kwl_sd_unit);
+
+      on condition (err$condition_before_msg)
+         begin;
+         if err$es.type = err$user_et
+                  &  err$es.status1 = err$job_not_found_ue then do;
+            goto ignore_this_entry;
+            end;
+         call cnsig$ (code);
+         end;
+
+      do job_id = 0 to last_job_id;
+         if job_list(job_id) then
+            if spl$lj (partition, job_id, jobp, true) then
+               if p_selection_kwl = null then
+                  call print_job (jobp, p_print_kwl);
+               else
+                  if kwl$match_kwl (p_selection_kwl, jobp) then
+                     call print_job (jobp, p_print_kwl);
+ignore_this_entry:
+         call kwl$destroy_kwl (jobp);
+         end;
+
+/******************************************************************************/
+/*
+/*      keys = 0;
+/*      do while (spl$lq (keys, partition, select_cl, jobp, auxp));
+/*         call print_job (jobp, p_print_kwl);
+/*         end;
+/*
+/******************************************************************************/
+
+      call conclude_queue_display;
+      return (true);
+
+%page;
+/* list_print_queue.list_this_queue.print_job, PrintMaster, Jeff Hostetler,   */
+/* September 1, 1984                                                          */
+/******************************************************************************/
+
+      print_job: proc (p_job_kwl, p_print_kwl);
+
+         dcl
+            p_job_kwl      ptr,
+            p_print_kwl    ptr;
+
+         /* format and display job */
+         /* if p_print_kwl = null then do ... */
+
+         if nr_jobs = 0 then do;
+            last_user_id = '';
+            opts_line_needed = false;
+            need_d_opt = false;
+            need_o_opt = false;
+            need_n_opt = false;
+            need_h_opt = false;
+            need_s_opt = false;
+            call display_header;
+            end;
+
+         nr_jobs = nr_jobs + 1;
+         call extract_values;
+         call display_job;
+
+         last_user_id = user_id;
+         return;
+
+%page;
+/* list_print_queue.display_header, PrintMaster, Jeff Hostetler, February 14, 1984*/
+/******************************************************************************/
+
+         display_header: proc;
+
+            if length (system_queue_is_on) = 0 then
+               call ioa$ ('%/Jobs in queue %v:%.', -1, partition);
+            else
+               call ioa$ ('%/Jobs in queue %v on system %v:%.', -1,
+                          partition, system_queue_is_on);
+
+            call ioa$ ('%/ User  Job         Job name          Pri  Size  Form  Copy status    At     Opt%.', -1);
+            call ioa$ (  '------ --- ------------------------- ---  ---- ------ ----------- --------- ---%.', -1);
+
+            return;
+            end display_header;
+
+%page;
+/* list_print_queue.display_job, PrintMaster, Jeff Hostetler, February 15, 1984*/
+/* display all info of the job                                                */
+/******************************************************************************/
+
+         display_job: proc;
+
+            if user_id ^= last_user_id then       /* don't print a user's name twice for two consecutive jobs */
+               if length (user_id) > 6 then       /* wrap around */
+                  call ioa$ ('%v%/%6x%$', -1, user_id);
+               else
+                  call ioa$ ('%6v%$', -1, user_id);
+            else
+               call ioa$ ('%6x%$', -1);
+
+            if file_size = '32767' then
+               file_size = '';
+
+            call ioa$ ('%4d %25v %r3v %r5v %6v %r3v/%r3v/%r3v %9v %r3v%.', -1,
+                       job_id, job_name, priority, file_size, form_name,
+                       copies_left, copies_printing, copies_completed,
+                       destination, opts);
+
+            return;
+            end display_job;
+
+%page;
+/* list_print_queue.extract_values, PrintMaster, Jeff Hostetler, February 14, 1984*/
+/******************************************************************************/
+
+         extract_values: proc;
+
+            dcl
+               p_kw        ptr,
+               i           bin,
+               date_queued char(28) var,
+               deadline    char(28) var,
+               fs_deadline bin(31),
+               status      bin;
+
+            user_id = '';
+            if kwl$find_kw (kw$user_id, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, user_id) then;
+
+            job_name = '';             /* this may or may not be present if '-OPEN' */
+            if kwl$find_kw (kw$job_name, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, job_name) then;
+
+            /* temporary - put date and time spooled in job name for
+               RJE jobs until keyword selection is implemented */
+
+            i = index (job_name, ' :PRNT');
+            if i ^= 0 & i = length(job_name)-5 then        /* RJE job */
+               if length (job_name) < 20 then
+                  if kwl$find_kw (kw$dt_spooled, jobp,  p_kw) then
+                     if kwl$get_nth_value (p_kw, 1, date_queued) then
+                        if length (job_name) < 16 then
+                           job_name = job_name || copy(' ', 16-length(job_name)) ||
+                                      substr (date_queued, 20, 3) ||
+                                      substr (date_queued, 10, 6);
+                        else
+                           job_name = job_name || copy(' ', 20-length(job_name)) ||
+                                      substr (date_queued, 11, 5);
+
+            file_size = '';
+            if kwl$find_kw (kw$size, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, file_size) then;
+
+            opts = '';
+            if kwl$find_kw (kw$defer, jobp, p_kw) then do;
+               opts = 'd';
+               need_d_opt = true;
+               end;
+            if kwl$find_kw (kw$hold_job, jobp, p_kw) then do;
+               opts = opts || 'h';
+               need_h_opt = true;
+               end;
+            if kwl$find_kw ('NOTE', jobp, p_kw) then do;
+               opts = opts || 'n';
+               need_n_opt = true;
+               end;
+            if kwl$find_kw (kw$resume_ok, jobp, p_kw) then do;
+               opts = opts || 's';
+               need_s_opt = true;
+               end;
+            if kwl$find_kw (kw$inuse_ok, jobp, p_kw) then do;
+               opts = opts || 'o';
+               need_o_opt = true;
+               end;
+
+            if length (opts) ^= 0 then
+               opts_line_needed = true;
+
+            form_name = '';                       /* does not have to be present */
+            if kwl$find_kw ('FORM', jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, form_name) then;
+
+            copies_left = '';
+            if kwl$find_kw (kw$copies_left, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, copies_left) then
+                  if copies_left = '0' then
+                     copies_left = '';;
+
+            copies_printing = '';
+            if kwl$find_kw (kw$copies_started, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, copies_printing) then
+                  if copies_printing = '0' then
+                     copies_printing = '';
+
+            copies_completed = '';
+            if kwl$find_kw (kw$copies_completed, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, copies_completed) then
+                  if copies_completed = '0' then
+                     copies_completed = '';
+
+            destination = '';                     /* this is not required to be present */
+            if kwl$find_kw ('AT', jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, destination) then;
+
+            priority = '';
+            if kwl$find_kw (kw$priority, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, priority) then
+                  if bin(priority) = 0 then
+                     priority = 'low';
+
+            deadline = '';
+            if kwl$find_kw (kw$deadline, jobp, p_kw) then
+               if kwl$get_nth_value (p_kw, 1, deadline) then do;
+                  call cv$dtb (deadline, fs_deadline, status);
+                  if status = 0 & fs_deadline <= time_now then
+                     priority = ' hi';
+                  end;
+
+            return;
+            end extract_values;
+
+         end print_job;
+
+%page;
+/* list_print_queue.list_this_queue.conclude_queue_display, PrintMaster,      */
+/* Jeff Hostetler, September 1, 1984                                          */
+/******************************************************************************/
+
+   conclude_queue_display: proc;
+
+   dcl
+      match  char(9) var;
+
+      if p_selection_kwl = null then        /* -SJ not used */
+         match = '';
+      else
+         match = 'matching ';
+
+      if nr_jobs = 0 then
+         if length (system_queue_is_on) = 0 then
+            call ioa$ ('%/No %vjobs in queue %v.%.', -1, match, partition);
+         else
+            call ioa$ ('%/No %vjobs in queue %v on system %v.%.', -1,
+                       match, partition, system_queue_is_on);
+      else do;
+         call ioa$ ('%/Copy status: copies left/printing/completed.%.', -1);
+         if opts_line_needed then do;
+            call ioa$ ('Opt (options): %$', -1);
+            if need_d_opt then
+               call ioa$ ('d = Deferred   %$', -1);
+            if need_h_opt then
+               call ioa$ ('h = Hold   %$', -1);
+            if need_n_opt then
+               call ioa$ ('n = Note   %$', -1);
+            if need_o_opt then
+               call ioa$ ('o = print while Open   %$', -1);
+            if need_s_opt then
+               call ioa$ ('s = Suspendable   %$', -1);
+            call ioa$ ('%.', -1);
+            end;
+         if nr_jobs = 1
+            then call ioa$ ('%d job in queue.%.', -1, nr_jobs);
+            else call ioa$ ('%d jobs in queue.%.', -1, nr_jobs);
+         end;
+      return;
+      end conclude_queue_display;
+
+
+end list_this_queue;
+
+%page;
+/* list_print_queue.parse_cl, PrintMaster, Jeff Hostetler, February 14, 1984  */
+/******************************************************************************/
+
+   parse_cl: proc;
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print */
+         caller_name    by 'list_print_queue',
+         pixel_size     by 44;
+
+      dcl
+         ei             like kwl$expand_info,
+         (temp_kwl, ppkw, pskw) ptr,
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         pic            char(pixel_size) var static
+                        init('uncl; -q, -queue entry; -a, -all; -help; end');
+
+
+%page;
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ ('');                  /* does not return */
+
+      if help_given then
+         goto help_wanted;
+
+      if all_given & queue_given then
+         call error_ ('Can''t use -ALL and -QUEUE options together.');
+
+      /* see if -SJ and/or -SK were given and separate */
+
+      temp_kwl = null;
+
+      string(ei) = kwl$accept_as_is_ei;
+      ei.expand = true;
+      call kwl$cl_to_kwl (uncl, temp_kwl, ei);
+
+      if kwl$find_kw ('SJ', temp_kwl, pskw) then do;
+         p_selection_kwl = pskw->kw_entry.next;
+         pskw->kw_entry.next = null;
+         call kwl$delete_kw (pskw, temp_kwl);
+         if kwl$find_kw ('SK', p_selection_kwl, ppkw) then do;
+            p_print_kwl = ppkw->kw_entry.next;
+            ppkw->kw_entry.next = null;
+            call kwl$delete_kw (ppkw, p_selection_kwl);
+            end;
+         end;
+      if p_print_kwl = null then
+         if kwl$find_kw ('SK', temp_kwl, ppkw) then do;
+            p_print_kwl = ppkw->kw_entry.next;
+            ppkw->kw_entry.next = null;
+            call kwl$delete_kw (ppkw, temp_kwl);
+            end;
+      if temp_kwl ^= null then
+         begin;
+         dcl m char(80) var;
+         m = 'Unrecognized keyword -' || temp_kwl->kw_entry.kw || '.';
+         call kwl$destroy_kwl (temp_kwl);
+         call error_ (m);
+         end;
+
+      call initialize_selection_kwl;
+
+      return;
+      end parse_cl;
+%page;
+/* list_print_queue.error_, PrintMaster, Jeff Hostetler, February 14, 1984    */
+/* procedure to display error message and command usage and call err$.        */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg         char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call ioa$er ('Type LPQ -HELP or HELP LPQ for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* list_print_queue.display_help, PrintMaster, Jeff Hostetler, March 27, 1984 */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage:  LPQ  queue_option  select_option%.', -1);
+      call ioa$ ('   or:  LPQ -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('QUEUE_OPTION must be blank or one of the following:%.', -1);
+      call ioa$ ('   -Queue partition -- list queue on PARTITION instead of the first queue found%.', -1);
+      call ioa$ ('   -All             -- list all queues visible to the user%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('SELECT_OPTION is optional and has the following form:%.', -1);
+      call ioa$ ('   -SJ kwl          -- only list jobs which "match" the kwl given%.', -1);
+      call ioa$ ('%.', -1);
+
+      return;
+      end display_help;
+
+/******************************************************************************/
+/*                                                                            */
+/* Internal procedure to initialize the selection kwl                         */
+/*                                                                            */
+/******************************************************************************/
+
+   initialize_selection_kwl : procedure;
+
+      dcl
+         kwp         ptr;
+
+      /* change all keywords to scheduling keywords */
+
+      do kwp = p_selection_kwl repeat kwp->kw_entry.next while (kwp ^= null);
+         kwp->kw_entry.flags.info = false;
+         end;
+
+      /* modify special keywords that don't have values, e.g., -USER
+         with no value means "my user id" */
+
+      if kwl$find_kw (kw$user_id, p_selection_kwl, kwp) then
+         if kwp->kw_entry.pf_value = null then
+            call kwl$add_value (kwp, gbl.my_user_id);
+
+      if kwl$find_kw (kw$project_id, p_selection_kwl, kwp) then
+         if kwp->kw_entry.pf_value = null then
+            call kwl$add_value (kwp, gbl.my_project_id);
+
+      if kwl$find_kw (kw$user_system, p_selection_kwl, kwp) then
+         if kwp->kw_entry.pf_value = null then
+            call kwl$add_value (kwp, psv.my_system_id);
+
+      return;
+      end initialize_selection_kwl;
+
+   end lpq;

@@ -1,0 +1,249 @@
+/* PRINT_PBH.PL1, PRI400>PBHIST, OS GROUP, 12/26/79
+/* Print Program Base Histogram.
+/* Copyright (c) 1979, Prime Computer, Inc., Wellesley, MA 02181
+/*
+/* DESCRIPTION:
+/*
+   This procedure is a command level interface to print, on the tty output
+   stream, the currently active Program Base Histogram data.  These data can
+   be used as an estimate of the proportion of time spent executing in
+   various code regions.  Both the operating system and a user program may
+   be metered.  The histogram is printed as a differential sample; the user
+   may select the sampling interval or use manual mode in which the command
+   will come to command level between printings.
+/* ABNORMAL CONDITIONS:
+/*
+   Error diagnostics are issued if the command line is invalid, or if a
+   specified map file cannot be read or contains bad data.
+/* IMPLEMENTATION:
+/*
+   The command first processes its arguments, including preparsing the map
+   file (if any) into a binary table.  Then the histogram is sampled and
+   stored, and the size of code blocks (the granularity) is determined from
+   the number of segments being metered, and the command line parameter value.
+   When either the sleep interval expires or the user enters a "start" command,
+   the histogram is sampled again, and is differenced with the stored sample,
+   and the results are printed.  The new sample then becomes the stored sample,
+   and the process repeats ad infinitum.
+/* MODIFICATIONS:
+   12/26/79 Hampson Tightened format; percents now disp to 10th's.
+   07/18/79 Hampson Initial coding.
+/*
+/***********************************************************************/
+
+print_pbh:
+        proc (com_args, com_status, com_name) options (nocopy);
+
+dcl com_args char(160) var,
+    com_status fixed bin,                        /* severity code */
+    com_name char(32) var;                       /* my name */
+
+dcl cl$pix entry (bit(16) aligned, char(*) var, ptr, fixed bin, char(*) var, ptr, fixed
+         bin, fixed bin, fixed bin),
+    map entry (fixed bin, fixed bin, fixed bin, fixed bin, (64) char(8) var),
+    date_time_ entry () returns (fixed bin(31)),
+    cv$fda entry (fixed bin(31), fixed bin, char(21) aligned),
+    (ioa$, ioa$er) entry options (variable),
+    tonl entry (),
+    pbinfo entry (ptr, fixed bin, fixed bin),
+    sleep$ entry (fixed bin(31)),
+    comlv$ entry (),
+    parse entry (char(*) var, fixed bin);
+
+dcl 1 ci,                                        /* command line info */
+       2 map_sw bit(1) aligned,                  /* -map map_path */
+       2 map_path char(128) var,
+       2 block_sw bit(1) aligned,                /* -block_size size */
+       2 block_size fixed bin(31),
+       2 freq_sw bit(1) aligned,                 /* -frequency time */
+       2 freq_seconds fixed bin(31);
+dcl com_pix char(62) var static init (
+         '-map tree; -block_size, -blksz oct; -frequency, -freq dec; end');
+
+dcl 1 pbm based,                                 /* pb hist. meter block */
+       2 counters(0:1023) fixed bin(31),
+       2 target_user bit(16) aligned,
+       2 mbz fixed bin,
+       2 number_segs fixed bin,                  /* ...being metered */
+       2 seg_numbers(8) fixed bin;               /* of metered segs */
+
+dcl 1 pbm_before like pbm;
+dcl 1 pbm_after like pbm;
+
+dcl (pixidx, badidx, code) fixed bin,
+    first bit(1) aligned,
+    (pa, pb, tp) ptr,                            /* before and after images */
+    real_blk_size fixed bin,                     /* size of each block of code */
+    rb_per_vb fixed bin,                         /* real blk/virtual (user-spec) blk */
+    total_meters fixed bin(31),                  /* samples this cycle */
+    (i, ir) fixed bin,
+    num_names fixed bin,
+    total_ir fixed bin(31),                      /* samples "in range" this cycle */
+    blocks_per_seg fixed bin,                    /* number of code blocks each seg */
+    seg_hits(8) fixed bin(31),                   /* total hits each seg this cycle */
+    seg_idx fixed bin,                           /* index into seg_hits and pbm.seg_numbers */
+    seg_word fixed bin,                          /* word no. in curr seg of curr meter printing */
+    hits fixed bin(31);
+dcl matched_names(64) char(8) var;
+dcl (pc1, pc2) fixed bin;
+dcl the_date char(21) aligned;
+dcl dow fixed bin;
+
+/* Table of blocks (real) per segment. */
+
+dcl bps_table(8) fixed bin static init (1024, 512, 256, 256, 128, 128, 128, 128);
+
+/* Table of block sizes. */
+
+dcl blk_size(8) fixed bin static init (64, 128, 256, 256, 512, 512, 512, 512);
+
+/* Table of total blocks used. */
+
+dcl tot_blocks(8) fixed bin static init (1024, 1024, 768, 1024, 640, 768, 896, 1024);
+
+/* Process command args */
+
+        call cl$pix ('0002'b4, com_name, addr (com_pix), 62, com_args, addr (ci), pixidx,
+                 badidx, code);
+        if code ^= 0
+           then do;
+bad_args:
+           com_status = 10000;
+           return;
+           end;
+
+        if ci.map_sw
+           then do;
+           call parse (ci.map_path, code);       /* read in map */
+           if code ^= 0
+              then goto bad_args;
+           call ioa$ ('Using map file %v. (%v)%.', 100, ci.map_path, com_name);
+           end;
+
+        pa = addr (pbm_after);
+        pb = addr (pbm_before);
+        first = '1'b;
+
+        do while ('1'b);
+           call pbinfo (pa, 2059, code);
+           if code ^= 0
+              then do;
+              call ioa$er ('Unable to read histogram data. (%v)%.', 100, com_name);
+              com_status = 10001;
+              return;
+              end;
+           if first
+              then do;
+              first = '0'b;
+
+/* Compute size of code blocks (grain). */
+
+              real_blk_size = blk_size (pa -> pbm.number_segs);   /* actual block size */
+              rb_per_vb = 1;                     /* assuming no user parm */
+              if ci.block_sw                     /* user param */
+                 then do;
+                 if ci.block_size < real_blk_size | mod (ci.block_size, real_blk_size) ^=
+                          0
+                    then call ioa$er (
+                             'Specified block size impossible, using %o (o). (%v)%.',
+                             100, real_blk_size, com_name);
+                 else rb_per_vb = divide (ci.block_size, real_blk_size, 15);
+                 end;
+              goto end_loop;
+              end;
+
+/* Compute info to put in header. */
+
+           total_meters = 0;
+           do i = 0 to 1023;
+              total_meters = total_meters + (pa -> pbm.counters(i) - pb -> pbm.counters(
+                       i));
+              end;
+           total_ir = total_meters - (pa -> pbm.counters(0) - pb -> pbm.counters(0));   /* in range */
+
+call cv$fda (date_time_(), dow, the_date);
+           call ioa$ ('%/%a%7xInterval: %:2d sec.%.', 100, the_date, 21, ci.
+                    freq_seconds);
+           if pa -> pbm.target_user = '0'b
+              then call ioa$ ('User: all%15x%$', 100);
+           else call ioa$ ('User: %6w%12x%$', 100, pa -> pbm.target_user);
+           call ioa$ ('Block size: Actual %o, Displayed %o%.', 100, real_blk_size, bin (
+                    real_blk_size * rb_per_vb, 15));
+           call ioa$ ('Segments metered:%$', 100);
+           do i = 1 to pa -> pbm.number_segs;
+              call ioa$ (' %o%$', 100, pa -> pbm.seg_numbers(i));
+              end;
+           pc1 = percent (total_ir, total_meters);
+           call ioa$ ('%/Samples: %:2d%4xIn range: %:2d%4x%% in range: %d.%d%/%.', 100,
+                    total_meters, total_ir, divide (pc1, 10, 15), mod (pc1, 10));
+
+/* Compute differential meters. */
+
+           blocks_per_seg = bps_table(pa -> pbm.number_segs);
+           do i = 1 to 8;
+              seg_hits(i) = 0;
+              end;
+           call ioa$ ('%/  Address    Samples %%_Tot %%_I-R Module(s)%/%.', 100);
+
+           do i = 0 to tot_blocks(pa -> pbm.number_segs) - 1 by rb_per_vb;   /* for each vir. blk */
+              seg_idx = divide (i, blocks_per_seg, 15) + 1;
+              seg_word = mod (i, blocks_per_seg) * real_blk_size;
+              hits = 0;
+              do ir = i to i + rb_per_vb - 1;    /* for each real blk */
+                 if ir ^= 0
+                    then hits = hits + pa -> pbm.counters(ir) - pb -> pbm.counters(ir);
+                 end;
+              seg_hits(seg_idx) = seg_hits(seg_idx) + hits;
+              if hits > 0
+                 then do;
+                 pc1 = percent (hits, total_meters);
+                 pc2 = percent (hits, total_ir);
+                 call ioa$ ('%4o|%6:0o %8:2d %3d.%d %3d.%d %$', 100, pa -> pbm.
+                          seg_numbers(seg_idx), seg_word, hits, divide (pc1, 10, 15), mod
+                          (pc1, 10), divide (pc2, 10, 15), mod (pc2, 10));
+                 if ci.map_sw
+                    then call map (pa -> pbm.seg_numbers(seg_idx), seg_word, seg_word +
+                             real_blk_size * rb_per_vb - 1, num_names, matched_names);
+                 else call tonl;
+                 end;
+              end;
+
+/* Print per-segment summary if more than one segment. */
+
+           if pa -> pbm.number_segs > 1
+              then do;
+              call ioa$ ('%/Seg.   Samples %%_Tot %%_I-R%/%.', 100);
+              do i = 1 to pa -> pbm.number_segs;
+                 pc1 = percent (seg_hits(i), total_meters);
+                 pc2 = percent (seg_hits(i), total_ir);
+                 call ioa$ ('%4o  %8:2d %3d.%d %3d.%d%.', 100, pa -> pbm.seg_numbers(i),
+                          seg_hits(i), divide (pc1, 10, 15), mod (pc1, 10), divide (pc2,
+                          10, 15), mod (pc2, 10));
+                 end;
+              end;
+
+/* Wait for next cycle. */
+
+end_loop:
+           if ci.freq_sw
+              then call sleep$ (ci.freq_seconds * 1000);
+           else call comlv$;
+
+           tp = pb;                              /* swap before and after images */
+           pb = pa;
+           pa = tp;                              /* ... */
+           end;
+
+/* percent (num, denom): compute percentage with fixedpoint arithmetic. */
+
+percent:
+           proc (num, denom) returns (fixed bin);
+
+dcl num fixed bin(31),                           /* numerator */
+    denom fixed bin(31);                         /* denominator */
+
+           return (divide (num * 1000, denom, 15));
+
+           end;                                  /* percent */
+
+        end;                                     /* print_pbh */

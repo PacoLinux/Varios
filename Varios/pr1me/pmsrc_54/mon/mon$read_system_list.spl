@@ -1,0 +1,97 @@
+/* MON$READ_SYSTEM_LIST.SPL, PrintMaster, Jim Wilcoxson, October 28, 1983     */
+/* Reads the prioritized list of systems in the network to determine who      */
+/* has highest priority for being the master.
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$read_system_list : procedure;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%list;
+
+dcl
+   (i,j)       bin,
+   had_dups    bit,
+   line        char(32) var,
+   status      bin,
+   system_name char(32) var,
+   unit        bin;
+
+
+   mon.my_system_index = 1;                     /* if no network or system list */
+   mon.system_list_size = 1;
+   system_list(1) = psv.my_system_id;
+   if ^psv.network_exists then
+      return;
+
+   unit = 0;
+   on condition (cleanup$)
+      begin;
+         call gp$close (unit);
+      end;
+
+   if ^gp$attach_system_dir(status) then
+      call err$ (err$primos_et,
+                 'Can''t attach to system directory to read system list',
+                 status, 0, 0);
+
+   if ^gp$file_exists (gbl$system_list_name) then
+      return;
+
+   call gp$open_file (k$read+k$getu, gbl$system_list_name, unit);
+
+   mon.my_system_index = 0;
+   mon.system_list_size = 0;
+   do while (gp$read_line (unit, line));
+      if line ^=  '' then do;
+         mon.system_list_size = mon.system_list_size + 1;
+         if mon.system_list_size > max_systems then
+            call err$ (err$user_et, 'Too many systems in system list.',
+                       err$system_list_ue, 0, 0);
+         system_list(mon.system_list_size) = translate(trim(line,'11'b),
+                                                   uppercase,lowercase);
+         if system_list(mon.system_list_size) = psv.my_system_id then
+            mon.my_system_index = mon.system_list_size;
+         end;
+      end;
+
+   call gp$close (unit);
+
+   /* make sure my system is in the system list */
+
+   if mon.my_system_index = 0 then
+      call err$ (err$user_et, 'My node name (' || psv.my_system_id ||
+                 ') is not in the system list.', err$system_list_ue, 0, 0);
+
+   /* verify that no system occurs more than once; if a duplicate is found,
+      change it to null to prevent multiple error messages */
+
+   had_dups = false;
+   do i = 1 to mon.system_list_size;
+      if length (system_list(i)) ^= 0 then
+match_loop:
+         do j = i+1 to mon.system_list_size;
+            if system_list(i) = system_list(j) then do;
+               call err$ (err$user_et+err$warning_et,
+                          'System "' || system_list(i) ||
+                          '" occurs more than once in system list.',
+                          err$system_list_ue, 0, 0);
+               had_dups = true;
+               system_list(j) = '';
+               leave match_loop;
+               end;  /* if system_list(i) */
+            end;  /* do j */
+      end;  /* do i */
+
+   if had_dups then
+      call err$ (err$user_et, 'Duplicate system names in system list.',
+                 err$system_list_ue, 0, 0);
+
+   return;
+
+end mon$read_system_list;

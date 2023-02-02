@@ -1,0 +1,495 @@
+/* L3$LASERJET.SPL, PrintMaster, Jeff Hostetler, May 26, 1985                 */
+/* Device driver for HP LaserJet laser printer.                               */
+/* Copyright (C) 1985 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l3$laserjet: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      key            bin,
+      data_line      char(*),               /* only valid when key = print */
+      number         bin;                   /* skip count or channel */
+
+   dcl
+      cr             char(1) static,
+      held_skips     bin static init (0);   /* for vertical motion speed-up */
+
+   /* The list of font definitions consists of a forward-linked list of
+   /*   definitions; each definition contains the name(s) for the font
+   /*   and its characteristics. */
+
+   %replace
+      max_nr_abbrev        by 4;
+   dcl
+      fontdef_bol          ptr static init (null),
+      1  fontdef           based,
+         2  next           ptr,
+         2  abbrev_count   bin,
+         2  abbrevs (max_nr_abbrev) char(10) var,
+         2  characteristics (8)     char(10) var;
+
+
+   select (key);
+      when (l2$device_init)
+         return (device_init());
+      when (l2$job_init)
+         return (job_init());
+      when (l2$print_line, l2$skip_channel) do;
+         call print_held_skips;
+         return (l2$func_not_handled_rc);
+         end;
+      when (l2$skip_line) do;
+         held_skips = held_skips + number;
+         return (l2$func_handled_rc);
+         end;
+      when (l2$job_terminate) do;
+         call print_held_skips;
+         return (l2$func_handled_rc);
+         end;
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of LASERJET Device Driver. */
+
+   device_init: proc returns (bin);
+
+      dcl
+         func     bin,
+         i        bin,
+         pkw      ptr,
+         value    char(kwl$chars_in_value) var;
+
+
+      extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+      extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+      extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+      extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+      do func = l2$job_init, l2$skip_channel, l2$skip_line,
+                l2$print_line, l2$job_terminate;
+         l23.func_implemented (func) = true;
+         end;
+
+      l23.pad_char = ' ';
+      l23.scan_key = l2$trim_key;
+
+      held_skips = 0;
+      cr = byte(141);
+
+      if kwl$find_kw ('FONTDEF', ds.p_device_kwl, pkw) then do;
+         do i = 1 by 1 while (kwl$get_nth_value (pkw, i, value));
+            call parse_fontdef (value);
+            end;
+         end;
+
+      return (l2$func_handled_rc);
+
+      parse_fontdef: proc (font);
+
+         /* Parse the value of a font definition.  They have the form:
+            a1,a2,a3,a4=orient,sym_set,spacing,pitch,point,style,weight,typeface
+            where a1 thru a4 are names or abbreviations.  */
+
+         dcl
+            font     char(128) var,
+            p        ptr,
+            left     char(50) var,
+            right    char(128) var,
+            i        bin;
+
+         allocate fontdef set (p);
+         p->fontdef.abbrev_count = 0;
+         p->fontdef.next = null;
+
+         if index(font, '=') = 0 then
+            call parse_error ('-FONTDEF', font, 'No equal sign found');
+         left = before(font, '=');
+         right = after(font, '=');
+
+         /* parse "a1,a2,a3,a4"; four abbrevs are not required */
+
+         call parse_commas ('-FONTDEF', left, max_nr_abbrev, p->fontdef.abbrevs,
+                            p->fontdef.abbrev_count, true, true, false);
+
+         /* parse font characteristics; all values are required; */
+         /* "i" is passed as a dummy variable */
+
+         call parse_commas ('-FONTDEF', right, 8, p->fontdef.characteristics,
+                            i, true, true, true);
+
+         /* Finished parsing FONTDEF; now insert it at the head */
+         /*   of the list of FONTDEF's. */
+
+         if fontdef_bol ^= null then        /* insert at bol with simple */
+            p->fontdef.next = fontdef_bol;  /*   forward pointer */
+         fontdef_bol = p;
+
+         return;
+
+         end parse_fontdef;
+      end device_init;
+
+   job_init: proc returns (bin);
+
+      dcl
+         (avalue, pvalue)     char(kwl$chars_in_value) var,
+         (a, p)   ptr,
+         kwp      ptr,
+         primary_font_pitch         float,
+         page_len                   float,
+         top_margin                 float,
+         text_len                   float,
+         left_margin                float,
+         right_margin               float,
+         vmi                        float,
+         lpi                        float,
+         lpp                        bin,
+         pl_48                      bin,
+         tm_48                      bin,
+         rm_                        bin,
+         lm_                        bin,
+
+         vstring  char(128) var,
+         1  vs       based (addr(vstring)),
+            2  len   bin,
+            2  chars char(vs.len) nonvarying;
+
+
+      /* Issue a RESET (Esc E) */
+
+      call l2$io (l2$output_string, 'E' || cr, 0);
+
+      /* Accept from either JOB or DEVICE a font specifier: -FONT f1 f2 */
+      /* Where f1 and f2 are names (abbreviations) for fonts described  */
+      /*    with the -FONTDEF keyword. */
+
+      /* The PRIMARY_FONT_PITCH is set here to the default assumed
+      /*   by the printer; it is used when setting the right margin.
+      */
+
+      primary_font_pitch = 10.0;
+
+      if ds$find_kw ('FONT', kwp) then do;
+         if kwl$get_nth_value (kwp, 1, pvalue) then do;  /* primary given */
+            pvalue = translate(pvalue, uppercase, lowercase);
+            if look_up_font (pvalue, p) then do;
+
+               if verify(p->fontdef.characteristics(4), decimal_digits) = 0 then
+
+                  /* The following is a CHAR(10) VAR to FLOAT conversion.  If
+                     an explicit FLOAT() is used, SPL at 19.3 generates QUAD-
+                     Precision instructions; this causes problems (UII) for
+                     sites at 19.1. */
+
+                  primary_font_pitch = p->fontdef.characteristics(4);
+
+
+               call ioa$rs (vs.chars, 128, vs.len,
+                            '&l%vO(%v(s%vp%vh%vv%vs%vb%vT%$', -1,
+                            p->fontdef.characteristics(1), /* orientation */
+                            p->fontdef.characteristics(2), /* symbol set */
+                            p->fontdef.characteristics(3), /* proportional vs. fixed spacing */
+                            p->fontdef.characteristics(4), /* print pitch */
+                            p->fontdef.characteristics(5), /* character height (point size) */
+                            p->fontdef.characteristics(6), /* style (italic/upright) */
+                            p->fontdef.characteristics(7), /* stroke weight */
+                            p->fontdef.characteristics(8));/* typeface */
+               call l2$io (l2$output_string, vs.chars, 0);
+               end;
+            else
+               call err$ (err$log_event_et, 'Unknown font '|| pvalue ||' given.',
+                          0, 0, 0);
+
+            /* Since a primary was given, look for an alternate */
+
+            if kwl$get_nth_value (kwp, 2, avalue) then do;
+               avalue = translate(avalue, uppercase, lowercase);
+               if look_up_font (avalue, a) then do;
+                  if a->fontdef.characteristics(1)
+                              ^= p->fontdef.characteristics(1) then
+                     call err$ (err$log_event_et, 'Primary and Alternate fonts have different orientations ('
+                                                  || pvalue || ' and ' || avalue || ').', 0, 0, 0);
+
+                  /* Either way output alternate font; omit orientation. */
+
+                  call ioa$rs (vs.chars, 128, vs.len,
+                               ')%v)s%vp%vh%vv%vs%vb%vT%$', -1,
+                               a->fontdef.characteristics(2), /* symbol set */
+                               a->fontdef.characteristics(3), /* proportional vs. fixed spacing */
+                               a->fontdef.characteristics(4), /* print pitch */
+                               a->fontdef.characteristics(5), /* character height (point size) */
+                               a->fontdef.characteristics(6), /* style (italic/upright) */
+                               a->fontdef.characteristics(7), /* stroke weight */
+                               a->fontdef.characteristics(8));/* typeface */
+                  call l2$io (l2$output_string, vs.chars, 0);
+                  end;
+               else
+                  call err$ (err$log_event_et, 'Unknown font '|| avalue ||' given.',
+                             0, 0, 0);
+               end;
+            end;
+         end;                               /* of if -FONT given */
+
+      /* Now set up the margins.  This info comes from the -MARGIN keyword:
+      /*   -MARGIN page_len, top_margin, text_len, left_margin, right_margin
+      /*
+      /* All values are in terms of inches.  Both the LEFT_ and RIGHT_ margins
+      /*   are distances from the left edge of the paper.
+      /*
+      /* Vertical line spacing will be determined as follows:
+      /*
+      /*    If -LINES_PER_INCH is given with a value then
+      /*       line spacing will be set to this (i.e. (LPI * TEXT_LEN) lines
+      /*       will be printed in the text region at LPI lines per inch).
+      /*    otherwise
+      /*       line spacing will be set so that LPP (the value of
+      /*       -LINES_PER_PAGE) lines will be printed in the text region.
+      /*    (Both methods will use the VMI, not the LPI, command.)
+      */
+
+      if ds$find_kw ('MARGIN', kwp) then do;
+
+         /* Get values from -MARGIN keyword; assume 8.5 x 11 paper (with
+         /*   1/2 inch top margin and no side margins) as the default.
+         */
+
+         page_len = float_value (kwp, 1, 11.0);
+         top_margin = float_value (kwp, 2, 0.5);
+         text_len = float_value (kwp, 3, 10.5);
+         left_margin = float_value (kwp, 4, 0.0);
+         right_margin = float_value (kwp, 5, 8.5);
+
+         /* Since the LaserJet ignores a left margin greater than a right
+         /*   margin, we will too.
+         */
+
+         if left_margin >= right_margin then do;
+            left_margin = 0.0;
+            right_margin = 8.5;
+            end;
+
+         /* Now set up PAGE_LENGTH and TOP_MARGIN.  We do this via the
+         /*   VMI command; set the VMI to 1/48th of an inch then set
+         /*   the PAGE_LENGTH and TOP_MARGIN to 48 times their value
+         /*   in inches.
+         */
+
+         pl_48 = binary(page_len * 48.0);
+         tm_48 = binary(top_margin * 48.0);
+         call ioa$rs (vs.chars, 128, vs.len, '&l1c%dp%dE%$', -1,
+                      pl_48, tm_48);
+         call l2$io (l2$output_string, vs.chars, 0);
+
+         /* Now set the VMI to set up the TEXT_LENGTH.  We have two
+         /*   different methods depending on whether -LINES_PER_INCH
+         /*   was given with a value.  Once the VMI is set, we then
+         /*   set the TEXT_LENGTH (as the number of print lines at
+         /*   that spacing.  I hope the following will help.)
+         /*
+         /* VMI inc.   TL inch |48 inc.|  page       48 inc.|  inch
+         /*     ---- = --------+-------+-------- or  -------+---------
+         /*     line      page | inch  |LPP line       inch | LPI line
+         /*
+         /* LPP line = TL inch | 48 inc.|  line
+         /*     ----   --------+--------+---------
+         /*     page     page  |  inch  | VMI inc.
+         */
+
+         vmi = (text_len * 48.0) / float(l23.lines_per_page, 23);
+         if ds$find_kw ('LINES_PER_INCH', kwp) then do;
+            lpi = float_value (kwp, 1, -1.0);
+            if lpi > 0.0 then
+               vmi = 48.0 / lpi;
+            end;
+         lpp = binary(text_len * 48.0 / vmi);
+
+         l23.lines_per_page = lpp;
+
+         call ioa$rs (vs.chars, 128, vs.len,
+                      '&l%6.4fc%dF%$', -1, vmi, lpp);
+         call l2$io (l2$output_string, vs.chars, 0);
+
+         /* Now set the left and right margins.  These are column
+         /*   numbers and are dependent on the PITCH of the currently
+         /*   loaded font.  (Remember the first column is labeled zero.)
+         */
+
+         lm_ = binary(primary_font_pitch * left_margin);
+         rm_ = binary(primary_font_pitch * right_margin) - 1;
+
+         /* Set the CHARS_PER_LINE so that truncation and line wrapping
+         /*   will work correctly (if enabled).
+         */
+
+         l23.chars_per_line = rm_ - lm_ + 1;
+
+         /* Output string with a CR (in case we move the left margin). */
+
+         call ioa$rs (vs.chars, 128, vs.len,
+                      '&a%dl%dM%c%$', -1, lm_, rm_, cr, 1);
+         call l2$io (l2$output_string, vs.chars, 0);
+
+         end;                               /* of if -MARGIN */
+      else do;
+
+         /* Now set the LINES_PER_INCH, but only if we haven't done
+         /*   it already (in the margin stuff).
+         */
+
+         if ds$find_kw ('LINES_PER_INCH', kwp) then do;
+            lpi = float_value (kwp, 1, -1.0);
+            if lpi > 0.0 then do;
+               vmi = 48.0 / lpi;
+               call ioa$rs (vs.chars, 128, vs.len, '&l%6.4fC%$', -1, vmi);
+               call l2$io (l2$output_string, vs.chars, 0);
+               end;
+            end;
+
+         end;                               /* of else of if -MARGIN */
+
+      return (l2$func_handled_rc);
+
+      float_value: proc (p, n, default)
+                   returns (float);
+         dcl
+            p           ptr,
+            n           bin,
+            default     float,
+            f           float,
+            value       char(kwl$chars_in_value) var;
+
+         on error
+            goto conv_err;
+
+         if kwl$get_nth_value (p, n, value) then
+            if verify(value, decimal_digits) = 0 then do;
+
+               /* RETURNing float(value,23) causes SPL at 19.3 to generate
+                  QUAD-Precision instructions (which is a problem for 19.1
+                  sites).  This is eliminated by using a temporary. */
+
+               f = value;                   /* CHAR() VAR to FLOAT conversion */
+               return (f);
+               end;
+
+      conv_err:
+
+         return (default);
+         end float_value;
+
+      look_up_font: proc (name, fp) returns (bit);
+
+         dcl
+            name  char(*) var,              /* (in) */
+            fp    ptr,                      /* (out) */
+            i     bin;
+
+         do fp = fontdef_bol repeat fp->fontdef.next while (fp ^= null);
+            do i = 1 to fp->fontdef.abbrev_count by 1;
+               if fp->fontdef.abbrevs(i) = name then
+                  return (true);            /* we found it */
+               end;
+            end;
+
+         return (false);                    /* we didn't find it */
+         end look_up_font;
+      end job_init;
+
+
+   print_held_skips: proc;
+
+      if held_skips > 0 then do;
+/***         if held_skips > 6 then
+            call l2$io (l2$output_string,
+                        '&a+' || trim(char(held_skips), '11'b, ' ') || 'R', 0);
+         else   ***/
+            call l2$io (l2$output_string, copy (byte(138), held_skips), 0);
+         held_skips = 0;
+         end;
+      return;
+      end print_held_skips;
+
+   parse_commas: proc (proc_msg, string, max_allowed, array, nr_found, trim_it,
+                       uppercase_it, require_all);
+
+      dcl
+         proc_msg    char(*) var,           /* in */
+         string      char(*) var,           /* in */
+         max_allowed bin,                   /* in */
+         array       (*) char(10) var,      /* out */
+         nr_found    bin,                   /* out */
+         trim_it        bit(1) aligned,     /* in */
+         uppercase_it   bit(1) aligned,     /* in */
+         require_all    bit(1) aligned;     /* in */
+
+      dcl
+         i              bin,
+         work_string    char(length(string)) var;
+
+      if trim_it & uppercase_it then
+         work_string = translate(trim(string, '11'b), uppercase, lowercase);
+      else
+         if uppercase_it then
+            work_string = translate(string, uppercase, lowercase);
+         else
+            work_string = trim(string, '11'b);
+
+      nr_found = 0;
+
+      do while (length(work_string) > 0);
+         i = index(work_string, ',');
+
+         if (i = 1)  |  (i = length(work_string)) then
+            call parse_error (proc_msg, string, 'Null item not allowed');
+
+         nr_found = nr_found + 1;
+         if nr_found > max_allowed then
+            call parse_error (proc_msg, string,
+                              'Maximum number of items exceeded');
+
+         if i = 0 then do;
+            array(nr_found) = work_string;
+            work_string = '';
+            end;
+         else do;
+            array(nr_found) = substr(work_string, 1, (i-1));
+            work_string = substr(work_string, (i+1));
+            if trim_it then do;
+               array(nr_found) = trim(array(nr_found), '01'b);
+               work_string = trim(work_string, '10'b);
+               end;
+            end;
+
+         end;
+
+      if (nr_found < 1)  |  (require_all & (nr_found < max_allowed)) then
+         call parse_error (proc_msg, string, 'Too few items specified');
+
+      return;
+      end parse_commas;
+
+   parse_error: proc (proc_msg, string, error_msg);
+
+      dcl
+         (proc_msg, string, error_msg) char(*) var;
+
+      /* This does not return !! */
+
+      call err$ (err$user_et, 'Error "' || error_msg ||
+                              '" occured while parsing "' || string ||
+                              '" in "' || proc_msg || '".', 0, 0, 0);
+
+      return;
+      end parse_error;
+
+end l3$laserjet;

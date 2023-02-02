@@ -1,0 +1,58 @@
+/* DS$CHANGE_STATE.SPL, PrintMaster, Jeff Hostetler, March 17, 1984           */
+/* Change and send device state to the monitor.                               */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$change_state: proc (state, cc, uid, tid);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>insert>ds$completion_codes.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>msg$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      state    bin,
+      cc       bin,
+      uid      char(uid_len),
+      tid      bin,                         /* transaction sequence nr (in) */
+
+      user_msg like ms$device_state;
+
+   /* can't send a completion code with no id */
+
+   if cc ^= ds$none_cc & uid = '' then
+      call err$ (err$coding_et, 'Inconsistent state, case 1', 0, 0, 0);
+
+   /* also can't send invalid completion code */
+
+   select (cc);
+      when (ds$completed_cc, ds$aborted_cc, ds$none_cc, ds$resend_job_cc,
+            ds$drop_job_cc, ds$drop_copy_cc, ds$suspended_cc, ds$resend_job_cc,
+            ds$timed_out_cc)
+         ;
+      otherwise do;
+         call ioa$ ('CC=%d, M=%d, D=%d%.', -1, cc, ds.monitors_device_state,
+                    ds.device_state);
+         call err$ (err$coding_et, 'Inconsistent state, case 2', 0, 0, 0);
+         end;
+      end;
+
+   user_msg.device_id = ds.device_name;
+   user_msg.current_job_uid = uid;
+   user_msg.job_completion_code = cc;
+   user_msg.state = state;
+   user_msg.job_transaction_id = tid;
+
+   if comm$send (mt$device_state, psv.my_system_id, 'monitor', addr(user_msg),
+                 ml$device_state) then;
+
+   ds.unique_id = uid;
+   ds.device_state = state;
+   ds.monitors_device_state = state;
+
+   return;
+   end ds$change_state;

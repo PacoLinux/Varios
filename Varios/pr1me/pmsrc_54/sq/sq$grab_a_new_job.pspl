@@ -1,0 +1,125 @@
+/* SQ$GRAB_A_NEW_JOB.SPL, PrintMaster, Jeff Hostetler, December 21, 1983      */
+/* Procedure to find the first free job, write the kwl, set up the page       */
+/*   control, and open the print file.  (August 27, 1984)                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+sq$grab_a_new_job: proc (p_kwl, nr_copies, open_pj_flag, no_wait_flag,  /* in */
+                         get_unit,                                      /* in */
+                         job_id, kw_e_unit,                            /* out */
+                         partition, pj_unit);                       /* in/out */
+
+%nolist;
+%Include '*>insert>gbl.ins.spl';
+%Include '*>insert>sq.ins.spl';
+%Include '*>insert>kwl.ins.spl';
+%Include '*>entry>gp$.ins.spl';
+%Include '*>entry>err$.ins.spl';
+%Include '*>entry>primos.ins.spl';
+%Include '*>entry>sq$delete_entry.ins.spl';
+%Include '*>entry>sq$open_entry.ins.spl';
+%Include '*>entry>sq$position.ins.spl';
+%include '*>entry>sq$set_up_pc.ins.spl';
+%include '*>entry>sq$write_job_kwl.ins.spl';
+%list;
+
+   dcl
+      p_kwl             ptr,                /* in */
+      nr_copies         bin,
+      open_pj_flag      bit,
+      no_wait_flag      bit,
+      get_unit          bit,
+      job_id            bin,                /* out */
+      kw_e_unit         bin,
+      partition         char(*) var,        /* in/out */
+      pj_unit           bin,                /* depends on get_unit */
+
+      rtime             bin(31),            /* for use with stat's */
+      dummy             bit,
+      kw_sd_unit        bin,
+      pc_sd_unit        bin,
+      pc_sd_sd_unit     bin,
+      pj_sd_unit        bin,
+      k                 bin,
+      n                 char(32) var,
+      x                 bin,
+      nwr               bin,
+      code              bin,
+      sgdr_code         bin;
+
+   kw_sd_unit = 0;
+   pc_sd_unit = 0;
+   pc_sd_sd_unit = 0;
+   pj_sd_unit = 0;
+   kw_e_unit = 0;
+   if get_unit then
+      pj_unit = 0;
+   job_id = 0;
+
+   on condition (CLEANUP$)
+      begin;
+      call gp$close (kw_sd_unit);
+      call gp$close (pc_sd_unit);
+      if kw_e_unit ^= 0 then do;            /* If we got far enough to open */
+         x = kwl$kwl_incomplete;            /* the kwl, invalidate it. */
+         call prwf$$ (k$writ+k$prea, kw_e_unit, addr(x), 1, 0, nwr, code);
+         call gp$close (kw_e_unit);
+         end;
+      call gp$close (pc_sd_sd_unit);
+      call gp$close (pj_sd_unit);
+      call gp$close (pj_unit);
+      end;
+
+%page;
+
+   /* open (lock) the kwl queue, get a free job, open it, then close
+      the kwl queue, leaving the job entry open */
+
+   call gp$open_pde (k$rdwr+k$getu+k$nsgs, partition, gbl$spool_queue,
+                      sq$q_kwl_name, kw_sd_unit);
+   dummy = sq$position (k$free, kw_sd_unit, job_id);
+   call sq$open_entry (k$writ+k$getu+k$iseg+k$nsam, kw_sd_unit, job_id, kw_e_unit);
+   call gp$close (kw_sd_unit);              /* close kwl queue */
+   call sq$write_job_kwl (p_kwl, kw_e_unit);
+
+   /* set up the page control entry, but first insure no trash exists */
+
+   call gp$open_file (k$rdwr+k$getu+k$nsgs, sq$q_pc_name, pc_sd_unit);
+   call sgdr$$ (k$spos, pc_sd_unit, job_id, sgdr_code, code);
+   if sgdr_code = sgdr$$file_present then do;
+      call err$ (err$log_event_et, 'PC present when KWL absent.', 0, 0, 0);
+      call sq$delete_entry (pc_sd_unit, job_id);
+      end;
+   call sq$open_entry (k$rdwr+k$getu+k$iseg+k$nsgs, pc_sd_unit, job_id, pc_sd_sd_unit);
+   call gp$close (pc_sd_unit);
+   call sq$set_up_pc (pc_sd_sd_unit, job_id, nr_copies);
+   call gp$close (pc_sd_sd_unit);
+
+   /* open print file
+      WARNING: this assumes the current directory is the print queue! */
+
+   if open_pj_flag then do;
+      if no_wait_flag
+         then n = sq$q_pj_updt_name;
+         else n = sq$q_pj_excl_name;
+      call gp$open_file (k$rdwr+k$getu+k$nsgs, n, pj_sd_unit);
+
+      k = k$writ + k$iseg + k$ndam;
+      if get_unit then
+         k = k + k$getu;
+      else
+         call gp$close ((pj_unit)); /* close reserved unit, don't set to zero */
+
+      call sq$open_entry (k, pj_sd_unit, job_id, pj_unit);
+      call gp$close (pj_sd_unit);
+      end;
+
+   partition = gp$partition_name (kw_e_unit);  /* return partition incase '' given */
+
+   /* at this point:
+         the kwl is open for (W) on "kw_e_unit"
+         the print file may be open (for (W))
+         "partition" has been set to the partition name of the queue */
+
+   return;
+   end sq$grab_a_new_job;

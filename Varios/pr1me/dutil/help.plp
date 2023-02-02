@@ -1,0 +1,301 @@
+/* Help.plp, Dutil, JEW, 15-Apr-81
+   Print long or short help about a command.
+
+   On first call, opens DUTIL.HELP in the current directory.
+   Format of help file is:
+
+      $COMMAND_NAME
+      <lines printed for long and short>
+      $S
+      <lines printed for short help>
+      $L
+      <lines printed for long help>
+      $E
+
+   $S and $L can be in either order , and either or both may
+   be omitted.
+
+*/
+
+Help: proc (command, do_long);
+
+$Insert *>insert>global.plp.ins
+$Insert Syscom>keys.pl1
+$Insert Syscom>errd.pl1
+
+%replace max_line_length by 80;
+
+dcl
+   command  char(32) var,
+   do_long  bit;
+
+dcl
+   errpr$   entry (bin, bin, char(*), bin, char(*), bin),
+   ioa$     entry options (variable),
+   srch$$   entry (bin, char(*), bin, bin, bin, bin),
+   tonl     entry;
+
+dcl
+   help_unit   bin static,
+   help_state  bin static init(0),    /* 0 = uninitialized,
+                                         1 = initialized unsuccessfully,
+                                         2 = initialized */
+   status      bin,
+   type        bin;
+
+
+   if help_state = 0 then
+      do;
+
+      /* do initialization */
+
+      call srch$$ (k$read+k$getu, 'dutil.help', 10, help_unit, type, status);
+      if status ^= 0 then
+         do;
+         call errpr$ (k$irtn, status, 'Opening Dutil.help.', 19, '', 0);
+         help_state = 1;
+         end;
+      else
+         help_state = 2;         /* all ok */
+      end;
+
+   if help_state = 1 then
+      call ioa$ ('No help is available.%.', -1);
+   else
+
+      if command = '' then
+         call print_help_directory;
+      else
+         call print_help (command, do_long);
+
+help_return:
+   return;
+
+/**/
+
+/* Internal procedure to print a directory of all available help */
+
+Print_help_directory: proc;
+
+dcl
+   rwnd$a   entry (bin),
+   tonl     entry;
+
+dcl
+   blanks   bin,
+   col      bin,
+   line     bin,
+   name     char(32) var,
+   status   bin;
+
+
+   col = 1;
+   line = 0;
+   call ioa$ ('Help is available for the following:%.', -1);
+
+   call rwnd$a (help_unit);     /* rewind help file */
+   call position_to_next (name, status);
+   do while (status =  0);
+
+      if col + length(name) > 79 then
+         do;
+         call newline (line);
+         col = 1;
+         end;
+
+      blanks = 10 - mod (length (name), 10);     /* number of blanks needed */
+      col = col + length (name) + blanks;
+      call ioa$ ('%v%#x%$', -1, name, blanks);
+      call position_to_next (name, status);
+
+   end;
+   call tonl;
+
+end;     /* Print_help_directory */
+
+/**/
+
+/* Print help on a single item (name).  */
+
+Print_help: proc (what, do_long);
+
+dcl
+   what     char(32) var,
+   do_long  bit;
+
+dcl
+   rwnd$a   entry (bin);
+
+dcl
+   help_line         char(max_line_length) var,
+   line              bin,
+   name              char(32) var,
+   status            bin,
+   target_type       char(32) var,
+   unwanted_type     char(32) var;
+
+
+   /* if target is >= next item, go forward in file, otherwise
+      rewind file first */
+
+   call position_to_next (name, status);
+   if status ^= 0 | name > what then
+      call rwnd$a (help_unit);
+
+   status = 0;
+   do while (name ^= what & status = 0);
+      call position_to_next (name, status);
+   end;
+
+   if status = 0 then
+      do;
+
+      /* found target, print unqualified help */
+
+      call tonl;
+      line = 0;
+      if get_line (help_line) then ;
+      do while (^(help_line = '$S' |
+                   help_line = '$L' |
+                   help_line = '$E'));     /* really "until" */
+
+         call print_line;
+
+      end;
+
+      /* skip unwanted help */
+
+      if do_long then
+         do;
+         target_type = '$L';
+         unwanted_type = '$S';
+         end;
+      else
+         do;
+         target_type = '$S';
+         unwanted_type = '$L';
+         end;
+
+      if help_line = unwanted_type then
+         do until (help_line = '$E' | help_line = target_type);
+            if get_line (help_line) then ;
+         end;
+
+      /* now print target help */
+
+      if help_line = target_type then
+         do;
+
+         if get_line (help_line) then ;
+         do while (^(help_line = unwanted_type | help_line = '$E'));
+
+            call print_line;
+
+         end;     /* do while */
+         end;     /* if help_line = target_type */
+      end;     /* if status = 0 */
+
+   else
+      call ioa$ ('No help is available for "%v".%$', -1, what);
+
+
+   /* Internal procedure to print help_line and a new_line */
+
+   Print_line: proc options (shortcall);
+
+      call ioa$ ('%v%$', -1, help_line);
+      call newline (line);
+      if get_line (help_line) then ;
+
+   end;     /* Print_line */
+
+end;     /* Print_help */
+
+/**/
+
+/* Internal procedure to print a newline and pause after 23 lines */
+
+Newline: proc (linecounter);
+
+$Insert *>insert>query.plp.ins
+
+dcl
+   linecounter    bin;
+
+   call tonl;
+   linecounter = linecounter + 1;
+
+   if linecounter = 21 then
+      do;
+      call tonl;
+      if ^query ('Continue help? ', def_yes) then
+         goto help_return;
+      end;
+
+end;     /* Newline */
+
+/**/
+
+Position_to_next: proc (name, status);
+
+dcl
+   name     char(32) var,
+   status   bin;
+
+dcl
+   line     char(max_line_length) var;
+
+
+   /* find next line beginning with a $, at least 1 letter, and no blanks */
+
+   do until (substr (line, 1, 1) = '$' &
+             index (line, ' ') = 0 &
+             length (line) > 1 &
+             line ^= '$E' & line ^= '$S' & line ^= '$L');
+
+      if ^get_line (line) then goto eof;
+
+   end;
+
+   name = substr (line, 2);     /* strip leading $ */
+   status = 0;
+   return;
+
+eof:
+   status = 1;
+   return;
+
+end;     /* Position_to_next */
+
+/**/
+
+/* Internal procedure to return next line of help file */
+
+Get_line: proc (line) returns (bit);
+
+dcl
+   line     char(max_line_length) var;
+
+dcl
+   rdlin$   entry (bin, char(*), bin, bin);
+
+dcl
+   buffer   char(max_line_length),
+   status   bin;
+
+   call rdlin$ (help_unit, buffer, max_line_length, status);
+   if status = 0 then
+      do;
+      line = trim (buffer, '01'b);     /* trim trailing blanks */
+      return (true);
+      end;
+
+   else
+      do;
+      line = '$E';
+      return (false);
+      end;
+
+end;     /* Get_line */
+
+end;     /* Help */

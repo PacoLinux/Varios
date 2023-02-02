@@ -1,0 +1,155 @@
+* BIO$READ_LINE.PMA, Spooler, Jim Wilcoxson, April 11, 1984
+* Read a line from a compressed file.
+* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.
+*
+       SEG
+       SYML
+       RLIT
+       SUBR    BIO$READ_LINE, ECB
+
+$INSERT *>INSERT>BIO.INS.PMA
+$INSERT SYSCOM>KEYS.INS.PMA
+
+*
+* MACRO FOR RDLINE TO GET THE NEXT CHARACTER FROM THE FILE.
+*
+GETC   MAC
+       NLSM
+&LOOP  LDC     0               ATTEMPT TO GET CHARACTER
+       BCNE    &DONE           HAVE A CHARACTER, ALL DONE
+       JSY     GET             GET NEXT BLOCK
+       JMP     &LOOP
+&DONE  EQU     *
+       ENDM
+
+*
+* SUBR TO READ THE NEXT LINE FROM THE FILE AND RETURN ITS ACTUAL LENGTH
+*
+BIO$READ_LINE ARGT    (FP: PTR; LINE: CHAR(*) VAR) RETURNS (BIT)
+*
+* SETUP REGISTERS
+*
+       EAXB    LINE,*
+       CRA
+       STA     XB%             INITIALIZE LINE TO NULL STRING
+       EAFA    1,XB%+1         STEP PAST STRING LENGTH
+       LDL     DOPE,*          GET STRING DOPE VECTOR; LENGTH IN B-REGISTER
+       CRA
+       STL     MAXLEN
+       TLFL    1
+
+       LDL     FP,*            L POINTS TO POINTER
+       STL     FP              REMOVE 1 INDIRECTION
+       EAXB    FP,*            XB NOW POINTS TO FILE BLOCK
+       EAFA    0,BIO$FB_NEXT_CHAR_IN_BUFFER,*
+       LDL     BIO$FB_CHARS_IN_BUFFER
+       TLFL    0
+
+       LRS     1               CONVERT TO WORDS IN BUFFER
+       TCL
+       ADL     BIO$FB_FILE_POSITION
+       STL     FILE_POS_OF_LINE,*
+
+MAJOR  EQU     *               MAIN CHARACTER LOOP
+       GETC                    GET NEXT CHARACTER
+
+       CAS     ='221           COMPRESSED SPACES?
+       JMP#    *+2             NO
+       JMP#    EXPAND          YES
+       CAS     ='212           END OF LINE?
+       JMP#    *+2             NO
+       JMP#    DONE            YES
+
+       STC     1
+       BCEQ    FINDCR          LINE FULL, SCAN TO END OF CURRENT LINE
+       JMP     MAJOR
+*
+* EXPAND COMPRESSED SPACES.  NEXT CHARACTER IS THE SPACE COUNT
+*
+EXPAND EQU     *
+       GETC
+       TAX                     SPACE COUNT INTO B
+       LDA     =R' '
+
+CSL    STC     1               COMPRESSED SPACE LOOP
+       BCEQ    FINDCR
+       BDX     CSL             MORE TO GO
+       JMP     MAJOR           CONTINUE
+*
+* LINE BUFFER IS FULL, FIND THE END OF THE CURRENT LINE
+*
+FINDCR EQU     *
+       GETC
+       SUB     ='212           IS THIS AN EOL?
+       BNE     FINDCR          NO, CONTINUE
+       JMP     DONE
+*
+*
+* GET NEXT BLOCK FROM DISK FILE.
+*
+GET    EQU     *
+       STY     GETRTN          SAVE RETURN ADDRESS
+
+       STFA    1,FAR1SV
+       TFLL    1
+       STL     FLR1SV
+
+       CALL    BIO$READ_BLOCK
+       AP      FP,SL
+
+       EAXB    FP,*
+       BEQ     RETURN          BIO$READ_BLOCK RETURNED FALSE; NO MORE DATA
+
+       EAFA    1,FAR1SV,*      RESTORE OUTPUT LINE FIELD REGISTERS
+       LDL     FLR1SV
+       TLFL    1
+
+       EAFA    0,BIO$FB_NEXT_CHAR_IN_BUFFER,*   AND INPUT BUFFER FIELD REGS
+       LDL     BIO$FB_CHARS_IN_BUFFER
+       TLFL    0
+
+       LDX     GETRTN
+       JMP     PB%,X           RETURN
+
+*
+* DONE, SAVE STATE AND RETURN LENGTH OF LINE IN VARYING STRING
+*
+
+DONE   EQU     *
+       STFA    0,BIO$FB_NEXT_CHAR_IN_BUFFER
+       TFLL    0
+       STL     BIO$FB_CHARS_IN_BUFFER
+       LDA     BIO$FB_NEXT_CHAR_IN_BUFFER    IF EOL IN LEFT BYTE, SKIP A BYTE
+       SAS     4               IS E-BIT SET?
+       JMP#    NOTODD          NOPE, EOL IN RIGHT BYTE
+       LDL     BIO$FB_CHARS_IN_BUFFER
+       BLNE    SKPONE          SKIP NEXT CHARACTER (LINES ALWAYS START ON W.B.)
+       HLT                     SHOULDN'T HAPPEN SINCE FILES ALWAYS EVEN # BYTES
+SKPONE LDC     0
+       STFA    0,BIO$FB_NEXT_CHAR_IN_BUFFER
+       TFLL    0
+       STL     BIO$FB_CHARS_IN_BUFFER
+
+NOTODD EQU     *
+       TFLL    1               ROOM LEFT IN LINE
+       TCL
+       ADL     MAXLEN          MAXLEN-ROOM LEFT
+       XCB                     CONVERT TO SHORT
+       STA     LINE,*          IS LENGTH OF LINE
+
+RETURN EQU     *
+       LDA     BIO$FB_STATUS   FUNCTION VALUE IS TRUE IF NO ERROR
+       LEQ
+       ARR     1               CHANGE TO PL/I BIT(1)
+       PRTN
+*
+*
+* DYNAMIC STORAGE
+*
+       DYNM    FP(3), LINE(3), FILE_POS_OF_LINE(3), DUMMY(3), DOPE(3)
+       DYNM    RNW, GETRTN, RCODE, FAR1SV(3), FLR1SV(2), MAXLEN(2)
+       DYNM    BUFIP(2), CODE
+
+       LINK
+ECB    ECB     BIO$READ_LINE,,FP,5
+       END

@@ -1,0 +1,75 @@
+/* BIO$READ_BLOCK.SPL, Spooler, Jim Wilcoxson, April 13, 1984                 */
+/* Reads the next block from a buffered I/O file.                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+bio$read_block : procedure (fp) returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>bio.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   fp       ptr,                            /* file block pointer (in) */
+
+   attempts bin,                            /* number of read attempts */
+   key      bin,                            /* prwf$$ key */
+   rnw      bin,                            /* prwf$$ words read */
+   type     bin,
+   status   bin;                            /* prwf$$ status code */
+
+
+   key = k$read;
+   if fp->bio$fb.use_conv then do;
+      key = key + k$conv;
+      fp->bio$fb.use_conv = false;
+      end;
+   fp->bio$fb.next_char_in_buffer = addr(fp->bio$fb.io_buffer);
+   fp->bio$fb.chars_in_buffer = 0;
+   do attempts = 1 to 36;                  /* try for 3 mins, 5 secs apart */
+
+      call prwf$$ (key, fp->bio$fb.unit, fp->bio$fb.next_char_in_buffer,
+                   fp->bio$fb.buffer_size, 0, rnw, status);
+
+      if (status = e$eof & rnw ^= 0) | status = 0 then
+         do;
+            fp->bio$fb.chars_in_buffer = rnw*2;
+            fp->bio$fb.status = 0;
+            fp->bio$fb.file_position = fp->bio$fb.file_position + rnw;
+            return (true);
+         end;
+
+      /* no data was read, status should be non-zero;  if EOF occurred,
+         check bio$wait flag and attempt to change file to read/write access
+         if set.  If successful, attempt to read file again.  If not successful,
+         wait for more data to be written to file.  If file was already opened
+         for read/write access, this is the real EOF */
+
+      fp->bio$fb.status = status;           /* save status in file block */
+      if fp->bio$fb.flags.write_acc | ^fp->bio$fb.flags.wait_at_eof
+       | status ^= e$eof then
+         return (false);                    /* no more data in file */
+
+      /* attempt to change access to write */
+
+      call srch$$ (bin(k$cacc+k$rdwr,15), 0, 0, fp->bio$fb.unit, type, status);
+      select (status);
+         when (0) do;
+            fp->bio$fb.write_acc = true;
+            call srch$$ (bin(k$cacc+k$read,15), 0, 0, fp->bio$fb.unit, type,
+                         status);
+            end;
+         when (e$fius)
+            call sleep$ (5000);             /* 5 seconds */
+         otherwise
+            return (false);                 /* with prwf$$ status code in fb */
+         end;
+
+      end;                                  /* do attempts */
+
+   fp->bio$fb.status = e$ndat;              /* returned on time-out */
+   return (false);
+
+end bio$read_block;

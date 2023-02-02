@@ -1,0 +1,109 @@
+/* DS$READ_PC.SPL, PrintMaster, Jeff Hostetler, March 9, 1984                 */
+/* Function to read the x'th USER DEFINED "mark" from the page control file.  */
+/* Returns true if pc mark changed.  Mark is truncated if it exceeds user's   */
+/* buffer size.                                                               */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$read_pc: proc (x, pm, len_in, mark_size_constant)
+            returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      x              bin(31),               /* read the x'th mark (in) */
+      pm             ptr,                   /* ptr to user's structure (in) */
+      len_in         bin,                   /* maximum size of structure (in) */
+      mark_size_constant  bit,              /* pc mark of constant size? (in) */
+
+      old_mark       (len_in) bin,
+      saved_pos      bin(31),
+      pos            bin(31),
+      code           bin,
+      rnw            bin;
+
+%page;
+
+   if ^mark_size_constant then
+      call err$ (err$coding_et, 'Non-constant marks not implemented', 0, 0, 0);
+
+   if x <= 0
+    | ds.last_pc_mark < 0
+    | ds.current_pc_mark > ds.last_pc_mark then
+      call err$ (err$coding_et, 'Invalid PC data/request', 0, 0, 0);
+
+   call prwf$$ (k$rpos, ds.page_control_unit, null, 0, saved_pos, 0, code);
+
+   if x = maxint31 then do;
+
+      /* position to last mark in page control file */
+
+      pos = maxint31;                       /* goto to eof */
+      call prwf$$ (k$posn+k$prea, ds.page_control_unit, null, 0, pos, 0, code);
+      call prwf$$ (k$rpos, ds.page_control_unit, null, 0, pos, 0, code);
+      if pos = 0 then do;                   /* file is empty */
+         ds.last_pc_mark = 0;
+         ds.current_pc_mark = 0;
+         return (false);
+         end;
+
+      if mod (pos, len_in) ^= 0 then        /* bad pc file; delete it */
+         goto bad_pc_file;
+
+      call prwf$$ (k$read+k$prer, ds.page_control_unit, pm, len_in,
+                   -len_in, rnw, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'positioning pc file', code, 0, 0);
+
+      if pm->fb15 ^= len_in then            /* page mark length mismatch */
+         goto bad_pc_file;
+
+      ds.current_pc_mark = divide (pos, len_in, 31);
+      ds.last_pc_mark = ds.current_pc_mark;
+      goto return_true;
+      end;
+
+      /* doesn't want the last mark; if the mark requested is past the
+         last mark, position to the last mark */
+
+      if x > ds.last_pc_mark then
+         if ds.current_pc_mark = ds.last_pc_mark then
+            return (false);                 /* already at last mark */
+         else
+            return (ds$read_pc (maxint31, pm, len_in, mark_size_constant));
+
+      /* the requested mark is <= last mark; read it */
+
+      call gp$copy (pm, addr(old_mark), len_in*2);   /* save old mark first */
+      pos = (x - 1) * len_in;            /* goto beginning of mark wanted */
+      call prwf$$ (k$read+k$prea, ds.page_control_unit, pm, len_in, pos,
+                   rnw, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Positioning PC file', code, 0, 0);
+
+      if pm->fb15 ^= len_in then do;        /* page mark length mismatch */
+         call gp$copy (addr(old_mark), pm, len_in*2); /* restore mark */
+         goto bad_pc_file;
+         end;
+
+      ds.current_pc_mark = x;
+
+return_true:
+      ds.current_pc_mark = ds.current_pc_mark - 1;
+      call prwf$$ (k$posn+k$prer, ds.page_control_unit, null, 0, -len_in,
+                   rnw, code);
+      return (true);
+
+bad_pc_file:
+   call prwf$$ (k$prea+k$trun, ds.page_control_unit, null, 0, saved_pos,
+                rnw, code);
+   return (false);
+
+   end ds$read_pc;

@@ -1,0 +1,813 @@
+/* OBJCON.PLP, EMACSSRC>OBJCON>SOURCE, TOOLS GROUP, 02/17/83
+/* OBJECT TEXT PROCESSOR
+/* Copyright (c) 1980, Prime Computer, Inc., Wellesley, MA 02181
+/* ************************************************************* */
+
+/*
+/* 02/17/83 Zane  Removed dynamic seg allocator calls, hardwired to 4004 & up.
+/* 02/17/83 Zane  Converted k$irtn to k$srtn in all cases for errpr$
+/* 11/10/82 BMZ   Added short pointer as last arg to cl$pix
+/* 11/10/82 BMZ   k$pl1 = 2
+*/
+objcon:
+        procedure(com_args, com_status) options(nocopy);
+
+declare com_args character(256) varying;
+declare com_status fixed binary(15);
+
+declare com_line character(256) varying;
+
+%replace first_sn by 2052;  /* ARGH!!! 2052 = '4004 */
+
+%replace k$pl1 by 2;
+
+%Replace buffer_size by 1024;
+/*          k$user      by 0;  3 in keys.ins.pl1  */
+
+declare buffer(buffer_size) fixed binary(15);
+declare bp pointer;
+declare np pointer;
+declare buffer_count fixed binary(15);
+declare eof bit(1);
+
+DCL 1 BH BASED,                                  /* BLOCK HEADER */
+       2 RECORD_SIZE BIN(15),
+       2 BHW,
+          3 BLOCK_TYPE BIT(4),
+          3 ZEROS BIT(4),
+          3 BLOCK_COUNT BIT(8);
+
+DCL BLOCK_COUNT BIN(15);
+
+DCL 1 GH BASED,                                  /* GROUP HEADER */
+       2 GROUP_TYPE BIT(8),
+       2 GROUP_COUNT BIT(8);
+
+DCL GROUP_TYPE BIN(15),
+    GROUP_COUNT BIN(15);
+
+/* SYMBOL TABLE ENTRY DEFINITION */
+
+
+declare sn fixed binary(12);
+declare next_sn fixed binary(12);
+declare num_segs fixed binary(15);
+
+DCL 1 ST BASED,
+       2 FT POINTER,                             /* FORWARD THREAD TO NEXT ENTRY */
+       2 MODULE POINTER,                         /* POINTER TO OWNING MODULE ENTRY */
+       2 FILE_NAME POINTER,                      /* POINTER TO DEFINING FILE NAME */
+       2 IN_REF POINTER,                         /* REF LIST FOR IN REFERENCES */
+       2 OUT_REF POINTER,                        /* REF LIST FOR OUT REFERENCES */
+       2 SERIAL BIN(15),                         /* ALFA ORDERING */
+       2 KEYS,
+          3 DEFINED BIT(1),                      /* SYMBOL DEFINED FLAG */
+          3 COMMON BIT(1),                       /* SYMBOL IS COMMON BLOCK */
+          3 DYNT BIT(1),                         /* SYMBOL IS DYNT */
+       2 NAME CHAR(128) VARYING;                 /* SYMBOL NAME */
+
+DCL XKEYS BIT(3) BASED;                          /* OVERLAY FOR CLEARING KEYS */
+
+%REPLACE ST_SIZE BY 13,
+         KEYS_INIT BY '000'B;
+
+/* REFERENCE LIST DEFINITION */
+
+DCL 1 RL BASED,
+       2 FT POINTER,                             /* POINTER TO NEXT ENTRY ON THREAD */
+       2 REF_PTR POINTER,                        /* POINTER TO REFERENCED SYMBOL */
+       2 ORDF BIT(1);                            /* SET IF OUT OF ORDER REFERENCE */
+
+%REPLACE RL_SIZE BY 5;
+
+/* PRINT LINE STUFF */
+
+%REPLACE MAX_PL_LEN BY 80;
+DCL PL CHAR(200) VARYING;
+DCL SECTION_TITLE CHAR(30) VARYING;
+DCL SPACES CHAR(128) STATIC INITIAL(' ');
+
+/* OTHER STUFF */
+
+DCL ORDF BIT(1);
+DCL CNP POINTER;                                 /* CURRENT NAME POINTER */
+DCL ST_ROOT(26) POINTER;                         /* SYMBOL TABLE ROOT */
+DCL CURRENT_MODULE POINTER;                      /* POINTER TO CURRENT MODULE */
+DCL FILE_LIST POINTER;                           /* LIST OF PROCESSED FILE NAMES */
+DCL CURRENT_FILE POINTER;                        /* POINTER TO CURRENT FILE */
+DCL MAIN_SERIAL BIN(15);                         /* SERIAL # OF NAMING MAIN PGMS */
+DCL TARGET_NAME CHAR(128) VARYING;               /* TARGET NAME FOR SEARCHES */
+DCL MAX_NAME_LENGTH BIN(15);                     /* LENGTH OF LONGEST NAME FOUND */
+declare free_pointer pointer;                    /* Pointer to free space */
+
+declare suffix_list(0:1) character( 10) varying static initial('', '.BIN');
+
+declare file_picture     character(128) varying static initial('Tree; End');
+declare picture          character(128) varying static initial('Tree; -Lib; -Max_Name_Length, -MNL dec = 8; End');
+
+declare 1 input,
+          2 file_name            character(128) varying,
+          2 lib_check            bit(1) aligned,
+          2 max_name_length_flag bit(1) aligned,
+          2 max_name_length      fixed binary(31);
+
+declare base_name character(32) varying;
+
+declare (pix_index, bad_index) fixed binary(15);
+
+declare suffix_used fixed binary(15);
+declare (type, code) fixed binary(15);
+declare (write_unit, read_unit) fixed binary(15) static initial(0);
+DCL (I, J) BIN(15);
+DCL P POINTER;
+
+$INSERT SYSCOM>KEYS.INS.PL1
+$INSERT SYSCOM>ERRD.INS.PL1
+
+declare (tnou, tnoua) entry(char(*), bin);
+declare cl$get entry(char(*) var, bin, bin);
+declare cl$pix entry(bin, char(*) var, ptr, bin, char(*) var, ptr,
+             bin, bin, bin, pointer options(short));
+/* declare getsn$ entry(bin, bin, bin, bin(12), bin, bin);
+*/
+declare srsfx$ entry(bin, char(*) var, bin, bin, bin, char(*) var, char(*) var, bin, bin);
+declare srch$$ entry(bin, char(*), bin, bin, bin, bin);
+declare ss$err entry;
+declare prwf$$ entry(bin, bin, ptr, bin, bin(31), bin, bin);
+declare errpr$ entry(bin, bin, char(*), bin, char(*), bin);
+declare ioa$   entry options(variable);
+declare wtlin$ entry(bin, char(*), bin, bin);
+
+/**/
+
+/* INITIALIZE */
+
+next_sn = first_sn;
+
+        DO I = 1 TO 26;                          /* INITIALIZE SYMBOL TABLE */
+           ST_ROOT(I) = NULL();
+           END;
+
+        FILE_LIST = NULL();                      /* INITIALIZE PROCESSED FILE LIST */
+        CURRENT_MODULE = NULL();
+        MAIN_SERIAL = 1000;
+        MAX_NAME_LENGTH = 0;
+
+        sn = next_sn;
+        next_sn = next_sn + 1;
+        free_pointer = ptr(sn, 0);
+
+        call tnou('[OBJCON rev 19.1]', 17);
+/**/
+
+/* PROCESS COMMAND LINE */
+
+        call cl$pix(k$pl1, 'OBJCON', addr(picture), 128,
+            com_args, addr(input), pix_index, bad_index, code, null());
+
+        if code ^= 0
+           then do;
+           com_status = e$barg;
+           call errpr$(k$srtn, com_status, '', 0, 'Objcon', 6);
+           call ss$err;
+           return;
+           end;
+
+        if input.file_name = ''
+          then do;
+          com_status = e$cmnd;
+          call ioa$('Missing output file. (Objcon)%.', 80);
+          call ss$err;
+          return;
+          end;
+
+/* Now open the Listing file */
+
+        call srsfx$(k$writ+k$getu, input.file_name, write_unit, type, 1, '.CNCRD', base_name, suffix_used, com_status);
+
+        if com_status ^= 0
+           then do;
+             call errpr$(k$srtn, com_status, (input.file_name), length(input.file_name), 'Objcon', 6);
+             call ss$err;
+             return;
+            end;
+           else;
+
+        call prwf$$(k$trnc, write_unit, null(), 0, 0, type, com_status);
+
+        if com_status ^= 0
+           then do;
+             call errpr$(k$srtn, com_status, (input.file_name), length(input.file_name), 'Objcon', 6);
+             call ss$err;
+             return;
+            end;
+
+        /* Check the Max Name Length for 1 <= max_name_length <= 32 */
+
+        if input.max_name_length < 1
+          then input.max_name_length = 1;
+
+        if input.max_name_length > 32
+          then input.max_name_length = 32;
+
+/**/
+
+/* GET NEXT INPUT FILE */
+
+GET_FILE:
+
+        CALL TNOUA('FILE NAME = ', 12);
+
+        call cl$get(com_line, 128, com_status);
+
+        call cl$pix(k$pl1, 'OBJCON', addr(file_picture), 128,
+           com_line, addr(input), pix_index, bad_index, code, null());
+
+        if code ^= 0
+            then do;
+            com_status = e$barg;
+            call errpr$(k$srtn, com_status, '', 0, 'Objcon', 6);
+            call ss$err;
+            return;
+            end;
+
+        if com_line = ''
+           then go to wrap_up;
+        else;
+
+
+/* OPEN INPUT FILE */
+
+        call srsfx$(k$read+k$getu, input.file_name, read_unit, type, 1, '.BIN', base_name, suffix_used, com_status);
+
+        if com_status ^= 0
+           then do;
+           call errpr$(k$srtn, com_status, (input.file_name), length(input.file_name), '', 0);
+           call ss$err;
+           GOTO GET_FILE;
+           END;
+
+/* STRING FILE NAME ONTO LIST */
+
+        target_name = base_name || suffix_list(suffix_used);
+        CURRENT_FILE = FIND_NAME(2, FILE_LIST);
+
+/* FALL THROUGH TO PROCESS FILE */
+
+/**/
+
+/* PROCESS NEXT FILE */
+
+NEXT_FILE:
+
+        EOF = '0'B;                              /* RESET BUFFER CONTROL */
+        BUFFER_COUNT = 0;
+
+/* FALL THROUGH TO PROCESS NEXT BLOCK */
+
+/**/
+
+/* PROCESS NEXT BLOCK */
+
+NEXT_BLOCK:
+
+        CALL BUFFER_CHECK(2);                    /* INSURE BLOCK HEADER IN */
+
+        BLOCK_COUNT = BP -> BH.BLOCK_COUNT;
+
+        IF BLOCK_COUNT ^= BP -> BH.RECORD_SIZE
+           THEN CALL ERROR(3, 0);
+
+        if block_count = 0
+           then call error(-1, 0);               /* END TAPE BLOCK */
+
+/* FALL THROUGH TO PROCESS NEXT GROUP */
+
+/**/
+
+/* PROCESS NEXT GROUP */
+
+NEXT_GROUP:
+
+        BP = NP;                                 /* SET PTR TO NEXT GROUP HEADER */
+
+        IF BLOCK_COUNT <= 1
+           THEN IF BLOCK_COUNT = 1
+              THEN GOTO NEXT_BLOCK;
+           ELSE CALL ERROR(4, 0);
+
+        CALL BUFFER_CHECK(1);                    /* INSURE GROUP HEADER IN */
+
+        GROUP_TYPE = BP -> GH.GROUP_TYPE;
+        GROUP_COUNT = BP -> GH.GROUP_COUNT;
+
+        BLOCK_COUNT = BLOCK_COUNT - GROUP_COUNT - 1;
+
+        BP = NP;
+
+        CALL BUFFER_CHECK(GROUP_COUNT);          /* INSURE GROUP DATA IN */
+
+        SELECT(GROUP_TYPE);
+
+/* NO ACTION CASES */
+
+           WHEN(04, 05, 06, 07, 08, 09, 10, 11, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+                    27, 28, 29, 30, 33, 34, 37, 39, 40, 44, 48)
+              ;
+
+/* NAME DEFINITIONS AND REFERENCES */
+
+           WHEN(01)
+              CALL COMMON_DEF(1);                /* SHORT COMMON DEF */
+           WHEN(02)
+              CALL ENTRY_DEF(1);                 /* ABS ENTRY */
+           WHEN(03)
+              CALL ENTRY_DEF(1);                 /* REL ENTRY */
+           WHEN(12)
+              CALL COMMON_REF(2);                /* MEM-REF COMMON */
+           WHEN(13)
+              CALL EXT_REF(1);                   /* MEM-REF EXTERNAL */
+           WHEN(26)
+              CALL COMMON_REF(1);                /* ORG TO COMMON */
+           WHEN(31)
+              CALL ENTRY_DEF(1);                 /* LINK-REL ENT */
+           WHEN(32)
+              CALL ENTRY_DEF(1);                 /* LINK-REL ENT */
+           WHEN(35)
+              CALL EXT_REF(0);                   /* IP EXT */
+           WHEN(36)
+              CALL COMMON_REF(1);                /* IP COMMON */
+           WHEN(41)
+              CALL COMMON_DEF(2);                /* LONG COMMON DEF */
+           WHEN(42)
+              CALL COMMON_REF(2);                /* LONG COMMON REF */
+           WHEN(43)                              /* DYNT */
+              DO;
+                 CALL ENTRY_DEF(0);              /* RECORD ENTRY */
+                 CNP -> ST.DYNT = '1'B;          /* REMEMBER THAT IT'S A DYNT */
+                 END;
+
+/* DEBUGGER GROUPS */
+
+           WHEN(52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63)
+              ;
+
+/* END GROUPS */
+
+           WHEN(14, 15, 38)
+              CURRENT_MODULE = NULL();           /* END GROUPS */
+
+/* CATCH-ALL FOR NON-SPECIFIED GROUPS */
+
+           OTHERWISE
+              CALL ERROR(6, GROUP_TYPE);
+
+           END;
+
+        GOTO NEXT_GROUP;
+
+/**/
+
+/* END OF OBJECT FILE */
+
+END_FILE:
+
+        call srch$$(k$clos, '', 0, read_unit, type, code);     /* CLOSE THE UNIT */
+
+        read_unit = 0;
+
+        GOTO GET_FILE;
+
+/**/
+
+/* INPUT OF FILE LIST */
+
+WRAP_UP:
+
+        if max_name_length > input.max_name_length
+          then max_name_length = input.max_name_length;
+
+/* ASSIGN ALPHA SEQUENCE # TO ALL SYMBOLS */
+
+        I = 1;                                   /* STARTING SERIAL # */
+        DO J = 1 TO 26;                          /* 26 THREADS */
+           DO P = ST_ROOT(J) REPEAT (P -> ST.FT) WHILE (P ^= NULL());
+              P -> ST.SERIAL = I;
+              I = I + 1;
+              END;
+           END;
+
+/* PRINT MAJOR TABLE */
+
+        DO I = 1 TO 26;
+           DO P = ST_ROOT(I) REPEAT (P -> ST.FT) WHILE (P ^= NULL());
+              /* Start line with entry name */
+
+              if length(p -> st.name) > max_name_length
+                then pl = substr(p -> st.name, 1, max_name_length) || '@';
+                else pl = p -> st.name || ' ' || substr(spaces, 1, max_name_length - length(p -> st.name));
+
+              IF P -> ST.COMMON
+                 THEN PL = PL !! '  COMMON';
+              ELSE IF P -> ST.DEFINED
+                 THEN DO;
+                 IF P -> ST.MODULE ^= P
+                    THEN PL = PL !! '  (MODULE NAME: ' !! P -> ST.MODULE -> ST.NAME !!
+                             ')';
+                 PL = PL !! '  DEFINED IN: ' !! P -> ST.FILE_NAME -> ST.NAME;
+                 IF P -> ST.DYNT
+                    THEN PL = PL !! ', DIRECT ENTRY';
+                 END;
+              ELSE PL = PL !! '  NOT DEFINED';
+              CALL PUT_LINE;
+              SECTION_TITLE = 'REFERENCED BY:';
+              CALL PRINT_LIST(P -> ST.IN_REF);
+              IF P -> ST.DEFINED & ^P -> ST.COMMON & P -> ST.MODULE = P & ^P -> ST.DYNT
+                 THEN DO;
+                 SECTION_TITLE = 'REFERENCES TO:';
+                 CALL PRINT_LIST(P -> OUT_REF);
+                 END;
+              PL = '  ';
+              CALL PUT_LINE;
+              END;
+           END;
+
+done:   call srch$$(k$clos, '', 0, write_unit, type, code);
+
+        write_unit = 0;
+
+        return;
+
+/**/
+
+/* PUT_LINE --- WRITE PL TO OUTPUT FILE */
+
+PUT_LINE:
+           PROC OPTIONS(SHORTCALL);
+
+DCL 1 XBUFF BASED,
+       2 JUNK BIN(15),
+       2 XD CHAR(2);
+
+           IF MOD(LENGTH(PL), 2) ^= 0
+              THEN PL = PL !! ' ';               /* INSURE EVEN LINE LENGTH */
+
+           call wtlin$(write_unit, addr(pl) -> xbuff.xd, divide(length(pl), 2, 15), code);
+
+           RETURN;
+           END;
+
+/**/
+
+/* PRINT_LIST --- PRINT REFERENCE LIST */
+
+PRINT_LIST:
+           PROC(T) OPTIONS(SHORTCALL);
+
+DCL T POINTER;
+DCL (P, P1, Q) POINTER;
+DCL (LSN, NSN) BIN(15);
+DCL GOT_ONE BIT(1);
+
+           PL = SUBSTR(SPACES, 1, MAX_NAME_LENGTH + 3) !! SECTION_TITLE;
+           CALL PUT_LINE;
+           PL = SUBSTR(SPACES, 1, MAX_NAME_LENGTH + 7);
+           GOT_ONE = '0'B;                       /* TO DETECT A NULL LIST */
+           LSN = 0;
+
+LOOP:
+           NSN = 9999;                           /* HOPE NEVER MORE SYMBOLS */
+           DO P = T REPEAT (P -> RL.FT) WHILE (P ^= NULL());
+              P1 = P -> RL.REF_PTR;
+              IF P1 -> ST.SERIAL > LSN & P1 -> ST.SERIAL < NSN
+                 THEN DO;
+                 NSN = P1 -> ST.SERIAL;
+                 Q = P1;
+                 ORDF = P -> RL.ORDF;            /* SAVE ORDERED REF FLAG */
+                 END;
+              END;
+
+           IF NSN = 9999
+              THEN                               /* SEE IF WE FOUND SOMETHING TO DO */
+                       DO;                       /* NOPE */
+              IF ^GOT_ONE
+                 THEN PL = PL !! '.NONE.';
+              CALL PUT_LINE;
+              RETURN;
+              END;
+           IF LENGTH(PL) + MAX_NAME_LENGTH + 3 > MAX_PL_LEN
+              THEN DO;
+              CALL PUT_LINE;
+              PL = SUBSTR(SPACES, 1, MAX_NAME_LENGTH + 7);
+              END;
+
+           if length(q -> st.name) > max_name_length
+             then pl = pl || substr(q -> st.name, 1, max_name_length) || '@';
+             else PL = pl || q -> st.name;
+
+           IF Q -> ST.COMMON
+              THEN PL = PL !! '+';
+           ELSE IF ^Q -> ST.DEFINED
+              THEN PL = PL !! '*';
+           ELSE IF LIB_CHECK & ORDF
+              THEN DO;
+              SUBSTR(PL, 1, 1) = '#';            /* FLAG LINE */
+              PL = PL !! '#';                    /* FLAG REFERENCE */
+              END;
+           ELSE PL = PL !! ' ';                  /* NORMAL REFERENCE */
+
+           if length(q -> st.name) <= max_name_length
+             then pl = pl || substr(spaces, 1, max_name_length - length(q -> st.name) + 3);
+             else pl = pl || '  ';
+
+           GOT_ONE = '1'B;
+           LSN = NSN;
+           GOTO LOOP;
+
+           END;
+
+/**/
+
+/* BUFFER_CHECK --- INSURE NEXT DATA IN BUFFER */
+
+BUFFER_CHECK:
+           PROC(WORD_COUNT) OPTIONS(SHORTCALL);
+
+DCL WORD_COUNT BIN(15);                          /* # OF WORDS NEEDED */
+
+DCL CODE BIN(15),
+    RNW BIN(15),
+    I BIN(15);
+DCL XBUFFER(1) BIN(15) BASED;
+
+/* INSURE REQUIRED DATA IS IN BUFFER, IF NOT
+   READ IN MORE OBJECT TEXT */
+
+           DO WHILE (BUFFER_COUNT < WORD_COUNT);
+
+              IF EOF
+                 THEN IF BUFFER_COUNT < 2
+                    THEN GOTO END_FILE;
+                 ELSE CALL ERROR(1, BP -> XBUFFER(1));
+
+              DO I = 1 TO BUFFER_COUNT;          /* MOVE REMAINING DATA TO BUFF START */
+                 BUFFER(I) = BP -> XBUFFER(I);
+                 END;
+
+              call prwf$$(k$read, read_unit, addr(buffer(buffer_count+1)), buffer_size - buffer_count, 0, rnw, code);
+
+              BP = ADDR(BUFFER);                 /* RESET DATA POINTER */
+              BUFFER_COUNT = BUFFER_COUNT + RNW;   /* NEW DATA COUNT */
+              IF CODE ^= 0
+                 THEN IF CODE = E$EOF
+                    THEN EOF = '1'B;
+                 ELSE CALL ERROR(2, CODE);
+
+              END;
+
+           BUFFER_COUNT = BUFFER_COUNT - WORD_COUNT;   /* UDDATE DATA LEFT */
+           NP = ADDREL(BP, WORD_COUNT);          /* LEAVE PTR TO AFTER DATA */
+
+           RETURN;
+
+           END;
+
+/**/
+
+/* ENTRY_DEF --- PROCESS ENTRY DEFINITION GROUP */
+
+ENTRY_DEF:
+           PROC(NAME_OFFSET) OPTIONS(SHORTCALL);
+
+DCL NAME_OFFSET BIN(15);
+
+           CNP = OBJECT_NAME(NAME_OFFSET, 2);    /* PUT NAME IN SYMBOL TABLE */
+           CNP -> ST.DEFINED = '1'B;             /* FLAG DEFINED */
+           CNP -> ST.FILE_NAME = CURRENT_FILE;   /* RECORD DEFINING FILE */
+           IF CURRENT_MODULE = NULL()
+              THEN                               /* TEST 1ST ENTRY IN MODULE */
+                       CURRENT_MODULE = CNP;     /* IF SO, IT'S THE MAIN NAME */
+           CNP -> ST.MODULE = CURRENT_MODULE;    /* RECORD DEFINING MODULE NAME */
+
+           RETURN;
+
+           END;
+
+/**/
+
+/* COMMON_DEF --- PROCESS COMMON DEFINITION GROUP */
+
+COMMON_DEF:
+           PROC(NAME_OFFSET) OPTIONS(SHORTCALL);
+
+DCL NAME_OFFSET BIN(15);
+
+           CNP = OBJECT_NAME(NAME_OFFSET, 1);    /* PUT NAME IN SYMBOL TABLE */
+           CNP -> ST.COMMON = '1'B;              /* FLAG AS COMMON BLOCK */
+
+/* SET DEFINED??? */
+
+           RETURN;
+
+           END;
+
+/**/
+
+/* EXT_REF    --- PROCESS EXTERNAL REFERENCE */
+
+/* COMMON_REF --- PROCESS COMMON REFERENCE */
+
+EXT_REF:
+COMMON_REF:
+           PROC(NAME_OFFSET) OPTIONS(SHORTCALL);
+
+DCL NAME_OFFSET BIN(15);
+
+           CNP = OBJECT_NAME(NAME_OFFSET, 1);    /* ADD NAME TO SYMBOL TABLE */
+           IF CURRENT_MODULE = NULL()
+              THEN                               /* SEE IF CURRENT MODULE IS NAMED */
+                       DO;
+              TARGET_NAME = '/M' !! SUBSTR(CHAR(MAIN_SERIAL), LENGTH(CHAR(MAIN_SERIAL)) -
+                       2, 3) !! '/';
+              IF MAX_NAME_LENGTH < 6
+                 THEN MAX_NAME_LENGTH = 6;
+              MAIN_SERIAL = MAIN_SERIAL + 1;
+              CURRENT_MODULE = FIND_NAME(2, ST_ROOT(1));
+              CURRENT_MODULE -> ST.DEFINED = '1'B;
+              CURRENT_MODULE -> ST.FILE_NAME = CURRENT_FILE;
+              CURRENT_MODULE -> ST.MODULE = CURRENT_MODULE;
+              END;
+           ORDF = CNP -> ST.DEFINED;             /* OUT OF ORDER IF REF SYM IS DEFINED */
+           IF CNP -> ST.COMMON ! CNP -> ST.MODULE = CURRENT_MODULE
+              THEN ORDF = '0'B;                  /* AVOID MISLEADING CASES */
+           CALL ADD_REF(CURRENT_MODULE -> ST.OUT_REF, CNP, ORDF);   /* RECORD OUT REFERENCE */
+           CALL ADD_REF(CNP -> ST.IN_REF, CURRENT_MODULE, ORDF);
+
+           RETURN;
+
+           END;
+
+/**/
+
+/* OBJECT_NAME --- EXTRACT AND ADD OBJECT TEXT NAME */
+
+OBJECT_NAME:
+           PROC(NAME_OFFSET, KEY) RETURNS(POINTER) OPTIONS(SHORTCALL);
+
+DCL (NAME_OFFSET, KEY) BIN(15);
+DCL (I, L) BIN(15);
+DCL (XNAME CHAR(128), XBITS BIT(8)) BASED;
+
+           BP = ADDREL(BP, NAME_OFFSET);         /* STEP BUFFER PTR OVER NON-NAME STUFF */
+           L = (GROUP_COUNT - NAME_OFFSET) * 2;  /* CHAR LENGTH OF NAME */
+           IF L = 0
+              THEN DO;
+              TARGET_NAME = '<B>';               /* SPECIAL NAME FOR BLANK COMMON */
+              I = 26;                            /* THROW ONTO LAST THREAD */
+              END;
+           ELSE DO;
+              IF SUBSTR(BP -> XNAME, L, 1) = ' '
+                 THEN L = L - 1;                 /* STRIP TRAILING SPACE */
+              TARGET_NAME = SUBSTR(BP -> XNAME, 1, L);   /* EXTRACT THE NAME */
+              I = BP -> XBITS - '300'B3;         /* SELECT THREAD BASED ON 1ST CHARACTER */
+              IF I < 1
+                 THEN I = 1;                     /* IF NOT ALPHA PUT AT START OR END */
+              IF I > 26
+                 THEN I = 26;
+              END;
+           IF LENGTH(TARGET_NAME) > MAX_NAME_LENGTH
+              THEN MAX_NAME_LENGTH = LENGTH(TARGET_NAME);   /* RECORD LONGEST NAME */
+           RETURN (FIND_NAME(KEY, ST_ROOT(I)));  /* ADD THE NAME AND RETURN */
+
+           END;
+
+/**/
+
+/* ADD_REF --- ADD REFERENCE TO STRING IF NOT ALREADY THERE */
+
+ADD_REF:
+           PROC(LIST_PTR, REF_PTR, ORDF) OPTIONS(SHORTCALL);
+
+DCL (LIST_PTR, REF_PTR, P) POINTER;
+DCL ORDF BIT(1);
+
+           P = ADDR(LIST_PTR);                   /* START AT THE BEGINNING */
+
+           DO WHILE (P -> RL.FT ^= NULL());
+              P = P -> RL.FT;                    /* STEP TO NEXT ENTRY */
+              IF P -> RL.REF_PTR = REF_PTR
+                 THEN RETURN;
+              END;
+
+/* ADD A NEW REFERENCE */
+
+           p -> rl.ft = get_block(rl_size);      /* LINK TO LAST ENTRY */
+           p = p -> rl.ft;
+           P -> RL.FT = NULL();                  /* NEW END OF LIST */
+           P -> RL.REF_PTR = REF_PTR;            /* INSERT RERERENCE */
+           P -> RL.ORDF = ORDF;                  /* SET ORDERING FLAG */
+
+           RETURN;
+
+           END;
+
+/**/
+
+/* FIND_NAME --- FIND/ADD NAME TO SYMBOL TABLE */
+
+FIND_NAME:
+           PROC(KEY, THREAD) RETURNS(POINTER) OPTIONS(SHORTCALL);
+
+DCL KEY BIN(15),
+    THREAD POINTER;
+DCL (F, C) POINTER;
+
+           DO F = ADDR(THREAD) REPEAT (C);
+              C = F -> ST.FT;                    /* STEP TO NEXT ENTRY */
+              IF C = NULL()
+                 THEN LEAVE;                     /* MUST ADD IF HIT END OF LIST */
+              IF C -> ST.NAME = TARGET_NAME
+                 THEN IF KEY ^= 2 ! ^C -> ST.KEYS.DEFINED
+                    THEN RETURN(C);
+                 ELSE;
+              IF C -> ST.NAME > TARGET_NAME
+                 THEN LEAVE;
+              END;
+
+/* ADD A NAME TO THE SYMBOL TABLE */
+
+           c = get_block(st_size + divide(length(target_name) + 1, 2, 15));
+           C -> ST.FT = F -> ST.FT;              /* INSERT AFTER PRIOR ENTRY */
+           F -> ST.FT = C;
+           C -> ST.MODULE = NULL();
+           C -> ST.IN_REF = NULL();
+           C -> ST.OUT_REF = NULL();
+           C -> ST.SERIAL = 0;
+           ADDR(C -> ST.KEYS) -> XKEYS = KEYS_INIT;
+           C -> ST.NAME = TARGET_NAME;
+
+           RETURN (C);
+
+           END;
+
+/**/
+/* Get Block from Free Space */
+
+get_block: procedure(size) returns(ptr) options(shortcall);
+
+  declare size fixed binary(15);
+  declare pointer pointer;
+  declare ptrrel entry(ptr, bin(31)) returns(ptr);
+
+  if segno(ptrrel(free_pointer, (size))) ^= segno(free_pointer)
+      then do;
+        sn = next_sn;
+        next_sn = next_sn + 1;
+        free_pointer = ptr(sn, 0);
+       end;
+      else;
+
+  pointer = free_pointer;
+  free_pointer = addrel(free_pointer, size);
+
+  return(pointer);
+
+ end /* get_block */;
+
+/* JUNK */
+
+error:
+           procedure(error_code, error_arg);
+
+declare (error_code, error_arg) fixed binary(15);
+
+           com_status = error_code;
+
+           if error_code > 0
+              then call ioa$('*** ERROR:%/%5x%$', 80);
+              else call ioa$('*** WARNING:%/%5x%$', 80);
+
+           select(error_code);
+             when (-1) do;
+               call ioa$('END TAPE BLOCK encountered. Ignoring rest of file.%.', 80);
+
+               go to END_FILE;
+              end;
+             when ( 1) call ioa$('Premature End_of_File. Last word was: %d%.', 80, error_arg);
+             when ( 2) call errpr$(k$srtn, error_arg, '', 0, 'Objcon', 6);
+             when ( 3) call ioa$('Block size mismatch. Use DMPOBJ to find error.%.', 80);
+             when ( 4) call ioa$('Bad Block size. Use DMPOBJ to find error.%.', 80);
+             when ( 6) call ioa$('Unrecognized group type: %d%.', 80, error_arg);
+            end;
+
+           call srch$$(k$clos, 0, 0, read_unit, type, code);
+
+           go to done;
+
+           end /* error */;
+
+/**/
+
+/* THE END */
+
+        END;

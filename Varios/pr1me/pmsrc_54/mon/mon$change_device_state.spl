@@ -1,0 +1,150 @@
+/* MON$CHANGE_DEVICE_STATE.SPL, PrintMaster, Jim Wilcoxson, March 10, 1984    */
+/* Changes a device's state and informs the master of the change.             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$change_device_state : procedure (devp, uid, jcc, tranid, new_state);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$send_to_master.ins.spl';
+%list;
+
+dcl
+   devp        ptr,                         /* pointer to device info (in) */
+   uid         char(8),                     /* current job uid (in) */
+   jcc         bin,                         /* job completion code (in) */
+   tranid      bin,                         /* transaction id (id) */
+   new_state   bin;                         /* new device state (in) */
+
+dcl
+   must_send_state   bit,
+   need_reply        bit,
+   reply             char(80) var,
+   status            bin;
+
+
+   if new_state = ds$shutdown_st then
+      if devp->device_info.device_state = ds$logging_in_st then
+         reply = 'Device '||devp->device_info.device_id||' did not start.';
+      else
+         reply = 'Device '||devp->device_info.device_id||' has shutdown.';
+
+   devp->device_info.device_state = new_state;
+   if devp->device_info.device_state = ds$shutdown_st
+    | devp->device_info.device_state = ds$timed_out_st then do;
+      devp->device_info.current_job_uid = '';
+      devp->device_info.user_nr = 0;
+      end;
+   else
+      devp->device_info.current_job_uid = uid;
+
+   if devp->device_info.system_id = psv.my_system_id then
+
+      /* if any messages are pending for the device and its new state
+         is not "shutdown", send the messages */
+
+      select (devp->device_info.device_state);
+         when (ds$shutdown_st) do;
+            alloc_text_length = length(reply);
+            call respond_to_msgs;
+            end;
+
+         when (ds$timed_out_st, ds$logging_in_st, ds$maxusr_st)
+            ;
+         otherwise
+            call send_msgs;
+         end;  /* select */
+   else
+      if devp->device_info.msg_list ^= null then
+         call err$ (err$coding_et, 'Remote device has messages.', 0, 0, 0);
+
+   if gbl.I_am_master then
+      call mon$schedule_device (devp);
+   else
+      begin;
+
+      dcl
+         user_msg like ms$device_state;
+
+         user_msg.device_id = devp->device_info.device_id;
+         user_msg.current_job_uid = uid;
+         user_msg.job_completion_code = jcc;
+         user_msg.job_transaction_id = tranid;
+         user_msg.state = devp->device_info.device_state;
+
+         if mon$send_to_master (mt$device_state, addr(user_msg),
+                                ml$device_state) then
+            ;
+      end;
+
+
+respond_to_msgs: proc;
+
+dcl
+   (p,r)    ptr,
+   user_msg like ms$device_response;
+
+   user_msg.command_status = ds$request_aborted_by_monitor;
+   user_msg.kw = '';
+   user_msg.message = reply;
+   do p = devp->device_info.msg_list repeat r while (p ^= null);
+      r = p->msg.next;
+      devp->device_info.msg_list = r;
+      if p->msg.sender_id = 'user' then
+         if comm$reply (p, mt$device_response, addr(user_msg),
+                length(user_msg.message)-ml$device_response) then ;
+      call comm$destroy_msg (p);
+      end;
+
+end respond_to_msgs;
+
+
+send_msgs : proc;
+
+dcl
+   had_failure bit,
+   mt          bin,
+   (p,r)       ptr,
+   job_uid     char(uid_len);
+
+   had_failure = false;
+   do p = devp->device_info.msg_list repeat r while (p ^= null);
+      r = p->msg.next;
+      p->msg.target_id = 'user';
+      p->msg.target_user_nr = devp->device_info.user_nr;
+      mt = p->msg.msg_type;
+      job_uid = addr(p->msg.user_data)->ms$start_job.uid;
+      if comm$xmit (p) then do;
+         if mt = mt$start_job then do;
+            devp->device_info.device_state = ds$printing_st;
+            devp->device_info.current_job_uid = job_uid;
+            end;
+         if devp->device_info.semaphore ^= 0 then do;
+            call sem$nf (devp->device_info.semaphore, status);
+            if status ^= 0 then
+               call err$ (err$primos_et, 'Notifying device sem', status, 0, 0);
+            end;
+         end;
+      else do;
+         had_failure = true;
+         call comm$destroy_msg (p);
+         end;
+      end;
+   devp->device_info.msg_list = null;
+   if had_failure then do;
+      call err$ (err$log_event_et, 'Shutting down device ' ||
+                 devp->device_info.device_id, 0, 0, 0);
+      call err$ (err$log_event_et, '   (failure sending messages after state change)', 0, 0, 0);
+      call mon$change_device_state (devp, '', ds$none_cc, 0, ds$shutdown_st);
+      end;
+
+end send_msgs;
+
+end mon$change_device_state;

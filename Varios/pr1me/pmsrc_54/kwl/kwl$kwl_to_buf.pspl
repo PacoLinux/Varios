@@ -1,0 +1,99 @@
+/* KWL$KWL_TO_BUF.SPL, PrintMaster, Jeff Hostetler, December 1, 1983          */
+/* Procedure to convert from kwl format to buffer format.                     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$kwl_to_buf: proc (p_kwl, p_buf);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%list;
+
+   dcl
+      p_kwl          ptr,                   /* (in/out) */
+      p_buf          ptr,                   /* (out) */
+
+      nr_kw          bin,                   /* number of kw's in kwl */
+      data_size      bin,                   /* in wds */
+      1  buf         based,
+         2  data_len bin,                   /* in wds */
+         2  data (data_size) bin,
+
+      bin15          bin based,
+      bvs_k          char(kwl$chars_in_kw) var based,
+      bvs_v          char(kwl$chars_in_value) var based,
+
+      (p_kw, pv, p)  ptr;
+
+%page;
+
+   nr_kw = 0;
+   data_size = 1;                           /* nr kw's wd */
+
+   /* First see how big to make the buffer. */
+
+   p_kw = p_kwl;
+   do while (p_kw ^= null);
+      nr_kw = nr_kw + 1;
+      /* ds = ds + wds in kw spelling + kw len wd + flag wd + nr_values wd */
+      data_size = data_size + length_in_wds (p_kw->kw_entry.kw) + 3;
+      pv = p_kw->kw_entry.pf_value;
+      do while (pv ^= null);
+         /* ds = ds + wds in value spelling + value len wd */
+         data_size = data_size + length_in_wds (pv->value_entry.value) + 1;
+         pv = pv->value_entry.next;         /* next value */
+         end;
+      p_kw = p_kw->kw_entry.next;           /* next kw */
+      end;
+
+   /* Now allocate buffer and pack kwl into it. */
+
+   allocate buf set (p_buf);
+   p_buf->buf.data_len = data_size;
+   p_buf->buf.data(1) = nr_kw;
+
+   p_kw = p_kwl;
+   p = addrel (p_buf, 2);
+   do while (p_kw ^= null);
+      p->bvs_k = p_kw->kw_entry.kw;         /* kw */
+      p = addrel (p, length_in_wds (p_kw->kw_entry.kw) + 1);/* add offset for char string & len wd, now at flags */
+      p->kwl$flags = p_kw->kw_entry.flags;
+      p = addrel (p, 1);                    /* nr values */
+      p->bin15 = p_kw->kw_entry.nr_value;
+      p = addrel (p, 1);                    /* first value */
+      pv = p_kw->kw_entry.pf_value;
+      do while (pv ^= null);
+         p->bvs_v = pv->value_entry.value;
+         p = addrel (p, length_in_wds (pv->value_entry.value) + 1); /* add offset for char string & len wd */
+         pv = pv->value_entry.next;
+         end;
+      p_kw = p_kw->kw_entry.next;
+      end;
+
+   /* Now, see if last wd written is the same as last one allocated. */
+   /* Note: "p" is currently 1 wd past the last one written. */
+   /* if last written ^= (beg + wds allocated) */
+
+   /* THIS MAY BE YANKED LATER. */
+   if addrel (p, -1) ^= addrel (p_buf, data_size) then
+      call err$ (err$coding_et, 'Logic error in conversion from KWL to Buffer',
+                  0, 0, 0);
+
+   return;
+   /* logical end of kwl$kwl_to_buf */
+%page;
+/* kwl$kwl_to_buf.length_in_wds, PrintMaster, Jeff Hostetler, December 2, 1983*/
+/* Function to determine the length of the character string given in words.   */
+/******************************************************************************/
+
+   length_in_wds: proc (x) returns (bin);
+
+      dcl
+         x  char(*) var;
+
+      return (divide (length (x) + 1, 2, 15));
+      end length_in_wds;
+
+   end kwl$kwl_to_buf;

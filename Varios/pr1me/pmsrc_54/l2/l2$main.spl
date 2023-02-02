@@ -1,0 +1,1665 @@
+/* L2$MAIN.SPL, PrintMaster, Jeff Hostetler, March 9, 1984                    */
+/* Main driver (level 2) for line oriented output.                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$main: proc (key);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>l2.ins.spl';
+%include '*>entry>l2$io.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>l2$load_big_letters.ins.spl';
+%include '*>entry>l2$expand_string.ins.spl';
+%include '*>entry>l2$print_banner.ins.spl';
+%list;
+
+%replace
+   top_margin           by 5,
+   length_page_string   by 10;              /* ' Page 1234' */
+
+dcl
+   key                  bin;                /* (see ds$ keys for values) */
+
+dcl
+   saved_print_mode     bin,                /* before binary mode entered */
+   binary_words_left    bin(31),            /* for binary mode */
+   print_loop_label     label static,       /* top_of_print_loop */
+   realignment_label    label static,       /* for alignment handler */
+   return_from_print_job label static,
+   restart_print_loop   bit aligned static,
+   status_display (ds.sd_lines) char(ds.sd_width) var based (ds.sd_display),
+   error_reply char(160) var based (ds.current_request.error_msgp);
+
+
+   select (key);
+
+      when (ds$device_init)
+         call initialize_device;
+
+      when (ds$device_terminate)
+         call terminate_device;
+
+      when (ds$device_reinit)
+         call l2$io (l2$device_reinit, '', 0);
+
+      when (ds$print_job) do;
+         l2.accounting = accounting_proc;   /* so L2$IO can call us */
+         call print_job;
+         end;
+
+      when (ds$request)
+         call process_request;
+
+      otherwise
+         call err$ (err$coding_et, 'Bad key "' || char (key) || '" in call',
+                    0, 0, 0);
+      end;  /* select */
+
+
+return_from_l2:
+
+   return;
+   /* logical end of L2$MAIN */
+
+%page;
+/* l2.initialize_device, PrintMaster, Jeff Hostetler, March 9, 1984           */
+/******************************************************************************/
+
+initialize_device: proc;
+
+dcl
+   banner_letter_file   char(128) var,
+   okay                 bit aligned,
+   p_kw                 ptr,
+   value                char(kwl$chars_in_value) var;
+
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+
+   /* allocate error response message for bad commands */
+
+   allocate error_reply set(ds.current_request.error_msgp);
+
+   /* setup length and width of status display image */
+
+   ds.status_display.sd_width = 80;         /* characters */
+   ds.status_display.sd_lines = 7;
+
+   okay = false;
+   if kwl$find_kw ('BANNER_LETTER_FILE', ds.p_device_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value) then do;
+         call l2$load_big_letters (value);
+         okay = true;
+         end;
+
+   if ^okay then
+      call err$ (err$user_et, 'Banner letter file must be specified.',
+                      err$missing_kw_ue, 0, 0);
+
+   l2.in_align_mode = false;
+
+   call l2$io (l2$device_init, '', 0);
+
+end initialize_device;
+
+%page;
+/* l2.terminate_device, PrintMaster, Jeff Hostetler, March 9, 1984            */
+/******************************************************************************/
+
+terminate_device: proc;
+
+   call l2$io (l2$device_terminate, '', 0);
+
+   if ds.current_request.error_msgp ^= null then do;
+      free error_reply;
+      ds.current_request.error_msgp = null;
+      end;
+
+end terminate_device;
+
+%page;
+/* l2.print_job, PrintMaster, Jeff Hostetler, March 9, 1984                   */
+/******************************************************************************/
+
+print_job: proc;
+
+%replace
+   check_request_lines by 10;               /* check every 10 lines */
+
+dcl
+   first_            bin,
+   code              bin,
+   the_print_line    char(l2.print_line_len) var based (plp),
+   plp               ptr,                   /* print line pointer */
+   request_counter   bin,
+   terminate_called  bit,
+   buffer            char(max_print_line_len) var;
+
+   plp = null;                              /* no print line yet */
+   terminate_called = false;
+   on condition (cleanup$)
+      begin;
+      if plp ^= null then do;
+         free the_print_line;
+         plp = null;
+         end;
+      call terminate_job;
+      end;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et
+            &  err$es.status1 = err$job_file_ue then do;
+         buffer = err$es.user_message;   /* Catch it before it disappears */
+         goto job_file_format_error;
+         end;
+      call cnsig$ (code);
+      end;
+
+   request_counter = check_request_lines;
+   print_loop_label = top_of_print_loop;    /* set global variable */
+   return_from_print_job = return_from_l2;
+   realignment_label = realignment_restart;
+
+   /* position to end of job in case it was suspended previously;
+      this sequence depends on read_pc not modifying the page mark
+      if it returns false (no mark read from disk) */
+
+   call initialize_job;
+   allocate the_print_line set (plp);
+   if ds.resume_ok then
+      if ds$read_pc (maxint31, addr(l2.pc_mark), l2$mark_size, true) then do;
+         call bio$set_position (ds.pfbp, l2.print_file_position);
+         call ds$reset_statistics;
+         end;
+
+   if ds.current_pc_mark > 0 then do;
+      call device_large_message (2, 'Resuming', 1);
+      call device_message ('Resuming from page mark '
+                           || trim(char(ds.current_pc_mark+1), '11'b));
+      l2.advance_page_count = 1;
+      l2.suppress_output = true;
+      end;
+   else
+      call ds$write_pc (addr(l2.pc_mark));
+
+   goto top_of_print_loop;
+
+   /* the driver jumps here when in align mode and the printer
+      has gone off-line then back on-line */
+
+realignment_restart:
+
+   call position_job (l2.first_alignment_page);
+   l2.need_to_realign = false;
+   goto top_of_print_loop;
+
+%page;
+
+top_of_print_loop:
+
+   do while (read_file ());
+
+      if l2.print_mode ^= l2$binary_mode then do;
+         if length (buffer) >= 2 then
+            if addrel (addr (buffer), 1)->bin15 = 1 then do;
+
+               /* convert old style (^000^001) to the new style (^001 space) */
+
+               substr (buffer, 1, 1) = byte(1);
+               substr (buffer, 2, 1) = ' ';
+               end;
+
+         if length(buffer) > 0 then do;
+            first_ = rank (substr (buffer, 1, 1));
+            if first_ = 1  |  first_ = 129 then do;    /* ^001 or ^201 */
+               call handle_mode_change (buffer);
+               goto check_for_request;
+               end;
+            end;
+
+         if l2.first_print_pos > 0 then do;
+            if l2.first_print_pos < length(buffer) then
+               buffer = substr (buffer, l2.first_print_pos+1);
+            l2.first_print_pos = 0;
+            end;
+         end;
+
+      select (l2.print_mode);
+         when (l2$paged_mode)
+            call paged_mode_print;
+         when (l2$ftn_mode)
+            call ftn_mode_print;
+         when (l2$no_fmt_mode)
+            call no_fmt_mode_print;
+         when (l2$binary_mode)
+            call binary_mode_print;
+         otherwise
+            call err$ (err$coding_et, 'Bad print mode', 0, 0, 0);
+         end;  /* select */
+
+check_for_request:
+
+      request_counter = request_counter - 1;
+      if request_counter = 0 then do;
+         request_counter = check_request_lines;
+         if ds$process_request(^l2.suppress_output) then
+
+            /* check for a delete job command while printing, and
+               simulate a DROP_COPY command */
+
+            if ds.completion_code = ds$drop_copy_cc then do;
+               l2.pasd_action = l2$drop_copy_pasd;
+               l2.pasd_page_count = 0;
+               call execute_pasd_action; /* do drop_copy command */
+               end;
+         end;
+
+      end;     /* of do while read line */
+
+   goto end_of_job;
+
+
+job_file_format_error:
+
+   l2.suppress_output = false;
+   l2.suppress_accounting = false;
+   call device_large_message (2, 'Job Error', 1);
+   call device_message (buffer);
+   ds.completion_code = ds$timed_out_cc;
+   goto end_of_job;
+
+end_of_job:
+
+   l2.suppress_output = false;
+   l2.suppress_accounting = false;
+   call accounting_proc (l2$eoj, 0);
+   select (ds.pfbp->bio$fb.status);
+      when (e$ndat) do;                     /* no more data in file */
+         call device_large_message (2, 'Timed Out', 1);
+         call device_message ('Timed-out at page mark '
+                              || trim(char(ds.current_pc_mark), '11'b));
+         ds.completion_code = ds$timed_out_cc;
+         end;
+
+      when (e$eof)
+         ds.completion_code = ds$completed_cc;
+
+      when (e$rldn, e$nete, e$shdn, e$rsnu, e$unop, e$vcgc, e$rshd) do;
+         call device_large_message (2, 'File Error', 1);
+         call device_message ('File error at page mark '
+                              || trim(char(ds.current_pc_mark), '11'b));
+         ds.completion_code = ds$resend_job_cc;
+         end;
+
+      when (0);
+
+      otherwise
+         call err$ (err$primos_et, 'Reading print file',
+                    ds.pfbp->bio$fb.status, 0, 0);
+      end;
+
+   free the_print_line;
+   plp = null;
+   call terminate_job;
+   return;
+   /* logical end of print_job */
+
+
+%page;
+/* l2.print_job.read_file, PrintMaster, J Wilcoxson, October 16, 1987         */
+/******************************************************************************/
+
+read_file: proc returns (bit);
+
+dcl
+   nw    bin;
+
+   if l2.print_mode = l2$binary_mode then do;
+      nw = 70;
+
+      /* if we're doing binary mode for a certain number of words, adjust the
+         number left */
+
+      if binary_words_left ^= -1 then do;
+         if nw > binary_words_left then
+            nw = binary_words_left;
+         binary_words_left = binary_words_left - nw;
+         end;
+      return (bio$read_buffer (ds.pfbp, buffer, nw));
+      end;
+   else
+      return (bio$read_line (ds.pfbp, buffer, l2.print_file_position));
+
+end read_file;
+
+
+%page;
+/* l2.print_job.paged_mode_print, PrintMaster, Jeff Hostetler, March 9, 1984  */
+/******************************************************************************/
+
+paged_mode_print: proc;
+
+dcl
+   i              bin,
+   first_char     bin,
+   third_char     bin,
+   line_string    char(20) var,
+   buf_chars_per_line      bin,
+   first_buf_char_on_line  bin;
+
+   /* see if first char is a :014 or :214 */
+
+   if length (buffer) > 0 then do;
+      first_char = rank(substr(buffer, 1, 1));
+      if first_char = 12  |  first_char = 140 then do;
+         l2.pm_lines_printed_this_page = maxint;
+         buffer = substr (buffer, 2);       /* remove form feed */
+         goto form_feed_done;
+         end;
+      end;
+
+   /* see if third char is a :014 or :214 */
+
+   if length (buffer) > 2 then do;
+      third_char = rank(substr(buffer, 3, 1));
+      if third_char = 12  |  third_char = 140 then do;
+         l2.pm_lines_printed_this_page = maxint;
+         buffer = substr (buffer, 4);       /* remove form feed */
+         end;
+      end;
+
+
+form_feed_done:
+
+   if l2.line_numbers then do;              /* ex: '1234) This is a test.' */
+      l2.last_line_nr_printed = l2.last_line_nr_printed + 1;
+      line_string = char (l2.last_line_nr_printed);
+      line_string = substr(line_string, length(line_string)-4) || ')  ';
+      buf_chars_per_line = l23.chars_per_line - length(line_string);
+      end;
+   else do;
+      line_string = '';
+      buf_chars_per_line = l23.chars_per_line;
+      end;
+
+   first_buf_char_on_line = 1;
+   if l2.wrap_around_enabled then
+      do i = buf_chars_per_line repeat i+buf_chars_per_line
+                                while (i < length (buffer));
+         call paged_print_line;
+         if l2.line_numbers then
+            line_string = '       |';    /* for continuation line(s) */
+         first_buf_char_on_line = i + 1;
+         end;
+
+   if length (buffer) >= first_buf_char_on_line | length(buffer) = 0 then do;
+      buf_chars_per_line = length (buffer) - first_buf_char_on_line + 1;
+      call paged_print_line;
+      end;
+
+   return;
+   /* logical end of paged_mode_print */
+
+
+/******************************************************************************/
+/* l2.print_job.paged_mode_print.paged_print_line,                            */
+/* PrintMaster, Jeff Hostetler, March 12, 1984                                */
+/******************************************************************************/
+
+paged_print_line: proc;
+
+   if l2.pm_lines_printed_this_page >= l2.pm_lines_per_page then
+      call print_header;
+   the_print_line = line_string || substr(buffer, first_buf_char_on_line,
+                                      buf_chars_per_line);
+   call print_line (the_print_line);
+   call skip_line (1);
+   l2.pm_lines_printed_this_page = l2.pm_lines_printed_this_page + 1;
+
+end paged_print_line;
+
+%page;
+/* l2.print_job.paged_mode_print.print_header,                                */
+/* PrintMaster, Jeff Hostetler, March 12, 1984                                */
+/******************************************************************************/
+
+print_header: proc;
+
+   dcl
+      page_string    char(20) var;
+
+   call skip_channel (1);
+
+   /* build the header line */
+   /* ex: 'This is a sample header xxxxxxxxx Page 1234' */
+
+   l2.pm_last_page_nr_printed = l2.pm_last_page_nr_printed + 1;
+   page_string = char (l2.pm_last_page_nr_printed);
+   the_print_line = l2.page_header_line || ' Page '
+                || substr (page_string, length (page_string) - 3);
+
+   /* now print it */
+
+   call print_line (the_print_line);
+   call skip_line (top_margin);
+   l2.pm_lines_printed_this_page = 0;
+
+end print_header;
+
+end paged_mode_print;
+
+%page;
+/* l2.print_job.ftn_mode_print, PrintMaster, Jeff Hostetler, March 10, 1984   */
+/******************************************************************************/
+
+ftn_mode_print: proc;
+
+   dcl
+      i              bin,
+      first_char     char;
+
+   if length (buffer) > 0 then do;
+      first_char = substr (buffer, 1, 1);
+      the_print_line = substr (buffer, 2);
+      end;
+   else do;
+      first_char = ' ';
+      the_print_line = '';
+      end;
+
+   i = index ('123456789ABCDEF+ 0-', first_char);
+   if i = 0 then
+      call skip_line (1);
+   else if i < 16 then
+      call skip_channel (i);
+   else if i ^= 16 then
+      call skip_line (i-16);
+   call print_line (the_print_line);
+
+end ftn_mode_print;
+
+%page;
+/* l2.print_job.binary_mode_print, PrintMaster, J Wilcoxson, October 16, 1987 */
+/******************************************************************************/
+
+binary_mode_print: proc;
+
+dcl
+   1  bdl      based (addr(buffer)),
+      2  len   bin,
+      2  dl    char(length(buffer)),
+
+   translate_save bit;
+
+
+   if ^l2.suppress_output then do;
+      translate_save = ds.need_device_translate;
+
+      on condition (cleanup$)
+         ds.need_device_translate = translate_save;
+
+      ds.need_device_translate = false;
+      call l2$io (l2$output_string, bdl.dl, 0);
+      ds.need_device_translate = translate_save;
+      end;
+
+   /* if this was the last binary buffer, go back to previous mode */
+
+   if binary_words_left = 0 then
+      l2.print_mode = saved_print_mode;
+
+end binary_mode_print;
+
+%page;
+/* l2.print_job.no_fmt_mode_print, PrintMaster, Jeff Hostetler, March 10, 1984*/
+/******************************************************************************/
+
+no_fmt_mode_print: proc;
+
+   dcl
+      last_char      bin,
+      line_string    char(20) var,
+      i              bin,
+      buf_chars_per_line      bin,
+      first_char     bin,
+      channel        bin,
+      first_buf_char_on_line  bin;
+
+   first_char = -1;
+   if length(buffer) > 0 then do;
+      first_char = rank (substr (buffer, 1, 1));
+      if first_char = 3 then do;            /* EVFU channel skip */
+         if length(buffer) > 1 then do;
+            channel = mod (rank (substr (buffer, 2, 1)), 16);
+            call skip_channel (channel);
+            end;
+         else
+            call skip_channel (1);          /* implied TOF */
+         if length(buffer) > 2 then
+            buffer = substr (buffer, 3);
+         else
+            buffer = '';
+         end;
+      end;
+
+   if l2.line_numbers then do;              /* ex: '12345)  This is a test.' */
+      l2.last_line_nr_printed = l2.last_line_nr_printed + 1;
+      line_string = char (l2.last_line_nr_printed);
+      line_string = substr(line_string, length(line_string) - 4) || ')  ';
+      buf_chars_per_line = l23.chars_per_line - length(line_string);
+      end;
+   else do;
+      line_string = '';
+      buf_chars_per_line = l23.chars_per_line;
+      end;
+
+   first_buf_char_on_line = 1;
+   if l2.wrap_around_enabled then
+      do i = buf_chars_per_line repeat i+buf_chars_per_line
+         while (i < length (buffer));
+         call print_line (line_string
+           || substr(buffer, first_buf_char_on_line, buf_chars_per_line));
+         call skip_line (1);
+         if l2.line_numbers then
+            line_string = '       |';
+         first_buf_char_on_line = i + 1;
+         end;
+
+   if length (buffer) >= first_buf_char_on_line |  length(buffer) = 0 then
+      call print_line (line_string || substr(buffer, first_buf_char_on_line));
+
+   /* if last char is not a CR (:015 or :215) AND is not a FF (:014 or :214),
+      we do a skip */
+
+   if length (buffer) > 0 then do;
+      last_char = rank(substr(buffer, length (buffer), 1));
+      if last_char = 13 | last_char = 141
+       | last_char = 12 | last_char = 140 then
+         return;
+      end;
+
+   /* don't do a skip if this was a channel skip only
+      ASSERT: length(buffer) = 0 | ^(last_char = 13 | 141) */
+
+   if first_char = 3 & length(buffer) = 0 then
+      return;
+
+   call skip_line (1);
+
+end no_fmt_mode_print;
+
+%page;
+/* l2.print_job.terminate_job, PrintMaster, Jeff Hostetler, March 10, 1984    */
+/******************************************************************************/
+
+terminate_job: proc;
+
+dcl
+   kwp         ptr,
+   bptr        ptr based;
+
+   if terminate_called then                 /* prevent recursive cleanup */
+      return;
+   terminate_called = true;
+
+   if ^ds$find_kw ('NO_EJECT', kwp) then do;
+      l2.suppress_accounting = true;
+      call skip_channel (1);
+      l2.total_pages_printed = l2.total_pages_printed + 1;
+      end;
+
+   call l2$io (l2$job_terminate, '', 0);
+
+   if addr(ds.user_accounting_proc)->bptr ^= null then
+      call ds.user_accounting_proc;
+
+end terminate_job;
+
+end print_job;
+
+%page;
+/* l2.handle_mode_change, PrintMaster, Jeff Hostetler, March 10, 1984         */
+/******************************************************************************/
+
+handle_mode_change: proc (s);
+
+dcl
+   s              char(*) var,              /* line causing mode change (in) */
+
+   two_chars      char(2),
+   second_char    bin;
+
+   if length (s) >= 2 then
+      second_char = rank (substr (s, 2, 1));
+   else
+      second_char = maxint;
+
+   select (second_char);
+      when (0)
+         l2.print_mode = l2$no_fmt_mode;
+      when (1)
+         l2.print_mode = l2$ftn_mode;
+      when (2)
+         call err$ (err$user_et, 'Attempted entry into COBOL mode',
+                    err$job_file_ue, 0, 0);
+      when (5) do;
+         saved_print_mode = l2.print_mode;
+         l2.print_mode = l2$binary_mode;
+         if length (s) > 2 then do;
+            on error
+               binary_words_left = -1;
+            binary_words_left = bin (substr (s, 3), 31);
+            end;
+         else
+            binary_words_left = -1;
+         end;
+      when (6)                              /* high-bit off is ignored */
+         ;
+      when (30) /* :36 */
+         call enter_paged_mode;
+      when (31) /* :37 */
+         if length (s) >= 4 then do;        /* ignore otherwise */
+            two_chars = substr (s, 3, 2);
+            l2.pm_lines_per_page = addr(two_chars)->bin15;
+            l2.print_mode = l2$paged_mode;
+            end;
+      otherwise do;
+         call enter_paged_mode;
+         l2.last_line_nr_printed = 0;
+         l2.pm_last_page_nr_printed = 0;
+         end;
+      end;  /* select */
+
+   return;
+
+
+   enter_paged_mode : procedure;
+
+      dcl (x,y)   bin;
+
+      y = l2.pm_chars_per_line - length_page_string;
+      if y > 0 then
+         if length (s) > 2 then do;
+            x = y - (length (s) - 2);
+            if x > 0 then                   /* header was too short */
+               l2.page_header_line = substr (s, 3) || copy (' ', x);
+            else if x = 0 then              /* just fits */
+               l2.page_header_line = substr (s, 3);
+            else                            /* too long, truncate it */
+               l2.page_header_line = substr (s, 3, y);
+            end;
+         else l2.page_header_line = copy (' ', y); /* no header given */
+      else
+         l2.page_header_line = '';          /* no room for any header */
+
+      l2.print_mode = l2$paged_mode;
+      l2.pm_lines_printed_this_page = maxint;
+
+      end enter_paged_mode;
+
+   end handle_mode_change;
+
+%page;
+/* l2.process_request, PrintMaster, Jeff Hostetler, March 9, 1984             */
+/******************************************************************************/
+
+process_request: proc;
+
+   dcl
+      code           bin,
+      bv             bin,                   /* binary (value) */
+      p_kw           ptr,
+      value          char(kwl$chars_in_value) var;
+
+   p_kw = ds.req_kwp;
+
+   if p_kw = null then do;                  /* after last request */
+      if ds.sd_display ^= null then do;
+         free status_display;
+         ds.sd_display = null;
+         end;
+      if ds.device_state ^= ds$printing_st then
+         return;
+      if restart_print_loop then do;
+         call position_job (ds.current_pc_mark + l2.advance_page_count);
+         restart_print_loop = false;
+         goto print_loop_label;             /* restart the job */
+         end;
+      if l2.pasd_page_count = 0 then do;
+         select (l2.pasd_action);
+            when (l2$drop_job_pasd, l2$drop_copy_pasd, l2$pause_pasd,
+                  l2$abort_pasd)
+               call execute_pasd_action;
+            otherwise ;
+            end;
+         end;
+      return;
+      end;
+
+
+   ds.current_request.error_status = ds$request_okay;
+   error_reply = '';
+dcl select_hack char(32); /*
+   select (p_kw->kw_entry.kw);
+*/    select_hack = p_kw->kw_entry.kw;
+   select (select_hack);
+      when ('STATUS')
+         call make_status_display;
+
+      when ('ADVANCE')                      /* advance n pages */
+         if ds.device_state = ds$printing_st then do;
+            l2.advance_page_count = l2.advance_page_count + get_binary(1);
+            restart_print_loop = true;
+            call continue;
+            end;
+         else call request_error_(3);       /* not valid now */
+
+      when ('BACKUP')                       /* backup n pages */
+         if ds.device_state = ds$printing_st then do;
+            l2.advance_page_count = l2.advance_page_count - get_binary(1);
+            restart_print_loop = true;
+            call continue;
+            end;
+         else call request_error_(3);
+
+      when ('POSITION')                     /* position to page n */
+         if ds.device_state = ds$printing_st then do;
+            bv = get_binary(0);
+            if bv = 0 then
+               call request_error_(5);
+/* select_hack
+            select (substr (value, 1, 1));
+*/          select_hack = (substr (value, 1, 1));
+            select (select_hack);
+               when ('+','-')               /* advance/backup relative */
+                  l2.advance_page_count = l2.advance_page_count + bv;
+               otherwise                    /* absolute position */
+                  l2.advance_page_count = -ds.current_pc_mark + bv;
+               end; /* select */
+            restart_print_loop = true;
+            call continue;
+            end;
+         else call request_error_(3);
+
+      when ('RESTART') do;                  /* restart job */
+         if ds.device_state ^= ds$printing_st then
+            call request_error_(3);
+         call continue;
+         restart_print_loop = true;
+         call device_large_message (2, 'Restarting', 1);
+         call device_message ('Restarting job');
+         call initialize_job;               /* reprint banner, etc. */
+         call ds$write_pc (addr(l2.pc_mark));
+         end;
+
+      when ('ALIGN') do;                    /* enter align mode */
+         l2.in_align_mode = false;          /* prevents extra user msg */
+         call continue;
+         l2.in_align_mode = true;
+         if ds.device_state = ds$printing_st then
+            l2.first_alignment_page = ds.current_pc_mark
+                                       + l2.advance_page_count;
+         else
+            l2.first_alignment_page = 1;
+         l2.last_alignment_page = l2.first_alignment_page + get_binary (1) - 1;
+         if l2.first_alignment_page = l2.last_alignment_page then
+            error_reply = error_reply || '; aligning page mark '
+                       || trim (char(l2.first_alignment_page), '11'b);
+         else
+            error_reply = error_reply || '; aligning page marks '
+                          || trim (char(l2.first_alignment_page), '11'b)
+                          || ' - '
+                          || trim (char(l2.last_alignment_page), '11'b);
+         end;
+
+      when ('CONTINUE')                     /* continue from where we are */
+         if ds.device_state = ds$printing_st then do;
+            call continue;
+            if length (error_reply) = 0 then
+               error_reply = 'printer is already printing; request has no effect';
+            end;
+         else
+            if l2.in_align_mode then do;
+               l2.in_align_mode = false;
+               error_reply = error_reply || '; align mode reset';
+               end;
+
+      when ('ABORT')
+         call handle_pasd_kw (l2$abort_pasd);
+
+      when ('DROP_COPY')
+         call handle_pasd_kw (l2$drop_copy_pasd);
+
+      when ('DROP_JOB')
+         call handle_pasd_kw (l2$drop_job_pasd);
+
+      when ('PAUSE')
+         call handle_pasd_kw (l2$pause_pasd);
+
+      when ('SUSPEND')
+         if ds.device_state = ds$printing_st then
+            if ds.resume_ok then
+               call handle_pasd_kw (l2$suspend_pasd);
+            else do;
+               error_reply = 'job can''t be suspended';
+               ds.current_request.error_status = ds$request_invalid;
+               end;
+         else
+            call request_error_ (3);
+
+      when ('STOP')
+         if ds.resume_ok then
+            call handle_pasd_kw (l2$suspend_pasd);
+         else
+            call handle_pasd_kw (l2$abort_pasd);
+
+      otherwise
+         ds.current_request.error_status = ds$request_unrecognized;
+
+      end; /* select */
+
+end_of_process_request:
+   if length(error_reply) > 2 then
+      if substr(error_reply, 1, 2) = '; ' then
+         error_reply = substr(error_reply, 3);
+   return;
+
+   /* logical end of process_request */
+
+%page;
+/* l2.process_request.get_binary, PrintMaster, Jim Wilcoxson, March 18, 1984  */
+/* Gets the first value from the current keyword, converts to binary, and     */
+/* checks to make sure it's positive if required.                             */
+/******************************************************************************/
+
+get_binary : procedure (type) returns (bin);
+
+dcl
+   type  bin,                               /* 0=any, 1=positive */
+   bv    bin;
+
+   if kwl$get_nth_value (p_kw, 1, value) then
+      if verify (value, digits_plus_minus) = 0 then do;
+         bv = binary(value);
+         if type = 1 & bv <= 0 then
+            call request_error_(4);         /* negative or zero value */
+         end;
+      else
+         call request_error_(2);            /* not a numeric value */
+   else
+      call request_error_(1);               /* missing value */
+
+   return (bv);
+
+end get_binary;
+
+%page;
+/* l2.process_request.make_status_display, PrintMaster, Jim Wilcoxson, June 5, 1984*/
+/* Creates the level 2 status display.                                        */
+/******************************************************************************/
+
+make_status_display : proc;
+
+dcl
+   action      char(40) var,
+   online_flag bin,
+   kwp         ptr,
+   value       char (kwl$chars_in_value) var,
+   v           bin,
+   i           bin;
+
+   allocate status_display set (ds.sd_display);
+
+   do i = 1 to ds.sd_lines;
+      status_display(i) = '';
+      end;
+
+   i = 1;                                      /* next status line available */
+
+   if kwl$find_kw ('FORM', ds.p_device_kwl, kwp) then do;
+      status_display(i) = 'Form type is ';
+      if kwl$get_nth_value (kwp, 1, value) then do;
+         do v = 1 by 1 while (kwl$get_nth_value (kwp, v, value));
+            if value = '' then
+               value = '(blank)';
+            else if index (value, ' ') ^= 0 then
+               value = '''' || value || '''';
+            status_display(i) = status_display(i) || value || ' ';
+            end;
+         end;
+      else
+         status_display(i) = 'Form type is (any)';
+      end;
+
+   if l2.in_align_mode then do;
+      status_display(i) = 'Device is aligning page';
+      if l2.first_alignment_page = l2.last_alignment_page then
+         status_display(i) = status_display(i) || ' ' ||
+                             trim (char (l2.first_alignment_page), '11'b);
+      else
+         status_display(i) = status_display(i) || 's ' ||
+                             trim (char (l2.first_alignment_page), '11'b)
+                             || ' through ' ||
+                             trim (char (l2.last_alignment_page), '11'b);
+      i = i+1;
+      end;
+
+   if l2.device_type ^= l2$amlc_dt
+   | kwl$find_kw ('CHECK_CARRIER', ds.p_device_kwl, kwp) then do;
+      call l2$io (l2$online_test, '', online_flag);
+      if online_flag = 0 then do;
+         status_display(i) = 'Device is off-line.';
+         i = i + 1;
+         end;
+      end;
+
+   if ds.device_state ^= ds$printing_st then
+      return;                                  /* no others are valid */
+
+   if l2.advance_page_count ^= 0 then do;
+      if l2.advance_page_count < 0 then
+         action = 'backing up';
+      else
+         action = 'advancing';
+      status_display(i) = 'Device is ' || action || ' to page ' ||
+             trim (char (ds.current_pc_mark + l2.advance_page_count), '11'b);
+      i = i + 1;
+      end;
+
+   select (l2.pasd_action);
+      when (l2$nothing_pasd)
+         ;
+      when (l2$abort_pasd)
+         action = 'abort the current job';
+      when (l2$drop_job_pasd)
+         action = 'drop the current job';
+      when (l2$drop_copy_pasd)
+         action = 'drop the current copy';
+      when (l2$pause_pasd)
+         action = 'pause the current job';
+      when (l2$suspend_pasd)
+         action = 'suspend the current job';
+      otherwise
+         call err$ (err$coding_et, 'Bad pasd action.', 0, 0, 0);
+      end;
+
+   if l2.pasd_action ^= l2$nothing_pasd then do;
+      status_display (i) = 'Device will ' || action || ' in ' ||
+                           trim (char (l2.pasd_page_count), '11'b) || ' pages';
+      i = i + 1;
+      end;
+
+   if l2.device_status = ds$paused_st then do;
+      status_display(i) = 'Device is paused, waiting for -CONTINUE.';
+      i = i + 1;
+      end;
+
+   return;
+
+end make_status_display;
+%page;
+/* l2.process_request.continue, PrintMaster, Jim Wilcoxson, March 18, 1984    */
+/* Processes the continue command; this is done for all valid commands.       */
+/******************************************************************************/
+
+continue: proc;
+
+dcl
+   cancelled_action     char(15) var;
+
+   if l2.in_align_mode then
+      error_reply = error_reply || '; align mode reset';
+   l2.in_align_mode = false;
+
+   select (l2.pasd_action);
+      when (l2$nothing_pasd)
+         cancelled_action = '';
+      when (l2$abort_pasd)
+         cancelled_action = 'abort';
+      when (l2$drop_copy_pasd)
+         cancelled_action = 'drop_copy';
+      when (l2$drop_job_pasd)
+         cancelled_action = 'drop_job';
+      when (l2$pause_pasd)
+         cancelled_action = 'pause';
+      when (l2$suspend_pasd)
+         cancelled_action = 'suspend';
+      otherwise
+         call err$ (err$coding_et, 'Invalid value in l2.pasd_action '
+                    || char (l2.pasd_action), 0, 0, 0);
+      end;
+
+   if l2.pasd_action ^= l2$nothing_pasd then do;
+      if l2.pasd_page_count ^= 0 then
+         error_reply = error_reply || '; '  || cancelled_action ||
+              ' at page mark ' ||
+              trim (char(l2.pasd_page_count + ds.current_pc_mark), '11'b);
+      else
+         error_reply = error_reply || '; current ' || cancelled_action;
+      error_reply = error_reply || ' cancelled';
+      end;
+
+   if l2.device_status = ds$paused_st then do;
+      error_reply = error_reply || '; continuing from pause';
+      l2.device_status = ds$printing_st;
+      end;
+
+   l2.pasd_action = l2$nothing_pasd;
+
+   return;
+   end continue;
+
+%page;
+/* l2.process_request.handle_pasd_kw,                                         */
+/* PrintMaster, Jeff Hostetler, March 10, 1984                                */
+/******************************************************************************/
+
+handle_pasd_kw: proc (action);
+
+   dcl
+      pc          bin,                      /* page count */
+      action      bin;
+
+   if ds.device_state ^= ds$printing_st then
+      call request_error_(3);
+
+   if kwl$get_nth_value (p_kw, 1, value) then do;
+      if verify (value, digits_plus_minus) = 0 then do;
+         pc = binary (value);               /* check for valid number before */
+                                            /* calling "continue" */
+         if pc < 0 then
+            call request_error_(6);
+         end;
+      else call request_error_(2);          /* not numeric */
+      end;
+   else
+      if action = l2$suspend_pasd then
+         pc = 1;                            /* action will happen at bottom */
+                                            /* of current page */
+      else
+         pc = 0;                            /* action happens immediately */
+
+   call continue;
+   l2.pasd_action = action;
+   l2.pasd_page_count = pc;
+
+end handle_pasd_kw;
+
+%page;
+/* l2.process_request.request_error_,                                         */
+/* PrintMaster, Jeff Hostetler, March 10, 1984                                */
+/******************************************************************************/
+
+request_error_: proc (type);
+
+dcl
+   type     bin;
+
+
+   select (type);
+      when (1) error_reply = 'missing required argument';
+      when (2) error_reply = 'expected a numeric argument';
+      when (3) error_reply = 'printer idle, request has no effect';
+      when (4) error_reply = 'argument must be greater than zero';
+      when (5) error_reply = 'argument cannot be zero';
+      when (6) error_reply = 'argument cannot be negative';
+      otherwise
+         call err$ (err$coding_et, 'Bad request error type', 0, 0, 0);
+      end;
+
+   ds.current_request.error_status = ds$request_invalid;
+   goto end_of_process_request;
+
+end request_error_;
+
+end process_request;
+
+%page;
+/* l2.device_large_message, PrintMaster, Jeff Hostetler, March 24, 1984       */
+/* print string given in large, block characters                              */
+/******************************************************************************/
+
+device_large_message: proc (skip_before, message, skip_after);
+
+dcl
+   skip_before       bin,
+   message           char(*) var,
+   skip_after        bin,
+
+   suppress_output_save bit aligned,
+   accounting_save   bit aligned,
+   (p, p0)           ptr,
+   line_length       bin,
+   1  bnr_line       based,
+      2  next        ptr,
+      2  line        char(line_length) var;
+
+   if l2.quiet then
+      return;
+
+   suppress_output_save = l2.suppress_output;
+   l2.suppress_output = false;
+   accounting_save = l2.suppress_accounting;
+   l2.suppress_accounting = true;
+
+   if skip_before < 0 then
+      call skip_channel (1);
+   else
+      call skip_line (skip_before);
+   do p = l2$expand_string (message, l23.chars_per_line)
+                    repeat p0 while (p ^= null);
+      line_length = length(p->bnr_line.line);
+      call print_line (p->bnr_line.line);
+      call skip_line (1);
+      p0 = p->bnr_line.next;
+      free p->bnr_line;
+      end;
+
+   if skip_after < 0 then
+      call skip_channel (1);
+   else
+      call skip_line (skip_after);
+
+   l2.suppress_output = suppress_output_save;
+   l2.suppress_accounting = accounting_save;
+
+end device_large_message;
+
+%page;
+/* l2.accounting_proc, PrintMaster, Jeff Hostetler, March 10, 1984            */
+/******************************************************************************/
+
+accounting_proc: proc (key, nr);
+
+dcl
+   key      bin,                            /* (see l2 for values)*/
+   nr       bin;                            /* meaning depends on key */
+
+   if l2.suppress_accounting then
+      call err$ (err$coding_et, 'Accounting called while suppressed.', 0, 0, 0);
+
+   select (key);
+
+      when (l2$page) do;
+         if l2.print_file_position ^= 0 then do;
+            if ^l2.suppress_output then
+               l2.total_pages_printed = l2.total_pages_printed + 1;
+            l2.first_print_pos = nr;
+            call ds$write_pc (addr(l2.pc_mark));
+            l2.first_print_pos = 0;
+            end;
+
+         if l2.advance_page_count ^= 0 then do; /* output suppressed */
+            l2.advance_page_count = l2.advance_page_count - 1;
+            if l2.advance_page_count = 0 then do;
+               l2.suppress_output = false;  /* re-enable output */
+               l2.advance_pc_save = 0;
+               call ds$reset_statistics;
+               end;
+            end;
+
+         if l2.in_align_mode then
+            if l2.need_to_realign then
+               goto realignment_label;
+            else
+               if ds.current_pc_mark > l2.last_alignment_page then do;
+                  l2.in_align_mode = false;
+                  call ds$reset_statistics;
+                  end;
+
+         if l2.pasd_action ^= l2$nothing_pasd then
+            if l2.pasd_page_count ^= 0 then do;
+               l2.pasd_page_count = l2.pasd_page_count - 1;
+               if l2.pasd_page_count = 0 then
+                  call execute_pasd_action;
+               end;
+
+         end;     /* when l3$page */
+
+      when (l2$eoj) do;
+         if l2.advance_page_count ^= 0 then do; /* advanced too far */
+            l2.suppress_output = false;
+            l2.advance_page_count = 0;
+            l2.suppress_accounting = true;
+            call device_large_message (2, 'Only ' ||
+                                       trim(char(ds.current_pc_mark),'11'b)
+                                       || ' pages in job', 4);
+            l2.suppress_accounting = false;
+            call position_job (l2.advance_pc_save);
+            goto print_loop_label;
+            end;
+
+         if l2.pasd_action ^= l2$nothing_pasd then do;
+            l2.pasd_page_count = 0;
+            call execute_pasd_action;
+            end;
+         end;
+
+      otherwise
+         call err$ (err$coding_et, 'Bad key "' || char(key) || '" in call',
+                    0, 0, 0);
+      end;     /* select */
+
+end accounting_proc;
+
+%page;
+/* l2.execute_pasd_action, PrintMaster, Jeff Hostetler, March 24, 1984        */
+/******************************************************************************/
+
+execute_pasd_action: proc;
+
+dcl
+   action      bin,
+   status      bin;
+
+   do while (l2.pasd_action ^= l2$nothing_pasd & l2.pasd_page_count = 0);
+
+      action = l2.pasd_action;
+      l2.pasd_action = l2$nothing_pasd;
+
+      select (action);
+         when (l2$abort_pasd) do;
+            call device_large_message (2, 'Aborted', 1);
+            call device_message ('Job aborted at page mark '
+               || trim (char(ds.current_pc_mark), '11'b));
+            ds.completion_code = ds$aborted_cc;
+            goto return_from_print_job;
+            end;
+         when (l2$drop_copy_pasd) do;
+            call device_large_message (2, 'Copy dropped', 1);
+            call device_message ('Copy dropped at page mark '
+               || trim (char(ds.current_pc_mark), '11'b));
+            ds.completion_code = ds$drop_copy_cc;
+            goto return_from_print_job;
+            end;
+         when (l2$drop_job_pasd) do;
+            call device_large_message (2, 'Job dropped', 1);
+            call device_message ('Job dropped.  (Copy dropped at page mark '
+               || trim (char(ds.current_pc_mark), '11'b) || ')');
+            ds.completion_code = ds$drop_job_cc;
+            goto return_from_print_job;
+            end;
+         when (l2$suspend_pasd) do;
+            call device_large_message (2, 'Suspended', 1);
+            call device_message ('Job suspended at page mark '
+               || trim (char(ds.current_pc_mark), '11'b));
+            ds.completion_code = ds$suspended_cc;
+            goto return_from_print_job;
+            end;
+         when (l2$pause_pasd) do;
+            l2.device_status = ds$paused_st;
+            do while (l2.device_status = ds$paused_st);
+               if ds.semaphore ^= 0 then do;
+                  call sem$wt (ds.semaphore, status);
+                  if status ^= 0 then
+                     call err$ (err$primos_et, 'Waiting on semaphore',
+                                status, 0, 0);
+                  end;
+               else
+                  call sleep$ (one_cycle);
+               if ds$process_request (false) then ;
+               end;
+            end;
+         otherwise
+            call err$ (err$coding_et, 'Invalid pasd action'
+                       || char(l2.pasd_action), 0, 0, 0);
+         end;   /* select */
+   end;
+
+end execute_pasd_action;
+
+%page;
+/* l2.position_job, PrintMaster, Jeff Hostetler, March 10, 1984               */
+/******************************************************************************/
+
+position_job: proc (page_nr);
+
+dcl
+   page_nr           bin(31),
+
+   accounting_save   bit,
+   code              bin;
+
+
+   if page_nr < 1 then
+      page_nr = 1;
+
+   if ^(l2.in_align_mode & l2.need_to_realign) then do;
+      if page_nr > ds.current_pc_mark then do;
+         call device_large_message (2, 'Advancing', 1);
+         if ^l2.suppress_output then
+            l2.advance_pc_save = ds.current_pc_mark;
+         end;
+      else
+         call device_large_message (2, 'Backing up', 1);
+      call device_message ('Positioning to page mark ' ||
+                            trim (char(page_nr), '11'b));
+      end;
+   else                                     /* positioning to alignment page */
+      if l2.paper_pos ^= 1 then do;
+         accounting_save = l2.suppress_accounting;
+         l2.suppress_accounting = true;
+         call skip_channel (1);
+         l2.suppress_accounting = accounting_save;
+         end;
+
+   if ds$read_pc (page_nr, addr(l2.pc_mark), l2$mark_size, true) then do;
+      call bio$set_position (ds.pfbp, l2.print_file_position);
+      if page_nr - 1 = ds.current_pc_mark then
+         if page_nr = 1 then
+            l2.advance_page_count = 0;
+         else
+             l2.advance_page_count = 1;     /* positioned to correct page */
+      else                            /* positioned to end, but not to target */
+         l2.advance_page_count = page_nr - ds.current_pc_mark;
+      end;
+   else                                     /* advance from current pos */
+      l2.advance_page_count = page_nr - ds.current_pc_mark;
+
+   call ds$reset_statistics;
+
+   if ds.current_pc_mark = 0 then
+      call ds$write_pc (addr(l2.pc_mark));
+
+   l2.suppress_output = (l2.advance_page_count > 0);
+   if l2.advance_page_count < 0 then
+      call err$ (err$coding_et, 'Invalid advance', 0, 0, 0);
+
+   return;
+   end position_job;
+
+%page;
+/* l2.initialize_job, PrintMaster, Jeff Hostetler, March 10, 1984             */
+/******************************************************************************/
+
+initialize_job: proc;
+
+dcl
+   align_save  bit,
+   code        bin,
+   dow         bin,                         /* day of week */
+   job_entryname char(32),
+   mode        bin,                         /* mode change byte */
+   p_kw        ptr,
+   value       char(kwl$chars_in_value) var;
+
+   /* Get "paper" characteristics.  (Presence is manditory.)
+      Look in job's kwl first, if not found then look in device's, if not
+      found then blow up. */
+
+   if ds$find_kw ('CHARS_PER_LINE', p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value) & verify (value, digits) = 0 then
+         l23.chars_per_line = binary (value);
+      else
+         call err$ (err$user_et,
+            'Required keyword -CHARS_PER_LINE absent or has invalid argument.',
+            err$missing_kw_ue, 0, 0);
+   else
+      l23.chars_per_line = 132;
+
+   if ds$find_kw ('LINES_PER_PAGE', p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value) & verify (value, digits) = 0 then
+         l23.lines_per_page = binary (value);
+      else
+         call err$ (err$user_et,
+            'Required keyword -LINES_PER_PAGE absent or has invalid argument.',
+            err$missing_kw_ue, 0, 0);
+   else
+      l23.lines_per_page = 66;
+
+   if ds$find_kw ('TRUNCATE', p_kw) then
+      l2.print_line_len = l23.chars_per_line;
+   else
+      l2.print_line_len = max_print_line_len;
+
+   restart_print_loop = false;
+
+   /* first let's initialize all level 2 variables */
+
+   l2.mark_size = l2$mark_size;
+   l2.mark_type = 1;
+   l2.print_mode = l2$paged_mode;
+   l2.print_file_position = 0;
+   l2.first_print_pos = 0;
+
+   l2.pm_chars_per_line = l23.chars_per_line;
+   l2.pm_lines_per_page = l23.lines_per_page - 12; /* for normal stock (66 lines) */
+   l2.pm_lines_printed_this_page = 0;
+   l2.pm_last_page_nr_printed = 0;
+   l2.last_line_nr_printed = 0;
+   l2.paper_pos = 1;
+   l2.total_pages_printed = 0;
+   if substr (ds.job_pathname, 1, 1) = '<' then do;  /* have pathname */
+      job_entryname = reverse (before (reverse (ds.job_pathname), '>'));
+      l2.page_header_line = job_entryname ||
+                             ' last modified ' || ds.modified_now;
+      end;
+   else
+      l2.page_header_line = '';
+   l2.pasd_action = l2$nothing_pasd;
+   l2.pasd_page_count = 0;
+   l2.advance_page_count = 0;
+   l2.advance_pc_save = 0;
+   l2.suppress_output = false;
+   l2.first_alignment_page = 1;
+   l2.line_numbers = false;
+   l2.no_header = false;
+   l2.wrap_around_enabled = false;
+   l2.suppress_accounting = false;
+   align_save = l2.in_align_mode;
+   l2.in_align_mode = false;
+   l2.quiet = false;
+   l2.need_to_realign = false;
+
+   l2.banner_printed = false;
+
+   call set_job_attributes;
+
+   call ds$reset_pc;
+   call bio$set_position (ds.pfbp, 0);
+   call ds$reset_statistics;
+
+   /* tell level 3 driver to initialize */
+
+   call l2$io (l2$job_init, '', 0);
+
+   if ^l2.banner_printed then
+      call l2$print_banner;
+
+   /* reset L2.PRINT_LINE_LEN in case level 3 driver changes
+      L23.CHARS_PER_LINE */
+
+   if ds$find_kw ('TRUNCATE', p_kw) then
+      l2.print_line_len = l23.chars_per_line;
+   else
+      l2.print_line_len = max_print_line_len;
+
+   /* enter correct mode before printing */
+
+   select (l2.print_mode);
+      when (l2$no_fmt_mode)
+         mode = 0;
+      when (l2$ftn_mode)
+         mode = 1;
+      when (l2$paged_mode)
+         mode = 30;
+      otherwise
+         call err$ (err$coding_et, 'Bad mode?', 0, 0, 0);
+      end;
+
+   call handle_mode_change (byte(1)||byte(mode)||l2.page_header_line);
+
+   l2.pm_lines_printed_this_page = maxint;
+   l2.pm_last_page_nr_printed = 0;
+
+   l2.ignore_next_eject = true;
+   l2.in_align_mode = align_save;           /* can't align on the banner page */
+   return;
+
+   /* logical end of initialize_job */
+
+%page;
+/* l2.initialize_job.set_job_attributes,                                      */
+/* PrintMaster, Jeff Hostetler, March 10, 1984                                */
+/******************************************************************************/
+
+set_job_attributes: proc;
+
+dcl
+   temp     bin;
+
+
+   l2.print_Mode = l2$paged_mode;           /* paged mode is default */
+
+   do p_kw = ds.p_job_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+dcl select_hack char(32); /*
+      select (p_kw->kw_entry.kw);
+*/       select_hack =  (p_kw->kw_entry.kw);
+      select (select_hack);
+         when ('QUIET')
+            l2.quiet = true;
+
+         when ('FTN')
+            l2.print_mode = l2$ftn_mode;    /* enter ftn mode */
+
+         when ('NO_FORMAT')
+            l2.print_mode = l2$no_fmt_mode;  /* enter nofmt mode */
+
+         when ('PAGINATE') do;              /* set paged modes lines */
+            l2.print_mode = l2$paged_mode;
+            if kwl$get_nth_value (p_kw, 1, value) then
+               if verify (value, digits) = 0 then do;
+                  temp = binary (value);
+                  if temp > 0 then
+                     l2.pm_lines_per_page = binary (value);
+                  end;
+            if kwl$get_nth_value (p_kw, 2, value) then
+               if verify (value, digits) = 0 then do;
+                  temp = binary (value);
+                  if temp > 0 then
+                     l2.pm_chars_per_line = binary (value);
+                  end;
+            end;
+
+         when ('PAGE_HEADER') do;
+            l2.print_mode = l2$paged_mode;  /* enter paged mode */
+            if kwl$get_nth_value (p_kw, 1, value) then
+               l2.page_header_line = value;
+            else
+               l2.page_header_line = '';
+            end;
+
+         when ('LINE_NUMBERS')
+            if l23.chars_per_line > 14 then
+               l2.line_numbers = true;
+
+         when ('NO_BANNER')
+            l2.no_header = true;
+
+         when ('SINGLE_BANNER')
+            if ds.unique_id = ds.last_unique_id then
+               l2.no_header = true;
+
+         when ('WRAP')
+            l2.wrap_around_enabled = true;
+
+         otherwise;  /* do nothing */
+         end;        /* select */
+      end;           /* do p_kw */
+
+end set_job_attributes;
+
+end initialize_job;
+
+%page;
+/* l2.device_message, PrintMaster, Jeff Hostetler, March 24, 1984             */
+/* output a message on the device.                                            */
+/******************************************************************************/
+
+device_message: proc (string);
+
+dcl
+   string            char(*) var,
+
+   suppress_output_save bit aligned,
+   accounting_save   bit aligned,
+   dow               bin,
+   now               char(28) var;
+
+   suppress_output_save = l2.suppress_output;
+   l2.suppress_output = false;
+   accounting_save = l2.suppress_accounting;
+   l2.suppress_accounting = true;
+   call cv$fdv (date$(), dow, now);
+   call print_line ('*** ' || now || '  ' || string ||  ' ***');
+   call skip_channel (1);
+   l2.suppress_accounting = accounting_save;
+   l2.suppress_output = suppress_output_save;
+   l2.ignore_next_eject = true;
+
+end device_message;
+
+%page;
+
+
+/******************************************************************************/
+/* print a single line                                                        */
+/******************************************************************************/
+
+print_line : procedure (line_to_print);
+
+dcl
+   line_to_print  char(*) var,
+   1  bdl      based (addr(line_to_print)),
+      2  len   bin,
+      2  dl    char(length(line_to_print));
+
+   call l2$io (l2$print_line, bdl.dl, 0);
+
+end print_line;
+
+%page;
+
+/******************************************************************************/
+/* Skips n lines on the device.                                               */
+/******************************************************************************/
+
+skip_line : procedure (n);
+
+dcl
+   n              bin;                      /* number of lines to skip */
+
+   call l2$io (l2$skip_line, '', n);
+
+end skip_line;
+
+%page;
+
+/******************************************************************************/
+/* skips to channel c; this may need to be simulated later on devices without */
+/* VFU capabilities                                                           */
+/******************************************************************************/
+
+skip_channel : procedure (c);
+
+dcl
+   c           bin;                         /* channel to skip to */
+
+   call l2$io (l2$skip_channel, '', c);
+
+end skip_channel;
+
+end l2$main;

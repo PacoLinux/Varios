@@ -1,0 +1,99 @@
+/* L2$EXPAND_STRING.SPL, PrintMaster, Jim Wilcoxson, March 17, 1984           */
+/* Expands a string to large letters (for spool header/trailer pages).        */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$expand_string : procedure (s, maxlen) returns (ptr);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>l2.ins.spl';
+%list;
+
+dcl
+   s                 char(*) var,           /* string to expand (in) */
+   maxlen            bin;                   /* maximum length of output */
+
+dcl
+   letter_width      bin,                   /* of a single letter */
+   nchars            bin,                   /* number of chars in S to expand */
+   ll                bin,                   /* length of returned lines */
+   1  letline based,                        /* one line of letter */
+      2  next        ptr,                   /* link to next line */
+      2  line        char(ll) var,          /* text of one line */
+   firstlinep        ptr,                   /* first "lp" (returned value) */
+   plp               ptr,                   /* previous "lp" */
+   lp                ptr,                   /* pointer to expanded line list */
+   more_left         bit,                   /* true if at least 1 letter has
+                                            /* more lines in it */
+   i                 bin,
+   letter_ix         bin,
+   1  sp (length(s)),                       /* data for each letter in "s" */
+      2  maxwidth    bin,
+      2  currentp    ptr;                   /* next line in letter */
+
+
+   firstlinep = null;
+   ll = 0;
+   nchars = 0;                              /* number of chars in s to expand */
+   do i = 1 to length(s);
+      letter_ix = rank(substr(s,i,1));
+      if letter_ix < rank(' ') then
+         letter_ix = rank('');             /* change control char to DEL */
+      else                                  /* map lower to upper (temp) */
+         if rank('a') <= letter_ix & letter_ix <= rank('z') then
+            letter_ix = letter_ix - (rank('a')-rank('A'));
+
+      if l2.big_letters(letter_ix).firstline = null then  /* change undef to DEL */
+         letter_ix = rank('');
+      letter_width = l2.big_letters(letter_ix).maxwidth;
+      if ll + letter_width + 1 <= maxlen then do;
+         ll = ll + letter_width + 1;        /* one extra for space separator */
+         sp(i).maxwidth = letter_width;
+         sp(i).currentp = l2.big_letters(letter_ix).firstline;
+         if sp(i).currentp ^= null then
+            more_left = true;
+         nchars = nchars + 1;
+         end;
+      else
+         goto begin_expand;                 /* have to quit early */
+      end;
+
+begin_expand:
+
+   do while (more_left);
+
+      allocate letline set(lp);
+      lp->letline.next = null;
+      if firstlinep = null then
+         firstlinep = lp;
+      else
+         plp->letline.next = lp;
+
+      more_left = false;                    /* may be set by create_line  */
+      call create_line;
+
+      plp = lp;
+
+      end;
+   return (firstlinep);
+
+
+create_line : procedure;
+
+   lp->letline.line = '';
+   do i = 1 to nchars;
+      if sp(i).currentp = null then
+         lp->letline.line = lp->letline.line || copy(' ',sp(i).maxwidth+1);
+      else do;
+         lp->letline.line = lp->letline.line ||
+                            sp(i).currentp->letline.line || ' ';
+         sp(i).currentp = sp(i).currentp->letline.next;
+         if sp(i).currentp ^= null then
+            more_left = true;
+         end;
+      end;
+
+end create_line;
+
+end l2$expand_string;

@@ -1,0 +1,80 @@
+/* MONITOR.SPL, PrintMaster, Jim Wilcoxson, November 23, 1983                 */
+/* Main monitor/master procedure.                                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+monitor : procedure (cl, com_status);
+
+dcl
+   mon$main_monitor        entry;
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>cond_fr_hdr.ins.spl';
+%include '*>insert>fault_fr_hdr.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$send_to_device.ins.spl';
+%list;
+
+dcl
+   cl                      char(*) var,     /* command line (in) */
+   com_status              bin;             /* command status (in/out) */
+
+dcl
+   linkage_fault$    char(14) var static init('LINKAGE_FAULT$');
+
+   com_status = severity$error;
+
+   /* there is a call to the monitor procedure MON$SEND_TO_DEVICE from the
+      main EPF library routine COMM$XMIT; rather than make a monitor library
+      for this one routine, the linkage fault is handled as a special case,
+      and resolved here. */
+
+   call mkonu$ (linkage_fault$, linkage_fault_hlr);
+
+   call mon$main_monitor;
+
+abnormal_return:
+   com_status = severity$error;
+   return;
+
+
+
+linkage_fault_hlr: proc (cfp);
+
+dcl
+   cfp               ptr,                   /* pointer to condition frame */
+
+   ev                entry variable,
+   1  ev_struc defined ev,
+      2  ecb_ptr     ptr,
+      2  display_ptr ptr,
+
+   fault_address     ptr,
+   status            bin;
+
+   fault_address = cfp->cfh.ms_ptr->ffh.fault_addr;
+   if gbl.trace_on then
+      call ioa$ ('TRACE: Linkage fault raised referencing %p (%v).%.', -1,
+                   fault_address, cfp->cfh.info_ptr->bcv);
+
+   if cfp->cfh.info_ptr->bcv = 'MON$SEND_TO_DEVICE' then
+      ev = mon$send_to_device;
+   else do;
+      call cnsig$ (status);
+      return;
+      end;
+
+   if gbl.trace_on then
+      call ioa$ ('TRACE: IP at %p (%v) snapped to %p.%.', -1,
+                   fault_address, cfp->cfh.info_ptr->bcv,
+                   ev_struc.ecb_ptr);
+   fault_address->based_ptr = ev_struc.ecb_ptr;
+   return;                                  /* re-execute PCL */
+
+   end linkage_fault_hlr;
+
+end monitor;

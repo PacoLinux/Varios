@@ -1,0 +1,525 @@
+/* DEVICE_COMMAND.SPL, PrintMaster, Jeff Hostetler, February 16, 1984         */
+/* Operator command to control devices.                                       */
+/*                                                                            */
+/*             DEVICE_COMMAND {-HELP | <device_name>                          */
+/*                                     [-ON [<system_name>]]                  */
+/*                                     [-NW]                                  */
+/*                                     [-START]                               */
+/*                                     <device_commands>}                     */
+/*                                                                            */
+/* NOTE:                                                                      */
+/*    "<device_commands>" ==> Will be accepted as is and passed to the device */
+/*                            without modification.                           */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+dc: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+%replace
+   uncl_length  by  160;
+
+   dcl
+      cl                   char(max_cl) var,
+      com_status           bin,
+
+      p_kwl                ptr,
+      p_kw                 ptr,
+      p_buf                ptr,
+      flags                like kwl$flags,
+      expand_info          like kwl$expand_info,
+
+      (msgp, user_msgp)    ptr,
+      had_errors           bit,
+      had_responses        bit,
+      last_response        bit,
+      msg_len              bin,
+      msg_type             bin,
+      max_wait_time        bin,
+      time_waited          bin,
+      we_did_initialization bit,
+
+      1  struc,
+         2  device_name    char(32) var,
+         2  dev_cl         char(uncl_length) var,
+         2  on_given       bit aligned,
+         2  system_name    char(32) var,
+         2  nw_given       bit aligned,
+         2  startup_given  bit aligned,
+         2  help_given     bit aligned;
+
+%page;
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+   call gp$version ('Device Command');
+
+   if ^i_am_opr then
+      call err$ (err$user_et, 'You are not an operator.', err$not_an_opr, 0, 0);
+
+   call parse_cl;
+
+   if length (dev_cl) = 0 then do;
+      p_buf = null;                         /* no message */
+      msg_len = 0;
+      end;
+
+   else do;
+
+      /* convert the command line to a kwl buffer. */
+
+      string(expand_info) = kwl$accept_as_is_ei;
+      string(flags) = kwl$default_flags;
+      p_kwl = null;
+      call kwl$cl_to_kwl (dev_cl, p_kwl, expand_info);
+      if kwl$find_kw ('EDIT', p_kwl, p_kw) then
+         if p_kw->kw_entry.pf_value ^= null | p_kw->kw_entry.next = null then
+            call err$ (err$user_et, 'A keyword must follow "-EDIT".', err$cl_ue, 0, 0);
+      if kwl$find_kw ('LOAD', p_kwl, p_kw) then
+         call make_value_pathname (p_kw);
+      if kwl$find_kw ('LOAD_EOJ', p_kwl, p_kw) then
+         call make_value_pathname (p_kw);
+      if kwl$find_kw ('LOAD_IDLE', p_kwl, p_kw) then
+         call make_value_pathname (p_kw);
+      call kwl$kwl_to_buf (p_kwl, p_buf);
+      call kwl$destroy_kwl (p_kwl);
+      msg_len = p_buf->fb15*2 + 2;
+      end;
+
+   /* send the message */
+
+   if startup_given then
+      msg_type = mt$startup_device;
+   else
+      msg_type = mt$device_command;
+
+   had_errors = false;
+   if comm$send (msg_type, struc.system_name, struc.device_name,
+                                                         p_buf, msg_len) then
+      if ^nw_given then do;
+         had_responses = false;
+         last_response = false;
+         max_wait_time = psv.time_limit*3;  /* seconds */
+         do while (get_response()) until (last_response);
+            call print_response;
+            end;
+         end;
+      else ;                                /* no wait option given */
+   else do;
+      call ioa$ ('Unable to send command to device (monitor down).%.', -1);
+      had_errors = true;
+      end;
+
+   call kwl$free_buffer (p_buf);
+   if had_errors then
+      goto abnormal_return;
+
+normal_return:
+
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+help_wanted:
+   call display_help;
+   goto normal_return;
+
+abnormal_return:
+
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+get_response : procedure returns (bit);
+
+   do time_waited = 1 to max_wait_time by 1
+                                   while (^comm$fetch_msg (msgp, user_msgp));
+      if time_waited = 15 then
+         call ioa$ ('Wait...%$', -1);
+      call sleep$ (one_second);
+   end;
+   if user_msgp = null then do;             /* timed out */
+      if had_responses then
+         call ioa$ ('no further responses to command from device.%.', -1);
+      else
+         call ioa$ ('no response to command from device.%.', -1);
+      return (false);
+      end;
+   else
+      return (true);
+
+end get_response;
+
+print_response : procedure;
+
+   select (msgp->msg.msg_type);
+      when (mt$device_response)
+         call print_device_response;
+      when (mt$device_status_reply)
+         call print_device_status;
+      when (mt$device_config_reply)
+         call print_device_config;
+      otherwise
+         call err$ (err$coding_et, 'Unknown message type returned from device',
+                    0, 0, 0);
+      end;
+
+   call comm$destroy_msg (msgp);
+
+end print_response;
+
+print_device_response : procedure;
+
+dcl
+   user_msg like ms$device_response based (user_msgp),
+   response    char(25) var;
+
+   if user_msg.command_status = ds$request_completed then do;
+      if ^had_responses & time_waited > 15 then
+         call ioa$ ('Commands accepted.%.', -1);
+      last_response = true;
+      return;
+      end;
+
+   had_responses = true;
+   alloc_text_length = length(user_msg.message);
+
+   if user_msg.command_status = ds$request_aborted_by_monitor
+    | user_msg.command_status = ds$reply_from_monitor then do;
+      call ioa$ ('%v%.', -1, user_msg.message);
+      had_errors = user_msg.command_status = ds$request_aborted_by_monitor;
+      last_response = true;
+      return;
+      end;
+
+   select (user_msg.command_status);
+      when (ds$request_okay)
+         response = 'Accepted';
+      when (ds$request_invalid) do;
+         response = 'Rejected';
+         had_errors = true;
+         end;
+      when (ds$request_unrecognized) do;
+         response = 'Unrecognized command';
+         had_errors = true;
+         end;
+      otherwise
+         call err$ (err$coding_et, 'Bad request status returned from device',
+                    0, 0,  0);
+      end;
+
+   call ioa$ ('%v "%v"%$', -1, response, user_msg.kw);
+   if length (user_msg.message) = 0 then
+      call ioa$ ('.%.', -1);
+   else
+      call ioa$ (' (%v).%.', -1, user_msg.message);
+
+end print_device_response;
+
+
+print_device_status : procedure;
+
+dcl
+   i                 bin,
+   state             char(25) var,
+   total_pages       bin,
+   um like ms$device_status_reply based (user_msgp);
+
+   /* set allocation variables */
+
+   alloc_status_lines = um.status_display_size.lines;
+   alloc_status_width = um.status_display_size.width;
+   alloc_load_names = um.number_loads_pending;
+
+   if length (um.system_id) = 0 then
+      call ioa$ ('%/Status of device %v:%.', -1, um.device_id);
+   else
+      call ioa$ ('%/Status of device %v on %v:%.', -1, um.device_id,
+                 um.system_id);
+   call ioa$ ('  Driver software is version %c%.', -1, um.version, 6);
+
+   if um.state ^= ds$printing_st then do;
+      select (um.state);
+         when (ds$ready_st) state = 'ready';
+         when (ds$idle_st) state = 'idle';
+         when (ds$timed_out_st) state = 'timed-out';
+         when (ds$shutdown_st) state = 'shutdown';
+         when (ds$paused_st) state = 'paused';
+         when (ds$logging_in_st) state = 'logging in';
+         otherwise
+            call err$ (err$coding_et, 'Unknown device state', 0, 0, 0);
+         end;
+      call ioa$ ('  Device is %v.%.', -1, state);
+      end;
+   else do;
+      call ioa$ ('  Job %d in queue %v is printing%.', -1,
+                 um.job_id, um.job_queue);
+      if length (um.job_name) ^= 0 then
+         call ioa$ ('  Job name is %v%.', -1, um.job_name);
+      if substr (um.job_pathname, 1, 1) = '<' then
+         call ioa$ ('  Pathname is %v%.', -1, um.job_pathname);
+      else
+         call ioa$ ('  Job queued with -OPEN%.', -1);
+      if um.copies_requested ^= 1 then
+         call ioa$ ('  This is copy %d of %d%.', -1, um.copy_printing,
+                    um.copies_requested);
+
+      call ioa$ ('  Page %d (disk record %d%$', -1,
+                 um.current_page, um.current_record);
+      if um.file_size ^= maxint then
+         call ioa$ (' of %d) is printing%.', -1, um.file_size);
+      else
+         call ioa$ (') is printing%.', -1);
+
+      if um.file_size ^= maxint & um.estimated_pages_left > 0 then do;
+         call ioa$ ('  Estimate %d page%$', -1, um.estimated_pages_left);
+         if um.estimated_pages_left ^= 1 then
+            call ioa$ ('s%$', -1);
+         total_pages = um.current_page + um.estimated_pages_left;
+         call ioa$ (' left in job (%d total)%.', -1, total_pages);
+         end;
+
+      if um.elapsed_print_time ^= 0 then do;
+         call ioa$ ('  Total elapsed print time is %d minute%$', -1,
+                    um.elapsed_print_time);
+         if um.elapsed_print_time ^= 1 then
+            call ioa$ ('s%.', -1);
+         else
+            call ioa$ ('%.', -1);
+         end;
+
+      if um.file_size ^= maxint & um.estimated_time_left ^= 0 then do;
+         call ioa$ ('  Estimate job will finish in %d minute%$', -1,
+                    um.estimated_time_left);
+         if um.estimated_time_left ^= 1 then
+            call ioa$ ('s%$', -1);
+         if um.pages_per_minute = 1 then
+            call ioa$ (' (at 1 page/min)%.', -1);
+         else
+            call ioa$ (' (at %d pages/min)%.', -1,
+                       um.pages_per_minute);
+         end;
+      end;
+
+   do i = 1 to um.lines;
+      if length (um.status_display(i)) ^= 0 then
+         call ioa$ ('  %v%.', -1, um.status_display(i));
+   end;
+
+   if um.reinit_pending | um.number_loads_pending ^= 0 then do;
+      call ioa$ ('%.', -1);
+      if reinit_pending then do;
+         call ioa$ ('  Device will reinitialize %$', -1);
+         if um.when_loads_pending = ds$do_at_eoj then
+            call ioa$ ('after the current job.%.', -1);
+         else if um.when_loads_pending = ds$do_when_idle then
+            call ioa$ ('when idle.%.', -1);
+         end;
+
+      if number_loads_pending ^= 0 then do;
+         call ioa$ ('  These keyword lists will be loaded %$', -1);
+         if um.when_loads_pending = ds$do_at_eoj then
+            call ioa$ ('after the current job:%.', -1);
+         else if um.when_loads_pending = ds$do_when_idle then
+            call ioa$ ('when idle:%.', -1);
+
+         do i = 1 to um.number_loads_pending;
+            call ioa$ ('    %v%.', -1, um.load_pathnames(i));
+            end;
+         end;
+      end;
+
+   select (um.action_after_eoj);
+      when (ds$no_action)
+         ;
+      when (ds$shutdown_action)
+         call ioa$ ('  Device will shutdown after the current job.%.', -1);
+      when (ds$pause_action)
+         call ioa$ ('  Device will pause after the current job.%.', -1);
+      otherwise
+         call err$ (err$coding_et, 'Bad eoj action.', 0, 0, 0);
+      end;
+
+   select (um.action_when_idle);
+      when (ds$no_action)
+         ;
+      when (ds$shutdown_action)
+         call ioa$ ('  Device will shutdown when idle.%.', -1);
+      when (ds$pause_action)
+         call ioa$ ('  Device will pause when idle.%.', -1);
+      otherwise
+         call err$ (err$coding_et, 'Bad action when idle.', 0, 0, 0);
+      end;
+
+end print_device_status;
+
+print_device_config: proc;
+
+dcl
+   um like ms$device_config_reply based (user_msgp);
+
+   /* set allocation variables */
+
+   alloc_kwl_size = addr(um.kwl_buf)->fb15 + 1;
+   if length (um.system_id) = 0 then
+      call ioa$ ('%/Configuration of device %v:%.', -1, um.device_id);
+   else
+      call ioa$ ('%/Configuration of device %v on %v:%.', -1, um.device_id,
+                 um.system_id);
+   call ioa$ ('  Driver software is version %c%.', -1, um.version, 6);
+
+   p_kwl = null;
+   call kwl$buf_to_kwl (addr(um.kwl_buf), p_kwl, expand_info, flags);
+   if p_kwl ^= null then do;
+      call kwl$kwl_to_text ('', p_kwl, 5);
+      call kwl$destroy_kwl (p_kwl);
+      end;
+   else
+      call ioa$ ('     (no keyword list)%.', -1);
+
+end print_device_config;
+
+%page;
+/* device_command.make_value_pathname, PrintMaster, Jeff Hostetler, April 14, 1984*/
+/* procedure to make the first value of the keyword given a complete pathname */
+/******************************************************************************/
+
+   make_value_pathname: proc (pkw);
+
+      dcl
+         pkw         ptr,
+
+         pv          ptr,
+         (code, u)   bin,
+         flags       like kwl$flags;
+
+      pv = pkw->kw_entry.pf_value;
+      if pv = null then
+         call err$ (err$user_et, 'Keyword "-' || pkw->kw_entry.kw
+                    || '" must have a value.', err$bad_value_ue, 0, 0);
+
+      /* We must examine the value given.  If it is a simple filename and
+         does not exist in the current directory, then we leave it alone
+         and let the device complete.  (This is for networked systems.
+         It forces the device to use the system directory on its system.)
+         If it does exist in the current directory or is a pathname
+         (possible relative) we must generate a complete pathname for
+         the device. */
+
+      if index (pv->value_entry.value, '>') = 0 then
+         if gp$file_exists (pv->value_entry.value) then
+            return;
+
+      call kwl$open_kwl (k$read+k$getu, pv->value_entry.value, u, flags);
+      call gpath$ (k$unit, u, addr(pv->value_entry.value)->bvs.chars, 128,
+                   addr(pv->value_entry.value)->bvs.len, code);
+      call gp$close (u);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'From GPATH$', code, 0, 0);
+
+      end make_value_pathname;
+
+%page;
+/* device_command.parse_cl, PrintMaster, Jeff Hostetler, February 17, 1984    */
+/* procedure to interpret the command line (see initial comment for usage).   */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys    by '000A'b4,   /* keep quotes, pl1, print*/
+         caller_name    by 'device_command',
+         pixel_size     by 28;        /* length both lines */
+
+      dcl
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         pic (2)        char(pixel_size) var static
+                           init ('entry; uncl; -on entry; -nw;',
+                                 '-start; -help; end');
+
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ ('');                 /* does not return */
+
+      if struc.help_given then
+         goto help_wanted;
+
+      if length (struc.system_name) = 0 then
+         struc.system_name = psv.my_system_id;
+
+      if length (struc.device_name) = 0 then
+         call error_ ('Missing argument; <device_name> must be given.');
+
+      if ^startup_given & length (dev_cl) = 0 then
+         call error_ ('No device command?');
+
+      end parse_cl;
+
+
+%page;
+/* device_command.error_, PrintMaster, Jeff Hostetler, February 17, 1984      */
+/* procedure to display user syntax error and call err$.                      */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg      char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call ioa$er ('Type DC -HELP or HELP DC for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* device_command.display_help,                                               */
+/* Spooler, Jeff Hostetler, March 27, 1984                                    */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage:  DC  device_name  options  device_keywords%.', -1);
+      call ioa$ ('   or:  DC -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('DEVICE_NAME -- must be a valid entry name; this name will be used in any future%.', -1);
+      call ioa$ ('                 commands to or requests from the device; all devices on a %.', -1);
+      call ioa$ ('                 system must have a unique name%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('OPTIONS must be blank or any combination of the following:%.', -1);
+      call ioa$ ('   -ON system_name  -- send command to device DEVICE_NAME on system SYSTEM_NAME%.', -1);
+      call ioa$ ('                         (If omitted, the device is assumed to be local)%.', -1);
+      call ioa$ ('   -NW              -- do not wait for a response from the device%.', -1);
+      call ioa$ ('   -START           -- start device DEVICE_NAME on system SYSTEM_NAME%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('DEVICE_KEYWORDS may be blank or a series of command keywords.  Command keywords%.', -1);
+      call ioa$ ('  may have either of the following forms:%.', -1);
+      call ioa$ ('   -keyword                     -- Simple command (ex: "-RESTART")%.', -1);
+      call ioa$ ('   -keyword value_1 ... value_N -- Command with value(s) (ex: "-BACKUP 5")%.', -1);
+      call ioa$ ('%.', -1);
+
+      end display_help;
+
+   end dc;

@@ -1,0 +1,659 @@
+/* MON$PROCESS_MESSAGE.SPL, PrintMaster, Jim Wilcoxson, January 1, 1984       */
+/* Handles incoming monitor/master messages.                                  */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$process_message : procedure (msgp, user_msgp);
+
+/*
+            when ('master')
+               if gbl.I_am_master then
+                  sent = comm$queue_cps_message (msgp, gbl.my_user_nr);
+               else do;
+                  msgp->msg.target_system = mon.master_system_id;
+                  msgp->msg.target_id = 'monitor';
+                  msgp->msg.target_user_nr = 0;
+                  goto start_xmit_over;
+                  end;
+*/
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>mon$change_device_kwl.ins.spl';
+%include '*>entry>mon$change_device_state.ins.spl';
+%include '*>entry>mon$create_device.ins.spl';
+%include '*>entry>mon$create_job.ins.spl';
+%include '*>entry>mon$destroy_device.ins.spl';
+%include '*>entry>mon$destroy_job.ins.spl';
+%include '*>entry>mon$find_device.ins.spl';
+%include '*>entry>mon$find_monitor.ins.spl';
+%include '*>entry>mon$init_disk_list.ins.spl';
+%include '*>entry>mon$master_check.ins.spl';
+%include '*>entry>mon$new_mon_disk_list.ins.spl';
+%include '*>entry>mon$queue_job.ins.spl';
+%include '*>entry>mon$resend_job.ins.spl';
+%include '*>entry>mon$scan_job_list.ins.spl';
+%include '*>entry>mon$schedule.ins.spl';
+%include '*>entry>mon$send_device_kwl.ins.spl';
+%include '*>entry>mon$send_disk_list.ins.spl';
+%include '*>entry>mon$send_to_master.ins.spl';
+%include '*>entry>mon$sys_list_mismatch.ins.spl';
+%include '*>entry>mon$update_disk_list.ins.spl';
+%list;
+
+dcl
+   msgp        ptr,                         /* pointer to message (in) */
+   user_msgp   ptr;                         /* pointer to user part (in) */
+
+dcl
+   found       bit,
+   kwlp        ptr,                         /* pointer to kwl */
+   ldev        bin,
+   jep         ptr,                         /* pointer to job entry */
+   expand_info like kwl$expand_info,
+   flags       like kwl$flags;
+
+   string(expand_info) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+
+   if gbl.trace_on then do;
+      call ioa$ ('%/TRACE: Message %d received from system %v, id %v, user %d:%.',
+                 -1, msgp->msg.msg_type, msgp->msg.sender_system,
+                 msgp->msg.sender_id, msgp->msg.sender_user_nr);
+      call ioa$ ('TRACE:   Message is for system %v, id %v, user %d%.', -1,
+                 msgp->msg.target_system, msgp->msg.target_id,
+                 msgp->msg.target_user_nr);
+      call ioa$ ('TRACE:   msg length is %d (%d) bytes%.', -1,
+                 msgp->msg.msg_length, msgp->msg.buffer_length);
+      end;
+
+   select (msgp->msg.msg_type);
+
+      when (mt$disk_list)
+         call disk_list_msg;
+
+      when (mt$job)
+         call job_kwl_msg;
+
+      when (mt$device_kwl)
+         call device_kwl_msg;
+
+      when (mt$device_state)
+         call device_state_msg;
+
+      when (mt$delete_job)
+         call delete_job_msg;
+
+      when (mt$resend_job)
+         call resend_job_msg;
+
+      when (mt$master_check)
+         call master_check_msg;
+
+      when (mt$takeover)
+         call takeover_msg;
+
+      otherwise
+         call err$ (err$log_event_et, 'Strange message type ('||
+                    msgp->msg.msg_type||') ignored.', 0, 0, 0);
+      end;  /* select */
+
+
+%page;
+
+/* DISK_LIST_MSG: reveived by master; user_msgp points to new disk list */
+
+disk_list_msg : procedure;
+
+dcl
+   monp        ptr;                         /* pointer to monitor block */
+
+   if gbl.I_am_master then do;
+      monp = mon$find_monitor (msgp->msg.sender_system);
+      call mon$new_mon_disk_list (user_msgp, monp);
+      end;
+
+end disk_list_msg;
+
+
+
+/* JOB_KWL_MSG: received by monitors and masters; user_msgp points to
+                packed job keyword list; if msg came from a monitor
+                (I am master), job can't be open */
+
+job_kwl_msg : procedure;
+
+   kwlp = null;
+   call kwl$buf_to_kwl (user_msgp, kwlp, expand_info, flags);
+   jep = mon$create_job (kwlp);             /* change to job entry */
+   if msgp->msg.sender_id = 'monitor' then
+      jep->je.is_open = false;              /* monitors never send open jobs */
+   call mon$queue_job (jep);
+
+   if ^jep->je.is_open then                 /* job MAY be ready */
+      if gbl.I_am_master then
+         call mon$schedule_job (jep);       /* don't need to do scan */
+      else
+         call mon$scan_job_list;            /* scan and MAYBE send to master */
+
+end job_kwl_msg;
+
+
+
+
+/* DEVICE_KWL_MSG: received by monitors and masters; user_msgp points to
+                   the device's new keyword list */
+
+device_kwl_msg : procedure;
+
+dcl
+   devp        ptr;                         /* pointer to device */
+
+dcl
+   user_msg like ms$device_kwl based (user_msgp);
+
+   kwlp = null;
+   call kwl$buf_to_kwl (addr(user_msg.kwl_buf), kwlp, expand_info, flags);
+   if ^mon$find_device (user_msg.device_id, msgp->msg.sender_system, devp) then
+      devp = mon$create_device (user_msg.device_id, msgp->msg.sender_system);
+   call mon$change_device_kwl (devp, kwlp); /* does a schedule */
+
+end device_kwl_msg;
+
+
+
+/* DEVICE_STATE_MSG: received by masters and monitors; user message
+                     has device name, current job, job completion code
+                     and current device status */
+
+device_state_msg : procedure;
+
+dcl
+   prev           ptr,
+   p              ptr,
+   devp           ptr,
+   jep            ptr,
+   dt             bin(31),
+   reschedule_job bit,
+   t0             bin(31);
+
+dcl
+   mt             bin,
+   user_msg       like ms$device_state based (user_msgp);
+
+
+   reschedule_job = false;
+
+   if ^mon$find_device (user_msg.device_id, msgp->msg.sender_system, devp) then
+      if user_msg.state = ds$shutdown_st
+       & user_msg.job_completion_code = ds$none_cc then
+         return;                            /* you're shutdown; so what */
+      else
+         devp = mon$create_device (user_msg.device_id, msgp->msg.sender_system);
+
+   if msgp->msg.sender_id = devp->device_info.device_id
+    & msgp->msg.sender_system = devp->device_info.system_id then
+      if devp->device_info.user_nr ^= msgp->msg.sender_user_nr then do;
+         if devp->device_info.user_nr ^= 0 then
+            call err$ (err$log_event_et, 'Changing device user number.', 0, 0, 0);
+         devp->device_info.user_nr = msgp->msg.sender_user_nr;
+         end;
+
+   if gbl.trace_on then do;
+      t0 = gp$ticks();
+      call ioa$ ('%/TRACE: Device %v state received at %:2d:%.', -1,
+                 user_msg.device_id, t0);
+      call ioa$ ('TRACE:    STATE = %d%.', -1, user_msg.state);
+      if user_msg.current_job_uid = '' then
+         call ioa$ ('TRACE:    UID = null%.', -1);
+      else
+         call ioa$ ('TRACE:    UID = non-null%.', -1);
+      call ioa$ ('TRACE:    CC = %d%.', -1, user_msg.job_completion_code);
+      call ioa$ ('TRACE:    TRANID = %d%.', -1, user_msg.job_transaction_id);
+      end;
+
+   /* CASE 1:
+              inconsistent status codes - device's status codes don't
+              make sense, or don't match what the master thinks they
+              should be
+      ACTION:
+              this is a coding error in the device, and I log it */
+
+   if user_msg.job_completion_code ^= ds$none_cc & user_msg.current_job_uid = ''
+      then do;
+inconsistent:
+      call err$ (err$log_event_et, 'Inconsistent device state from device "'
+                 ||user_msg.device_id||'".', 0, 0, 0);
+      return;
+      end;
+
+   /* CASE 2: I am only a monitor - the device's status is copied without
+              any error checking */
+
+   if ^gbl.I_am_master then
+      goto update_status;
+
+   /* CASE 3: a device status came in with no completion code
+      ACTION:
+              update device status only */
+
+   if user_msg.job_completion_code = ds$none_cc then
+      goto update_status;
+
+   /* CASE 5: uid and completion code given
+      ACTION:
+              search for the job on the job list
+              if found, update copies left depending on the job completion code:
+                   a) completed, - decrement number of copies left to print and
+                      drop_copy    set device's current job to null
+                   b) resend - resend job
+                   c) aborted, suspended - reschedule job
+                   d) dropped - delete job
+                   e) timed-out - reschedule the job in a few minutes
+               if job not found on job list, only update the device status
+               if job transaction id on message is less than the current id,
+                  the number of copies left is not changed; if greater or equal,
+                  number of copies is decremented and new transaction is
+                  is computed
+   */
+
+   /* find this job on the job list */
+
+   prev = null;
+   do jep = mon.job_bol repeat jep->je.next while (jep ^= null);
+      if jep->je.uid = user_msg.current_job_uid then
+         leave;
+      else
+         prev = jep;
+      end;
+
+   if jep = null then
+      goto update_status;
+
+   /* job was found, update copies left and device's current job
+      if the transaction number on the message is greater than mine,
+      go ahead and subtract 1; this may cause extra copies to be scheduled,
+      but that won't matter since all devices will report failure.  This
+      works ONLY under the assumption that CHANGE_JOB cannot change
+      the number of copies.  This will all be changed later so that devices
+      send the number of copies left with the new transaction id rather
+      than sending the old transaction id and the master doing a subtract */
+
+   select (user_msg.job_completion_code);
+      when (ds$completed_cc, ds$drop_copy_cc)
+
+         /* update copies left to print.  If zero, delete the job.  If
+            not zero, requeue the job, since changing the number of copies
+            left to print will change the job size, and therefore its order
+            in the job list.  If the device's information is not current,
+            don't decrement copies left */
+
+         if user_msg.job_transaction_id >= jep->je.transaction_id then do;
+            if jep->je.copies_left > 0 then /* deleting a job sets this to 0 */
+               jep->je.copies_left = jep->je.copies_left - 1;
+            if jep->je.copies_left = 0 then
+               call delete;
+            else do;
+               reschedule_job = true;
+               jep->je.transaction_id = user_msg.job_transaction_id + 1;
+
+               /* requeue job (queue order may change)
+                  don't do this for priority zero jobs! */
+
+               if jep->je.priority ^= 0 then
+                  call mon$queue_job (jep);
+               end;
+            end;
+         else
+            reschedule_job = true;          /* already have correct # copies */
+      when (ds$resend_job_cc)
+         call resend;
+      when (ds$timed_out_cc) do;            /* defer job for a few minutes */
+         dt = date$();
+         if jep->je.deferred_date < dt+timeout_resend_interval then
+            jep->je.deferred_date = dt+timeout_resend_interval;
+         call mon$queue_job (jep);
+         end;
+      when (ds$drop_job_cc)
+         call delete;
+      when (ds$aborted_cc, ds$suspended_cc)
+         reschedule_job = true;
+      otherwise
+         goto inconsistent;
+      end;
+
+update_status:
+
+   /* update device's state, and reschedule it */
+
+   call mon$change_device_state (devp, user_msg.current_job_uid,
+                                 user_msg.job_completion_code,
+                                 user_msg.job_transaction_id, user_msg.state);
+
+   /* if a job was aborted, suspended, completed (with more copies left),
+      reschedule it */
+
+   if reschedule_job then
+      if jep = null then
+         call err$ (err$log_event_et, 'Attempt to reschedule deleted job', 0, 0, 0);
+      else
+         call mon$schedule_job (jep);
+   return;
+
+
+delete : procedure;
+
+dcl
+   d     ptr;
+
+   /* remove job from job list */
+
+   if prev = null then
+      mon.job_bol = jep->je.next;
+   else
+      prev->je.next = jep->je.next;
+   call mon$destroy_job (jep);
+
+end delete;
+
+
+resend : procedure;
+
+dcl
+   prev     ptr,
+   jep      ptr,
+   monp     ptr,
+   ldev     bin,
+   uid      char(8);
+
+   /* remove the job from the job list before calling for resend, since
+      resend would destroy the job on the job list */
+
+   prev = null;
+   do jep = mon.job_bol repeat jep->je.next while (jep ^= null);
+      if jep->je.uid = user_msg.current_job_uid then
+         leave;
+      else
+         prev = jep;
+      end;
+   if jep = null then
+      return;
+
+   if prev = null then                      /* remove job from job list */
+      mon.job_bol = jep->je.next;
+   else
+      prev->je.next = jep->je.next;
+
+   /* send resend message to monitor owning job */
+
+   do monp = mon.monitor_bol repeat monp->monitor_info.next while (monp ^= null);
+      do ldev = 0 to max_ldevs;
+         if monp->monitor_info.disks(ldev).disk_name = jep->je.queue_partition
+          & length (monp->monitor_info.disks(ldev).system_name) = 0 then
+            begin;
+            dcl
+               user_msg like ms$resend_job;
+
+               user_msg.partition = jep->je.queue_partition;
+               user_msg.job_nr = jep->je.job_id;
+               user_msg.uid = jep->je.uid;
+               if comm$send (mt$resend_job, monp->monitor_info.system_id,
+                               'monitor', addr(user_msg), ml$resend_job) then ;
+               goto destroy_job;
+            end;
+         end;  /* do ldev */
+   end;  /* do monp */
+
+   /* not found on remote, maybe it's local */
+
+   do ldev = 0 to max_ldevs;                /* search my local partitions */
+      if mon.my_disks(ldev).disk_name = jep->je.queue_partition
+       & length (mon.my_disks(ldev).system_name) = 0 then do;
+         call mon$resend_job (jep->je.queue_partition, jep->je.job_id,
+                              jep->je.uid);
+         goto destroy_job;
+         end;
+      end;
+
+   call err$ (err$log_event_et, 'Can''t find job to resend.', 0, 0, 0);
+
+destroy_job:
+   call mon$destroy_job (jep);
+
+end resend;
+
+end device_state_msg;
+
+
+
+
+/* DELETE_JOB_MSG: received by masters and monitors; user_msgp points
+                   to unique job id */
+
+delete_job_msg : procedure;
+
+dcl
+   devp        ptr,
+   prev        ptr,
+   jep         ptr,
+
+   user_msg like ms$delete_job based (user_msgp);
+
+   /* if I am master, tell any devices printing this job to stop */
+
+   if gbl.I_am_master then
+      do devp = mon.device_bol repeat devp->device_info.next while (devp ^= null);
+         if devp->device_info.device_state = ds$printing_st
+          & devp->device_info.current_job_uid = user_msg.uid then
+            if comm$send (mt$delete_job, devp->device_info.system_id,
+                          devp->device_info.device_id, addr(user_msg.uid),
+                          ml$delete_job) then ;
+         end;
+
+   else
+
+      /* tell my master to delete the job unless he's the one that told
+         me to delete it; this may cause the master to delete a job that
+         hasn't been sent yet, but that's handled below */
+
+      if msgp->msg.sender_system ^= mon.master_system_id
+       | msgp->msg.sender_id ^= 'monitor' then  /* forward to master */
+         if mon$send_to_master (mt$delete_job, user_msgp, ml$delete_job) then ;
+
+   prev = null;
+   do jep = mon.job_bol repeat jep->je.next while (jep ^= null);
+      if jep->je.uid = user_msg.uid then
+         leave;
+      else
+         prev = jep;
+      end;
+
+   if jep = null then                       /* monitor may not have the job */
+      return;
+
+   if prev = null then
+      mon.job_bol = jep->je.next;
+   else
+      prev->je.next = jep->je.next;
+   call mon$destroy_job (jep);
+
+end delete_job_msg;
+
+
+
+
+/* RESEND_JOB_MSG: received by monitors; user_msgp points to job's partition,
+                   entry #, and uid structure */
+
+resend_job_msg : procedure;
+
+dcl
+   1  user_msg       like ms$resend_job based (user_msgp);
+
+   call mon$resend_job (user_msg.partition, user_msg.job_nr, user_msg.uid);
+
+end resend_job_msg;
+
+
+
+
+
+/* MASTER_CHECK_MSG:
+
+      compare system lists, and find caller's position in list.  If the lists
+      don't match, one of us has to logout.  If caller has been up 10 minutes
+      (timer_fudge_factor_mins) longer than me, I logout.  Otherwise, we
+      send the check message back to him, and when he applies the test, he
+      will logout.  The fudge factor is necessary to prevent each side from
+      thinking it has been up longer; otherwise, these checks might oscillate
+      from one side to the other continuously.
+
+      If the lists match and I am currently a master, then we compare the
+      positions of this node and the calling node.  If this node is higher
+      in the list (i.e., index is lower), then we takeover the caller.  If
+      this node is lower in the list, we send a check message to the caller,
+      which causes him to apply the test and send us a takeover.
+
+      Note that if the system lists match, but I am not a master, I ignore
+      the check message.  Also, remember that only masters send out master
+      check and takeover messages, not monitors */
+
+
+master_check_msg : procedure;
+
+dcl
+   my_time_up                          bin,
+   my_user_msgp                        ptr,
+   your_system_id                      char(32) var,
+   your_system_index                   bin,
+   timer_fudge_factor_ticks            bin(31),
+   the_same                            bit,
+   i                                   bin,
+   user_msg like ms$master_check based (user_msgp);
+
+
+   your_system_id = msgp->msg.sender_system;
+   alloc_system_entries = user_msg.system_list_size;
+
+   the_same = true;
+   your_system_index = 0;
+   do i = 1 to user_msg.system_list_size while (the_same);
+      if user_msg.system_list(i) ^= mon.system_list(i) then
+         the_same = false;
+      if mon.system_list(i) = your_system_id then
+         your_system_index = i;
+      end;
+
+   if the_same then do;
+      if gbl.I_am_master & your_system_index > mon.my_system_index then
+         if comm$reply (msgp, mt$takeover, null, 0) then ;
+      end;
+   else do;
+      my_time_up = gp$ticks() - gbl.my_login_time;
+      timer_fudge_factor_ticks = timer_fudge_factor_mins*60*psv.ticks_per_sec;
+      call err$ (err$log_event_et, 'System list mismatch', 0, 0, 0);
+      call ioa$ ('%21x%v has been up %:2d ticks%.', -1, your_system_id,
+                 user_msgp->ms$master_check.time_logged_in);
+      call ioa$ ('%21xI have been up %:2d ticks%.', -1, my_time_up);
+      if my_time_up > user_msgp->ms$master_check.time_logged_in
+                                          + timer_fudge_factor_ticks then
+         if mon$master_check (your_system_id) then ;
+         else ;
+      else
+
+         /* this is a fatal error; other end has been up longer than me;
+            I will log out */
+
+         call mon$sys_list_mismatch (your_system_id,
+                               user_msgp->ms$master_check.system_list,
+                               user_msgp->ms$master_check.system_list_size);
+      end;
+
+end master_check_msg;
+
+
+/* TAKEOVER_MSG: a higher priority master is taking over...change to
+                 a monitor and send him all info my devices and jobs.
+                 There is no user message for takeovers */
+
+takeover_msg : procedure;
+
+dcl
+   I_was_master   bit,
+   jep            ptr,
+   nextp          ptr,
+   monp           ptr,
+   devp           ptr;
+
+   I_was_master = gbl.I_am_master;
+   gbl.I_am_master = false;
+   gbl.I_am_monitor = true;
+   mon.master_system_id = msgp->msg.sender_system;
+   if length (mon.master_system_id) = 0 then
+      call err$ (err$coding_et, 'Master sent null system name.', 0, 0, 0);
+
+   /* clear all circuits to monitors other than the new master */
+
+   do monp = mon.monitor_bol repeat monp->monitor_info.next while (monp ^= null);
+      if monp->monitor_info.system_id ^= mon.master_system_id then
+         call comm$disconnect (monp->monitor_info.system_id);
+      end;
+
+   /* destroy all devices that are not local; send local device's state
+      and keyword list to new master */
+
+   do devp = mon.device_bol repeat nextp while (devp ^= null);
+      nextp = devp->device_info.next;
+      if devp->device_info.system_id ^= psv.my_system_id then
+         call mon$destroy_device (devp);
+      else do;
+         call mon$send_device_kwl (devp);
+         call mon$change_device_state (devp, devp->device_info.current_job_uid,
+                                       ds$none_cc, 0,
+                                       devp->device_info.device_state);
+         end;
+      end;
+
+   /* if I was a master, send jobs on my system without re-reading
+      the queues, but delete all jobs on remote machines.  If I was
+      only a monitor, I don't know about all jobs in my queues, and
+      the queues have to be re-read */
+
+   do jep = mon.job_bol repeat nextp while (jep ^= null);
+      nextp = jep->je.next;
+      found = false;
+      if I_was_master then
+         do ldev = 0 to max_ldevs while (^found);
+            if mon.my_disks(ldev).disk_name = jep->je.queue_partition
+             & length (mon.my_disks(ldev).system_name) = 0 then
+               found = true;
+            end;  /* do ldev */
+      if ^found then                        /* remote job */
+         call mon$destroy_job (jep);
+      end;  /* do jep */
+
+   if I_was_master then do;
+      call mon$send_disk_list;
+      call mon$scan_job_list;
+      end;
+   else do;
+      call mon$init_disk_list;              /* re-initialize the disk list */
+      call mon$update_disk_list;            /* update it (and send to master) */
+
+      /* we could call MON$SCAN_JOB_LIST here to send jobs to the new
+         master, but MON$UPDATE_DISK_LIST has already called it;  calling
+         again would cause jobs to be sent twice */
+
+      end;
+
+end takeover_msg;
+
+end mon$process_message;

@@ -1,0 +1,119 @@
+/* L3$DP.SPL, PrintMaster, Jeff Hostetler, March 6, 1984                      */
+/* Device Driver for the Data Products printer.                               */
+/* NOTE:  This version supports EVFU form length load for the parallel        */
+/*        interface.                                                          */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l3$dp: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>t$lmpc.ins.spl';
+%list;
+
+   dcl
+      key         bin,
+      data_line   char(*),                  /* only valid when key = print */
+      number      bin,                      /* skip count or channel */
+
+      status_vector     (3) bit(16) aligned,
+
+      has_evfu          bit static,
+      held_skips        bin static init(0);
+
+
+   select (key);
+      when (l2$device_init)
+         return (device_init());
+      when (l2$job_init)
+         return (job_init());
+      when (l2$print_line, l2$skip_channel, l2$job_terminate) do;
+         call print_held_skips;
+         return (l2$func_not_handled_rc);
+         end;
+      when (l2$skip_line) do;
+         held_skips = held_skips + number;
+         return (l2$func_handled_rc);
+         end;
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of Data Products Device Driver. */
+
+%page;
+
+
+device_init: proc returns (bin);
+
+dcl
+   func  bin,
+   kwp   ptr;
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = ' ';
+   l23.scan_key = l2$trim_key;
+   l23.max_channel_skip = 12;
+   has_evfu = kwl$find_kw ('EVFU', ds.p_device_kwl, kwp);
+
+   /* for parallel printers, optimize line skipping and download EVFU */
+
+   if l2.device_type = l2$parallel_dt then do;
+      do func = l2$skip_channel, l2$skip_line, l2$print_line,
+                l2$job_init, l2$job_terminate;
+         l23.func_implemented (func) = true;
+         end;
+      end;
+
+   return (l2$func_handled_rc);
+
+end device_init;
+
+%page;
+
+
+print_held_skips: proc;
+
+  dcl
+     nr        bin;
+
+   do while (held_skips > 0);
+      nr = min (held_skips, 15);         /* can't skip > 15 lines */
+      call t$lmpc (ds.device_unit, null, 0, t$lmpc$skip_n_lines + nr,
+                   status_vector);
+      held_skips = held_skips - nr;
+      end;
+
+end print_held_skips;
+
+%page;
+
+
+job_init: proc returns (bin);
+
+dcl
+   i              bin;
+
+   if has_evfu & l2.device_type = l2$parallel_dt then do;
+
+      /* load EVFU (currently only channel 1 is setup) */
+
+      call t$lmpc (ds.device_unit, null, 0, t$lmpc$start_load, status_vector);
+      call t$lmpc (ds.device_unit, null, 0, 1, status_vector);
+      do i = 1 to l23.lines_per_page*2 - 1;
+         call t$lmpc (ds.device_unit, null, 0, 0, status_vector);
+         end;
+      call t$lmpc (ds.device_unit, null, 0, t$lmpc$end_load, status_vector);
+      end;
+   return (l2$func_handled_rc);
+
+end job_init;
+
+end l3$dp;

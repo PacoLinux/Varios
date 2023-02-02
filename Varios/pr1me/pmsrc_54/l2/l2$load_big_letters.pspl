@@ -1,0 +1,148 @@
+/* L2$LOAD_BIG_LETTERS.SPL, PrintMaster, Jim Wilcoxson, March 17, 1984        */
+/* Initializes big letter array from a data file.                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$load_big_letters : procedure (pathname);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>l2.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   pathname       char(*) var;              /* letter filename (in) */
+
+dcl
+   fp             ptr,
+   i              bin,
+   ch             char,
+   lc             bin,
+   1  letline based,
+      2  next     ptr,
+      2  line     char(l2$max_letter_width) var,
+   letter_ix      bin,
+   line           char(l2$max_letter_width) var,
+   maxwidth       bin,
+   more           bit,
+   plp            ptr,
+   pos            bin(31),
+   unit           bin;                      /* file unit for letter file */
+
+
+   do i = rank(' ') to rank('');
+      l2.big_letters(i).maxwidth = 0;
+      l2.big_letters(i).firstline = null;
+      end;
+
+   unit = 0;
+   fp = null;
+   on condition (cleanup$)
+      begin;
+      call bio$close_file (fp);
+      end;
+   call gp$open_path (k$read+k$getu, pathname, unit);
+   fp = bio$init_file (unit, '0'b);
+
+   lc = 0;
+   do while (bio$read_line (fp, line, pos));
+
+      lc = lc + 1;
+      if length(line) > 0 then do;
+         if length(line) ^= 9 then
+            goto bad_line;
+         if substr(line,1,7) ^= 'begin "' | substr(line,9,1) ^= '"' then
+            goto bad_line;
+
+         ch = substr(line,8,1);
+         letter_ix = rank(ch);
+         if letter_ix < rank(' ') then
+            goto bad_line;
+         if l2.big_letters(letter_ix).firstline ^= null then
+            goto duplicate_letter;
+
+         maxwidth = 0;
+         more = true;
+         plp = null;
+         do while (more);
+
+            if ^bio$read_line (fp, line, pos) then
+               goto bad_end;             /* eof before end "x" */
+            lc = lc + 1;
+            if length(line) = 7 then
+               if substr(line,1,5) = 'end "' & substr(line,7,1) = '"' then
+                  if substr(line,6,1)=ch then
+                     more = false;
+                  else
+                     goto bad_end;
+
+            if more then
+               call create_line;
+            else
+               call finish_letter;
+            end;  /* do while more */
+         end;  /* length(line) > 0 */
+      end;  /* do while readline */
+
+   call bio$close_file (fp);
+   return;
+
+
+bad_end:
+   call err$ (err$user_et+err$warning_et, 'Mismatched begin/end pair.', 0, 0, 0);
+   goto bad_line;
+
+duplicate_letter:
+   call err$ (err$user_et+err$warning_et, 'Character "'||ch||
+              '" specified more than once in letter file.', 0, 0, 0);
+   goto bad_line;
+
+bad_line:
+   call err$ (err$coding_et,
+      'Line '||lc||' in letter file '||pathname||' is bad',
+      0, 0, 0);
+
+
+
+create_line : procedure;
+
+dcl
+   lp    ptr,
+   i     bin;
+
+   i = index(line, '|');                    /* for extra trailing blanks */
+   if i ^= 0 then
+      line = substr(line, 1, i-1);
+   if length(line) > maxwidth then
+      maxwidth = length(line);
+   allocate letline set(lp);
+   if plp = null then
+      l2.big_letters(letter_ix).firstline = lp;
+   else
+      plp->letline.next = lp;
+
+   lp->letline.next = null;
+   lp->letline.line = line;
+   plp = lp;
+
+end create_line;
+
+finish_letter : procedure;
+
+dcl
+   p        ptr;
+
+   l2.big_letters(letter_ix).maxwidth = maxwidth;
+   do p = l2.big_letters(letter_ix).firstline repeat p->letline.next while (p ^= null);
+      do while (length(p->letline.line) < maxwidth);
+         p->letline.line = p->letline.line || ' ';
+         end;
+      end;
+
+end finish_letter;
+
+end l2$load_big_letters;

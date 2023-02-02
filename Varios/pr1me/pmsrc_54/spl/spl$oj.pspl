@@ -1,0 +1,143 @@
+/* SPL$OJ.SPL, PrintMaster, Jeff Hostetler, November 17, 1983                 */
+/* User callable procedure to open a spool file.                              */
+/* NOTE:  This procedure must catch all errors and return {true | false}.     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spl$oj: proc (keys, pj_unit, kw_cl, partition_given, p_job_info)
+        returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      k$getu_bit  by 2;                     /* :40000 */
+
+   dcl
+      keys        bin,                      /* Only k$getu will be looked at */
+      pj_unit     bin,                      /* Unit pj will be opened on. */
+                                            /* (in/out) */
+      kw_cl       char(*) var,              /* Note:  This only contains the */
+                                            /* "<kw>" portion of the command */
+                                            /* line. (in) */
+      partition_given char(*) var,          /* (in) */
+      p_job_info  ptr,                      /* points to output struct (in) */
+
+      we_did_initialization   bit,
+      get_unit                bit,
+      in_updt_queue           bit,
+      we_can_close_pj         bit,
+      p_buf       ptr,
+      p_kwl       ptr,
+      p_kw        ptr,
+      open_unit   bin,
+      nr_copies   bin,
+      pos         bin(31),
+      code        bin,
+      bit16       bit(16) based,
+      system_job_is_on  char(32) var,
+      kw_e_unit   bin;
+
+%page;
+   kw_e_unit = 0;
+   get_unit = substr(addr(keys)->bit16, k$getu_bit, 1);
+   if get_unit then
+      pj_unit = 0;
+   we_can_close_pj = false;
+   p_kwl = null;
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then do;
+      on condition (ANY$)
+         call gp$any;
+      on condition (err$condition_before_msg)
+         goto abnormal_return;
+      end;
+
+   on condition (CLEANUP$)
+      call cleanup;
+
+%page;
+   if p_job_info->spl$info.version ^= spl$info_version then
+      call err$ (err$user_et, 'Version mismatch.', err$version_mismatch_ue, 0, 0);
+
+   /* initialize output structure */
+
+   p_job_info->spl$info.job_id = -1;
+   p_job_info->spl$info.job_name = '';
+   p_job_info->spl$info.job_system = '';
+   p_job_info->spl$info.pathname = '';
+   p_job_info->spl$info.file_size = maxint;
+   p_job_info->spl$info.q_partition = trim(partition_given, '11'b);
+   p_job_info->spl$info.q_system = '';      /* NOT FILLED IN YET */
+
+   /* If they pass in a unit to use, check that it is not already open. */
+
+   if ^get_unit then do;
+      call prwf$$ (k$rpos, pj_unit, null, 0, pos, 0, code);
+      if code ^= e$unop then do;
+         if code = 0 then
+            code = e$uius;
+         call err$ (err$primos_et, 'Unit requested already open', code, 0, 0);
+         end;
+      else do;                              /* reserve file unit */
+         we_can_close_pj = true;            /* since PJ_UNIT is */
+                                            /* zero or we opened it */
+         call gp$open_path (k$read, kwl$library_directory, pj_unit);
+         end;
+      end;
+   else
+      we_can_close_pj = true;
+
+   kw_cl = kw_cl || ' -' || kw$copyfile || ' -' || kw$opened;
+   call sq$set_up_kwl ('', '', '** not set **', '** not set **', kw_cl,
+                       p_kwl, nr_copies, p_job_info->spl$info.job_name);
+
+   in_updt_queue = kwl$find_kw (kw$inuse_ok, p_kwl, p_kw);
+   call sq$grab_a_new_job (p_kwl, nr_copies, true, in_updt_queue, get_unit,
+                           p_job_info->spl$info.job_id, kw_e_unit,
+                           p_job_info->spl$info.q_partition, pj_unit);
+   system_job_is_on = gp$system_name (kw_e_unit);
+   call gp$close (kw_e_unit);
+   call sq$part_2 (p_kwl, p_job_info->spl$info.job_id,
+                   p_job_info->spl$info.q_partition,
+                   system_job_is_on, nr_copies, 1);
+
+   call kwl$destroy_kwl (p_kwl);
+
+   if we_did_initialization then
+      call gp$terminate;
+   return (true);
+
+
+abnormal_return:
+
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+   return (false);                          /* failure */
+
+
+
+
+   cleanup: procedure;
+
+      call gp$close (kw_e_unit);
+      if we_can_close_pj then
+         if get_unit then call gp$close (pj_unit); /* and set var to zero */
+                     else call gp$close ((pj_unit)); /* don't change user's value */
+      p_job_info->spl$info.job_id = -1;
+      call kwl$destroy_kwl (p_kwl);
+      return;
+      end cleanup;
+
+   end spl$oj;
+

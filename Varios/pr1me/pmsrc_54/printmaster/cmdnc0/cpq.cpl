@@ -1,0 +1,132 @@
+/* CPQ.CPL, PrintMaster, Jim Wilcoxson, June 1, 1984                          */
+/* Creates a new PrintMaster print queue.                                     */
+/*                                                                            */
+/* Usage:  CPQ [partition_name]                                               */
+/*    or:  CPQ -HELP                                                          */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+&args queue: entry; ~
+      help_sw:  -HELP
+
+&s rev := 5.4
+type '[Create Print Queue '%rev%']'
+type 'Copyright (C) 1984-1988 Merit Software, Inc.'
+type
+
+&if ^ [null %help_sw%] &then &do
+   type 'Usage:  CPQ [partition]'
+   type '   or:  CPQ -HELP'
+   type
+   type 'PARTITION is the name of the partition where the print queue is to be created.'
+   type 'User must have (ALL) access to the MFD of the partition.'
+   type
+   &return
+   &end
+
+&s pmpq := PRINTMASTER_QUEUE*
+&s prog := PRINTMASTER*>PROGRAMS
+
+&s current_dir := [dir [pathname X]]
+&s queue_sw := ^ [null %queue%]       /* true if queue was used on command line
+
+&call get_queue
+&if [null %x%] &then &return
+
+&if %x% = %queue% &then &do
+   type Creating print queue on %queue%.
+   type
+   &end
+&s queue := %x%
+
+&do &while [length %queue%] > 0
+
+   ATTACH <%queue%>MFD
+
+   &if [exists %pmpq%] &then ~
+      &if [query 'Print queue already exists, delete it (no)' FALSE] &then &do
+         &severity &error &ignore
+         SAC %pmpq% $REST:ALL -NQ
+         &if %severity$% ^= 0 &then &goto get_next_partition
+         CNAME %pmpq% %pmpq%.DELETE
+         &if %severity$% ^= 0 &then &do
+            SAC %pmpq% $REST:URW .PRINTMASTER_SYSTEM:ALL -NQ
+            &goto get_next_partition
+            &end
+         DELETE %pmpq%.DELETE -NQ -FORCE -NVFY
+         &if %severity$% ^= 0 &then TYPE Please delete <%queue%>%pmpq%.DELETE
+         &severity &error &fail
+         &end
+      &else &goto get_next_partition
+
+   &if [exists %pmpq%.COPY] &then DELETE %pmpq%.COPY -NQ -NVFY -FORCE
+
+   &severity &error &ignore
+   CREATE %pmpq%.COPY
+   &if %severity$% ^= 0 &then &goto get_next_partition
+   &severity &error &fail
+
+   ATTACH *>%pmpq%.COPY
+
+   OPEN KWL.QUEUE 1 4002
+   CLOSE 1
+   OPEN PAGE_CONTROL.QUEUE 1 4002
+   CLOSE 1
+   OPEN PJ_EXCL.QUEUE 1 4002
+   CLOSE 1
+   OPEN PJ_UPDT.QUEUE 1 4002
+   CLOSE 1
+
+   RWLOCK ^PJ_UPDT.QUEUE EXCL
+   RWLOCK PJ_UPDT.QUEUE UPDT
+
+   &severity &error &ignore
+   SAC @@ $REST:DRW
+   &severity
+
+   ATTACH <%queue%>MFD
+   CNAME *>%pmpq%.COPY %pmpq%
+   &severity &error &ignore
+   SAC %pmpq% $REST:U .PRINTMASTER_SYSTEM:ALL -NQ
+   &severity
+   TYPE PrintMaster print queue <%queue%>%pmpq% created.
+
+&label get_next_partition
+
+   ATTACH %current_dir%
+   type
+   &severity &error &fail
+   &s queue := ''
+   &if ^ %queue_sw% &then &do
+      &call get_queue
+      &s queue := %x%
+      &end
+   &end
+
+ATTACH %current_dir%
+&return
+
+&routine get_queue
+
+&s x := [r %prog%>GET_FILENAME -INITIAL %queue% ~
+                    -PROMPT 'Partition name of PrintMaster print queue (blank to stop)' ~
+                    -MIN 0]
+&do &while ^ [null %x%]
+   &severity &error &ignore
+   R %prog%>CPL$ATTACH [quote <%x%>MFD]
+   &severity &error &fail
+   &if %severity$% ^= 0 &then &do
+      &if %queue_sw% &then ~
+          &stop 1 &message Partition %x% does not exist.
+      &else ~
+          type Partition %x% does not exist, reenter
+      &s queue := ''
+      &s x := [r %prog%>GET_FILENAME -INITIAL %queue% ~
+                          -PROMPT 'Partition name of PrintMaster print queue (blank to stop)' ~
+                          -MIN 0]
+      &end
+   &else ~
+      &return
+   &end
+&return

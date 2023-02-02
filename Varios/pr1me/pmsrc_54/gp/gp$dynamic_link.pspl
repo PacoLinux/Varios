@@ -1,0 +1,91 @@
+/* GP$DYNAMIC_LINK.SPL, PrintMaster, Jim Wilcoxson, November 27, 1984         */
+/* Procedure to snap a dynamic link.                                          */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+gp$dynamic_link : procedure (entry_name, e) returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%list;
+
+dcl
+   entry_name        char(*) var,
+   e                 entry variable;
+
+dcl
+   access_violation$ condition,
+   linkage_fault$    condition,
+   1 ev defined e,
+      2  ecbp,                              /* pointer to ECB */
+         3  fault    bit,
+         3  ring     bit(2),
+         3  ext      bit,
+         3  seg      bit(12),
+         3  word     bin,
+      2  displayp    ptr options (short),   /* pointer to display */
+   i                 bin,
+   p                 ptr;
+
+dcl (l2$main, l2$accounting) entry;
+dcl (l3$px, l3$dp, l3$tty, l3$x2700, l3$laserjet, l3$standard) entry;
+
+   /* make a dynamic link and snap it;  if a LINKAGE_FAULT$ condition
+      occurs, try using select.  This is for pre-19.4 systems where
+      all driver routines are in the same EPF */
+
+   displayp = null;                   /* procedure is external */
+   ecbp.fault = '1'b;                 /* turn on fault bit */
+   ecbp.ring = '00'b;                 /* type 0 link */
+   ecbp.ext = '0';                    /* not an extended pointer */
+   ecbp.seg = segno (addr (entry_name));
+   ecbp.word = rel (addr (entry_name));
+
+   on condition (LINKAGE_FAULT$)
+      goto dynamic_link_failed;
+   on condition (ACCESS_VIOLATION$)   /* occurs when entry in gate seg */
+      goto dynamic_link_worked;
+   i = addr(ecbp)->based_ptr->fb15;   /* snap link */
+
+
+dynamic_link_worked:
+
+   return (true);
+
+
+dynamic_link_failed:
+
+   /* if entry is in the main EPF, use assignment to get the entry
+      variable.  However, catch linkage faults, in case the routine
+      is not in the main EPF and is not in any EPF in the driver's
+      search list */
+
+   on condition (linkage_fault$)
+      goto procedure_not_found;
+   revert condition (access_violation$);
+
+dcl select_hack char(32); /*
+   select (entry_name);
+*/ select_hack = entry_name;
+   select (select_hack);
+      when ('L3$PX') e = l3$px;
+      when ('L3$DP') e = l3$dp;
+      when ('L3$LASERJET') e = l3$laserjet;
+      when ('L3$TTY') e = l3$tty;
+      when ('L3$X2700') e = l3$x2700;
+      when ('L3$STANDARD') e = l3$standard;
+      when ('L2$MAIN') e = l2$main;
+      when ('L2$ACCOUNTING') e = l2$accounting;
+      otherwise
+         goto procedure_not_found;
+      end;     /* select */
+
+   return (true);                           /* link was found */
+
+
+procedure_not_found:
+
+   return (false);
+
+end gp$dynamic_link;

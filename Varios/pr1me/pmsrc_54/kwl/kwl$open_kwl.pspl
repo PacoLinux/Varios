@@ -1,0 +1,92 @@
+/* KWL$OPEN_KWL.SPL, PrintMaster, Jeff Hostetler, January 1, 1984             */
+/* procedure to open a kwl file                                               */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$open_kwl: proc (key, pathname_given, unit, flags_acl);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%Include '*>insert>based_vars.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%Include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      key            bin,                   /* k$ key for srch$$ open (in)    */
+      pathname_given char(*) var,           /* pathname of file to open (in)  */
+                                            /* NOTE:  If this is a filename,  */
+                                            /* then file will be searched for */
+                                            /* in the KWL Library.            */
+                                            /* ALSO:  Name will have manditory*/
+                                            /* suffix appended to it before   */
+                                            /* search is attepmted.           */
+      unit           bin,                   /* File unit to open or opened on */
+      flags_acl      like kwl$flags,        /* from "pathname"'s ACL (out)    */
+
+      acl            like primos_acl,
+      acl_name       char(128) var,
+      acl_type       bin,
+      path_to_open   char(128) var,
+      code           bin;
+
+%page;
+   string (flags_acl) = kwl$default_flags;
+
+   call apsfx$ (pathname_given, path_to_open, kwl$kwl_suffix, code);
+   select (code);
+      when (0, -1)
+         ;
+      when (e$nmlg)
+         path_to_open = pathname_given;
+      otherwise
+         call err$ (err$primos_et, 'Unable to append ' || kwl$kwl_suffix
+                    || ' to ' || path_to_open, code, 0, 0);
+      end;
+
+   if fnchk$ (k$uprc, path_to_open) then do;
+
+      /* if an entry name, then first check for it in the current directory */
+      /* if not found, then look in the library */
+
+      on condition (err$condition_before_msg)
+         begin;
+         if err$es.type = err$primos_et  &
+               (err$es.status1 = e$fntf  |  err$es.status1 = e$ninf) then
+            goto try_library;
+         call cnsig$ (code);
+         end;
+
+      /* ... This call should probably be changed to an GP$OPEN_FILE call ... */
+
+      call gp$open_pde (key, '', '*', path_to_open, unit);
+      revert condition (err$condition_before_msg);
+      goto got_it_open;
+
+try_library:
+
+      revert condition (err$condition_before_msg);
+      call gp$open_pde (key, '', kwl$library_directory, path_to_open, unit);
+      path_to_open = kwl$library_directory || '>' || path_to_open;
+
+got_it_open:
+
+      end;
+
+   else
+      call gp$open_path (key, path_to_open, unit);
+
+   acl.version = acl_version;
+   call ac$lst (path_to_open, addr(acl), max_acl_ents, acl_name, acl_type, code);
+   if code = 0 & acl_type = dft_spec_aclt then
+      flags_acl.wp = false;                 /* no ACL => not write protected */
+   else
+      if calac$ (path_to_open, null, ('P'), '', code) then
+         flags_acl.wp = false;              /* "P" access    => NOT Protected */
+      else
+         flags_acl.wp = true;               /* no "P" access => Protected */
+
+   return;
+   end kwl$open_kwl;

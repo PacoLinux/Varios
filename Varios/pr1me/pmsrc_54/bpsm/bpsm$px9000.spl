@@ -1,0 +1,104 @@
+/* BPSM$PX9000.SPL, PrintMaster, Jeff Hostetler, March 6, 1984                */
+/* Device Driver for the Printronix 9000 printer.                             */
+/* (Differs from L3$PX because EVFU loaded when keyword list changes)         */
+/* NOTE:  This version supports EVFU form length load only.                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+bpsm$px9000: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>t$lmpc.ins.spl';
+%list;
+
+dcl
+   key         bin,
+   data_line   char(*),                     /* only valid when key = print */
+   number      bin,                         /* skip count or channel */
+
+   has_evfu          bit static;
+
+   select (key);
+      when (l2$device_init)
+         return (device_init());
+      when (l2$job_init, l2$device_reinit)
+         return (job_init());
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of Printronix Device Driver. */
+
+%page;
+
+
+device_init: proc returns (bin);
+
+   dcl
+      func  bin,
+      kwp   ptr;
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = byte(0);
+   l23.scan_key = l2$trim_key;
+   l23.max_channel_skip = 15;
+   has_evfu = kwl$find_kw ('EVFU', ds.p_device_kwl, kwp);
+   do func = l2$job_init, l2$device_reinit;
+      l23.func_implemented (func) = true;
+      end;
+   return (l2$func_handled_rc);
+
+end device_init;
+
+%page;
+
+
+job_init: proc returns (bin);
+
+dcl
+   evfbuf            char(150) var,
+   status_vector     (3) bit(16) aligned,
+   i                 bin;
+
+   if ^has_evfu then
+      goto no_evfu_load;
+
+   /* load EVFU (only channel 1 is setup) */
+
+   if l2.device_type = l2$parallel_dt then do;
+
+      /* parallel interface */
+
+      call t$lmpc (ds.device_unit, null, 0, '201E'b4, status_vector);
+      call t$lmpc (ds.device_unit, null, 0, '2010'b4, status_vector);
+      do i = 1 to l23.lines_per_page - 1;
+         call t$lmpc (ds.device_unit, null, 0, '2011'b4, status_vector);
+         end;
+      call t$lmpc (ds.device_unit, null, 0, '201F'b4, status_vector);
+      end;
+
+   else if l2.device_type = l2$amlc_dt then do;
+
+      /* serial interface */
+
+      evfbuf = byte(30) || byte(16) || copy(byte(17),l23.lines_per_page-1)
+                        || byte(31);
+      call l2$io (l2$output_string, (evfbuf), 0);
+      end;
+
+
+no_evfu_load:
+
+   return (l2$func_handled_rc);
+
+end job_init;
+
+end bpsm$px9000;

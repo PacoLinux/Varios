@@ -1,0 +1,208 @@
+/* SPL$DJ.SPL, PrintMaster, Jeff Hostetler, February 5, 1984                  */
+/* User callable procedure to delete a job.                                   */
+/* Note:  This procedure must catch all errors and return {true | false}.     */
+/*                                                                            */
+/* User may only delete their own jobs (user_id must match).                  */
+/* Operators may delete all jobs.                                             */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spl$dj: proc (no_verify_flag, partition, job_id, job_name)
+        returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      no_verify_flag    bit,                /* (in) */
+      partition         char(*) var,        /* (in/out) */
+      job_id            bin,                /* (in) */
+      job_name          char(*) var,        /* (out) */
+
+      verify            bit,                /* local flag, true to verify */
+      (kwl_sd_unit,     kwl_e_unit)    bin,
+      (pc_sd_unit,      pc_sd_sd_unit) bin,
+      (code,            rnw)           bin,
+      kwl_flag                         bin,
+      expand_info                      like kwl$expand_info,
+      flags                            like kwl$flags,
+      (p_kwl, p_kw, p_buf)             ptr,
+      system_job_is_on                 char(32) var,
+      we_did_initialization            bit,
+      job_deleted                      bit,
+      (kwv_unique_id, prev_unique_id)  char (uid_len) var,
+      id_value                         char(32) var;
+
+   kwl_sd_unit = 0;        kwl_e_unit = 0;
+   pc_sd_unit = 0;         pc_sd_sd_unit = 0;
+   p_kwl = null;           p_buf = null;
+   job_name = '';
+
+   verify = ^no_verify_flag;
+
+   /* this is used to ensure a job has not changed after being closed to
+      verify deletion (in case user did not own the job) */
+
+   prev_unique_id = '';
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+
+   on condition (CLEANUP$)
+      call cleanup;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et & err$es.status1 = err$kwl_incomplete_ue then
+         goto job_not_found;
+
+      if err$es.type = err$primos_et & err$es.status1 = e$fnts then
+         goto job_not_found;
+
+      if we_did_initialization then
+         goto abnormal_return;
+
+      call cnsig$ (code);                   /* ANY$ onunit does not exist */
+      end;
+
+%page;
+
+
+try_again:
+
+   /* open the kwl queue, then the job; the exist check prevents a job
+      from being created */
+
+   call gp$open_pde (k$read + k$getu + k$nsgs, partition, gbl$spool_queue,
+                      sq$q_kwl_name, kwl_sd_unit);
+   partition = gp$partition_name (kwl_sd_unit); /* in case blank partition given */
+   call sq$open_entry (k$exst + k$iseg, kwl_sd_unit, job_id, kwl_e_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg, kwl_sd_unit, job_id,
+                       kwl_e_unit);
+   call gp$close (kwl_sd_unit);
+
+   system_job_is_on = gp$system_name (kwl_e_unit);
+
+   /* read the job keyword list, lookup the job's unique id (for monitor msg),
+      and user id to verify this user owns the job.  This check
+      is not done for operators, devices, or monitors */
+
+   string(expand_info) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   call kwl$destroy_kwl (p_kwl);
+   call kwl$read_disk_buffer (kwl_e_unit, p_buf);
+   call kwl$buf_to_kwl (p_buf, p_kwl, expand_info, flags);
+   call kwl$free_buffer (p_buf);
+   kwv_unique_id = '';
+   if kwl$find_kw (kw$unique_id, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, kwv_unique_id) then;
+   if kwl$find_kw (kw$job_name, p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, job_name) then;
+
+   if ^gbl.I_am_opr  |  verify then
+      if gbl.I_am_user then do;
+         if kwl$find_kw (kw$user_id, p_kwl, p_kw) then
+            if kwl$get_nth_value (p_kw, 1, id_value) then
+               if id_value ^= gbl.my_user_id then
+                  goto not_your_job;
+
+         end;
+
+   /* make sure job has not changed if it was closed for verification */
+
+   if length (prev_unique_id) ^= 0 then
+      if prev_unique_id ^= kwv_unique_id then
+         goto job_changed;
+
+   /* open pc entry (job is still locked) */
+
+   call gp$open_pde (k$read + k$getu + k$nsgs, partition, gbl$spool_queue,
+                     sq$q_pc_name, pc_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg + k$nsgs, pc_sd_unit, job_id,
+                       pc_sd_sd_unit);
+   call gp$close (pc_sd_unit);
+
+   /* try to delete the job */
+
+   call sq$delete_job (kwl_e_unit, pc_sd_sd_unit, partition, job_id, p_kwl);
+
+   /* if successful we will come back here.
+      if error other than in use occurs, we will goto "abnormal_return"
+      via onunit. */
+
+   /* if we delete the job or it is in use and the copies left was set to zero
+      inform the monitor that we deleted it.  This is only done for users and
+      operators, not monitors or devices */
+
+   if gbl.I_am_user then
+      if comm$send (mt$delete_job, system_job_is_on, 'monitor',
+                     addrel (addr(kwv_unique_id), 1), ml$delete_job) then ;
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+   return (true);
+
+
+job_not_found:
+
+   call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+              || ' not found in queue ' || partition || '.',
+              err$job_not_found_ue, 0, 0);
+
+not_your_job:
+
+   if gbl.I_am_opr then do;
+
+      /* Verify is implied since we came here.  Turn it off for next attempt,
+         then close job to prevent hanging up LPQ and friends */
+
+      verify = false;
+      prev_unique_id = kwv_unique_id;
+      call gp$close (kwl_e_unit);
+
+      call ioa$ ('%/Job %d %v belongs to %v.%.', -1, job_id, job_name, id_value);
+      if ysno$a ('Job is not yours, okay to delete', 32, a$dno) = ftn_true then
+         goto try_again;
+      end;
+
+   call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+              ||' does not belong to you.', err$not_your_job_ue, 0, 0);
+
+
+job_changed:
+
+   call err$ (err$user_et, 'Job ' || trim(char(job_id), '11'b)
+              ||' has changed since you began deleting it.',
+              err$not_your_job_ue, 0, 0);
+
+
+abnormal_return:
+
+   call cleanup;
+   if we_did_initialization then
+      call gp$terminate;
+
+   return (false);
+
+
+
+   cleanup : procedure;
+
+      call gp$close (pc_sd_sd_unit);
+      call gp$close (pc_sd_unit);
+      call gp$close (kwl_e_unit);
+      call gp$close (kwl_sd_unit);
+      call kwl$free_buffer (p_buf);
+      call kwl$destroy_kwl (p_kwl);
+      end cleanup;
+
+   end spl$dj;

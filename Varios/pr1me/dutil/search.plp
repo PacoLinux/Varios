@@ -1,0 +1,235 @@
+/* Search.plp, Dutil, JEW, 13-Mar-81
+   Search command handler.
+
+   Searches a partition for records matching header search criteria.
+*/
+
+Search: proc (cl, info, clp) options (nocopy);
+
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>global.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>query.plp.ins
+$Insert *>insert>condition.plp.ins
+
+dcl
+   get_param entry (bin, char(*) var, bin(31), bit),
+   help entry (char(*) var, bit),
+   ioa$ entry options (variable),
+   findpath entry (1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin, 3 bin(31),
+                   3 bin(31), 3 bin, 3 (5) bin, 2 (0:1023) bin,
+                   bin(31)) returns (char(160) var),
+   search_pattern entry (bin(31), bin, bin, bin(31), bin(31)) returns (bin(31)),
+   tonl entry;
+
+dcl
+   check_bra      bit,
+   check_next     bit,
+   check_back     bit,
+   check_type     bit,
+   end            bin(31),
+   match_all      bit,
+   1  my_rec like disk_record,
+   n              bin,
+   next_ra        bin(31),
+   print_names    bit,
+   records_checked bin(31),
+   records_matched bin(31),
+   ra             bin(31),
+   searching      bit,
+   start          bin(31),
+   test_bra       bin(31),
+   test_next      bin(31),
+   test_back      bin(31),
+   test_type      bin,
+   times          bin;
+
+
+   start = 0;
+   end = maxra;
+   records_checked = 0;
+   records_matched = 0;
+   print_names = false;
+   check_bra = false;
+   check_next = false;
+   check_back = false;
+   check_type = false;
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.oct_number then
+      do;
+      start = info.oct_val;
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      if info.oct_number then
+         do;
+         end = info.oct_val;
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+         end;
+      end;
+
+   if info.keyword then
+      if token = '-N' | token = '-NAMES' then
+         do;
+         print_names = true;
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+         end;
+      else
+         goto help_me;
+   if ^info.eol then goto help_me;
+
+   /* having parsed the line, get search criteria from him */
+
+   call get_search_criteria;
+   call tonl;
+
+   /* begin the search...an on-unit comes in handy to display
+      the current record */
+
+   call mkonu$ ('QUIT$', quit_);
+
+   n = 1;
+   searching = true;
+   do while (searching);
+
+      next_ra = search_pattern (ra, n, times, start, end);
+      if next_ra = -1 then
+         searching = false;
+      else
+         call check_record;     /* if this rec matches criteria, print it */
+
+   end;
+
+   call ioa$ ('%/Search complete. %:3d records checked, %:3d records matched.%.',
+               -1, records_checked, records_matched);
+
+   return;
+
+help_me:
+   call help ('SEARCH', false);
+   return;
+
+
+/* Internal procedure to get search criteria from user */
+
+get_search_criteria: proc;
+
+dcl
+   string   char (80) var,
+   typed_something   bit,
+   v31      bin(31);
+
+try_again:
+
+   call ioa$ ('Enter <cr> for don''t care values.%/%.', -1);
+   call get_param (3, 'Bra? ', test_bra, check_bra);
+   call get_param (3, 'Next? ', test_next, check_next);
+   call get_param (3, 'Back? ', test_back, check_back);
+   call get_param (4, 'Type? ', v31, check_type);
+   test_type = v31;    /* convert type from long to short integer */
+
+   call tonl;
+   do until (typed_something);
+
+      call get_param (2, 'Match any or all conditions? ', addr(string) -> fb31,
+                      typed_something);
+      select (string);
+         when ('ANY', 'any') match_all = false;
+         when ('ALL', 'all') match_all = true;
+         otherwise typed_something = false;
+         end;
+
+   end;
+
+   /* check consistancy of parameters */
+
+   if check_bra | check_next | check_back | check_type then;
+   else
+      do;
+      call tonl;
+      if ^query ('Do you really want all don''t cares ? ', no_def) then
+         goto try_again;
+      end;
+
+end;      /* get_search_criteria */
+
+
+
+/* Internal procedure to check whether the current record matches
+   the search criteria */
+
+check_record: proc options (shortcall);
+
+   call diskio (read_key | demote_bit, next_ra, cpartition, my_rec, status);
+   if status ^= 0 then
+      return;
+
+   records_checked = records_checked + 1;
+
+   if match_all then
+      do;
+      if check_bra then
+         if my_rec.bra ^= test_bra then
+            goto no_match;
+      if check_next then
+         if my_rec.next ^= test_next then
+            goto no_match;
+      if check_back then
+         if my_rec.back ^= test_back then
+            goto no_match;
+      if check_type then
+         if my_rec.type ^= test_type then
+            goto no_match;
+      goto match;
+      end;
+
+   else
+      do;
+      if check_bra then
+         if my_rec.bra = test_bra then
+            goto match;
+      if check_next then
+         if my_rec.next = test_next then
+            goto match;
+      if check_back then
+         if my_rec.back = test_back then
+            goto match;
+      if check_type then
+         if my_rec.type = test_type then
+            goto match;
+      end;     /* fall through to no_match */
+
+no_match:
+   return;
+
+match:
+   records_matched = records_matched + 1;
+   call ioa$ ('Match at record %:3o%$', -1, next_ra);
+   if print_names then
+      call ioa$ (' file %v%.', -1, findpath (my_rec, next_ra));
+   else
+      call tonl;
+   return;
+
+end;     /* check_record */
+
+
+/* On-unit for status checks */
+
+Quit_: proc (cfp);
+
+dcl
+   cfp   ptr;
+
+dcl
+   tty$rs entry (bit(16), bin);
+
+   call tty$rs ('11'b, status);
+   flush_tty_buffers = false;
+   call ioa$ ('%/Currently at record %:3o.  %:3d matches so far.%.', -1,
+               records_checked, records_matched);
+   call cnsig$ (status);
+
+end;    /* Quit_ */
+
+end;     /* Search */
+

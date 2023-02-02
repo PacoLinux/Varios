@@ -1,0 +1,353 @@
+/* INSTALL_PRINTMASTER.CPL, PrintMaster, Jeff Hostetler, June 9, 1984         */
+/* Command file to install PrintMaster.                                       */
+/*                                                                            */
+/* Usage:  r INSTALL_PRINTMASTER [-RPT]                                       */
+/*    or:  r INSTALL_PRINTMASTER -HELP                                        */
+/*                                                                            */
+/* Phase 1: Install PrintMaster commands and help files.  In phase 1, both    */
+/*          PrintMaster and the Prime spool system may be run concurrently.   */
+/*                                                                            */
+/* Phase 2: Install PrintMaster SPOOL and PROP replacement commands and       */
+/*          SPOOL$ replacement procedure.  After phase 2 PrintMaster will     */
+/*          convert SPOOL and PROP commands and SPOOL$ calls into similiar    */
+/*          PrintMaster commands and calls.                                   */
+/*                                                                            */
+/* Please note: 1)  Attach to PRINTMASTER to run INSTALL_PRINTMASTER          */
+/*              2)  User must have ALL access to the following directories:   */
+/*                    CMDNC0 on the command device                            */
+/*                    HELP* on the command device                             */
+/*              3)  User must have ALL access to the MFD where PRINTMASTER*   */
+/*                    will be created.  This is asked for during install.     */
+/*              4)  User must be logged in to the system being installed,     */
+/*                    although the user can attach to a remote PRINTMASTER    */
+/*                    directory to install.                                   */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+&args rpt_sw:  -rpt, -report; ~
+      help_sw: -help
+
+
+&s rev := 5.4
+type '[Install PrintMaster '%rev%']'
+type [quote Copyright (C) 1984-1988 Merit Software, Inc.]
+type
+
+
+&if ^ [null %help_sw%] &then &do
+   type
+   type 'Usage:  INSTALL_PRINTMASTER [-RPT]'
+   type '   or:  INSTALL_PRINTMASTER -HELP'
+   type
+   type 'Phase 1:  Install PrintMaster commands and help files.  After this'
+   type 'phase both PrintMaster and the Prime spool system may run concurrently.'
+   type
+   type 'Phase 2:  Install PrintMaster PROP and SPOOL replacement commands'
+   type 'and a replacement procedure for SPOOL$.  After this phase PrintMaster will '
+   type 'convert all PROP and SPOOL commands and all calls to SPOOL$ into similiar'
+   type 'PrintMaster commands and calls.  This phase is intended to let sites'
+   type 'use PrintMaster without requiring program modifications or extensive operator'
+   type 'retraining.'
+   type
+   type 'If -RPT is given, all steps in the installation procedure will be reported.'
+   type
+   &return
+   &end
+
+
+&s pmsd := PRINTMASTER*
+&s prog := *>PRINTMASTER*>PROGRAMS
+
+type '* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *'
+type '*     Please answer the following questions concerning installation.    *'
+type '*     Each question''s default response is listed in parentheses.        *'
+type '*     Hit RETURN in response to a question to take the default.         *'
+type '*     This procedure requires ALL access to CMDNC0, HELP*, and an MFD.  *'
+type '* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *'
+type
+
+/* Get partition name of system directory.
+/* Look for an existing system directory first.
+
+&severity &error &ignore
+&s curdir := [dir [pathname X]]
+R %prog%>CPL$ATTACH %pmsd%
+&severity &error &fail
+&if %severity$% ^= 0 &then ~
+   &s default_partition := ''
+&else &do
+   &s default_partition := [pathname X]
+   &s default_partition := [substr %default_partition% 2 ~
+                                   [calc [index %default_partition% >] - 2]]
+   &end
+ATTACH %curdir%
+&s msg := Partition name of PrintMaster system directory
+&if [length %default_partition%] ^= 0 ~
+   &then &s question := [quote %msg% (%default_partition%)]
+   &else &s question := [quote %msg%]
+&s valid_partition_given := FALSE
+&do &until %valid_partition_given%
+   &s partition := [translate [response %question% %default_partition% -tty]]
+   &s partition := [trim [trim %partition% -left <] -right >]
+   &if [length %partition%] > 0 &then ~
+      &if [exists <%partition%>MFD] &then ~
+         &s valid_partition_given := TRUE
+      &else type Partition %partition% not found, please reenter
+   &end
+
+/* the following is for COPY_SYSTEM_CONFIGURATION
+
+&if %default_partition% ^= %partition% ~
+   &then &s from_partition := %default_partition%
+   &else &s from_partition := ''
+
+/* Create a new system directory or simply overwrite new programs ?
+
+&if [exists <%partition%>%pmsd%] &then &do
+   &if [exists CMDNC0>APJ.RUN] &then ~
+      &s copy_programs := [query 'Install new version of PrintMaster (yes)' TRUE -tty]
+   &else ~
+      &s copy_programs := true
+
+   &if %copy_programs% &then &do
+      type '    'Installing programs in <%partition%>%pmsd%.
+      &severity &error &ignore
+      COPY *>%pmsd%>PROGRAMS <%partition%>%pmsd%>== -NQ %rpt_sw%
+      &s sev := %severity$%
+      &severity
+      &if %sev% ^= 0 &then &do
+          type
+          type Make sure the monitor and all devices are logged out, and
+          type that no PrintMaster EPFs are in use at the console.
+          &stop %sev%
+          &end
+      &if ^ [exists <%partition%>%pmsd%>EPF_LIBRARIES] &then ~
+          CREATE <%partition%>%pmsd%>EPF_LIBRARIES
+      COPY *>%pmsd%>EPF_LIBRARIES>@@ <%partition%>%pmsd%>EPF_LIBRARIES>== -NQ %rpt_sw%
+      &if ^ [exists <%partition%>%pmsd%>DEVICES>DEVICE.ENTRY$.SR] &then ~
+          COPY *>%pmsd%>DEVICES>DEVICE.ENTRY$.SR <%partition%>%pmsd%>DEVICES>== -NQ %rpt_sw%
+      &end
+   &end
+&else &do
+   &s copy_programs := true
+   type '    'Installing system directory %pmsd% on %partition%.
+   &if [exists <%partition%>%pmsd%.COPY] &then DELETE <%partition%>%pmsd%.COPY -NQ -NVFY -FORCE %rpt_sw%
+   COPY *>%pmsd% <%partition%>=.COPY %rpt_sw% -NQ
+   CNAME <%partition%>%pmsd%.COPY %pmsd%
+   &severity &error &ignore
+   SAC <%partition%>%pmsd%>SYSTEM_DEFAULTS.KF .PRINTMASTER_OPERATOR:ALL  $REST:PR
+   SAC <%partition%>%pmsd% .PRINTMASTER_OPERATOR:ALL  .PRINTMASTER_SYSTEM:ALL  SYSTEM:ALL  $REST:LUR
+   &severity &error &fail
+   &end
+
+&if %copy_programs% &then &do
+   type '    'Installing commands in CMDNC0.
+   &do c &list INIT_PRINTMASTER CDD CFD CPQ
+      COPY *>CMDNC0>%c%.CPL  CMDNC0>== %rpt_sw% -NQ
+      PROTECT CMDNC0>%c%.CPL RWD R
+      &end
+   &do c &list DC DPJ EKF LPJ LPQ CPJ APJ
+      COPY *>CMDNC0>%c%.@ CMDNC0>== %rpt_sw% -NQ
+      PROTECT CMDNC0>%c%.@ RWD R
+      &end
+   &end
+
+&if %copy_programs% &then &do
+   type '    'Installing help files in HELP*.
+   &do c &list [wild *>HELP*>@@]
+      COPY *>HELP*>%c% HELP*>== %rpt_sw% -NQ
+      PROTECT HELP*>%c% RWD R
+      &end
+   &end
+
+/* find out where the default entry$ search list is - we're going to need it
+
+&if [exists SYSTEM>ENTRY$.SR] &then ~
+   &if [exists SEARCH_RULES*>ENTRY$.SR] &then ~
+      &if [query 'Are you running rev 20.2 or above on this system (yes)' TRUE] &then ~
+         &s search_rule_dir := SEARCH_RULES*
+      &else ~
+         &s search_rule_dir := SYSTEM
+   &else ~
+      &s search_rule_dir := SYSTEM
+&else ~
+   &s search_rule_dir := SEARCH_RULES*
+
+&if ^ [exists %search_rule_dir%>ENTRY$.SR] &then ~
+   &stop 1 &message Can't find default entry$ search list.
+
+/* add Printmaster search rule to default entry$ search list
+
+&if %copy_programs% &then &do
+   type '    Adding PrintMaster EPF library to default entry search list.'
+   COMO -NTTY
+   &data NSED %search_rule_dir%>ENTRY$.SR
+      L PRINTMASTER;D;*
+      TOP
+      L printmaster;D;*
+      TOP
+      L Printmaster;D;*
+      TOP
+      L PrintMaster;D;*
+      TOP
+      F #-!!!!!!_!!!!_!!!!!!!!!    /* -static_mode_libraries, upper or lower
+      IB PRINTMASTER*>EPF_LIBRARIES>PROG_LIBRARY.RUN
+      TOP
+      L SP$LIB;DU *;B;LOAD *
+      TOP
+      L sp$lib;DU *;B;LOAD *
+      TOP
+      L Sp$Lib;DU *;B;LOAD *
+      TOP
+      L Sp$lib;DU *;B;LOAD *
+      FILE
+      &end
+   &if [exists *] &then DELETE *
+   COMO -TTY
+   &end
+
+/* do PROP and SPOOL updating/replacement */
+
+&s pf := <%partition%>%pmsd%>PHASE-II
+&s first := FALSE
+&s do2 := FALSE
+&if [exists %pf%] &then &do
+   &if %copy_programs% &then &do  /* updating our PROP & SPOOL */
+      &s first := FALSE
+      &s do2 := TRUE
+      &end
+   &end
+&else &do
+   &s do2 := [query 'Replace Prime spooler (no)' FALSE -tty]
+   &s first := %do2%
+   &end
+
+&if %do2% &then &do
+
+   /* create the file indicating phase II is installed
+
+   OPEN <%partition%>%pmsd%>PHASE-II 2 2
+   CLOSE 2
+
+   /* Load the PROP and SPOOL replacement commands, but first change their name.
+
+   &if %first% &then ~
+      type '    Backing up Prime PROP and SPOOL commands.'
+
+   &if [exists CMDNC0>SPOOL.RUN] &then &do
+      COPY CMDNC0>SPOOL.RUN CMDNC0>SPOOL.PRIME_VERSION.RUN -NQ
+      type '    '[quote Prime SPOOL command backed up (as SPOOL.PRIME_VERSION.RUN).]
+      &end
+   &else &if [exists CMDNC0>SPOOL.PRIME_VERSION.RUN] &then ~
+      type '    Prime SPOOL command already backed up.'
+   &else &if [exists CMDNC0>SPOOL.SAVE] &then &do
+      COPY CMDNC0>SPOOL.SAVE CMDNC0>SPOOL.PRIME_VERSION.SAVE -NQ
+      DELETE CMDNC0>SPOOL.SAVE
+      type '    '[quote Prime SPOOL command backed up (as SPOOL.PRIME_VERSION.SAVE).]
+      &end
+   &else &if [exists CMDNC0>SPOOL.PRIME_VERSION.SAVE] &then ~
+      type '    Prime SPOOL command already backed up.'
+   &else type '    Prime SPOOL command not found.'
+
+   &if [exists CMDNC0>PROP.RUN] &then &do
+      COPY CMDNC0>PROP.RUN CMDNC0>PROP.PRIME_VERSION.RUN -NQ
+      type '    '[quote Prime PROP command backed up (as PROP.PRIME_VERSION.RUN).]
+      &end
+   &else &if [exists CMDNC0>PROP.PRIME_VERSION.RUN] &then ~
+      type '    Prime PROP command already backed up.'
+   &else &if [exists CMDNC0>PROP.SAVE] &then &do
+      COPY CMDNC0>PROP.SAVE CMDNC0>PROP.PRIME_VERSION.SAVE -NQ
+      DELETE CMDNC0>PROP.SAVE
+      type '    '[quote Prime PROP command backed up (as PROP.PRIME_VERSION.SAVE).]
+      &end
+   &else &if [exists CMDNC0>PROP.PRIME_VERSION.SAVE] &then ~
+      type '    Prime PROP command already backed up.'
+   &else type '    Prime PROP command not found.'
+
+   &end
+
+&if %do2% &then &do
+
+   type '    Installing PROP and SPOOL replacement commands in CMDNC0.'
+   &do f &list [wild *>CMDNC0>@.REPLACEMENT.CPL]
+      &s b := [before %f% .]
+
+      /* at rev 21 and beyond, PROP and SPOOL are EPF runfiles.  Since they
+      /* will usually be mapped into an address space (in use), copy the CPL
+      /* files to the run files, then change the names */
+
+       &if [exists CMDNC0>%b%.CPL] &then DELETE CMDNC0>%b%.CPL
+       COPY *>CMDNC0>%b%.REPLACEMENT.CPL CMDNC0>=.RUN %rpt_sw% -NQ
+       CNAME CMDNC0>%b%.RUN %b%.CPL
+       &end
+
+   /* put SPOOL$ library in system ENTRY$ search list
+
+   COMO -NTTY
+   &data NSED %search_rule_dir%>ENTRY$.SR
+   L SPOOL$;D;*
+   TOP
+   L spool$;D;*
+   TOP
+   L Spool$;D;*
+   TOP
+   F #-!!!!!!_!!!!_!!!!!!!!!    /* -static_mode_libraries, upper or lower
+   IB PRINTMASTER*>EPF_LIBRARIES>SPOOL$.RUN
+   FILE
+   &end
+   COMO -TTY
+   &end
+
+&if %do2% & %first% &then &do
+   &severity &error &ignore
+   &if [query 'Enable automated user and operator SPOOL and PROP retraining (no)' FALSE -tty] &then &do
+      OPEN <%partition%>%pmsd%>TEACH_PRINTMASTER 2 2
+      CLOSE 2
+      &end
+   &else ~
+      &if [exists <%partition%>%pmsd%>TEACH_PRINTMASTER] &then ~
+         DELETE <%partition%>%pmsd%>TEACH_PRINTMASTER -NQ -NVFY %rpt_sw%
+   &severity &error &fail
+   &end
+
+&if [length %from_partition%] > 0 &then ~
+   &if [query 'Has another system been configured (yes)' TRUE -tty] &then ~
+      &if [query 'Copy system configuration from the other system (no)' FALSE -TTY] &then ~
+         R %prog%>COPY_SYSTEM_CONFIGURATION  %from_partition% %partition%
+
+R %prog%>CHECK_FOR_QUEUES
+
+type
+type '* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *'
+type
+
+&if [exists CMDNC0>APJ.RUN] &then &do
+   &if %copy_programs% &then ~
+      type PrintMaster installed.
+   &else ~
+      type PrintMaster already installed.
+   type System directory is <%partition%>%pmsd%.
+   &if %copy_programs% | %do2% &then &do
+      type
+      type 'Type ICE or SSR -DFLT ENTRY$ on system console to activate new
+      type 'search rules, followed by INIT_PRINTMASTER to start PrintMaster.
+      type
+      type 'NOTE:  Any users already logged in, including yourself, will also have'
+      type 'to give the ICE or SSR command to use PrintMaster, or a LINKAGE_FAULT$'
+      type 'condition may be raised.'
+      &end
+   &if [null %default_partition%] &then &do
+      type
+      type You may want to run CONFIGURE_PRINTMASTER later to customize
+      type PrintMaster for your site.
+      type
+      type 'Use the CDD command to create device definitions, APJ to queue jobs,'
+      type 'and LPQ to list queues.'
+      type
+      &end
+   type
+   &end
+&else ~
+   type PrintMaster is NOT installed.
+&return

@@ -1,0 +1,272 @@
+/* KWL$TEXT_TO_KWL.SPL, PrintMaster, Jeff Hostetler, September 12, 1983       */
+/* Procedure to convert a kwl in text format to internal format.              */
+/* Format:                                                                    */
+/*   "-<kw>[:<flags>] [<value>]"                                              */
+/*   "<value>"                                                                */
+/*   "<value>"                                                                */
+/*   ...                                                                      */
+/*   "<value>"                                                                */
+/*                                                                            */
+/* NOTES:  "text_path_name" is the name of the text file to convert, if blank */
+/*          text will be taken from the tty.                                  */
+/*         (Flags may or may not be accepted if EXPAND_INFO.SPECIAL_KWL is    */
+/*          not set)                                                          */
+/*         When reading from the tty, a blank line will serve as EOF, (blank  */
+/*          lines will be ignored in files).                                  */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$text_to_kwl: proc (text_path_name, p_kwl, expand_info);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>kwl_ext.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$add_value.ins.spl';
+%include '*>entry>kwl$delete_kw.ins.spl';
+%include '*>entry>kwl$find_kw.ins.spl';
+%include '*>entry>kwl$format_kw.ins.spl';
+%include '*>entry>kwl$insert_kw.ins.spl';
+%include '*>entry>kwl$parse_kw.ins.spl';
+%Include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      dash                 by '-',
+      not_char             by '-^',         /* code assumes it starts with dash */
+      max_line_len         by 160,
+      max_line_wds         by 80;
+
+   dcl
+      text_path_name       char(*) var,
+      p_kwl                ptr,
+      expand_info          like kwl$expand_info,
+
+      vs                   char(max_line_len) var,
+
+      p_kw                 ptr,
+      printed_flag_msg     bit,
+      (unit, code, x)      bin,
+      new_path             char(128) var,
+      from_tty             bit;
+
+   unit = 0;
+   on condition(CLEANUP$)
+      call gp$close (unit);
+
+   on condition(err$condition_after_msg)
+      begin;
+      if (err$es.type = err$user_et)
+       & (err$es.status1 = err$ill_kw_ue) then do;
+         p_kw = null;
+         call error_ ('');
+         goto listen_;
+         end;
+      call cnsig$ (code);                   /* if we can't handle it... */
+      end;
+
+%page;
+   p_kw = null;
+   printed_flag_msg = false;
+   if length (trim (text_path_name, '11'b)) = 0 then do;
+      from_tty = true;
+      call ioa$('Enter keyword list.%.', -1);
+      end;
+   else do;
+      from_tty = false;
+      call apsfx$ (text_path_name, new_path, kwl$text_suffix, code);
+      if code > 0 then
+         call err$ (err$primos_et, 'Appending text suffix.', code, 0, 0);
+      call gp$open_path (k$read + k$getu, new_path, unit);
+      end;
+
+   call get_next_line (vs, code);
+   do while (code ^= e$eof);
+      if length (vs) > 0 then               /* for case when we're in a file */
+
+         /* this test depends on dash being the first character of
+            a "not" keyword -^abc */
+
+         if (substr (vs, 1, 1)) = dash then do;
+            x = index (vs, ' ');
+            if x = 0 then
+               call handle_kw (vs);
+            else do;
+               call handle_kw (substr(vs, 1, x-1));
+               call handle_value (substr(vs, x));
+               end;
+            end;
+         else
+            call handle_value (vs);
+listen_:
+      call get_next_line (vs, code);
+      end;
+
+   if ^from_tty then
+      call gp$close (unit);
+
+   return;
+   /* logical end of kwl$text_to_kwl */
+
+%page;
+/* kwl$text_to_kwl.handle_kw, PrintMaster, Jeff Hostetler, September 12, 1983 */
+/******************************************************************************/
+
+   handle_kw: proc (str);
+
+      dcl
+         str      char(*) var,
+
+         kw       char(kwl$chars_in_kw) var,
+         flags    like kwl$flags,
+         p_ikw    ptr;
+
+
+      p_kw = null;
+      if length(str) > length(not_char) then
+         if substr(str, 1, length(not_char)) = not_char then do;/* Negated kw, */
+            kw = substr(str, length(not_char)+1);
+            call kwl$format_kw (kw);
+            if kwl.check_wp_from_ikwl_only then do;       /* See if it's */
+               if kwl$find_kwv (kw, psv.internal_kwl, p_ikw) then /* a reserved  */
+                  if p_ikw->kw_entry.wp then do;               /*protected kw */
+                     call error_ ('Keyword "'||str || '" cannot be removed.');
+                     return;
+                     end;
+               end;
+            if kwl$find_kwv (kw, p_kwl, p_kw) then
+               call kwl$delete_kw (p_kw, p_kwl); /* remove from list  */
+            p_kw = null;
+            return;
+            end;
+
+      if length(str) = length(not_char) then
+         if str = not_char then do;
+            call error_ ('Negated null keyword "' || not_char
+                       || '" not allowed.');
+            return;
+            end;
+
+      if length(str) = 1 then do;
+         call error_ ('Null keyword "-" is not allowed.');
+         return;
+         end;
+
+      /* NOTE:  On calls to "KWL$INSERT_KW", the second set of flags */
+      /* (flags_acl) is not needed, so I just pass the first set twice. */
+
+      call kwl$parse_kw (str, kw, flags);
+      call kwl$format_kw (kw);
+
+      /* flags may or may not be allowed if not the "MASTER" list. */
+
+      if ^expand_info.special_kwl  &  string (flags) ^= kwl$default_flags then
+         if ^kwl.in_edit_kwl then do;
+            call error_ ('Flags are not valid here "' || str || '".');
+            return;
+            end;
+         else
+            if ^printed_flag_msg then do;
+               call err$ (err$user_et + err$warning_et,
+                  'Flags accepted, but are ignored on all but the system MASTER keyword file.',
+                  err$flags_not_valid_here_ue, 0, 0);
+               printed_flag_msg = true;
+               end;
+
+      call kwl$insert_kw ((kw), p_kw, p_kwl, expand_info, flags, flags);
+
+      return;
+      end handle_kw;
+
+%page;
+/* kwl$text_to_kwl.handle_value, PrintMaster, Jeff Hostetler, September 12, 1983*/
+/******************************************************************************/
+
+   handle_value: proc (value);
+
+      dcl
+         value char(*) var,
+
+         next_ch     bin,
+         info        like gtpar,
+         unquoted_value char(kwl$chars_in_value) var;
+
+      value = trim(value, '11'b);
+
+      if length (value) > kwl$chars_in_value then
+         call error_ ('Length exceeds maximum value length "' || value || '"');
+      else
+         if p_kw = null then
+            call error_ ('No keyword for this value "' || value || '"');
+         else
+            if expand_info.special_kwl & ^p_kw->kw_entry.flags.abbrev then do;
+               p_kw = null;
+               call error_ ('Values are not permitted here');
+               end;
+            else
+               if value = '''''' then       /* ... GT$PAR changed "''" into " " ... */
+                  call kwl$add_value (p_kw, '');
+               else do;
+                  next_ch = 1;
+                  call gt$par('0001'b4, '', '''', '', value, unquoted_value,
+                              length(value), info, next_ch);
+                  call kwl$add_value (p_kw, unquoted_value);
+                  end;
+
+      return;
+      end handle_value;
+
+%page;
+/* kwl$text_to_kwl.get_next_line, PrintMaster, Jeff Hostetler, September 12, 1983*/
+/******************************************************************************/
+
+   get_next_line: proc (vs, code);
+
+      dcl
+         vs          char(*) var,
+         code        bin,
+
+         text_line   char(max_line_len);
+
+      if from_tty then do;
+         call ioa$ ('> %$', -1);
+         call cl$get (vs, max_line_len, code);
+         vs = trim(vs, '11'b);
+         if length(vs) = 0 then
+            code = e$eof;
+         end;
+      else do;
+         call rdlin$ (unit, text_line, max_line_wds, code);
+         vs = trim(text_line, '11'b);
+         end;
+
+      return;
+      end get_next_line;
+
+%page;
+/* kwl$text_to_kwl.error_, PrintMaster, Jeff Hostetler, September 12, 1983    */
+/* procedure to print warning (if from_tty) or abort (if ^from_tty)           */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg char(*) var;
+
+      if from_tty then do;
+         if length (msg) ^= 0 then
+            call ioa$er ('%v.  %$', -1, msg);
+         call ioa$er ('Item ignored.%.', -1);
+         if p_kw = null then
+            call ioa$er ('The next item must be a keyword.%.', -1);
+         end;
+      else
+         call err$ (err$user_et,
+                    msg || ' in text file "' || text_path_name || '".',
+                    err$text_format_ue, 0, 0);
+
+      return;
+      end error_;
+
+   end kwl$text_to_kwl;

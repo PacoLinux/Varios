@@ -1,0 +1,313 @@
+/* Add_entry.plp, Dutil, JEW, 28-Mar-81
+   Add an entry to the current ufd record.
+
+   ADD_ENTRY | AE [<offset>]
+
+   <offset> is the word offset within the ufd to add the entry.  If not
+   specified, a free location is found.
+
+*/
+
+Add_entry: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>ufd_ent.plp.ins
+$Insert *>insert>diskio.plp.ins
+$Insert *>insert>query.plp.ins
+
+%replace
+   lowercase by 'abcdefghijklmnopqrstuvwxyz',
+   uppercase by 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+dcl
+   date_time_  entry returns (bin(31)),
+   get_param   entry (bin, char(*) var, bin(31), bit),
+   help        entry (char(*) var, bit),
+   ioa$        entry options (variable),
+   texto$      entry (char(*), bin, bin, bin),
+   tonl        entry;
+
+dcl
+   bit8           bit(8) based,
+   blanks         char(32) static init((32)' '),
+   bra            bin(31),
+   ecp            bin,          /* ent character pointer */
+   1  ent like ufd_entry,
+   entry_length   bin,          /* length of new entry */
+   entryname       char(32) var,
+   input_given    bit,
+   1  my_rec like disk_record,
+   nch            bin,
+   offset         bin,
+   offset_spec    bit,
+   ok             bin,
+   partial        bit,
+   rcp            bin,
+   true_length    bin,
+   type           bin(31),
+   1  word  based,
+      2  high8    bit(8),
+      2  low8     bit(8);
+
+
+   offset_spec = false;
+   call diskio (read_key, (rec.cra), cpartition, my_rec, status);
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.dec_number then
+      do;
+      offset = info.dec_val;
+      offset_spec = true;
+      if 0 <= offset & offset <= 1023 then
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      else
+         goto help_me;
+      end;
+
+   if ^info.eol then
+      goto help_me;
+
+   /* get entry data */
+
+   do until (input_given);
+
+      call get_param (3, 'Entry BRA? ', bra, input_given);
+      if input_given then
+         if 0 <= bra & bra <= maxra then;
+         else
+            do;
+            call ioa$ ('Must be in the range 0-%:3o.%.', -1, maxra);
+            input_given = false;
+            end;
+
+   end;
+
+   do until (input_given);
+
+      call get_param (3, 'Entry type? ', type, input_given);
+      if input_given then
+        if 0 <= type & type <= 4 then;
+        else
+           do;
+           call ioa$ ('Type must be 0-4.%.', -1);
+           input_given = false;
+           end;
+
+   end;
+
+   do until (input_given);
+
+      call get_param (2, 'Entry name? ', addr(entryname) -> fb31, input_given);
+      if input_given then
+         do;
+         call texto$ ((entryname), length (entryname), true_length, ok);
+         if ok = 0 then
+            do;
+            call ioa$ ('Illegal filename.%.', -1);
+            input_given = false;
+            end;
+         end;
+
+   end;
+
+   /* if user just added the RAT entry, make the name 32 characters */
+
+   if bra = 2 then
+      entryname = entryname ||  substr (blanks, 1, 32-length (entryname));
+
+   entry_length = 12 + divide (length (entryname) + 1, 2, 15);
+
+   if ^offset_spec then
+      offset = find_free_slot ();
+   else
+
+      /* user specified offset, check validity */
+
+      if offset + entry_length > 1023 then
+         do;
+         call ioa$ ('This entry will not fit at word %d.%.', -1, offset);
+         offset = find_free_slot ();
+         end;
+
+   /* offset now points to offset to write entry.  Setup new entry */
+
+   ent.ecw.type = '03'b4;         /* valid ufd entry */
+   ent.ecw.size = addr(entry_length) -> word.low8;
+   ent.filebra = bra;
+   ent.fill1 = 0;
+   ent.protection.owner = '07'b4;
+   ent.protection.nonowner = '00'b4;
+   ent.fill2 = 0;
+   addr(ent.datmod) -> fb31 = date_time_();
+   addr(ent.filetype) -> fb15 = type;
+
+   /* set special bits in filetype */
+
+   if entryname = 'MFD' & bra = 1
+   |  entryname = 'BOOT' & bra = 0
+   |  entryname = 'BADSPT' & my_rec.bra = 1
+   |  bra = 2 then
+      ent.filetype.special = '1'b;
+
+   if (entryname = 'BOOT' & bra = 0) | bra = 2 then
+      ent.filetype.header16 = '1'b;
+
+   ent.scw.type = 0;
+   true_length = divide (length (entryname) + 3, 2, 15);   /* new scw */
+   ent.scw.size = addr(true_length) -> word.low8;
+   ent.filename = translate (entryname, uppercase, lowercase);
+
+   /* write entry.  Next record is already chained to the current one
+      in case entry overflows */
+
+   ecp = 1;     /* ent char pointer */
+   rcp = (offset+1)*2 + 1;     /* my_rec char pointer */
+   nch = entry_length * 2;     /* number of characters to move */
+   if offset + entry_length - 1 > 1023 then
+      do;              /* won't all fit, adjust nch */
+      nch = 2049 - rcp;        /* enough to fill current record */
+      partial = true;
+      end;
+   else
+      partial = false;
+
+   call move_data_and_write ();
+
+   if partial then
+      do;           /* finish entry */
+      rcp = 1;
+      ecp = ecp + nch;
+      nch = entry_length*2 - nch;
+      call diskio (read_key, (my_rec.next), cpartition, my_rec, status);
+      if status ^= 0 then
+         goto partial_written;
+
+      call move_data_and_write ();
+      end;
+
+   call ioa$ ('Entry added.%.', -1);
+   call ioa$ ('The current record buffer is invalid.%.', -1);
+
+ae_exit:
+   return;
+
+partial_written:
+   call ioa$ ('Error while adding entry.  A partial entry has been written.%.', -1);
+   return;
+
+help_me:
+   call help ('ADD_ENTRY', false);
+
+
+
+   /* Internal procedure to move ent to my_rec, update data count, and write */
+
+   move_data_and_write: proc;
+
+   dcl
+      c2080    char(2080) based,
+      nrc      bin;
+
+      substr (addr(my_rec.data) -> c2080, rcp, nch) =
+            substr (addr(ent) -> c2080, ecp, nch);
+
+      nrc = divide (rcp + nch, 2, 15);      /* new record count */
+      if nrc > my_rec.count then
+         my_rec.count = nrc;
+
+      call diskio (write_key, (my_rec.cra), cpartition, my_rec, status);
+      if status ^= 0 then
+         goto partial_written;
+
+   end;     /* move_data_and_write */
+
+
+   /* Internal procedure to find a free slot for entry */
+
+   find_free_slot: proc returns (bin);
+
+   dcl
+      claim_record   entry (bin(31), bin),
+      get_free_record entry (bin(31)) returns (bin(31)),
+      link_record    entry (bin(31), 1, 2, 3 bin(31), 3 bin(31), 3 bin, 3 bin,
+                            3 bin(31), 3 bin(31), 3 bin, 3 (5) bin,
+                            2 (0:1023) bin, bin);
+
+   dcl
+      loc      bin,
+      ra       bin(31),
+      status   bin;
+
+
+      /* position to end of ufd */
+
+      ra = my_rec.next;
+      do while (ra ^= 0);
+
+         call diskio (read_key, ra, cpartition, my_rec, status);
+         if status ^= 0 then
+            goto ae_exit;
+         ra = my_rec.next;
+
+      end;
+
+      /* will entry fit in this record? */
+
+      loc = my_rec.count - 1;
+      if loc + entry_length > 1023 then
+         do;
+
+         /* another record is needed */
+
+         ra = get_free_record (ra);
+         if ra ^= 0 then
+            do;
+            call ioa$ ('Ok to use record %:3o%$', -1, ra);
+            if ^query ('? ', no_def) then
+               goto ae_exit;
+            end;
+         else
+
+            /* no free records... */
+
+            do;
+
+               call ioa$ ('Another record is needed for this entry, but %.', -1);
+               call ioa$ ('there are no free records according to the RAT.%.', -1);
+               do until (input_given);
+                  call  get_param (3, 'Free record address (<cr> for none)? ',
+                                   ra, input_given);
+                  if ^input_given then
+                     goto ae_exit;
+                  if 0 <= ra & ra <= maxra then;
+                  else
+                     do;
+                     call ioa$ ('Must be in range 0-%:3o.%.', -1, maxra);
+                     input_given = false;
+                     end;
+
+               end;
+
+            end;
+
+         /* claim new record */
+
+         call claim_record (ra, status);
+         if status ^= 0 then
+            goto ae_exit;
+
+         /* new record must be linked to old */
+
+         call link_record (ra, my_rec, status);
+         if status ^= 0 then
+            goto ae_exit;
+
+         end;
+
+   return (loc);
+
+   end;     /* find_free_slot */
+
+end;     /* Add_entry */
+

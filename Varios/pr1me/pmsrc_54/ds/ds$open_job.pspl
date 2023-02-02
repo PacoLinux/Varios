@@ -1,0 +1,425 @@
+/* DS$OPEN_JOB.SPL, PrintMaster, Jeff Hostetler, March 12, 1984               */
+/* Function to open a job, returns true if successful.                        */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$open_job: proc (partition, job_id_given, unique_id_given)
+             returns (bit);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>insert>ds$device_states.ins.spl';
+%include '*>insert>ds$completion_codes.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>ds$reset_statistics.ins.spl';
+%include '*>entry>ds$send_kwl.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      partition         char(*) var,        /* (in) */
+      job_id_given      bin,                /* (in) */
+      unique_id_given   char(uid_len),      /* (out) */
+
+      bio_flags         bin,
+      dow               bin,
+      code              bin,
+      nwr               bin,
+      (e, p)            char(32) var,
+      d                 char(128) var,
+      status            bin,
+      kw_e_unit         bin,
+      (kw_sd_unit, pc_sd_unit, pc_sd_sd_unit)    bin,
+      (pc_sd_e0_unit, pj_sd_unit)   bin;
+
+   kw_sd_unit = 0;      pc_sd_unit = 0;
+   pc_sd_sd_unit = 0;   pc_sd_e0_unit = 0;
+   pj_sd_unit = 0;
+   kw_e_unit = 0;
+   call initialize_ds$;
+
+   on condition (CLEANUP$)
+      begin;
+      call abort_cleanup;
+      end;
+
+   on condition (err$condition_after_msg)
+      begin;
+      if err$es.type = err$primos_et then
+         select (err$es.status1);        /* do resend on these */
+            when (e$fius, e$rldn, e$nete, e$shdn, e$rsnu) do;
+               ds.completion_code = ds$resend_job_cc;
+               goto fail_;
+               end;
+            otherwise
+               call cnsig$ (status);
+            end;
+      end;
+
+%page;
+   call gp$open_pde (k$read + k$getu, partition, gbl$spool_queue,
+                      sq$q_kwl_name, kw_sd_unit);
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$primos_et & err$es.status1 = e$fnts then do;
+         ds.completion_code = ds$drop_job_cc;
+         goto fail_;
+         end;
+      else
+         call cnsig$ (status);
+      end;
+   call sq$open_entry (k$read + k$getu + k$iseg, kw_sd_unit,
+                       job_id_given, kw_e_unit);
+   revert condition (err$condition_before_msg);
+   call gp$close (kw_sd_unit);
+
+   /* in case of incomplete kwl (earlier sq$delete_job failed), tell
+      monitor to delete the job */
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et
+       & err$es.status1 = err$kwl_incomplete_ue then do;
+         ds.completion_code = ds$drop_job_cc;
+         goto fail_;
+         end;
+      else
+         call cnsig$ (status);
+      end;
+   if ^check_id_on_kwl () then do;
+      ds.completion_code = ds$resend_job_cc;
+      goto fail_;
+      end;
+   revert condition (err$condition_before_msg);
+
+   /* NOTE: assumes still attached to print queue directory */
+
+   call gp$open_file (k$read + k$getu, sq$q_pc_name, pc_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg, pc_sd_unit, job_id_given,
+                       pc_sd_sd_unit);
+   call gp$close (pc_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg, pc_sd_sd_unit, 0,
+                       pc_sd_e0_unit);      /* open entry 0 */
+
+   /* Find a copy to print and open the pc file for it, but don't update the */
+   /*   copy status for it (wait until we finish everything else). */
+
+   if ^find_a_copy (ds.copy_nr) then do;   /* also returns nr of copy we have*/
+      ds.completion_code = ds$drop_job_cc;
+      goto fail_;
+      end;
+
+   call gp$close (pc_sd_sd_unit);
+
+   call interpret_kwl;
+   call cv$fdv (date$(), dow, ds.started);
+
+   /* NOTE: assumes still attached to print queue directory */
+
+   if ds.copyfile then do;                  /* open file in queue */
+      if ds.inuse_ok then
+         call gp$open_file (k$read + k$getu, sq$q_pj_updt_name, pj_sd_unit);
+      else
+         call gp$open_file (k$read + k$getu, sq$q_pj_excl_name, pj_sd_unit);
+      call sq$open_entry (k$read + k$getu + k$iseg, pj_sd_unit, job_id_given,
+                          ds.print_file_unit);
+      call gp$close (pj_sd_unit);
+      end;
+   else do;                                 /* open user's file */
+      on condition (err$condition_before_msg)
+         begin;
+            if err$es.type = err$primos_et then do;
+               ds.completion_code = ds$resend_job_cc;
+               goto fail_;
+               end;
+            else
+               call cnsig$ (status);
+         end;
+
+      call gp$open_path (k$read + k$getu, ds.job_pathname, ds.print_file_unit);
+      call gp$get_dtm (ds.job_pathname, ds.dates.modified_now, ds.dates.backed_up);
+      revert condition (err$condition_before_msg);
+      end;
+
+   if ds.copyfile then do;
+      call prwf$$ (k$posn, ds.print_file_unit, null, 0, maxint31, 0, status);
+      if status = e$eof then do;
+         call prwf$$ (k$rpos, ds.print_file_unit, null, 0,
+                      ds.file_size_words, 0, status);
+         call prwf$$ (k$posn+k$prea, ds.print_file_unit, null, 0, 0, 0, status);
+         if status ^= 0 then
+            call err$ (err$primos_et, 'Rewinding print file', status, 0, 0);
+         if ds.file_size = maxint then do;
+            ds.file_size = divide (ds.file_size_words+511, 1024, 31);
+            if ds.file_size = 0 then
+               ds.file_size = 1;
+            end;
+         end;
+      end;
+   else
+      if ds.file_size ^= maxint then
+         ds.file_size_words = ds.file_size * dr_size;
+
+   /* Now update the copy status for this copy */
+
+   status = sq$copy_in_progress;
+   call prwf$$ (k$writ+k$prea, pc_sd_e0_unit, addr(status), 1,
+                bin(sq$pc_hdr_len + ds.copy_nr - 1, 31), nwr, code);
+   call gp$close (pc_sd_e0_unit);
+
+   ds.device_state = ds$printing_st;        /* monitor already knows */
+   call gp$close (kw_e_unit);
+
+   /* init buffered I/O procedures */
+
+   if ds.inuse_ok then
+      bio_flags = bio$wait;
+   else
+      bio_flags = '0'b;
+   ds.pfbp = bio$init_file (ds.print_file_unit, bio_flags);
+
+   ds.total_elapsed_print_time = 1;        /* avoid divide by zero */
+   call ds$reset_statistics;
+
+   call at$hom (code);
+   return (true);
+
+fail_:
+   call abort_cleanup;
+   return (false);
+
+   /* logical end of ds$open_job */
+
+%page;
+/* ds$open_job.initialize_ds$, PrintMaster, Jeff Hostetler, March 13, 1984    */
+/******************************************************************************/
+
+   initialize_ds$: proc;
+
+      ds.q_partition = partition;
+
+      /* ds.p_job_kwl is initialized in the main program; it is not
+         changed here because check_id_on_kwl destroys any old kwl
+         left in p_job_kwl */
+
+      ds.completion_code = ds$none_cc;
+      ds.page_control_unit = 0;
+      ds.print_file_unit = 0;
+      ds.last_pc_mark = 0;
+      ds.current_pc_mark = 0;
+      ds.job_name = '';
+      ds.user_project = '';
+      ds.user_id = '';
+      ds.system_id = '';
+      ds.job_pathname = '';
+      ds.file_size = maxint;
+      ds.file_size_words = maxint31;
+      ds.copy_nr = 0;
+      ds.requested = 0;
+      ds.backed_up = '';
+      ds.deferred = '';
+      ds.modified_then = '';
+      ds.modified_now = '';
+      ds.spooled = '';
+      ds.started = '';
+      ds.copyfile = false;
+      ds.inuse_ok = false;
+      ds.parallel_ok = false;
+      ds.resume_ok = false;
+      ds.delete_user_file = false;
+      ds.notify_user = false;
+      ds.notify_now = false;
+      ds.pfbp = null;
+      return;
+      end initialize_ds$;
+
+%page;
+/* ds$open_job.find_a_copy, PrintMaster, Jeff Hostetler, March 13, 1984       */
+/******************************************************************************/
+
+   find_a_copy: proc (copy_to_print)
+                returns (bit);
+
+      dcl
+         copy_to_print  bin,                /* (out) */
+
+         pc_hdr (sq$pc_hdr_len) bin,
+         copy_status_page  (128) bin,
+         (i, nwr, code)    bin;
+
+      on condition (err$condition_before_msg)
+         begin;
+         if err$es.type = err$primos_et & err$es.status1 = e$fius then
+            goto try_next_one;
+         call cnsig$ (code);
+         end;
+
+      call prwf$$ (k$read, pc_sd_e0_unit, addr(pc_hdr), sq$pc_hdr_len, 0,
+                   nwr, code);
+      if code ^= 0 then
+         call err$ (err$primos_et, 'Reading Page Control Header',
+                    code, 0, 0);
+
+      if pc_hdr(sq$copies_left_wd) = 0 then
+         return (false);
+      ds.tranid = pc_hdr(sq$tsn_wd);
+
+      copy_to_print = 0;
+      call prwf$$ (k$read + k$conv, pc_sd_e0_unit, addr(copy_status_page), 128,
+                   0, nwr, code);
+      do while (nwr ^= 0);
+         do i = 1 to nwr;
+            if copy_status_page(i) = sq$copy_in_progress
+                  |  copy_status_page(i) = sq$copy_not_started then do;
+               call sq$open_entry (k$rdwr+k$getu+k$iseg+k$ndam+k$$no_wait,
+                                   pc_sd_sd_unit, copy_to_print + i, ds.page_control_unit);
+               copy_to_print = copy_to_print + i;
+               return (true);
+               end;
+try_next_one:
+            end;
+         copy_to_print = copy_to_print + nwr;
+         call prwf$$ (k$read + k$conv, pc_sd_e0_unit, addr(copy_status_page), 128,
+                      0, nwr, code);
+         end;
+
+      if code ^= e$eof then
+         call err$ (err$primos_et, 'Reading copy status file', code, 0, 0);
+
+      return (false);
+      end find_a_copy;
+
+%page;
+/* ds$open_job.check_id_on_kwl, PrintMaster, Jeff Hostetler, March 13, 1984   */
+/******************************************************************************/
+
+   check_id_on_kwl: proc
+                    returns (bit);
+
+      dcl
+         p_buf    ptr,
+         p_kw     ptr,
+         value    char(kwl$chars_in_value) var,
+         ei       like kwl$expand_info,
+         flags    like kwl$flags;
+
+      string (ei) = kwl$accept_as_is_ei;
+      string (flags) = kwl$default_flags;
+
+      call kwl$destroy_kwl (ds.p_job_kwl);
+      call kwl$read_disk_buffer (kw_e_unit, p_buf);
+      call kwl$buf_to_kwl (p_buf, ds.p_job_kwl, ei, flags);
+      call kwl$free_buffer (p_buf);
+
+      if ^kwl$match_kwl (ds.p_job_kwl, ds.p_device_kwl) then do;
+         call ds$send_kwl;
+         return (false);
+         end;
+
+      ds.job_id = job_id_given;
+
+      if kwl$find_kw (kw$unique_id, ds.p_job_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value) then
+            if value = unique_id_given then do;
+               ds.last_unique_id = ds.unique_id;
+               ds.unique_id = unique_id_given;
+               return (true);
+               end;
+            else return (false);            /* this is a different job */
+
+      call err$ (err$user_et, 'Job''s unique id is absent or invalid.',
+                 err$invalid_job_id_ue, 0, 0);
+
+      end check_id_on_kwl;
+
+%page;
+/* ds$open_job.interpret_kwl, PrintMaster, Jeff Hostetler, March 12, 1984     */
+/******************************************************************************/
+
+   interpret_kwl: proc;
+
+      dcl
+         p_kw        ptr,
+         value       char(kwl$chars_in_value) var;
+
+      do p_kw = ds.p_job_kwl repeat p_kw->kw_entry.next while (p_kw ^= null);
+dcl select_hack char(32); /*
+         select (p_kw->kw_entry.kw);
+*/       select_hack =  (p_kw->kw_entry.kw);
+         select (select_hack);
+            when (kw$job_name)
+               if p_kw->kw_entry.pf_value ^= null then
+                  ds.job_name = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$project_id)
+               ds.user_project = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$user_id)
+               ds.user_id = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$job_system)
+               ds.job_system = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$user_system)
+               ds.system_id = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$pathname)
+               ds.job_pathname = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$size)
+               ds.file_size = binary(p_kw->kw_entry.pf_value->value_entry.value);
+            when (kw$copies)
+               ds.copies.requested = binary(p_kw->kw_entry.pf_value->value_entry.value);
+            when (kw$dt_backed_up)
+               ds.backed_up = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$dt_modified) do;
+               ds.modified_then = p_kw->kw_entry.pf_value->value_entry.value;
+               ds.modified_now = ds.modified_then;
+               end;
+            when (kw$dt_spooled)
+               ds.spooled = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$defer)
+               ds.deferred = p_kw->kw_entry.pf_value->value_entry.value;
+            when (kw$copyfile)
+               ds.copyfile = true;
+            when (kw$inuse_ok)
+               ds.inuse_ok = true;
+            when (kw$parallel_ok)
+               ds.parallel_ok = true;
+            when (kw$resume_ok)
+               ds.resume_ok = true;
+            when (kw$delete_user_file)
+               ds.delete_user_file = true;
+            when (kw$notify) do;
+               ds.notify_user = true;
+               if p_kw->kw_entry.pf_value ^= null then
+                  ds.notify_now =
+                   (p_kw->kw_entry.pf_value->value_entry.value = 'NOW');
+               end;
+            otherwise;
+            end;     /* select */
+next_kw:
+         end;        /* do */
+
+      return;
+      end interpret_kwl;
+
+%page;
+/* ds$open_job.abort_cleanup, PrintMaster, Jeff Hostetler, March 13, 1984     */
+/******************************************************************************/
+
+   abort_cleanup: proc;
+
+      call kwl$destroy_kwl (ds.p_job_kwl);
+      call gp$close (kw_sd_unit);
+      call gp$close (pc_sd_unit);
+      call gp$close (pc_sd_e0_unit);
+      call gp$close (pj_sd_unit);
+      call gp$close (pc_sd_sd_unit);
+      call gp$close (kw_e_unit);
+      call gp$close (ds.print_file_unit);
+      call gp$close (ds.page_control_unit);
+      call at$hom (code);
+      return;
+      end abort_cleanup;
+
+   end ds$open_job;

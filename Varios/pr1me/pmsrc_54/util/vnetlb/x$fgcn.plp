@@ -1,0 +1,191 @@
+/* X$FGCN.PLP,  PRINETSRC>VNETLB,  COMMS SW GROUP,  07/05/83
+   Get data about a fast select Primenet call request
+   Copyright (c) 1983, Prime Computer, Inc., Natick, Ma 01760 */
+
+/* TITLE : X$FGCN - Get data about a fast select Primenet call request */
+
+/* START-HISTORY :
+   07/05/83 BERTIL LINDBLAD Template constructed
+   END-HISTORY */
+
+/* START-DESCRIPTION :
+   X$FGCN is a short form routine to get information about an incoming call
+   request, specially tailored for handling fast select calls. In particular,
+   it will deduce from the facility field which response is allowed
+   (accept or clear).
+   END-DESCRIPTION */
+
+/* START-DESIGN :
+   X$FGCN:
+   BEGIN
+   Call XLGCON to gather data about the call request.
+   Parse facility field for fast select parameter, set ANSKEY
+   END
+   END-DESIGN */
+
+/* START-CODE : */
+
+X$FGCN:
+   procedure (key, anskey, vcid, port, adr, adrn, adrbc, udata, udatan, udatbc,
+             status);
+
+/* caller's arguments */
+
+   dcl key bit(16);                    /* as xlgcon: key */
+   dcl anskey bin;                     /* returned, specify caller's response
+                                          rule (xs$acc, xs$clr, or xs$not) */
+   dcl vcid bin;                       /* returned, VC identifier, see xlgcon
+                                          */
+   dcl port bin;                       /* returned, target process identifier
+                                          mechanism, see xlgcon */
+   dcl adr char(2);                    /* returned, array holding caller's
+                                          nodename */
+   dcl adrn bin;                       /* Max # chars in adr, see xlgcon */
+   dcl adrbc bin;                      /* returned, actually given # of chars
+                                          in adr */
+   dcl udata char(2);                  /* returned, array holding user's
+                                          userdata field */
+   dcl udatan bin;                     /* Max # chars in udata, see xlgcon */
+   dcl udatbc bin;                     /* returned, actually given # of chars
+                                          in udata */
+   dcl status(2) bin;                  /* returned, call status, as for xlgcon
+                                          */
+
+/* Called procedures */
+
+   dcl xlgcon entry(bit(16), bin, bin, char(*), bin, bin, char(*), bin, bin,
+                 char(*), bin, bin, char(*), bin, bin, (2) bin);
+
+/* Local declarations */
+
+   dcl fct_field char(63);             /* To hold facility field of call */
+   dcl fct_bc bin;                     /* Returned # of bytes in facility field
+                                          */
+   dcl junk bin;                       /* Used for scratch arguments, and also
+                                          as index. */
+   dcl rubsh char(1);                  /* Scratch argument */
+   dcl fcty_length bin;
+   dcl fcty_code bit(8);
+   dcl fcty_bits bit(8) based;
+   dcl this_char char(1);
+
+$INSERT syscom>x$keys.ins.pl1
+
+/* Set anskey to as yet not known */
+
+      anskey = xs$not;
+
+/* Call XLGCON to get data */
+
+      call xlgcon(key, vcid, port, adr, adrn, adrbc, fct_field, 63, fct_bc,
+                rubsh, 0, junk, udata, udatan, udatbc, status);
+
+/* We carry on here only for a call actually in place; IFF status(1)
+   equals xs$cmp */
+
+      if (status(1) ^= xs$cmp)
+      then
+         return;
+
+/* Now parse the facility field for fast select request. This is done
+   for the X.25 fast select definiton; any national facilities terminate
+   the search. If there is no facility field at all, just return (saying
+   xs$not) */
+
+      if (fct_bc = 0)
+      then
+         return;
+
+/*
+   The facility field format is described by X.25 chap 7.4.1. It
+   consists of elements. Each element consists of facility code and
+   parameter. To determine this facility parameter's length:
+   the first 2 bits in the code specify a class:
+
+         +8_7_6_5_4_3_2_1+         +8_7_6_5_4_3_2_1+
+   A : 0 |0 0 X X X X X X|   B : 0 |0 1 X X X X X X|
+       1 |fcty parameter |       1 |   facility    |
+         +---------------+       2 |   parameter   |
+                                   +---------------+
+
+         +8_7_6_5_4_3_2_1+          +8_7_6_5_4_3_2_1+
+   C : 0 |1 0 X X X X X X|    D : 0 |1 1 X X X X X X|
+       1 |   facility    |        1 |fcty fld length|
+       2 |   parameter   |        2 |   facility    |
+       3 |     field     |        3 |   parameter   |
+         +---------------+          |      .        |
+                                    |      .        |
+                                    +---------------+
+
+*/
+
+      junk = 1;                        /* "point" to 1st fcty field */
+
+fcty_parse:
+      do while(junk < fct_bc);
+
+         this_char = SUBSTR(fct_field, junk, 1);
+         fcty_code = ADDR(this_char) -> fcty_bits;
+
+         junk = junk + 1;              /* point to parameter/fcty length */
+
+         if substr(fcty_code, 1, 2) ^= '11'b
+         then
+            fcty_length = bin(substr(fcty_code, 1, 2), 15) + 1;
+         else
+            do;
+               this_char = SUBSTR(fct_field, junk, 1);
+               fcty_length = bin(ADDR(this_char) -> fcty_bits, 15);
+               junk = junk + 1;        /* point to start of parameter */
+            end;
+
+/*
+   Facilities are divided into three fields, the international facilities,
+   the calling DTE's network, and the called DTE's network.  International
+   facilities always come first. The start of each of the others is
+   signified by a facility marker, which is '00000000'
+*/
+
+         if fcty_code = '00'b4
+         then
+            leave;
+
+/*
+   The facility code and parameter values for fast select are:
+
+          0 0 0 0 0 0 0 1
+          x y 0 0 0 0 0 z
+
+   x y = 0 0 => not fast select
+   x y = 1 0 => fast select, not restricted response
+   x y = 1 1 => fast select, restricted response
+
+   z is used for reverse charge indication
+*/
+
+         if fcty_code = '01'b4
+         then
+            do;
+               this_char = SUBSTR(fct_field, junk, 1);
+               select(substr(ADDR(this_char) -> fcty_bits, 1, 2));
+               when('00'b, '01'b)
+                  anskey = xs$not;
+               when('10'b)
+                  anskey = xs$acc;
+               when('11'b)
+                  anskey = xs$clr;
+               end;
+            end;
+
+/* Now update junk to point to next facility element */
+
+         junk = junk + fcty_length;
+
+      end;                             /* of fcty_parse */
+
+      return;
+
+   end;
+
+/* END-CODE */
+

@@ -1,0 +1,188 @@
+/* MON$CREATE_JOB.SPL, PrintMaster, Jim Wilcoxson, December 21, 1983          */
+/* Create job entry from keyword list.                                        */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$create_job : procedure (kwlp) returns (ptr);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+dcl
+   kwlp        ptr;                         /* keyword list pointer (in) */
+
+dcl
+   alloc_path_length   bin,                 /* length of pathname to allocate */
+   based_path char(alloc_path_length) var based,  /* template for allocating */
+   delete_info_kws bit,                     /* true if info keywords can be deleted */
+   dow            bin,                      /* day of the week */
+   jep            ptr,                      /* local job entry pointer */
+   kwp            ptr,                      /* keyword pointer */
+   next_kwp       ptr,                      /* next keyword pointer */
+   status         bin;
+
+
+   if kwlp = null then
+      call err$ (err$coding_et, 'Null kwl given', 0, 0, 0);
+
+   allocate je set(jep);
+
+   jep->je.next = null;
+   jep->je.job_id = -1;
+   jep->je.transaction_id = -1;
+   jep->je.pathname_ptr = null;
+   jep->je.queue_partition = '';
+   jep->je.copies_left = 0;
+   jep->je.kwlp = kwlp;
+   jep->je.uid = '';
+   jep->je.time_scanned = -maxint31;        /* way in the past */
+   jep->je.deferred_date = -maxint31;       /* way in the past */
+   jep->je.start_deadline = maxint31;       /* way into the future */
+   jep->je.date_queued = maxint31;          /* way into the future */
+   jep->je.size = 0;
+   jep->je.status = 0;                      /* currently unused */
+   jep->je.priority = -1;
+   jep->je.parallel_ok = false;
+
+   /* set is_open and in_queue before entering keyword loop,
+      because these are needed in the loop */
+
+   jep->je.is_open = kwl$find_kw (kw$opened, kwlp, kwp)
+                          & ^kwl$find_kw (kw$inuse_ok, kwlp, kwp);
+   jep->je.in_queue = kwl$find_kw (kw$copyfile, kwlp, kwp);
+
+   /* if job is remote or I am the highest master, the info keywords
+      can be deleted on this job.  If I'm not the highest master, I
+      may have to forward this job to another master later, and the
+      info keywords will be needed */
+
+   delete_info_kws = false;
+   if mon.my_system_index = 1 then
+      delete_info_kws = true;
+   else
+      if gbl.I_am_master then
+         if kwl$find_kw (kw$q_system, kwlp, kwp) then
+            if kwp->kw_entry.pf_value->value ^= psv.my_system_id then
+               delete_info_kws = true;
+
+   /* scan through keywords, creating the job entry */
+
+   do kwp = kwlp repeat next_kwp while (kwp ^= null);
+
+      /* get forward pointer now, because keyword may be deleted */
+
+      next_kwp = kwp->kw_entry.next;
+
+dcl select_hack char(32); /*
+      select (kwp->kw_entry.kw);
+*/    select_hack =  (kwp->kw_entry.kw);
+      select (select_hack);
+
+         when (kw$copies_left)
+            jep->je.copies_left = kwp->kw_entry.pf_value->value;
+
+         when (kw$defer) do;
+            call cv$dtb (kwp->kw_entry.pf_value->value,
+                         jep->je.deferred_date, status);
+            if status ^= 0 then do;
+               call err$ (err$log_event_et, 'Invalid defer date.', 0, 0, 0);
+               jep->je.deferred_date = -maxint31;
+               end;
+            end;
+
+         when (kw$deadline) do;
+            call cv$dtb (kwp->kw_entry.pf_value->value,
+                         jep->je.start_deadline, status);
+            if status ^= 0 then do;
+               call err$ (err$log_event_et, 'Invalid deadline.', 0, 0, 0);
+               jep->je.start_deadline = -maxint31;
+               end;
+            end;
+
+         when (kw$dt_spooled) do;
+            call cv$dtb (kwp->kw_entry.pf_value->value,
+                         jep->je.date_queued, status);
+            if status ^= 0 then do;
+               call err$ (err$log_event_et, 'Invalid date queued.', 0, 0, 0);
+               jep->je.date_queued = maxint31;
+               end;
+            end;
+
+         when (kw$parallel_ok)
+            jep->je.parallel_ok = true;
+
+         when (kw$pathname)
+
+            /* only store the job's pathname if the job job is not in the queue
+               Otherwise, the monitor will not need the pathname */
+
+            if ^jep->je.in_queue then do;
+               alloc_path_length = length (kwp->kw_entry.pf_value->value);
+               allocate based_path set (jep->je.pathname_ptr);
+               jep->je.pathname_ptr->based_path = kwp->kw_entry.pf_value->value;
+               end;
+
+         when (kw$q_partition)
+            jep->je.queue_partition = kwp->kw_entry.pf_value->value;
+
+         when (kw$size)
+            jep->je.size = kwp->kw_entry.pf_value->value;
+
+         when (kw$job_id)
+            jep->je.job_id = kwp->kw_entry.pf_value->value;
+
+         when (kw$tran_id)
+             jep->je.transaction_id = kwp->kw_entry.pf_value->value;
+
+         when (kw$priority)
+            jep->je.priority = kwp->kw_entry.pf_value->value;
+
+         when (kw$unique_id)
+            jep->je.uid = kwp->kw_entry.pf_value->value;
+
+         otherwise;
+
+      end; /* select */
+
+      /* if I am a monitor, the info keywords cannot be deleted since
+         the job keyword list will be eventually passed to the master;
+         if I am the highest priority master, all info keywords
+         can be deleted since the job will never be passed to another
+         master.  However, if I am a lower priority monitor, and
+         CURRENTLY a master, the info keywords can only be deleted if
+         the job is remote; local jobs' keywords cannot be deleted,
+         since they must be passed to the master if a takeover occurs -
+         the queue is not re-read on a takeover if I was a master */
+
+      if delete_info_kws & kwp->kw_entry.flags.info then do;
+         kwl.in_edit_kwl = true;             /* allows delete of protected kw */
+         call kwl$delete_kw (kwp, jep->je.kwlp);
+         kwl.in_edit_kwl = false;
+         end;
+
+      end; /* do kwp */
+
+   /* check job entry */
+
+   if jep->je.job_id = -1
+    | jep->je.priority = -1
+    | length (jep->je.queue_partition) = 0
+    | (^jep->je.in_queue & jep->je.pathname_ptr = null)
+    | jep->je.transaction_id = -1
+    | jep->je.uid = '' then
+      call err$ (err$coding_et, 'Missing critical keywords', 0, 0, 0);
+
+   /* if deadline has already elapsed, raise priority */
+
+   if jep->je.start_deadline <= date$() & jep->je.priority ^= 0 then
+      jep->je.priority = maxint;
+
+   return (jep);
+
+end mon$create_job;

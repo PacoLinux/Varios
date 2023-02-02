@@ -1,0 +1,210 @@
+/* DELETE_PRINT_JOB.SPL, PrintMaster, Jeff Hostetler, February 3, 1984        */
+/* Delete Job Command.                                                        */
+/*                                                                            */
+/*    DELETE_PRINT_JOB {-HELP | -Job <id1> [<id2>] ... [<id10>]               */
+/*                              [-Queue <partition>]}                         */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+dpj: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%list;
+
+%replace
+   max_job_list   by 10;
+
+   dcl
+      cl          char(max_cl) var,         /* (in) */
+      com_status  bin,                      /* (out) */
+
+      code                    bin,
+      job_id                  bin,
+      job_name                char(32) var,
+      i                       bin,
+      x                       bin,
+      we_did_initialization   bit,
+      error_encountered       bit,
+      job_list (max_job_list) bin,
+      1  struc,
+         2  job_id1  (max_job_list)     bin(31),
+         2  job_given         bit(1) aligned,
+         2  job_id2  (max_job_list)     bin(31),
+         2  queue_given       bit(1) aligned,
+         2  partition         char(32) var,
+         2  help_given        bit(1) aligned,
+         2  nq_given          bit(1) aligned;
+
+%page;
+   job_id = -1;
+   error_encountered = false;
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+
+   call gp$version ('Delete Print Job');
+
+   on condition (err$condition_after_msg)
+      begin;
+      error_encountered = true;
+      if err$es.type = err$user_et then do;
+         if err$es.status1 = err$job_not_found_ue then
+            goto do_next_job;
+         if err$es.status1 = err$not_your_job_ue then
+            goto do_next_job;
+         end;
+      if we_did_initialization then
+         call gp$any;
+      else
+         call cnsig$ (code);
+      end;
+
+%page;
+
+   call parse_cl;
+
+   if length (struc.partition) = 0 then
+      call at$any (k$setc, gbl$spool_queue, code);
+   else
+      call at$abs (k$setc, struc.partition, gbl$spool_queue, code);
+   if code ^= 0 then do;
+      if length (struc.partition) ^= 0 then
+         call ioa$ ('No print queue on this partition.%.', -1);
+      else
+         call ioa$ ('No print queues found.%.', -1);
+      goto abnormal_return;
+      end;
+
+   do i = 1 to max_job_list while (job_list(i) >= 0);
+      job_id = job_list(i);
+      if spl$dj (nq_given, partition, job_id, job_name) then do;
+         x = min(length(job_name), binary(1));
+         call ioa$ ('Job %d%#x%v deleted from queue %v.%.', -1, job_id,
+                    x, job_name, partition);
+         end;
+      else
+         call err$ (err$coding_et, 'SPL$ procedure returned to main with an error', 0, 0, 0);
+
+do_next_job:
+      end;
+
+   if we_did_initialization then
+      call gp$terminate;
+   if error_encountered
+      then com_status = severity$error;
+      else com_status = severity$ok;
+   return;
+
+
+abnormal_return:
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+
+help_wanted:
+   call display_help;
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+%page;
+/* delete_print_job.parse_cl, PrintMaster, Jeff Hostetler, February 3, 1984   */
+/* procedure to interpret the command line (see initial comment for usage).   */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print */
+         caller_name    by 'delete_print_job',
+         pixel_size     by 82;
+
+      dcl
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         i              bin,
+         pic      char(pixel_size) var static
+          init('10 * dec = -1;-j, -job 10 * dec = -1; -q, -queue entry; -help; -nq, -no_query; end');
+
+%page;
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ (''); /* does not return */
+
+      if help_given then
+         goto help_wanted;
+
+      do i = 1 to max_job_list;
+         if job_given then
+            job_list(i) = job_id2(i);
+         else
+            job_list(i) =  job_id1(i);
+         end;
+
+      if job_list(1) < 0 then
+         call error_ ('Job id missing.');
+
+      return;
+      end parse_cl;
+
+
+%page;
+/* delete_print_job.error_, PrintMaster, Jeff Hostetler, February 4, 1984     */
+/* procedure to display error message and command usage and call err$.        */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg         char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call ioa$er ('Type DPJ -HELP or HELP DPJ for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* delete_print_job.display_help, PrintMaster, Jeff Hostetler, March 27, 1984 */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage: DPJ j1 j2 ... j10  options%.', -1);
+      call ioa$ ('   or: DPJ -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('OPTIONS may be blank or any combination of the following:%.', -1);
+      call ioa$ ('   -Queue partition  -- Delete jobs from queue on PARTITION instead of first%.', -1);
+      call ioa$ ('                        queue found%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('   -NQ               -- Don''t ask for verification when deleting another%.', -1);
+      call ioa$ ('                        user''s job (operators only).%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('Users may only delete their own jobs.  Operators may delete%.', -1);
+      call ioa$ ('any job.  Deleting a job causes any copies currently printing to%.', -1);
+      call ioa$ ('aborted.%.', -1);
+      call ioa$ ('%.', -1);
+
+      return;
+      end display_help;
+
+   end dpj;

@@ -1,0 +1,246 @@
+/* AREA_MAN.PLP, PRIMOS>R3S, OS GROUP, 12/27/79.
+/* This is a general PL/I Area Manager.
+/* Copyright (c) 1979, Prime Computer, Inc., Wellesley, MA 02181
+/*
+/* DESCRIPTION:
+   This module contains three entrypoints: ar$in to initialize an area
+   of a given size; ar$alc to allocate a block of a given size in an area;
+   and ar$fre to free a given block in an area.  The Knuth Boundary Tag
+   method is used.  Areas and blocks within them are contrained to be even
+   in size.  An area must be no smaller than 12 words, and the usable storage
+   in an area of size S is (S - 10) words.
+
+/* ABNORMAL CONDITIONS:
+   The condition AREA is raised if an attempt is made to initialize an area
+   of a size that is too large or too small.  It is also raised if an allocate
+   or free request is made on an uninitialized area.  If an area runs out
+   of storage, ar$alc returns the null pointer, and no condition is raised.
+
+/* IMPLEMENTATION:
+   An area must start on an even word address.  The structure arh below
+   is the area header, and is present in every area.  Initially the free
+   list contains one block of maximum size.  Other blocks are created as
+   allocations and freeings are done.  They each have a header of the
+   form shown by art below.  In addition, a block has a trailer word
+   in the form shown by tag below.
+
+/* MODIFICATIONS:
+   12/27/79 Hampson Changed ar$alc not to signal AREA if aloc_size = (0,1).
+   04/23/79 Hampson Got rid of "merge" int proc; does both merges together.
+   04/06/79 Hampson Pirated from PL1G area package.
+/*
+/***********************************************************************/
+
+ar$in:
+        proc (ap_arg, area_size) options (nocopy);
+
+dcl ap_arg ptr,                                  /* ptr to the area */
+    area_size fixed bin(31);                     /* size in words */
+
+dcl 1 arh based,                                 /* area header */
+       2 mark1 bit(16) aligned,                  /* init ('8000'b4) */
+       2 free_fwd fixed bin,                     /* relp to free list next */
+       2 free_bak fixed bin,                     /* relp to free list prev */
+       2 rot_ptr fixed bin,                      /* rotating ptr */
+       2 reserved(2) fixed bin,
+       2 mark2 bit(16) aligned,                  /* init ('8000'b4) */
+       2 free_blk,                               /* the first free block */
+          3 size fixed bin,                      /* in doublewords excluding header/trailer */
+          3 fwd fixed bin,                       /* relp to free list next */
+          3 bak fixed bin;                       /* relp to free list prev */
+
+%replace free_blk_offset by 7,                   /* offset (arh.free_blk) */
+         free_blk_chain by 0;                    /* offset (arh.mark1) */
+
+dcl 1 art based,                                 /* area trailer - end boundary tag */
+       2 size fixed bin,                         /* follows storage of arg.free_blk */
+       2 mark3 bit(16) aligned;                  /* init ('8000'b4) */
+
+dcl 1 afb like arh.free_blk based;               /* free block header */
+
+dcl 1 tag based,                                 /* free block trailer */
+       2 not_free bit(1),                        /* also overlay on afb.size */
+       2 size bit(15);
+
+dcl tag_word fixed bin based;
+
+dcl ap ptr,                                      /* local copy of ap_arg */
+    asize_dw fixed bin,                          /* size in doublewords */
+    (bp, tp) ptr,                                /* working ptrs */
+    tprel fixed bin,
+    bprel fixed bin,
+    (new_size, t_size) fixed bin,
+    trp fixed bin;                               /* allocate loop ctrl var */
+
+dcl signl$ entry (char(*) var, ptr, fixed bin, ptr, fixed bin, bit(16) aligned),
+    area_ char(4) var static init ('AREA');
+
+/* BEGIN entrypoint ar$in: initialize area header. */
+
+        ap = ap_arg;                             /* speed access */
+        if area_size < 12 | area_size > 65536
+           then goto raise_area;                 /* size not correct */
+        if mod (rel (ap), 2) ^= 0
+           then goto raise_area;                 /* not even-aligned */
+
+        asize_dw = divide (area_size - 10, 2, 15);   /* usable storage in d.w. */
+        ap -> arh.mark1 = '8000'b4;
+        ap -> arh.free_fwd = free_blk_offset;    /* build initial freelist */
+        ap -> arh.free_bak = free_blk_offset;
+        ap -> arh.rot_ptr = free_blk_offset;     /* 1st block to alloc */
+        ap -> arh.mark2 = '8000'b4;
+        ap -> arh.free_blk.size = asize_dw;
+        ap -> arh.free_blk.fwd = free_blk_chain;   /* backthread for nice list */
+        ap -> arh.free_blk.bak = free_blk_chain;
+        tp = addrel (ap, asize_dw * 2 + 8);      /* area trailer */
+        tp -> art.size = asize_dw;
+        tp -> art.mark3 = '8000'b4;
+
+        return;
+
+/* BEGIN entrypoint ar$alc: allocate in area. */
+
+ar$alc:
+        entry (ap_arg, aloc_size) returns (ptr);
+
+dcl aloc_size fixed bin(31);                     /* size needed in words */
+
+        ap = ap_arg;
+        call area_validate;                      /* make sure not uninitialized */
+
+        if aloc_size < 0 | aloc_size > 65526
+           then goto raise_area;                 /* can never alloc blocks of these sizes */
+        if aloc_size < 2
+           then asize_dw = 1;                    /* max (2, aloc_size) */
+        else asize_dw = divide (aloc_size + 1, 2, 15);   /* size in double words */
+
+/* Starting at block pointed to by rotating ptr, find the first block
+   that has at least enough storage.  If the block found is too large,
+   it is split into the needed block and a new (smaller) free block.  */
+
+        do trp = ap -> arh.rot_ptr repeat bp -> afb.fwd until (bp -> afb.fwd = ap -> arh.
+                 rot_ptr);
+           bp = addrel (ap, trp);                /* cv offset to ptr to block */
+           if bp -> afb.size < asize_dw
+              then;                              /* too small - skip it */
+           else if bp -> afb.size < asize_dw + 3   /* 6 wds min to split */
+              then do;                           /* first ~exactly - use it */
+              call unlink (bp);                  /* remove from free list */
+              ap -> arh.rot_ptr = bp -> afb.fwd;   /* update rotating ptr */
+              return (addr (bp -> afb.fwd));     /* ptr to user storage */
+              end;
+           else do;                              /* block too big - split it */
+              tp = addrel (bp, 2 * asize_dw + 2);   /* ptr to new block */
+              tprel = rel (tp) - rel (ap);       /* area-relative ptr */
+              tp -> afb.size = bp -> afb.size - asize_dw - 1;   /* size new free blk */
+              addrel (tp, -1) -> tag.not_free = '1'b;   /* allocate */
+              addrel (tp, -1) -> tag.size = bit (asize_dw, 15);
+              addrel (tp, tp -> afb.size * 2 + 1) -> tag_word = tp -> afb.size;   /* bottom tag of free */
+              tp -> afb.fwd = bp -> afb.fwd;     /* move links to new free blk */
+              tp -> afb.bak = bp -> afb.bak;
+              addrel (ap, bp -> afb.fwd) -> afb.bak = tprel;   /* account for moved header */
+              addrel (ap, bp -> afb.bak) -> afb.fwd = tprel;
+              bp -> tag.not_free = '1'b;         /* top tag of allocated blk */
+              bp -> tag.size = bit (asize_dw, 15);
+              ap -> arh.rot_ptr = bp -> afb.fwd;   /* update rotating ptr */
+              return (addr (bp -> afb.fwd));     /* ptr to user storage */
+              end;
+
+           end;                                  /* search loop */
+
+        return (null());                         /* no free blocks large enough */
+
+/* BEGIN entrypoint ar$fre: free block in area */
+
+ar$fre:
+        entry (ap_arg, blockp_arg);
+
+dcl blockp_arg ptr;                              /* block to free */
+
+        ap = ap_arg;
+        call area_validate;
+        bp = addrel (blockp_arg, -1);            /* adjust to point to block header */
+        bprel = rel (bp) - rel (ap);             /* convert to offset */
+        tp = addrel (bp, 2 * bp -> afb.size + 2);   /* block below */
+
+/* If block above is not free, thread this block onto the free list.
+   Else, call block above the new free block header, and adjust lengths.  */
+
+        new_size = bin (bp -> tag.size, 15);     /* size of block being freed */
+        if addrel (bp, -1) -> tag.not_free
+           then do;
+           bp -> afb.fwd = ap -> arh.free_fwd;
+           bp -> afb.bak = free_blk_chain;
+           addrel (ap, ap -> arh.free_fwd) -> afb.bak = bprel;
+           ap -> arh.free_fwd = bprel;
+           end;
+        else do;                                 /* above block is free.. */
+           t_size = bin (addrel (bp, -1) -> tag.size, 15);   /* size of block above */
+           new_size = t_size + new_size + 1;
+           bp = addrel (bp, -2 * t_size - 2);    /* point to block above */
+           end;
+
+/* If block below is free, unlink it from the freelist. */
+
+        if ^(tp -> tag.not_free)
+           then do;
+           call unlink (tp);
+           new_size = new_size + bin (tp -> tag.size, 15) + 1;
+           end;
+
+/* Now fix the top and bottom tags of the resulting block (possibly
+   two-way merged), fixing free flag and size at once.  */
+
+        bp -> afb.size = new_size;
+        addrel (bp, 2 * new_size + 1) -> tag_word = new_size;
+
+        return;                                  /* block is freed */
+
+/* *************************************************************
+   unlink (blkp): remove block blkp from freelist in area addressed
+   by ap. Fix rotating ptr if we unlink block it addresses.
+   ************************************************************* */
+
+unlink:
+           proc (blkp) options (shortcall);
+
+dcl blkp ptr;                                    /* ptr to block to unlink */
+
+           addrel (ap, blkp -> afb.bak) -> afb.fwd = blkp -> afb.fwd;   /* fix threads */
+           addrel (ap, blkp -> afb.fwd) -> afb.bak = blkp -> afb.bak;
+           blkp -> tag.not_free = '1'b;          /* mark allocated */
+           addrel (blkp, blkp -> afb.size * 2 + 1) -> tag.not_free = '1'b;
+           if addrel (ap, ap -> arh.rot_ptr) = blkp
+              then ap -> arh.rot_ptr = blkp -> afb.fwd;
+
+           end;                                  /* unlink */
+
+/* *************************************************************
+   area_validate (): check that the presented area object (pointed
+   to by ap) looks like an area.  Heuristics are used.
+   ************************************************************* */
+
+area_validate:
+           proc options (shortcall);
+
+           if mod (rel (ap), 2) ^= 0
+              then goto raise_area;
+           if ap -> arh.mark1 ^= '8000'b4
+              then goto raise_area;
+           if ap -> arh.mark2 ^= '8000'b4
+              then goto raise_area;
+
+           end;                                  /* area_validate */
+
+/* We come here to raise the AREA condition due to a defective area
+   or an allocate/free request on an uninitialized area.
+   The machine state passed is our return info. The info structure
+   passed is:
+   dcl 1 info,
+   2 ptr_to_area ptr;
+   */
+
+raise_area:
+        call signl$ (area_, stackptr(), 20, addr (ap), 2, '000'b);   /* no return */
+
+        end;                                     /* area_man */

@@ -1,0 +1,169 @@
+/* LIST_PRINT_JOB.SPL, PrintMaster, Jeff Hostetler, February 11, 1984         */
+/* List Job Command.                                                          */
+/*                                                                            */
+/*    LIST_PRINT_JOB {-HELP |                                                 */
+/*                 -Job <job_id> [-List [<pathname>]] [-Queue [<partition>]]} */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+lpj: proc (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>spl$lj.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%list;
+
+   dcl
+      cl          char(max_cl) var,
+      com_status  bin,
+
+      indent_count            bin,
+      job_id                  bin,
+      we_did_initialization   bit,
+      p_kwl                   ptr,
+      status                  bin,
+      1  struc,
+         2  long_job_id1      bin(31),
+         2  job_given         bit(1) aligned,
+         2  long_job_id2      bin(31),
+         2  queue_given       bit(1) aligned,
+         2  partition         char(32) var,
+         2  list_given        bit(1) aligned,
+         2  pathname          char(128) var,
+         2  help_given        bit(1) aligned;
+
+%page;
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   we_did_initialization =  gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+   call gp$version ('List Print Job');
+
+   call parse_cl;
+
+   if length (struc.pathname) = 0 then
+      indent_count = 3;
+   else do;
+      if ^tnchk$ (k$uprc, struc.pathname) then
+         call err$ (err$user_et, 'Illegal list pathname.', err$cl_ue, 0, 0);
+      indent_count = 0;
+      end;
+
+   if ^spl$lj (struc.partition, job_id, p_kwl, false) then
+      call err$ (err$coding_et, 'SPL$ procedure returned to main with an error', 0, 0, 0);
+   if length (struc.pathname) = 0 then
+      call ioa$ ('%/Characteristics of job %d:%.', -1, job_id);
+   call kwl$kwl_to_text (struc.pathname, p_kwl, indent_count);
+   call kwl$destroy_kwl (p_kwl);
+
+normal_return:
+
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+help_wanted:
+   call display_help;
+   goto normal_return;
+
+abnormal_return:
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+   /* logical end of list_print_job */
+
+%page;
+/* list_print_job.parse_cl, PrintMaster, Jeff Hostetler, February 11, 1984    */
+/* procedure to interpret the command line (see initial comment for usage).   */
+/******************************************************************************/
+
+   parse_cl: proc;
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print */
+         caller_name    by 'list_print_job',
+         pixel_size     by 73;
+
+      dcl
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         pic            char(pixel_size) var static init
+            ('dec = -1; -j, -job dec = -1; -q, -queue entry; -l, -list tree; -help; end');
+
+
+%page;
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ (''); /* does not return */
+
+      if struc.help_given then
+         goto help_wanted;
+
+      if struc.job_given then
+         job_id = struc.long_job_id2;
+      else
+         job_id = struc.long_job_id1;
+
+      if job_id = -1 then                   /* no value given */
+         call error_ ('Missing JOBID.');
+
+      call gp$unquote (struc.pathname);
+
+      return;
+      end parse_cl;
+
+%page;
+/* list_print_job.error_, PrintMaster, Jeff Hostetler, February 11, 1984      */
+/* procedure to display error message and command usage and call err$.        */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg         char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call ioa$er ('Type LPJ -HELP or HELP LPJ for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* list_print_job.display_help, PrintMaster, Jeff Hostetler, March 27, 1984   */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage:  LPJ job_option queue_option%.', -1);
+      call ioa$ ('   or:  LPJ -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('JOB_OPTION must be one of the following:%.', -1);
+      call ioa$ ('   -Job nr                -- List the job with number NR%.', -1);
+      call ioa$ ('   -Job nr -List pathname -- List the job with number NR into PATHNAME%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('QUEUE_OPTION must be blank or the following:%.', -1);
+      call ioa$ ('   -Queue partition -- List jobs from the queue on PARTITION%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('If QUEUE_OPTION is blank then the first queue found will be listed.%.', -1);
+      call ioa$ ('%.', -1);
+      return;
+      end display_help;
+
+   end lpj;

@@ -1,0 +1,458 @@
+/* Disk_dim.plp, Dutil, JEW, 15-Mar-81
+   Disk I/O routines for Dutil.
+*/
+
+Disk_dim: proc;
+
+$Insert *>insert>global.plp.ins
+
+%Replace
+   bcb_size by 10,                /* size of a bcb in words */
+   free_area_size by 11000,       /* nr_buffers * (1040 + bcb_size) + 10 */
+   nr_buffers by 10;            /* number of disk buffers */
+
+dcl
+   ioa$er entry options (variable);
+
+dcl
+   1  bcb   based,        /* buffer control block */
+      2  next           ptr,       /* pointer to next bcb */
+      2  back           ptr,      /* pointer to previous bcb */
+      2  dvno           bin,      /* device number */
+      2  ra             bin(31),  /* record address */
+      2  flags,
+         3  modified    bit,      /* buffer has been modified */
+      2  bufp           ptr,      /* pointer to data buffer */
+
+   c2080  char(2080) based,
+   free_area (free_area_size) bin static ext,  /* free pool for bcbs and buffers */
+   iop  ptr  static,       /* pointer to srwrec pointer for buffer */
+   (top, bottom) ptr static,    /* pointer to first and last buffers */
+   p     ptr;
+
+/**/
+
+Disk_init: entry;      /* called from Main */
+
+   /* allocate and initialize all bcb's and disk buffers */
+
+dcl
+   ar$alc entry (ptr, bin(31)) returns (ptr),
+   ar$in  entry (ptr, bin(31)),
+   exit   entry;
+
+dcl
+   freep ptr,
+   i     bin;
+
+
+   /* allocate and initialize bcb's */
+
+   freep = addr (free_area);
+   top = null ();
+   bottom = null ();
+   call ar$in (freep, free_area_size);
+
+   do i = 1 to nr_buffers;
+
+      p = ar$alc (freep, bcb_size);
+      if p = null () then
+         goto not_enough_room;
+
+      /* fill in bcb */
+
+      p -> bcb.next = top;
+      if i = 1 then
+         bottom = p;
+      p -> bcb.dvno = -1;
+      p -> bcb.flags.modified = false;
+      if top ^= null () then        /* fill in back pointer of last block */
+         top -> bcb.back = p;
+      top = p;
+
+   end;
+
+   top -> bcb.back = null ();
+
+   /* allocate buffers */
+
+   do p = top repeat p->bcb.next while (p ^= null());
+
+      p -> bcb.bufp = ar$alc (freep, 1040);
+      if p -> bcb.bufp = null () then
+         goto not_enough_room;
+
+   end;
+
+   /* allocate "pointer" for Srwrec */
+
+   iop = ar$alc (freep, 1);
+   if iop = null () then
+      goto not_enough_room;
+
+   /* initialize various counters and meters */
+
+   modified_recs = 0;
+   disk_meters.found = 0;
+   disk_meters.read_calls = 0;
+   disk_meters.write_calls = 0;
+
+   return;     /* all successful */
+
+not_enough_room:
+
+   call ioa$er ('Not enough room for %d buffers. (disk_dim)%.', -1, nr_buffers);
+   call exit;
+   goto not_enough_room;
+
+/**/
+
+Diskio: entry (key, ra, dvno, buffer, status);
+
+   /* Main disk I/O routine...handles buffered reads and writes.
+
+      Keys bits are:
+
+         1     Write operation
+         2     Ignore checksum errors
+         3     Bypass disk read
+         4     Format track
+         5     Do error correction
+         6     Demote buffer after read/write
+         7     Do cra check
+         8     Force disk I/O
+         9     Special call from Update routine below
+        10     Print error messages
+
+      Status bits are:
+         1     Ecc error occurred
+         2     Cra mismatch
+         3     Drive failure
+         4     Write protect (software write protect)
+         5     Illegal seek  (checked by software)
+
+*/
+
+
+dcl
+   1  key  like diskio_key,
+   ra       bin(31),
+   dvno     bin,
+   buffer   char(2080),
+   1  status like diskio_status;
+
+dcl
+   found    bit;
+
+
+   /* common setup logic */
+
+   addr(status) -> fb15 = 0;
+   p = search ();    /* search buffers, set "found" */
+   if ^found then
+      call claim_bottom;          /* claim last buffer & set p */
+
+   if key.write then
+      do;
+
+      /* Write a disk record */
+
+      p -> bcb.bufp -> c2080 = buffer;    /* move data to io buffer */
+      if key.force_io then
+         call io;
+      else
+         do;
+         p -> bcb.flags.modified = true;
+         modified_recs = modified_recs + 1;
+         end;
+
+      disk_meters.write_calls = disk_meters.write_calls + 1;
+
+      end;      /* write section */
+
+   else
+      do;
+
+      /* Read routine */
+
+      if ^key.bypass_read then
+         do;
+         if key.force_io | ^found then
+            call io;      /* read in disk record */
+         buffer = p -> bcb.bufp -> c2080;     /* move data to user buffer */
+         end;
+
+      disk_meters.read_calls = disk_meters.read_calls + 1;
+
+      end;    /* read routine */
+
+   /* promote or demote the buffer unless Disk_update call or I/O error */
+
+   if ^key.update_call then
+      if addr(status) -> fb15 = 0 then
+         if key.demote then
+            call demote;
+         else
+            call promote;
+      else
+
+         /* an I/O error occurred...invalidate this buffer */
+
+         p -> bcb.dvno = -1;
+
+   return;
+
+/**/
+
+/* Internal procedure to search list for a record.  Returns a pointer to
+   the buffer if found, else null.  Variable "found" is set true/false */
+
+Search: proc returns (ptr) options (shortcall);
+
+dcl
+   p   ptr;
+
+
+   found = true;
+   do p = top repeat (p -> bcb.next) while (p ^= null());
+      if p -> bcb.ra = ra & p -> bcb.dvno = dvno then
+         do;
+
+         /* found record, update meters and return pointer to bcb */
+
+         disk_meters.found = disk_meters.found + 1;
+         return (p);
+         end;
+   end;
+   found = false;
+   return (null());
+
+end;    /* Search */
+/**/
+
+/* Claim_bottom - claim the bottom buffer, writing it to disk if it was
+   modified.  P is set to bottom */
+
+Claim_bottom: proc options (shortcall);
+
+   p = bottom;     /* do this now for Io */
+   if bottom -> bcb.flags.modified then
+      do;
+      call io;
+      bottom -> bcb.flags.modified = false;
+      modified_recs = modified_recs - 1;
+      end;
+
+   /* fill in this bcb with our info */
+
+   bottom -> bcb.dvno = dvno;
+   bottom -> bcb.ra   = ra;
+
+end;    /* Claim_bottom */
+
+/**/
+
+Promote: proc options (shortcall);
+
+   /* moves buffer at p to top of list */
+
+   if p ^= top then
+      do;         /* unlink block from its current position */
+      p -> bcb.back -> bcb.next = p -> bcb.next;
+      if p ^= bottom then
+         p -> bcb.next -> bcb.back = p -> bcb.back;
+      else
+         bottom = bottom -> bcb.back;
+
+      p -> bcb.next = top;
+      p -> bcb.back = null ();
+      top -> bcb.back = p;
+      top = p;
+      end;
+
+end;    /* promote */
+
+/**/
+
+/* Demote - demote a buffer to end of list */
+
+Demote: proc options (shortcall);
+
+   /* move buffer at p to bottom of list */
+
+   if p ^= bottom then
+      do;
+
+      p -> bcb.next -> bcb.back = p -> bcb.back;
+      if p ^= top then
+         p -> bcb.back -> bcb.next = p -> bcb.next;
+      else
+         top = top -> bcb.next;     /* moved top to bottom */
+
+      /* now link to bottom */
+
+      p -> bcb.next = null ();
+      p -> bcb.back = bottom;
+      bottom -> bcb.next = p;
+      bottom = p;
+      end;
+
+end;    /* Demote */
+
+/**/
+
+Io: proc options (shortcall);
+
+   /* Read/Write into the buffer whose buffer control block is pointed
+      to by p */
+
+dcl
+   srwrec entry (bin, bin, bin, 1, 2 bit, 2 bit, 2 bit, 2 bit, 2 bit,
+                 2 bit(11), bin(31), bin, label),
+   to_hts entry (bin(31), bin, bin, bin, bin, label);
+
+dcl
+   bit16    bit(16) based,
+   fb15     bin(15) based,
+   head     bin,
+   msg      char(20) var,    /* error message */
+   rw       char(5) var,     /* read/write */
+   sector   bin,
+   1  srwkey,
+      2  check_cra      bit,
+      2  ignore_checksum bit,
+      2  reserved       bit,
+      2  format         bit,
+      2  do_ecc         bit,
+      2  nr_channels    bit(11),
+   track    bin,
+   type     bin;     /* 0 = read, 1 = write */
+
+
+   /* check for record address out of range first */
+
+   if ra < 0 | ra > maxra then
+      do;
+      status.illegal_seek = true;
+      goto io_error;
+      end;
+
+   /* check write protect */
+
+   else if key.write & mode_flags.write_protect then
+      do;
+      status.write_protect = true;
+      goto io_error;
+      end;
+
+   /* setup srwkey based on key in diskio.  Mask off check_cra and reserved
+      bits.  Cra check is done by this routine */
+
+   addr(srwkey) -> bit16 = addr(key) -> bit16 & '01011'b;
+   type = key.write;
+   addr(status) -> fb15 = 0;
+
+   /* initialize pointer to buffer for srwrec.  This pointer is the
+      word number of the buffer.  The pointer must be in the same
+      segment as the buffers (srwrec computes virtual address by:
+         VA = ptr (segno (addr(your_pointer), your_pointer);    */
+
+   iop -> fb15 = rel (p -> bcb.bufp);
+
+   call srwrec (type, iop -> fb15, 1040, srwkey, ra, dvno, err1);
+
+   /* no error so far, check cra if requested */
+
+   if key.check_cra then
+      if p -> bcb.bufp -> disk_record.cra ^= ra then
+         do;
+         status.cra_error = true;
+         goto io_error;
+         end;
+
+   return;    /* no errors */
+
+err1:
+
+   /* ecc or drive failure error */
+
+   if key.ignore_checksum then
+      status.drive_failure = true;
+   else
+      do;
+
+      /* possibly ECC error, try i/o again ignoring ecc */
+
+      srwkey.ignore_checksum = true;
+      call srwrec (type, iop -> fb15, 1040, srwkey, ra, dvno, err2);
+
+      /* no error this time => it was ECC */
+
+      status.ecc_error = true;
+      end;
+
+   goto io_error;
+
+err2:
+
+   /* it must have been a drive failure of some kind */
+
+   status.drive_failure = true;
+
+
+io_error:
+
+   if ^key.silent then
+      do;
+      if type = 0 then
+         rw = 'read';
+      else
+         rw = 'write';
+
+      if status.ecc_error then
+         msg = 'ecc uncorrectable';
+      else if status.cra_error then
+         msg = 'cra mismatch';
+      else if status.write_protect then
+         msg = 'write protect';
+      else if status.illegal_seek then
+         msg = 'illegal seek';
+      else
+         msg = 'drive failure';
+
+      call to_hts (ra, dvno, head, track, sector, bad_news);
+
+      call ioa$er ('Disk %v error (%v) at record %:3o.%.', -1, rw, msg, ra);
+      call ioa$er ('Head %d, Track %d, Sector %d.%.', -1, head, track, sector);
+
+      end;
+
+   return;
+
+bad_news:
+   call ioa$er ('Internal error in Dutil...alt return taken in to_hts.%.', -1);
+   return;
+
+end;    /* Io */
+
+/**/
+
+Disk_update: entry;
+
+   /* Flushes all disk buffers and resets modified bits */
+
+dcl
+   bit16  bit(16) based,
+   1  local_key like diskio_key,
+   1  local_status like diskio_status;
+
+   /* setup key for write, ecc, force_io, update_call */
+
+   addr(local_key) -> bit16 = '898'b4;
+   do p = top repeat p -> bcb.next while (p ^= null());
+      if p->bcb.flags.modified then
+         call diskio (local_key, p->bcb.ra, p->bcb.dvno, p->bcb.bufp->c2080,
+                      local_status);
+   end;
+
+end;   /* Disk_dim */

@@ -1,0 +1,157 @@
+/* List.plp, Dutil, JEW, 11-Feb-81
+   List ufd entries.
+
+*/
+
+List: proc (cl, info, clp);
+
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>global.plp.ins
+$Insert *>insert>ufd_ent.plp.ins
+$Insert *>insert>query.plp.ins
+$Insert *>insert>diskio.plp.ins
+
+dcl
+   help entry (char(*) var, bit),
+   ioa$ entry options (variable),
+   ioa$rs entry options (variable),
+   rd_entry entry options (variable) returns (bit),
+   tnoua entry (char(*), bin),
+   wild$ entry (char(*) var, char(*) var, bin) returns (bit);
+
+dcl
+   buf  char(12),
+   deleted_flag char(3),
+   1  ecwpos,
+      2  ra    bin(31),
+      2  wn    bin,
+   1  ent like ufd_entry,
+   entlength   bin,
+   entry_count bin,
+   fnlength    bin,
+   ignore_deleted_entries   bit,
+   1 my_rec like disk_record,
+   nextwd      bin,
+   print_entry bit,
+   ra          bin(31),
+   retlen      bin,
+   type        char(3),
+   wildcard    char(64) var,
+   wild_match  bit;
+
+
+   ignore_deleted_entries = true;
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if ^info.eol & ^info.keyword then
+      do;
+      wild_match = true;
+      wildcard = token;
+      if wild$ (wildcard, '', status) then;
+      if status ^= 0 then
+         do;
+         call ioa$ ('Bad wildcard.%.', -1);
+         goto help_me;
+         end;
+      call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+      end;
+   else
+      wild_match = false;
+
+   if info.keyword then
+      if token = '-D' then
+         do;
+         ignore_deleted_entries = false;
+         call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+         end;
+      else
+         goto help_me;
+
+   if ^info.eol then
+      goto help_me;
+
+   /* get a local copy of the current disk record */
+
+   call diskio (read_key, (rec.cra), cpartition, my_rec, status);
+   if status ^= 0 then
+      return;
+
+   /* do some simple checks to prevent casual errors */
+
+   if my_rec.type ^= 4 then
+      if ^query ('This is not a ufd record.  Do you want to continue? ',
+                  no_def) then return;
+
+   if my_rec.back ^= 0 then
+      do;
+      call ioa$ ('This is not the first record.  Bra is %:3o.%.', -1, my_rec.bra);
+      if ^query ('Do you want to continue? ', no_def) then return;
+      end;
+
+   /* check for an empty ufd */
+
+   if my_rec.count < 25 & my_rec.back = 0 then
+      do;
+      call ioa$ ('Empty ufd.%.', -1);
+      return;
+      end;
+
+   /* setup for reading ufd */
+
+   nextwd = 0;       /* override rd_entry's initialization and checking */
+   ra = my_rec.cra;
+   entry_count = 0;
+
+   do while (rd_entry (my_rec, ra, nextwd, ent, ignore_deleted_entries, ecwpos));
+
+      /* if a wildcard was given, check entry for a match */
+
+      if ^wild_match then
+         print_entry = true;
+      else
+         print_entry = wild$ (wildcard, (ent.filename), status);
+
+      if print_entry then
+         do;
+
+         /* need to print this entry */
+
+         entlength = ent.ecw.size;
+
+         select (ent.filetype.type);
+            when (0) type = 'Sam';
+            when (1) type = 'Dam';
+            when (2, 3) type = 'Seg';
+            when (4) type = 'Ufd';
+            when (-32768) type = 'Spc';
+            otherwise type = '   ';
+            end;
+
+         if ent.ecw.type = 2 then
+            deleted_flag = '(d)';
+         else
+            deleted_flag = '   ';
+
+         fnlength = (ent.scw.size - 1) * 2;
+
+         if mod (entry_count, 20) = 0 then
+            do;
+            entry_count = 0;
+            call ioa$ ('%/Ecw location  File Bra    Filename %24x Type Length%.', -1);
+            end;
+
+         call ioa$rs (buf, 12, retlen, '%:3o/%d', 7, ecwpos.ra, ecwpos.wn);
+         call tnoua (buf, 12);
+         call ioa$ ('  %6:3o  %c %32c  %3c   %d%.', -1,
+                    ent.filebra, deleted_flag, 3, ent.filename,
+                    fnlength, type, 3, entlength);
+         entry_count = entry_count + 1;
+         end;
+
+   end;
+
+   return;
+
+help_me:
+   call help ('LIST', false);
+
+end;

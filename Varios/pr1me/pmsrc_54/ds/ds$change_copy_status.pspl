@@ -1,0 +1,189 @@
+/* DS$CHANGE_COPY_STATUS.SPL, PrintMaster, Jeff Hostetler, March 16, 1984     */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+ds$change_copy_status: proc (new_copy_status, old_tsn);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>ds$completion_codes.ins.spl';
+%include '*>insert>ds.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      new_copy_status   bin,                /* (in) */
+      old_tsn           bin,                /* old transaction seq # (out) */
+
+/* NOTE: "BUF" is declared and used this way because the update operation */
+/* must be done with a force write (See "SQ$.INS.SPL" for a description */
+/* of the format of "BUF") and the copies left field must be updated
+/* atomically with the copy status words  */
+      buf                              (sq$pc_hdr_len+ds.copy_nr) bin,
+
+      cp(2)                            bin,
+      ei                               like kwl$expand_info,
+      ervec(3)                         bin,
+      flags                            like kwl$flags,
+      mess                             char(80),
+      messlen                          bin,
+      kwl_flag                         bin,
+      (kwbp, kwlp, kwp)                ptr,
+      (kwl_sd_unit,     kwl_e_unit)    bin,
+      (pc_sd_unit,      pc_sd_sd_unit) bin,
+      (pc_sd_e0_unit,   zero)          bin,
+      (code,            rnw)           bin;
+
+   kwl_sd_unit = 0;
+   kwl_e_unit = 0;
+   pc_sd_unit = 0;
+   pc_sd_sd_unit = 0;
+   pc_sd_e0_unit = 0;
+   old_tsn = 0;
+   kwbp = null;
+   kwlp = null;
+
+   on condition (CLEANUP$)
+      begin;
+      call cleanup;
+      end;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et
+            &  err$es.status1 = err$job_in_use_ue then
+         goto close_the_job;
+      call cnsig$ (code);
+      end;
+
+   /* open the queue and the job */
+
+   call gp$open_pde (k$read + k$getu + k$nsgs, ds.q_partition,
+                     gbl$spool_queue, sq$q_kwl_name, kwl_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$nsgs + k$iseg, kwl_sd_unit, ds.job_id,
+                       kwl_e_unit);
+
+   call gp$open_file (k$read + k$getu + k$nsgs, sq$q_pc_name, pc_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg + k$nsgs, pc_sd_unit, ds.job_id,
+                       pc_sd_sd_unit);
+   call sq$open_entry (k$rdwr + k$getu + k$iseg + k$nsgs, pc_sd_sd_unit, 0,
+                       pc_sd_e0_unit);
+   call prwf$$ (k$read, pc_sd_e0_unit, addr(buf), (sq$pc_hdr_len + ds.copy_nr),
+                0, rnw, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Unable to read pc file', code, 0, 0);
+
+   old_tsn = buf(sq$tsn_wd);
+
+   buf(sq$pc_hdr_len + ds.copy_nr) = new_copy_status;
+   if new_copy_status = sq$copy_completed & buf(sq$copies_left_wd) > 0 then do;
+      buf(sq$tsn_wd) = buf(sq$tsn_wd) + 1;
+      buf(sq$copies_left_wd) = buf(sq$copies_left_wd) - 1;
+      end;
+
+   call prwf$$ (k$writ+k$prea, pc_sd_e0_unit, addr(buf),
+                sq$pc_hdr_len + ds.copy_nr, 0, rnw, code);
+   if code ^= 0 then
+      call err$ (err$primos_et, 'Rewriting pc status file', code, 0, 0);
+   call gp$close (pc_sd_e0_unit);
+
+   /* if new status is completed, delete page control file; if not printing,
+      close the page control file (since keyword list is now open for writing
+      and job is locked).  Don't bother deleting page control if no more
+      copies left to print since a delete_job will be done anyway. */
+
+   if new_copy_status ^= sq$copy_in_progress then do;
+      call gp$close (ds.page_control_unit);
+      if new_copy_status = sq$copy_completed & buf(sq$copies_left_wd) > 0 then
+         call sq$delete_entry (pc_sd_sd_unit, ds.copy_nr);
+      end;
+
+   if buf(sq$copies_left_wd) = 0 then do;      /* delete the job */
+
+      /* free the queues during the delete, but keep the job locked */
+
+      call gp$close (kwl_sd_unit);
+      call gp$close (pc_sd_unit);
+
+      /* if job has been changed since it began printing, re-read
+         keyword list to see if user (still) wants to delete file
+         or be notified */
+
+      if ds.completion_code = ds$completed_cc & old_tsn ^= ds.tranid then do;
+         call kwl$read_disk_buffer (kwl_e_unit, kwbp);
+         string(ei) = kwl$accept_as_is_ei;
+         string(flags) = kwl$default_flags;
+         call kwl$buf_to_kwl (kwbp, kwlp, ei, flags);
+         call kwl$free_buffer (kwbp);
+         ds.delete_user_file = kwl$find_kw (kw$delete_user_file, kwlp, kwp);
+         ds.notify_user = kwl$find_kw (kw$notify, kwlp, kwp);
+         if kwp ^= null then             /* now or deferred? */
+            if kwp->kw_entry.pf_value ^= null then
+               ds.notify_now =
+                (kwp->kw_entry.pf_value->value_entry.value = 'NOW');
+         call kwl$destroy_kwl (kwlp);
+         end;
+
+      /* delete the job */
+
+      call sq$delete_job (kwl_e_unit, pc_sd_sd_unit, ds.q_partition,
+                          ds.job_id, ds.p_job_kwl);
+
+      revert condition (err$condition_before_msg);
+
+      /* delete user's file and notify user if copy was completed (vs dropped
+         with DROP_COPY command */
+
+      if ds.completion_code = ds$completed_cc then do;
+         if ds.delete_user_file then do;
+            call tatch$ (path$(ds.job_pathname), code);
+            on condition (err$condition_after_msg)
+               goto next_step;
+            if code = 0 then
+               call gp$delete_file (entry$(ds.job_pathname));
+            else
+               call err$ (err$primos_et+err$warning_et, 'Deleting user file',
+                          code, 0, 0);
+next_step:
+            revert condition (err$condition_after_msg);
+            end;
+         if ds.notify_user then do;
+            call ioa$rs (mess, length(mess), messlen,
+                         'Job %d %v in queue %v has finished printing.%$', -1,
+                         ds.job_id, ds.job_name, ds.q_partition);
+            ervec(2) = 0;
+            call smsg$ (bin(ds.notify_now),
+                       addr(ds.user_id)->bvs.chars,
+                       addr(ds.user_id)->bvs.len, 0,
+                       addr(ds.system_id)->bvs.chars,
+                       addr(ds.system_id)->bvs.len,
+                       mess, messlen, ervec);
+            end;
+         end;
+      return;
+      end;
+
+close_the_job:
+
+   call cleanup;
+   return;
+
+   /* logical end of ds$change_copy_status */
+
+   cleanup: proc;
+
+      call gp$close (ds.page_control_unit);
+      call gp$close (pc_sd_e0_unit);
+      call gp$close (pc_sd_sd_unit);
+      call gp$close (kwl_e_unit);
+      call gp$close (pc_sd_unit);
+      call gp$close (kwl_sd_unit);
+      call kwl$destroy_kwl (kwlp);
+      call kwl$free_buffer (kwbp);
+      end cleanup;
+   end ds$change_copy_status;

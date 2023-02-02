@@ -1,0 +1,74 @@
+/* SQ$PART_2.SPL, PrintMaster, Jeff Hostetler, June 9, 1984                   */
+/* TEMPORARY Procedure to perform similar parts of SPL$AJ and SPL$OJ.         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+sq$part_2: proc (p_kwl, job_id, q_partition, system_job_is_on, nr_copies, tid);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%list;
+
+   dcl
+      p_kwl             ptr,                /* (in/out) */
+      job_id            bin,                /* (in) */
+      q_partition       char(*) var,        /* (in) */
+      system_job_is_on  char(*) var,        /* (in) */
+      nr_copies         bin,                /* (in) */
+      tid               bin,                /* (in) transaction id */
+
+      ei                like kwl$expand_info,
+      flags             like kwl$flags,
+      p_kw              ptr,
+      p_buf             ptr,
+      hold_in_edit_kwl  bit,
+      bin15             bin based;
+
+   /* We must now add several keywords that are write protected in the */
+   /*   Internal KWL.  Since they were not present when the user's keywords */
+   /*   were added, they may already be present.  We must set IN_EDIT_KWL to */
+   /*   write over them.  (But save it's value and restore it when finished.) */
+
+   hold_in_edit_kwl = kwl.in_edit_kwl;
+
+   on condition (CLEANUP$)
+      kwl.in_edit_kwl = hold_in_edit_kwl;
+
+   kwl.in_edit_kwl = true;
+
+   /* We must inform the monitor, of the system the queue is on, of the */
+   /* new job.  Give them the kwl and the number of copies left to print. */
+
+   string (ei) = kwl$accept_as_is_ei;
+   string (flags) = kwl$default_flags;
+   flags.info = true;                       /* make it a non-scheduling param */
+
+   call kwl$insert_kw (kw$job_id, p_kw, p_kwl, ei, flags, flags);
+   call kwl$add_value (p_kw, trim(char(job_id), '11'b));
+
+   /* kw$q_partition is the partition on which the spool queue is located. */
+
+   call kwl$insert_kw (kw$q_partition, p_kw, p_kwl, ei, flags, flags);
+   call kwl$add_value (p_kw, q_partition);
+
+   call kwl$insert_kw (kw$q_system, p_kw, p_kwl, ei, flags, flags);
+   call kwl$add_value (p_kw, system_job_is_on);
+
+   call kwl$insert_kw (kw$copies_left, p_kw, p_kwl, ei, flags, flags);
+   call kwl$add_value (p_kw, trim(char(nr_copies), '11'b));
+
+   call kwl$insert_kw (kw$tran_id, p_kw, p_kwl, ei, flags, flags);
+   call kwl$add_value (p_kw, trim(char(tid), '11'b));
+
+   call kwl$kwl_to_buf (p_kwl, p_buf);
+   if ^comm$send (mt$job, system_job_is_on, 'monitor', p_buf,
+                  p_buf->bin15*2 + 2) then
+      ;
+   call kwl$free_buffer (p_buf);
+
+   kwl.in_edit_kwl = hold_in_edit_kwl;
+   return;
+   end sq$part_2;

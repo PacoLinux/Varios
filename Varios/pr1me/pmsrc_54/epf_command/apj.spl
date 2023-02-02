@@ -1,0 +1,359 @@
+/* ADD_PRINT_JOB.SPL, PrintMaster, Jeff Hostetler, January 18, 1984           */
+/* Add Job Command.                                                           */
+/*                                                                            */
+/*    APJ {-HELP | {<pathname> | -OPEN [<nr>]}                                */
+/*                     [-BANNER [<value_1> <value_2> ... <value_10>]]         */
+/*                     [-NOTE [<value_1> <value_2> ... <value_10>]]           */
+/*                     [-QUEUE [<partition>]]                                 */
+/*                     [-Set_Var <gvar>]                                      */
+/*                     [<key_word_list>]}}                                    */
+/*                                                                            */
+/* NOTE:                                                                      */
+/*    "<nr>"              ==> unit to open on (default is 2)                  */
+/*    "<key_word_list>"   ==> user defined kw's (rest of line)                */
+/*                                                                            */
+/*    CL$PIX has a problem with unclaimed arguments if they follow            */
+/*    a claimed keyword (all get appended together; -backup -x 5              */
+/*    will look like -backup 5 if picture is uncl;-x).                        */
+/*                                                                            */
+/* (Command is in EPF form)                                                   */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+apj: procedure (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>sq.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>spl$aj.ins.spl';
+%include '*>entry>spl$oj.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%list;
+
+   %replace
+      max_msg     by 10,                    /* max number of msg lines allowed*/
+                                            /* in command line. */
+      uncl_length by 160;                   /* this is the value given in the */
+                                            /* subroutines guide and that     */
+                                            /* appears in the subroutine, but */
+                                            /* we may need something larger   */
+                                            /* like "max_cl" size, which will */
+                                            /* probably cause us all sorts of */
+                                            /* problems..... */
+
+   dcl
+      cl          char(max_cl) var,
+      com_status  bin,
+
+      spl_info       like spl$info,
+      code           bin,
+      cp(2)          bin,
+      rec_lit        char(7) var,
+      unit           bin,
+      type           bin,
+      spool_status   bit,
+      we_did_initialization   bit,
+      dt_deferred    char(28) var,
+
+      1  struc,
+         2  pathname       char(128) var,
+         2  kw_cl          char(uncl_length) var,
+         2  open_given     bit aligned,
+         2  open_unit      bin(31),
+         2  set_var_given  bit aligned,
+         2  gv_name        char(80) var,
+         2  banner_given   bit aligned,
+         2  bnr (max_msg)  char(80) var,
+         2  note_given     bit aligned,
+         2  note (max_msg) char(80) var,
+         2  queue_given    bit aligned,
+         2  q_partition    char(32) var,
+         2  help_given     bit aligned;
+
+%page;
+
+   spl_info.version = spl$info_version;
+   spl_info.job_id = -1;
+   spl_info.job_name = '';
+   spl_info.pathname = '';
+   spl_info.file_size = 0;
+   spl_info.q_partition = '';
+
+   com_status = severity$error;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+
+   call gp$version ('Add Print Job');
+
+   on condition (err$condition_after_msg)
+      begin;
+      if err$es.type = err$user_et
+            &  err$es.status1 = err$flags_not_valid_here_ue then
+         goto abnormal_return;
+
+      if we_did_initialization then
+         call gp$any;
+      else
+         call cnsig$(code);
+      end;
+
+   call parse_cl;
+
+   if length (struc.q_partition) = 0
+      then call at$any (k$setc, gbl$spool_queue, code);
+      else call at$abs (k$setc, struc.q_partition, gbl$spool_queue, code);
+   if code ^= 0 then do;
+      if length (struc.q_partition) ^= 0
+         then call ioa$ ('No print queue on this partition.%.', -1);
+         else call ioa$ ('No print queues found.%.', -1);
+      goto abnormal_return;
+      end;
+
+   call at$hom (code);
+
+   if struc.open_given then
+      spool_status = spl$oj (k$writ, (struc.open_unit), struc.kw_cl,
+                             struc.q_partition, addr(spl_info));
+   else do;
+      cp(1) = 0;
+      cp(2) = length(struc.pathname);
+      call tsrc$$ (k$read+k$getu, addr(struc.pathname)->bvs.chars, unit, cp,
+                   type, code);
+      call gp$close (unit);
+      select (code);
+         when (0, e$fius)
+            if type > 1 then
+               call err$ (err$user_et, struc.pathname||' is not a sam/dam file.',
+                          err$print_file_error_ue, 0, 0);
+         when (e$fntf)
+            call err$ (err$user_et, struc.pathname||' does not exist.',
+                       err$print_file_error_ue, 0, 0);
+
+         when (e$nrit, e$bpas, e$ninf)
+            call err$ (err$user_et, struc.pathname||' cannot be accessed.',
+                       err$print_file_error_ue, 0, 0);
+         otherwise
+            call err$ (err$primos_et, 'Opening '||struc.pathname, code, 0, 0);
+         end;
+      spool_status = spl$aj (struc.pathname, struc.kw_cl, struc.q_partition,
+                             addr(spl_info));
+      end;
+
+   if spool_status = false then
+      call err$ (err$coding_et, 'SPL$ procedure returned to main with an error', 0, 0, 0);
+
+   if psv.monitor_user = 0 & gbl.I_am_opr then
+      call ioa$ ('Warning: the monitor is down - your job may not be printed immediately.%.', -1);
+
+   com_status = severity$ok;
+   if struc.set_var_given then do;
+      call gv$set (struc.gv_name, char(spl_info.job_id), code);
+      if code ^= 0 then do;
+         call err$ (err$warning_et + err$user_et,
+                    'Could not set global variable "' || struc.gv_name || '".',
+                    0, 0, 0);
+         com_status = severity$warning;
+         end;
+      end;
+
+   call ioa$ ('Job %d%$', -1, spl_info.job_id);
+   if length (spl_info.job_name) ^= 0 then
+      call ioa$ (' %v%$', -1, spl_info.job_name);
+   if spl_info.file_size = 1 then
+      call ioa$ (', 1 record,%$', -1);
+   else if spl_info.file_size ^= maxint then /* didn't use -OPEN */
+      call ioa$ (', %d records,%$', -1, spl_info.file_size);
+/*****   Later, do this; when spl_info.q_system is filled in
+   if spl_info.q_system ^= psv.my_system_id then
+       call ioa$ (' added to remote queue %v on %v.%.', -1,
+                  spl_info.q_partition, spl_info.q_system);
+   else
+******/
+       call ioa$ (' added to queue %v.%.', -1, spl_info.q_partition);
+
+   if we_did_initialization then
+      call gp$terminate;
+   /* com_status has already been set */
+   return;
+
+help_wanted:
+   call display_help;
+   if we_did_initialization then
+      call gp$terminate;
+   com_status = severity$ok;
+   return;
+
+abnormal_return:
+   if length (spl_info.job_name) ^= 0 then
+      call ioa$ ('Job %v not queued.%.', -1, spl_info.job_name);
+
+   com_status = severity$error;
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+   /* logical end of add_print_job */
+
+%page;
+/* add_print_job.listen_, PrintMaster, Jeff Hostetler, January 18, 1984       */
+/* Listen loop to collect and assemble messages.                              */
+/******************************************************************************/
+
+   listen_: proc (p, kw_spelling, msg);
+
+      dcl
+         p           ptr,
+         kw_spelling char(32) var,
+         msg         char(80) var,
+
+         i     bin,
+         code  bin,
+         nr_lines bin,
+         vs    char(sq$chars_in_msg_line) var,
+         unq_msg  char(sq$chars_in_msg_line) var,
+         array (max_msg) char(sq$chars_in_msg_line) var based (p);
+
+      do i = 1 to max_msg until (length(array(i)) = 0);
+         end;
+      nr_lines = i-1;
+
+      if nr_lines = 0 then do;
+         call ioa$ ('%v%.', -1, msg);
+         call ioa$ ('Enter a blank line to terminate the message.  Note that lines%.', -1);
+         call ioa$ ('exceeding %d characters will be truncated.%.', -1, sq$chars_in_msg_line);
+
+         do i = 1 to max_msg until (length(unq_msg) = 0);
+            call tnoua ('> ', 2);
+            call cl$get (vs, sq$chars_in_msg_line, code);
+            unq_msg = vs;
+            call gp$unquote (unq_msg);
+            array(i) = unq_msg;
+            call gp$quote (array(i));
+            end;
+         nr_lines = i-1;
+         end;
+
+      if nr_lines > 0 then do;
+         kw_cl = kw_cl || space || kw_spelling;
+         do i = 1 to nr_lines;
+            kw_cl = kw_cl || space || array(i);
+            end;
+         end;
+
+      return;
+      end listen_;
+
+%page;
+/* add_print_job.parse_cl, PrintMaster, Jeff Hostetler, January 19, 1984      */
+/* procedure to interpret the command line (see initial comment for usage).   */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print*/
+         caller_name    by 'add_print_job',
+         pixel_size     by 62;              /* length of 2 lines */
+
+      dcl
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         pic (2) char(pixel_size) var static
+             init ('tree; uncl; -open dec = 2; -sv, -set_var char; -banner ',
+                   '10 * charl; -note 10 * charl; -queue entry; -help; end'),
+
+         (p, pp)        ptr,
+         unq_msg        char(sq$chars_in_msg_line) var,
+         dow            bin,
+         i              bin;
+
+%page;
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr(struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ ('');                  /* does not return */
+
+      if struc.help_given then
+         goto help_wanted;
+
+      /* pathname needs to be unquoted here!!! */
+
+      call gp$unquote (struc.pathname);
+
+      if length (struc.pathname) = 0 then   /* no pathname */
+         if ^open_given then
+            call error_ ('Missing argument, either a pathname or -OPEN must be specified.');
+         else;                           /* Ok ==> "-Open" */
+      else                               /* "<pathname>" ... */
+         if open_given then              /* "<pathname>" "-Open" */
+            call error_ ('Cannot use -OPEN with a pathname.');
+
+%page;
+      if struc.banner_given then
+         call listen_ (addr(struc.bnr(1)), '-BANNER',
+            'Enter the message that is to appear on the banner page.');
+
+      if struc.note_given then
+         call listen_ (addr(struc.note(1)), '-NOTE',
+            'Enter your note for the operator.');
+
+      return;
+      end parse_cl;
+
+%page;
+/* add_print_job.error_, PrintMaster, Jeff Hostetler, January 20, 1984        */
+/* procedure to display user syntax error and call err$.                      */
+/******************************************************************************/
+
+   error_: proc (msg);
+
+      dcl
+         msg   char(*) var;
+
+      if length (msg) ^= 0 then
+         call ioa$er ('%v%.', -1, msg);
+      call ioa$er ('Type APJ -HELP or HELP APJ for more information.%.', -1);
+      call err$ (err$user_et, '', err$cl_ue, 0, 0);
+      end error_;
+
+%page;
+/* add_print_job.display_help, PrintMaster, Jeff Hostetler, March 26, 1984    */
+/******************************************************************************/
+
+   display_help: proc;
+
+      call ioa$ ('%/Usage:  APJ pathname  options  job_keywords%.', -1);
+      call ioa$ ('   or:  APJ -OPEN unit  options  job_keywords%.', -1);
+      call ioa$ ('   or:  APJ -HELP%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('OPTIONS may be blank or any combination of the following:%.', -1);
+      call ioa$ ('   -BANNER msg1 msg2 ... msg10 -- Places a message on the banner page%.', -1);
+      call ioa$ ('   -NOTE msg1 msg2 ... msg10   -- Places a note to the operator on the job%.', -1);
+      call ioa$ ('   -QUEUE partition            -- Place job in queue on this partition%.', -1);
+      call ioa$ ('   -Set_Var gvar               -- Set global variable GVAR to the job id%.', -1);
+      call ioa$ ('                                    of the new job (EX: "-SV .job_id")%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('JOB_KEYWORDS may be blank or a list of keywords each with the following form:%.', -1);
+      call ioa$ ('   -keyword                       -- INSERT keyword with no values%.', -1);
+      call ioa$ ('   -keyword -value_1 ... -value_N -- INSERT keyword with these values%.', -1);
+      call ioa$ ('                                       or CHANGE the keyword''s values%.', -1);
+      call ioa$ ('   -^keyword                      -- DELETE keyword from the list%.', -1);
+      call ioa$ ('%.', -1);
+      call ioa$ ('If options -BANNER or -NOTE are given without a message the user will be asked%.', -1);
+      call ioa$ ('to supply one.  Messages consist of a series of 80 character lines.  Messages%.', -1);
+      call ioa$ ('may be of any length, but are limited to 10 lines.%.', -1);
+      call ioa$ ('%.', -1);
+
+      return;
+      end display_help;
+   end apj;

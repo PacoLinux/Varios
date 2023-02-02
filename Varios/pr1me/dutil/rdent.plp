@@ -1,0 +1,190 @@
+/* Rdent.plp, Dutil, JEW, 26-Mar-81
+   Reads entries in the current ufd record and formats them.
+*/
+
+Rdent: proc (cl, info, clp);
+
+$Insert *>insert>global.plp.ins
+$Insert *>insert>cl.plp.ins
+$Insert *>insert>query.plp.ins
+$Insert *>insert>ufd_ent.plp.ins
+
+dcl
+   help     entry (char(*) var, bit),
+   ioa$     entry options (variable),
+   rd_entry entry options (variable) returns (bit);
+
+dcl
+   c2080             char(2080) based,
+   1  ecwpos,
+      2  ra          bin(31),
+      2  wn          bin,
+   1  ent  like  ufd_entry,
+   1  my_rec  like  disk_record,
+   nextwd            bin;
+
+
+   call cl$par ('0'b, cl, token, token_sz, info, clp, status);
+   if info.eol then
+      do;
+
+      /* verify this is a ufd record and we're at beginning */
+
+      if rec.type ^= 4 then
+         if ^query ('This is not a ufd record. Do you want to continue? ', def_yes) then
+            return;
+
+      if rec.back ^= 0 then
+         if ^query ('Not at bof.  Do you want to continue? ', def_yes) then
+            return;
+
+      nextwd = 0;           /* override rd_entry checking */
+      ra = rec.cra;
+      addr(my_rec) -> c2080 = addr(rec) -> c2080;
+
+      do while (rd_entry (my_rec, ra, nextwd, ent, '0'b, ecwpos));
+         call print_entry;
+      end;
+
+      end;
+
+   else
+      call help ('RDENT', false);
+
+rdent_return:
+   return;
+
+
+   /* Internal procedure to print the ufd entry */
+
+   print_entry: proc options (shortcall);
+
+   dcl
+      fdat$a   entry (bin, char(*)),
+      ftim$a   entry (bin, char(*)),
+      tonl     entry;
+
+   dcl
+      buf            char(17),
+      date_modified  char(16),
+      loc            bin,
+      n              bin,
+      string         char(80) var,
+      t              char(20) var;
+
+
+      loc = ecwpos.wn;
+
+      call print_loc_and_value (0, 1);
+      select (ent.ecw.type);
+         when (2)
+            string = 'Vacant';
+         when (3)
+            string = 'Ufd';
+         otherwise
+            string = 'Unrecognized';
+         end;
+      call ioa$ ('%v entry %d words long%.', -1, string, bin (ent.ecw.size));
+
+      call print_loc_and_value (1, 2);
+      call ioa$ ('Bra%.', -1);
+
+      buf = '(' || trim (char (loc+3), '10'b) || '-' ||
+            trim (char (loc+5), '10'b) || ')';
+      call ioa$ ('%cReserved%.', -1, buf, 17);
+
+      call print_loc_and_value (6, 1);
+      call ioa$ ('Protection (%d,%d)%.', -1, bin (ent.protection.owner),
+                  bin (ent.protection.nonowner));
+
+      call print_loc_and_value (7, 1);
+      call ioa$ ('Reserved%.', -1);
+
+      call print_loc_and_value (8, 1);
+      call fdat$a (ent.datmod, date_modified);
+      call ioa$ ('Date last modified  %c%.', -1, date_modified, 16);
+
+      call print_loc_and_value (9, 1);
+      call ftim$a (ent.timmod, date_modified);
+      call ioa$ ('Time last modified  %c%.', -1, date_modified, 8);
+
+      call print_loc_and_value (10, 1);
+      call ioa$ ('Filetype (%$', -1);
+      string = '';
+      if ent.filetype.header16 then
+         string = string || ', Special';
+      if ent.filetype.dumped then
+         string = string || ', Dumped';
+      if ent.filetype.primos2 then
+         string = string || ', Primos2';
+
+      select (ent.filetype.rwlock);
+         when (0)
+            t = 'System rwl';
+         when (1)
+            t = 'NR/1W';
+         when (2)
+            t = 'NR&1W';
+         when (3)
+            t = 'NR&NW';
+         otherwise
+            t = 'Unknown rwl';
+         end;
+      string = string || ', ' || t;
+
+      select (ent.filetype.type);
+         when (0)
+            t = 'Sam file';
+         when (1)
+            t = 'Dam file';
+         when (2)
+            t = 'Sam segdir';
+         when (3)
+            t = 'Dam segdir';
+         when (4)
+            t = 'Ufd';
+         otherwise
+            t = 'Unknown type';
+         end;
+      string = string || ', ' || t;
+
+      string = substr (string, 3);       /* strip leading ', ' */
+      call ioa$ ('%v)%.', -1, string);
+
+      call print_loc_and_value (11, 1);
+      call ioa$ ('Scw (filename length is %d decimal)%.', -1,
+                  bin ((ent.scw.size - 1) * 2));
+
+      buf = '(' || trim (char (loc+12), '10'b) || '-' ||
+            trim (char (loc+10+ent.scw.size), '10'b) || ')';
+      call ioa$ ('%cFilename is %c%/%.', -1, buf, 17, ent.filename, 32);
+
+      if ^query ('Continue? ', def_yes) then
+         goto rdent_return;
+
+      call tonl;
+
+
+      print_loc_and_value: proc (offset, nwords) options (shortcall);
+
+      dcl
+         offset   bin,       /* offset withing ent */
+         nwords   bin;
+
+      dcl
+         binarray(0:40) bin based,
+         format   char(20);
+
+
+         buf = '(' || trim (char (loc+offset), '10'b) || ')';
+         if nwords = 1 then
+            format = '%c   %6w  %$';
+         else
+            format = '%c  %7z:3o  %$';
+         call ioa$ (format, -1, buf, 6, addr(ent) -> binarray (offset));
+
+      end;     /* print_loc_and_value */
+
+   end;     /* print_entry */
+
+end;     /* Rdent */

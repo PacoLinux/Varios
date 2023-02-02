@@ -1,0 +1,576 @@
+/* INIT_PRINTMASTER.SPL, PrintMaster, Jim Wilcoxson, September 19, 1983       */
+/* Initializes PrintMaster when the system is booted.                         */
+/* The monitor is started.                                                    */
+/*                                                                            */
+/* Usage:   INIT_PRINTMASTER [-MONITOR] [-FULL] [-VERSION v]                  */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+init_printmaster : procedure (cl, com_status);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>ldisk_dcl.ins.spl';
+%include '*>entry>comm$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%list;
+
+%replace
+   printmaster_id by 'PRINTMASTER_SYSTEM',
+   monitor_cpl_file by 'PRINTMASTER_MONITOR.CPL';
+
+dcl
+   already        char(8) var,              /* {" already" | ""} */
+   area_size      bin(31),
+   cl             char(max_cl) var,
+   com_status     bin,
+   como_state     bin,
+   dir_unit       bin,
+   date           char(28) var,
+   dow            bin,
+   dummy          bin,
+   (i,j,k)        bin,
+   ph_logo$       condition,
+   local_user_nr  bin,
+   monitor_aborted bit,
+   monitor_running bit,
+   more           bit,
+   node_id        bin,
+   phant_user     bin,
+   spawn_ds like sds,                       /* spawn$ data structure */
+   status         bin,
+   system_name    char(32) var,
+   temp_system_partition char(32) var,
+   time_array (11) bin,
+   time_left      bin,
+   total_users    bin,
+   user_nr        bin,
+   we_did_initialization bit,
+
+   1  struc,
+      2  monitor_given  bit aligned,
+      2  full_given     bit aligned,
+      2  pacl_given     bit aligned,
+      2  port_given     bit aligned,
+      2  port           bin(31),            /* Primenet port */
+      2  tl_given       bit aligned,
+      2  tl             bin(31),            /* time limit in seconds */
+      2  pr_given       bit aligned,        /* monitor/device priority */
+      2  mon_priority   bin(31),
+      2  dev_priority   bin(31),
+      2  version_given  bit aligned,
+      2  version        char(80) var,
+      2  please_given   bit aligned;
+
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.kwl_address = addr(kwl$static_external); /* dynamic common kludge */
+
+   com_status = severity$error;
+   dir_unit = 0;
+
+   /* set flag so GP$TERMINATE won't be called unless commons have been
+      initialized */
+
+   we_did_initialization = false;
+
+   call parse_cl;
+
+   /* ensure this is run only from the console.  -PLEASE overrides this,
+      but is undocumented and used only for internal testing */
+
+   call user$ (local_user_nr, total_users);
+   if local_user_nr ^= 1 & ^struc.please_given then do;
+      call ioa$er ('Must be run from the system console.%.', -1);
+      return;
+      end;
+
+   /* determine address of shared segment and init named semaphores */
+
+   if ^gp$partial_init (true, struc.full_given, rev_number) then
+      call exit;                            /* message already printed */
+
+   /* init these vars each time */
+
+   psv.expiration_date = 0;                 /* may be changed by GP$INIT */
+   psv.time_limit = struc.tl;
+   psv.monitor_priority = struc.mon_priority;
+   psv.device_priority = struc.dev_priority;
+
+   /* initialize clock tick rate.  This is the tick rate (ticks per second)
+      used by GP$TICKS */
+
+   call timdat (time_array, 11);
+   psv.ticks_per_sec = time_array(11);
+
+   if struc.full_given then do;
+
+      psv.system_inited = false;
+      psv.primenet_port = struc.port;
+      psv.rev_modifier = struc.version;
+
+      /* lock shared area to keep people out during full initialization */
+
+      call lock_shared_area;
+      end;
+
+   we_did_initialization = gp$init ('system', '', error_exit);
+   if we_did_initialization then
+      on condition (any$)
+         call gp$any;
+
+   como_state = gp$como_state (como$read);  /* save original */
+
+   /* verify that a system directory exists */
+
+   call at$ (k$setc, gbl$system_dir, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'Attaching to system directory', status, 0, 0);
+
+   /* init system-wide network info BEFORE calling COMM$MY_SYSTEM_ID, since
+      it may use some of this info.  The network is assumed to exist if there
+      is a system list in the system directory.  The network may or may
+      not be currently started, however (START_NET may not have been done
+      yet).  This is the distinction between these variables */
+
+   psv.network_exists = gp$file_exists (gbl$system_list_name);
+   if psv.network_exists then
+      psv.network_started = comm$my_system_id (psv.my_system_id);
+   else do;
+      psv.my_system_id = '';
+      psv.network_started = false;
+      end;
+
+   /* monitor fills in psv.my_system_nr when it starts */
+
+      psv.my_system_nr = 0;
+
+   /* ensure that system directory is local; this restriction could be
+      removed later with sufficient thought */
+
+   dir_unit = gp$open_curdir ();
+   system_name = gp$system_name (dir_unit);
+   temp_system_partition = gp$partition_name (dir_unit);
+   call gp$close (dir_unit);
+   if system_name ^= psv.my_system_id then
+      call err$ (err$user_et, 'Cannot have remote system directory.',
+                 err$bad_system_directory_ue, 0, 0);
+
+   /* is monitor up?  Try to change name of its CPL program in the
+      program directory */
+
+   call at$ (k$setc, gbl$program_dir, status);
+   if status ^= 0 then
+      call err$ (err$user_et, 'Directory ' || gbl$program_dir ||
+                 ' not found on system.', err$bad_system_directory_ue, 0, 0);
+
+   call cnam$$ (monitor_cpl_file, length(monitor_cpl_file),
+                monitor_cpl_file, length(monitor_cpl_file), status);
+   if status = e$fius then
+      monitor_running = true;
+   else if status = e$exst then
+      monitor_running = false;              /* no monitor running yet */
+   else
+      call err$ (err$primos_et, 'Checking PRINTMASTER_MONITOR.CPL',
+                 status, 0, 0);
+
+   psv.system_partition = temp_system_partition;
+
+   /* make sure area coordination variables and semaphores are not
+      "stuck", even if only partial initialization; unlock is done later */
+
+   call lock_shared_area;
+
+   /* Initialize shared heap used for local communication and storing
+      per-system data structures */
+
+   if struc.full_given then do;
+
+      if gp$attach_system_dir (status) then
+         psv.suppress_copyright = gp$file_exists ('GCCSS');
+      else
+         psv.suppress_copyright = false;
+
+      /* remove all local messages */
+
+      do i = 1 to max_users;
+         psv.user_msg_bol(i) = null;
+         psv.user_msg_eol(i) = null;
+         end;
+
+      /* areas must start on an even word boundary */
+
+      psv.shared_area = addr (psv.begin_shared_area);
+      if mod (rel (psv.shared_area), 2) ^= 0 then
+         psv.shared_area = addrel (psv.shared_area, 1);
+      area_size = 65536 - rel(psv.shared_area);
+      call ar$in (psv.shared_area, area_size);
+
+      /* initialize shared master and internal keyword lists */
+
+      psv.internal_kwl = null;
+      psv.old_internal_kwl = null;
+      call kwl$load_ikwl;
+      psv.master_kwl = null;
+      psv.old_master_kwl = null;
+      call kwl$load_mkwl;
+      psv.date_inited = date$();
+      already = '';
+      end;
+   else
+      already = ' already';
+
+   call cv$fdv (psv.date_inited, dow, date);
+   call ioa$ ('Shared databases%v initialized (on %v).%.', -1, already, date);
+
+   if pacl_given then
+      call set_priority_acls;
+
+
+   psv.system_inited = true;                /* system has been initialized */
+   psv.shared_area_owner = 0;               /* unlock area */
+   call sem$dr (gbl.area_semaphore, status);
+   call sem$nf (gbl.area_semaphore, status);
+
+   /* start monitor if filename passed on the command line */
+
+   if monitor_given & ^monitor_running then do;
+      call at$ (k$setc, gbl$program_dir, status);
+      if status ^= 0 then
+         call err$ (err$primos_et, 'Attaching to program directory.', status,
+                    0, 0);
+
+      psv.monitor_user = 0;              /* no monitor running yet */
+
+      /* initialize args for spawn */
+
+      spawn_ds.version = spawn$_version;
+      spawn_ds.user_id = 'PRINTMASTER_MONITOR';
+      spawn_ds.project_id = '';                /* same project */
+      spawn_ds.utype =  u$cph;                 /* CPL phantom */
+      spawn_ds.priority = psv.monitor_priority; /* priority */
+      spawn_ds.prvl = '0001'b4;                /* is privileged */
+      spawn_ds.ts = 0;                         /* default timeslice */
+      spawn_ds.num_grps = 1;
+      spawn_ds.groups(1) = gbl$spool_acl_group;
+
+      status = 0;
+      user_nr = 0;
+      monitor_aborted = false;
+
+      on condition (ph_logo$)
+         begin;
+         do while (true);
+            call lon$r (addr(phant_user), 1, more, status);
+            if status = e$ndat then
+               leave;            /* do while (true) */
+
+            if phant_user = user_nr then
+               monitor_aborted = true;
+            end;  /* do while */
+         end;  /* begin */
+
+      /* the key argument says this is a CPL phantom, and that attributes
+         should not be inherited */
+
+      call spawn$ ('0000'b4, addr(spawn_ds), monitor_cpl_file,
+                   length (monitor_cpl_file), '', user_nr, status);
+      if status = 0 then do;
+         do while (psv.monitor_user = 0 & ^monitor_aborted);
+            call sleep$ (one_cycle);
+            end;
+         if monitor_aborted then do;
+            call ioa$er ('PRINTMASTER_MONITOR *aborted* (was user %d).%.',
+                       -1, user_nr);
+            goto error_exit;
+            end;
+         else
+            call ioa$ ('PRINTMASTER_MONITOR started (user %d).%.',
+                        -1, user_nr);
+         end;
+      else
+         call err$ (err$primos_et, 'Starting monitor', status, 0, 0);
+
+      end;
+   else
+      if monitor_given then
+         call ioa$ ('PRINTMASTER_MONITOR already running (user %d).%.', -1,
+                    psv.monitor_user);
+
+
+normal_exit:
+
+   dummy = gp$como_state (como_state); /* reset to orig state */
+
+   call gp$terminate;
+   com_status = 0;
+   return;
+
+error_exit:
+
+   dummy = gp$como_state (como_state); /* reset to orig state */
+
+   call gp$close (dir_unit);
+   call gp$terminate;
+
+quick_error_exit:                           /* user not initialized yet */
+
+   com_status = 1;
+   return;
+
+
+/* This procedure force-locks the shared area, in case the lock is stuck.
+   References to external structures (such as gbl) cannot be made, because
+   they may not have been initialized yet */
+
+lock_shared_area: procedure;
+
+dcl
+   i           bin,
+   time_left   bin;
+
+
+   /* set lock */
+
+   if psv.shared_area_owner ^= local_user_nr then
+      do time_left = psv.time_limit to 0 by -1
+              while (^cstore (psv.shared_area_owner,0,local_user_nr));
+         call sleep$ (one_cycle);
+         end;
+
+   if psv.shared_area_owner ^= local_user_nr then do;
+      call ioa$ ('Database lock released (was held by user %d).%.', -1,
+                 psv.shared_area_owner);
+
+      /* lock is held by some user...force lock it by repeatedly
+         setting it for 3 seconds in a loop */
+
+      do i = 1 to 30;
+         psv.shared_area_owner = local_user_nr; /* force lock it */
+         call sleep$ (100);              /* wait a bit */
+         end;
+      end;
+
+end lock_shared_area;
+
+
+
+set_priority_acls : procedure;
+
+dcl
+   1 acl like primos_acl,
+   1  ld$ like disk_list,
+   spool_acl_pair char(36) var,             /* userid:ALL */
+   status         bin,
+   (i,j)          bin;
+
+   /* put priority ACL on all local partitions */
+
+   ld$.version = ldisk_version;
+   call ldisk$ (k$all, '', addr(ld$), max_ldevs, status);
+   if status ^= 0 then
+      call err$ (err$primos_et, 'From ldisk$', status, 0, 0);
+
+   spool_acl_pair = gbl$spool_acl_group || ':ALL';
+
+   do i = 1 to ld$.count;
+      if gp$check_pacl (ld$.disk_name(i), addr(acl), status) then ;
+      select (status);
+
+         when (e$rldn, e$nete, e$rsnu, e$fntf) ; /* partition not accessible */
+
+         when (e$pnac, e$nacl)
+            call ioa$ ('Warning: partition %v is not an ACL partition.%.', -1,
+                       ld$.disk_name(i));
+
+         when (e$panf)                      /* priority ACL not found */
+            acl.count = 0;
+
+         when (0, -1)
+            ;
+
+         otherwise
+            call err$ (err$primos_et+err$warning_et,
+                       'Getting priority ACL on '||ld$.disk_name(i),
+                       status, 0, 0);
+
+         end; /* select */
+
+      if status = -1 | status = e$panf then do;
+         if length (ld$.system_name(i)) ^= 0 then do;
+            call ioa$ ('Warning: no priority ACL on remote partition %v.%.',
+                       -1, ld$.disk_name(i));
+            goto next_disk;
+            end;
+         if acl.count = max_acl_ents then
+            call err$ (err$user_et,
+                       'Already'||max_acl_ents||' pairs in priority ACL.',
+                       err$too_many_acls_ue, 0, 0);
+         acl.count = acl.count + 1;
+         acl.ent(acl.count) = spool_acl_pair;
+         call pa$set (ld$.disk_name(i),addr(acl),status);
+         if status ^= 0 then
+            call err$ (err$primos_et, 'Setting priority ACL', status, 0, 0);
+         end;
+
+next_disk:
+
+   end;
+
+   /* setting a priority ACL always turns on output, so reset it */
+
+   dummy = gp$como_state (como_state);
+
+end set_priority_acls;
+
+%page;
+/* init_printmaster.parse_cl, PrintMaster, Jeff Hostetler, September 8, 1984  */
+/******************************************************************************/
+
+   parse_cl: proc;
+
+      %replace
+         cl$pix_keys    by '000A'b4,        /* keep quotes, pl1, print */
+         caller_name    by 'init_printmaster',
+         pixel_size     by 60;
+
+      dcl
+         i              bin,
+         pix_index      bin,
+         bad_index      bin,
+         ns_code        bin,
+         pic (4)  char(pixel_size) var static
+                  init('-monitor; -full; -pacl; -port dec=-9999;',
+                       ' -timelimit dec=-9999;',
+                       ' -priority dec dec;',
+                       ' -version, -v char; -please; end');
+
+      call cl$pix (cl$pix_keys, caller_name, addr (pic), pixel_size,
+                   cl, addr (struc), pix_index, bad_index, ns_code, null);
+      if ns_code ^= 0 then
+         call error_ (
+  'Type INIT_PRINTMASTER -HELP or HELP INIT_PRINTMASTER for more information.');
+
+      if struc.port_given then
+         if 1 <= struc.port & struc.port <= 99 then
+            ;
+         else
+            call bad_value ('PORT', struc.port, 1, 99);
+      else
+         call required ('PORT', 1, 99);
+
+      if struc.tl_given then
+         if 0 <= struc.tl & struc.tl <= 300 then    /* max of 5 minutes */
+            ;
+         else
+            call bad_value ('TIMELIMIT', struc.tl, 0, 300);
+      else
+         call required ('TIMELIMIT', 0, 300);
+
+      if struc.pr_given then do;
+         if -2 <= struc.mon_priority & struc.mon_priority <= 3 then
+            ;
+         else
+            call bad_value ('PRIORITY', struc.mon_priority, 0, 3);
+         if -2 <= struc.dev_priority & struc.dev_priority <= 3 then
+            ;
+         else
+            call bad_value ('PRIORITY', struc.dev_priority, 0, 3);
+         end;
+
+      if struc.version_given then do;
+         if length(struc.version) > 1 then
+            call error_ ('The keyword -VERSION requires a one character, alphanumeric value.');
+         if length(struc.version) = 0 then
+            struc.version = ' ';
+         end;
+      else
+         struc.version = ' ';
+
+      return;
+
+
+      bad_value : procedure (name, value, min, max);
+
+      dcl
+         name     char(*) var,
+         value    bin(31),
+         min      bin,
+         max      bin;
+
+         call ioa$ ('The keyword -%v requires a value between %d and %d.%.', -1,
+                    name, min, max);
+         if value ^= -9999 then
+            call ioa$ ('The value %:2d cannot be used.%.', -1, value);
+         call error_ ('');
+
+      end bad_value;
+
+
+      bad_octal_value : procedure (name, value, min, max);
+
+      dcl
+         name     char(*) var,
+         value    bin(31),
+         min      bin,
+         max      bin;
+
+         call ioa$ ('The keyword -%v requires an octal value between %o and %o.%.', -1,
+                    name, min, max);
+         if value ^= -32767 then            /* '77777 */
+            call ioa$ ('The value %:2o cannot be used.%.', -1, value);
+         call error_ ('');
+
+      end bad_octal_value;
+
+
+      required : procedure (name, min, max);
+
+      dcl
+         name     char(*) var,
+         min      bin,
+         max      bin;
+
+         call ioa$ ('The keyword -%v is required, with a value between %d and %d.%.', -1,
+                    name, min, max);
+         call error_ ('');
+
+      end required;
+
+
+      required_octal : procedure (name, min, max);
+
+      dcl
+         name     char(*) var,
+         min      bin,
+         max      bin;
+
+         call ioa$ ('The keyword -%v is required, with an octal value between %o and %o.%.', -1,
+                    name, min, max);
+         call error_ ('');
+
+      end required_octal;
+
+
+      error_: procedure (msg);
+
+      dcl
+         msg   char(*);
+
+         if msg ^= '' then
+            call ioa$ ('%c%.', -1, msg, length(msg));
+         if we_did_initialization then
+            goto error_exit;
+         else
+            goto quick_error_exit;
+
+      end error_;
+
+      end parse_cl;
+
+end init_printmaster;

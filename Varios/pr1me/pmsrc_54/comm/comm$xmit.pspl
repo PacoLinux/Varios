@@ -1,0 +1,125 @@
+/* COMM$XMIT.SPL, PrintMaster, Jim Wilcoxson, February 23, 1984               */
+/* Transmits a message to its next destination.  Returns true if message      */
+/* MAY have been transmitted - in this case, "msgp" will be null and message  */
+/* is no longer available to the caller.  Returns false if message definitely */
+/* was not transmitted -  "msgp" will remain unchanged and message is still   */
+/* available to the caller.  In this case, the caller must destroy the        */
+/* message if it is not to be retransmitted.                                  */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+comm$xmit : procedure (msgp) returns (bit);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>comm.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>mon$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>comm$connect.ins.spl';
+%include '*>entry>comm$destroy_msg.ins.spl';
+%include '*>entry>comm$free_io_buffers.ins.spl';
+%include '*>entry>comm$queue_ipc_message.ins.spl';
+%include '*>entry>comm$queue_message.ins.spl';
+%include '*>entry>comm$service.ins.spl';
+%list;
+
+dcl
+   msgp           ptr;                      /* ptr to message (in) */
+
+dcl
+   target         bin,
+   status         bin,
+   sent           bit;
+
+   sent = false;
+   if gbl.I_am_device | gbl.I_am_user then do;
+      if msgp->msg.target_system = psv.my_system_id
+       & msgp->msg.target_user_nr ^= 0 then /* I can send this myself */
+         target = msgp->msg.target_user_nr;
+      else
+         target = psv.monitor_user;
+      if target ^= 0 then do;
+         sent = comm$queue_ipc_message (msgp, target);
+         if target = psv.monitor_user & sent & ^psv.network_exists then do;
+            call sem$nf (gbl.monitor_semaphore, status);
+            if status ^= 0 then
+               call err$ (err$primos_et, 'Notifying monitor sem',
+                          status, 0, 0);
+            end;
+         end;  /* if target ^= 0 */
+      end;  /* I am device or user */
+   else                                     /* I am a monitor */
+       if msgp->msg.target_system = psv.my_system_id then
+         do; /* select_hack */
+dcl select_hack char(32); /*
+         select (msgp->msg.target_id);
+*/       select_hack =  (msgp->msg.target_id);
+         select (select_hack);
+            when ('user')
+               sent = comm$queue_ipc_message (msgp, msgp->msg.target_user_nr);
+            when ('monitor')
+               do;
+               call ioa$ ('Message %d received%.', -1, msgp->msg.msg_type);
+               call err$ (err$coding_et, 'Message to myself?', 0, 0, 0);
+               end;
+            when ('master')
+               call err$ (err$coding_et, 'Message to master?', 0, 0, 0);
+            otherwise                       /* message is to a device */
+               sent = mon$send_to_device (msgp);
+         end; /* select */
+         end; /* select_hack */
+      else
+         sent = network_send();
+
+   if sent & msgp ^= null then
+      call comm$destroy_msg (msgp);
+   return (sent);
+
+/***************************************************************************/
+
+network_send : procedure returns (bit);
+
+dcl
+   (p,q)       ptr,
+   sent        bit,
+   cbp         ptr;
+
+   if ^comm$connect (msgp->msg.target_system, cbp, true) then
+      return (false);
+
+   /* call service if pending transmits are building up */
+
+   if cbp->cb.pending_xmits > 5 then
+      call comm$service;
+
+   /* adjust message length; it should not include the length of the status
+      header, since this is not transmitted through the network */
+
+   msgp->msg.status.buffer_length = msgp->msg.status.buffer_length
+                                               - msg_status_length;
+   call x$tran (cbp->cb.vcid, msgp->msg.buffer_level, msgp->msg.header,
+      msgp->msg.status.buffer_length, msgp->msg.status);
+
+   /* if message wasn't sent, queue it for handling by COMM$SERVICE */
+
+   select (msgp->msg.buffer_status);
+
+      when (xs$cmp)                         /* message was probably xmitted */
+         call comm$destroy_msg (msgp);
+
+      when (xs$clr, xs$bvc)                 /* message was NOT xmitted */
+         return (false);
+
+      otherwise do;                         /* queue for later handling */
+         call comm$queue_message (comm.buffer_bol, comm.buffer_eol, msgp);
+         cbp->cb.pending_xmits = cbp->cb.pending_xmits + 1;
+         msgp = null;                       /* so we don't destroy it above */
+         end;
+      end;  /* select */
+
+   return (true);
+
+end network_send;
+
+end comm$xmit;

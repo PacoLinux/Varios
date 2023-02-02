@@ -1,0 +1,77 @@
+/* KWL$EXPAND_VALUE.SPL, PrintMaster, Jeff Hostetler, September 12, 1983      */
+/* Procedure to expand the value given.                                       */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$expand_value: proc (value, p_kwl, expand_info);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$open_kwl.ins.spl';
+%include '*>entry>kwl$buf_to_kwl.ins.spl';
+%include '*>entry>kwl$free_buffer.ins.spl';
+%include '*>entry>kwl$read_disk_buffer.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      value          char(*) var,           /* (in) */
+      p_kwl          ptr,                   /* (in/out) */
+      expand_info    like kwl$expand_info,  /* (in) */
+
+      flags_acl      like kwl$flags,
+      p_buf          ptr,
+      (pathname, d)  char(128) var,
+      (p, e)         char(32) var,
+      (unit, code)   bin;
+
+%page;
+   p_buf = null;
+   unit = 0;
+
+   on condition (CLEANUP$)
+      begin;
+      call gp$close (unit);
+      call kwl$free_buffer (p_buf);
+      end;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$user_et                             /* If it is a write protect error, */
+            &  err$es.status1 = err$kw_wp_ue then do;          /* see if the file is from the */
+         call gpath$ (k$unit, unit, addr(pathname)->bvs.chars, /* library.  If so, continue with */
+                      128, addr(pathname)->bvs.len, code);     /* the conversion.  Otherwise, */
+         if code = 0 then do;                                  /* continue to signal.  NOTE:  For */
+            call gp$split_pathname (pathname, p, d, e);        /* nested USING files, if any one */
+            if d = kwl$library_directory then                  /* of them is a library file, then */
+               signal condition(kwl$cond_cont_conversion);     /* we will continue and no message */
+            end;                                               /* will appear. */
+         end;
+      call cnsig$ (code);
+      end;
+
+   on condition (kwl$expand_print_info_cond)
+      begin;
+      call ioa$er ('Expanding "-USING %v".%.', -1, value);
+      call cnsig$ (code);
+      end;
+
+   on condition (kwl$expand_continue_cond)
+      goto end_of_procedure;
+
+
+
+
+   call kwl$open_kwl (k$read + k$getu, value, unit, flags_acl);
+   call kwl$read_disk_buffer (unit, p_buf);
+   call kwl$buf_to_kwl (p_buf, p_kwl, expand_info, flags_acl);
+
+end_of_procedure:
+   call gp$close (unit);
+   call kwl$free_buffer (p_buf);
+   return;
+   end kwl$expand_value;

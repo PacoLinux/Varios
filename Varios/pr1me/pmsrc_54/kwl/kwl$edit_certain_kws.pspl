@@ -1,0 +1,194 @@
+/* KWL$EDIT_CERTAIN_KWS.SPL, PrintMaster, Jeff Hostetler, June 13, 1984       */
+/* Edit the values of some special kw's.                                      */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$edit_certain_kws: proc (p_kwl, check_for_expired_dates);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>kwl$add_value.ins.spl';
+%include '*>entry>kwl$find_kw.ins.spl';
+%include '*>entry>kwl$insert_kw.ins.spl';
+%include '*>entry>kwl$get_nth_value.ins.spl';
+%list;
+
+   %replace
+      now_ by 'NOW';
+
+   dcl
+      p_kwl    ptr,                         /* (in/out) */
+      check_for_expired_dates bit,          /* (in) */
+
+      acct_info_subr entry variable options (variable),
+      acc_avail char(80) var,
+      date_    char(28) var,
+      deadline_present bit,
+      dow      bin,
+      dtm_now  bin(31),
+      code     bin,
+      ei       like kwl$expand_info,
+      flags    like kwl$flags,
+      fs_date  bin(31),
+      job_edit_subr  entry (ptr, char(*) var) variable returns (bit),
+      kw       char(kwl$chars_in_kw) var,
+      p_kw     ptr,
+      parent   char(128) var,
+      reason         char(kwl$chars_in_value) var defined value_buffer,
+      value_buffer   char(kwl$chars_in_value) var;
+
+   dtm_now = date$ ();
+
+   /* Verify that COPIES is present and has a numeric value. */
+   /* Insert it if necessary. */
+
+   if ^ kwl$find_kw (kw$copies, p_kwl, p_kw) then do;
+      string(ei) = kwl$accept_as_is_ei;
+      string(flags) = kwl$default_flags;
+      flags.wp = true;
+      flags.info = true;
+      call kwl$insert_kw (kw$copies, p_kw, p_kwl, ei, flags, flags);
+      end;
+
+   if ^ kwl$get_nth_value (p_kw, 1, value_buffer) then
+      call kwl$add_value (p_kw, trim(char(1), '11'b));
+   else
+      if verify(value_buffer, digits) ^= 0 then
+         call err$ (err$user_et,
+                    'Keyword "-'||kw$copies||'" must have numeric value.',
+                    err$bad_value_ue, 0, 0);
+      else
+         if bin(value_buffer) <= 0 then
+            call err$ (err$user_et, 'Number of copies must be greater than zero.',
+                       err$bad_value_ue, 0, 0);
+
+   /* If DEFER and/or DEADLINE are present, complete the date and optionally
+      check to see if it's expired. */
+
+   string(ei) = kwl$accept_as_is_ei;
+   string(flags) = kwl$default_flags;
+   flags.info = true;
+   deadline_present = false;
+   do kw = kw$defer, kw$deadline;
+      if kwl$find_kwv (kw, p_kwl, p_kw) then do;
+         if ^ kwl$get_nth_value (p_kw, 1, value_buffer) then
+            call err$ (err$user_et, 'Keyword "-'||kw||'" must have a value.',
+                       err$bad_value_ue, 0, 0);
+         if kw = kw$deadline then do;
+            deadline_present = true;
+            if trim(translate(value_buffer, uppercase, lowercase), '11'b) = now_
+               then do;
+               fs_date = dtm_now;
+               goto complete_the_date;
+               end;
+            end;
+         call cv$dtb (value_buffer, fs_date, code);
+         if code ^= 0 then
+            call err$ (err$primos_et,
+                       'Converting value of keyword "-'||kw||'"', code, 0, 0);
+         if check_for_expired_dates then
+            if fs_date < dtm_now then
+               call err$ (err$user_et, 'Date given in keyword "-'||kw
+                          ||'" has already expired.', err$bad_value_ue, 0, 0);
+
+complete_the_date:
+         call cv$fdv (fs_date, dow, date_);
+         if value_buffer ^= date_ then do;
+            kwl.in_edit_kwl = true;
+            call kwl$insert_kw ((kw), p_kw, p_kwl, ei, flags, flags);
+            call kwl$add_value (p_kw, date_);
+            kwl.in_edit_kwl = false;
+            end;
+         end;
+      end;
+
+
+   /* PRIORITY must be present and have a numeric value */
+
+   if ^ kwl$find_kw (kw$priority, p_kwl, p_kw) then
+      call err$ (err$user_et, 'Keyword "-' || kw$priority
+                 || '" is required.  Check SYSTEM_DEFAULTS keyword list.',
+                 err$bad_value_ue, 0, 0);
+
+   /* kw is present, but does it have a valid value */
+
+   if kwl$get_nth_value (p_kw, 1, value_buffer) then
+      if verify (value_buffer, digits) = 0 then
+         if bin(value_buffer) < 1000 then
+            if bin(value_buffer) = 0  &  deadline_present then
+               call err$ (err$user_et, 'Conflicting options "-'||kw$priority
+                          ||'" with value zero and "-'||kw$deadline||'".',
+                          err$bad_value_ue, 0, 0);
+            else
+               goto priority_ok;
+
+   /* otherwise, we have a bad (or missing) value */
+
+   call err$ (err$user_et, 'Value for keyword "-' || kw$priority
+              || '" must be a positive integer less than 1000.',
+              err$bad_value_ue, 0, 0);
+
+priority_ok:
+
+   /* if -DL is included, verify that the user has delete access to the
+      file's parent directory, unless this is an operator */
+
+   if gbl.I_am_opr then
+      goto dl_ok;
+
+   if kwl$find_kw (kw$delete_user_file, p_kwl, p_kw) then
+      if kwl$find_kw (kw$pathname, p_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value_buffer) then do;
+            parent = reverse (after (reverse (value_buffer), '>'));
+            if ^calac$ (parent, addr(gbl.full_id), 'D', acc_avail, code) then
+               call err$ (err$user_et,
+                          'You do not have delete access to this file.',
+                          err$no_right_ue, 0, 0);
+            end;
+         else
+            call err$ (err$coding_et, '-PATHNAME with no value?', 0, 0, 0);
+      else
+         call err$ (err$user_et, '-DL cannot be used with -OPEN.',
+                    err$cl_ue, 0, 0);
+
+dl_ok:
+
+   if kwl$find_kw ('ACCOUNTING', p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value_buffer) then
+         if gp$dynamic_link (value_buffer, acct_info_subr) then do;
+            value_buffer = '';
+            call acct_info_subr (gbl.my_user_nr, gbl.my_project_id,
+                                 gbl.my_user_id, value_buffer);
+            if length (value_buffer) ^= 0 then do;
+               kwl.in_edit_kwl = true;
+               string(ei) = kwl$default_expand_info;
+               ei.wp_use_acl = true;
+               ei.info_use_skwl = true;
+               call kwl$insert_kw ('ACCT_INFO', p_kw, p_kwl, ei, flags, flags);
+               call kwl$add_value (p_kw, value_buffer);
+               kwl.in_edit_kwl = false;
+               end;
+            end;
+         else
+            if gbl.trace_on then
+               call err$ (err$user_et+err$warning_et,
+                          'Accounting procedure not found.', 0, 0, 0);
+
+   if kwl$find_kw ('JOB_EDIT', p_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value_buffer) then
+         if gp$dynamic_link (value_buffer, job_edit_subr) then do;
+            reason = 'Job edit subr failed.';
+            if ^job_edit_subr (p_kwl, reason) then
+               call err$ (err$user_et, (reason), 0, 0, 0);
+            end;
+         else
+            if gbl.trace_on then
+               call err$ (err$user_et+err$warning_et,
+                          'Job edit procedure not found.', 0, 0, 0);
+
+   return;
+   end kwl$edit_certain_kws;

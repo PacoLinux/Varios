@@ -1,0 +1,90 @@
+/* KWL$BUF_TO_KWL.SPL, PrintMaster, Jeff Hostetler, November 23, 1983         */
+/* Procedure to convert a kwl from buffer format to kwl format.               */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+kwl$buf_to_kwl: proc (p_buf, p_kwl, expand_info, flags_acl);
+
+%nolist;
+%include '*>insert>gbl.ins.spl';
+%include '*>insert>kwl.ins.spl';
+%include '*>entry>kwl$insert_kw.ins.spl';
+%include '*>entry>kwl$expand_value.ins.spl';
+%include '*>entry>kwl$add_value.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   dcl
+      p_buf          ptr,                   /* (in) */
+      p_kwl          ptr,                   /* (in/out) */
+      expand_info like kwl$expand_info,     /* (in) */
+      flags_acl   like kwl$flags,           /* (in) */
+
+      error_has_happened   bit,
+      we_are_expanding     bit,
+      (i, j)               bin,
+      (pk, pf, pv)         ptr,
+      p_kw                 ptr,
+      (nr_kw, nr_v)        bin,
+
+      bin15                bin based,
+      bvs                  char(kwl$chars_in_value) var based;
+
+   on condition(kwl$cond_cont_conversion)
+      begin;
+      error_has_happened = true;            /* error on current kw */
+      goto ignore_values_and_continue;
+      end;
+
+%page;
+   if p_buf = null then return;             /* no buffer */
+   if p_buf->bin15 = 0 then return;         /* buffer length word */
+
+   nr_kw = addrel (p_buf, 1)->bin15;        /* number of kw's in kwl */
+   if nr_kw = 0 then return;                /* no kw's */
+
+   pk = addrel (p_buf, 2);                  /* first kw (char var) */
+   do i = 1 to nr_kw;
+      error_has_happened = false;
+      pf = addrel (pk, to_wds (pk->bin15) + 1); /* skip over bvs, to flag wd */
+      if pk->bvs = kw$using & expand_info.expand then
+         we_are_expanding = true;
+      else do;
+         we_are_expanding = false;
+         call kwl$insert_kw ((pk->bvs), p_kw, p_kwl, expand_info,
+                             pf->kwl$flags, flags_acl);
+         end;
+
+ignore_values_and_continue:
+      nr_v = addrel (pf, 1)->bin15;         /* nr of values for this kw */
+      pv = addrel (pf, 2);                  /* first value (char var) */
+      do j = 1 to nr_v;                     /* process each value */
+         if ^error_has_happened then        /* if error on kw, ignore values */
+            if we_are_expanding then        /* if currently processing a "using" */
+               call kwl$expand_value (pv->bvs, p_kwl, expand_info);
+            else
+               call kwl$add_value (p_kw, pv->bvs);
+
+         pv = addrel (pv, to_wds (pv->bin15) + 1); /* next value */
+         end;
+
+      pk = pv;                              /* next kw immediately follows */
+      end;                                  /* last value */
+
+   return;
+   /* logical end of kwl$buf_to_kwl */
+
+%page;
+/* kwl$buf_to_kwl.to_wds, PrintMaster, Jeff Hostetler, December 2, 1983       */
+/* function to convert char count to word count (rounded up).                 */
+/******************************************************************************/
+
+   to_wds: proc (x) returns (bin);
+
+      dcl
+         x  bin;
+
+      return (divide (x + 1, 2, 15));
+      end to_wds;
+
+   end kwl$buf_to_kwl;

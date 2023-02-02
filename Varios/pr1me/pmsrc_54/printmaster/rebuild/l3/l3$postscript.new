@@ -1,0 +1,195 @@
+/* L3$POSTSCRIPT.SPL, PrintMaster, Jim Wilcoxson, October 17, 1987            */
+/* Device Driver for PostScript devices.                                      */
+/* Copyright (C) 1987 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l3$postscript: proc (key, data_line, number) returns (bin);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>l2$.ins.spl';
+%list;
+
+dcl
+   key            bin,
+   data_line      char(*),                  /* only valid when key = print */
+   number         bin;                      /* skip count or channel */
+
+dcl
+   need_save      bit static init (false);   /* true if first op. after job_init */
+
+
+   select (key);
+
+      when (l2$print_line)
+         return (print_line());
+      when (l2$skip_line)
+         return (skip_line());
+      when (l2$skip_channel)
+         return (skip_channel());
+
+      when (l2$job_init)
+         return (job_init());
+      when (l2$job_terminate)
+         return (job_terminate());
+
+      when (l2$device_init)
+         return (device_init());
+      when (l2$device_terminate)
+         return (device_terminate());
+
+      otherwise
+         return (l2$unrecognized_func_rc);
+      end;  /* select */
+
+   /* end of PostScript device driver */
+
+%page;
+
+device_init: proc returns (bin);
+
+dcl
+   func     bin;
+
+
+   extloc.ds_address = addr(ds$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.l2_address = addr(l2$static_external); /* dynamic common kludge */
+
+   l23.pad_char = ' ';
+   l23.scan_key = l2$trim_key;
+
+   do func = l2$job_init, l2$skip_line, l2$skip_channel,
+             l2$print_line, l2$job_terminate;
+      l23.func_implemented (func) = true;
+      end;
+
+   /* send out control-D to reset the printer */
+
+   call l2$io (l2$output_string, byte (132), 0);
+
+   return (l2$func_handled_rc);
+
+end device_init;
+
+
+device_terminate: proc returns (bin);
+
+   return (l2$func_handled_rc);
+
+end device_terminate;
+
+
+job_init: proc returns (bin);
+
+   call l2$io (l2$output_string, ' statusdict /jobname (', 0);
+   call l2$io (l2$output_string, psquote ((ds.job_name)), 0);
+   call l2$io (l2$output_string, ') put', 0);
+
+   /* set flag to indicate a PostScript save is needed.  This is so that the
+      user's modifications from -JOB_INIT_STRING are included in the save */
+
+   need_save = true;
+   return (l2$func_handled_rc);
+
+end job_init;
+
+
+job_terminate: proc returns (bin);
+
+   call l2$io (l2$output_string, byte (132), 0);
+   return (l2$func_handled_rc);
+
+end job_terminate;
+
+
+print_line: proc returns (bin);
+
+   if need_save then do;
+      call l2$io (l2$output_string, '/pmsv save def', 0);
+      need_save = false;
+      end;
+
+   call l2$io (l2$output_string, '(', 0);
+   call l2$io (l2$output_string, psquote (data_line), 0);
+   call l2$io (l2$output_string, ')pms', 0);
+
+   return (l2$func_handled_rc);
+
+end print_line;
+
+
+psquote: proc (data_line) returns (char(512) var);
+
+dcl
+   data_line   char(*),
+   ps_string   char (512),
+   l           bin,
+   p           bin,                         /* next position to fill in ps_string */
+   d           bin,
+   i           bin;
+
+   /* if nothing to quote, return the original string */
+
+   if search (data_line, '()\') = 0 then
+      return (data_line);
+
+   /* preceed all parentheses and backslashes with a backslash */
+
+   d = 1;                                   /* next position in data_line */
+   p = 1;                                   /* next position in ps_string */
+   do until (i = 0);
+      i = search (substr (data_line, d), '()\');
+      if i ^= 0 then do;
+         substr (ps_string, p, i-1) = substr (data_line, d, i-1);
+         p = p + i-1;
+         substr (ps_string, p, 1) = '\';
+         substr (ps_string, p+1, 1) = substr (data_line, i+d-1, 1);
+         p = p+2;
+         d = d + i;
+         end;
+      else do;
+         l = length (data_line)-d+1;
+         substr (ps_string, p, l) = substr (data_line, d, l);
+         p = p + l;
+         end;
+      end;
+   return (substr (ps_string, 1, p-1));
+
+end psquote;
+
+
+skip_line: proc returns (bin);
+
+dcl
+   i  bin;
+
+   if need_save then do;
+      call l2$io (l2$output_string, '/pmsv save def', 0);
+      need_save = false;
+      end;
+
+   do i = 1 to number;
+      call l2$io (l2$output_string, ' pml', 0);
+      end;
+   call l2$io (l2$output_string, byte(141), 0);
+   call l2$io (l2$output_string, byte(138), 0);
+
+   return (l2$func_handled_rc);
+
+end skip_line;
+
+
+
+skip_channel: proc returns (bin);
+
+   if number = 1 then
+      call l2$io (l2$output_string, ' pmp', 0);
+   return (l2$func_handled_rc);
+
+end skip_channel;
+
+end l3$postscript;

@@ -1,0 +1,430 @@
+/* SPOOL$.SPL, PrintMaster, Jeff Hostetler, February 9, 1984                  */
+/* SPOOL$ Interface.                                                          */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+spool$: proc (key, name, xnamlen, info, buffer, buflen, ret_code);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>spl$info.ins.spl';
+%include '*>insert>based_vars.ins.spl';
+%include '*>insert>stack_fr_hdr.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%list;
+
+   dcl
+      key               bin,                /* 1=copy, 2=open, 3=modify, 4=close */
+      name              char(maxint),       /* file name/banner name */
+      xnamlen           bin,                /* length of name */
+      1  info,
+         2  reserved    bin,
+         2  file_unit   bin,                /* unit to open */
+         2  pow,
+            3  ftn      bit,                /* ftn print mode */
+            3  notused  bit,                /* formerly, expand file */
+            3  lnum     bit,                /* generate line numbers */
+            3  nhe      bit,                /* suppress header page */
+            3  no_eject bit,                /* no eject when done */
+            3  nfmt     bit,                /* no format control */
+            3  plot     bit,                /* plot file, word 7 = raster size */
+            3  defer    bit,                /* defer, word 11 = date&time */
+            3  notused2 bit,                /* formerly, local print only */
+            3  at       bit,                /* logical dest in words 13-20 */
+            3  bnrname  bit,                /* banner name in words 21-28 */
+            3  copies   bit,                /* nr copies in word 29 */
+            3  reservd2 bit(2),
+            3  nfy      bit,                /* notify user when done */
+            3  xarray   bit,                /* extended array used */
+         2  form_type   char(6),
+         2  plot_size   bin,                /* raster scan size */
+         2  prt_name    char(6),            /* PRTnnn */
+         2  defer_time  bin,                /* integer minutes after midnight */
+         2  file_size   bin,                /* if key=1 (out) */
+         2  destination char(16),           /* (Optional), "-at" */
+         2  bnr_name    char(16),           /* (Optional), "-as" */
+         2  copies_     bin,                /* (Optional) */
+         2  xopt,                           /* extended options */
+            3  ldev     bit,                /* -DISK used */
+            3  rush     bit,                /* only for key=3 */
+            3  norush   bit,                /* only for key=3 */
+            3  rtnmsg   bit,                /* put error message in "name" */
+            3  reservd3 bit(2),
+            3  truncate bit,                /* truncate lines too long */
+            3  nodefer  bit,                /* remove defer (key=3) */
+            3  reservd4 bit(8),
+         2  ldev_       bin,                /* disk number for -DISK */
+      buffer            char(*),            /* (not used) */
+      buflen            bin,                /* (not used) */
+      ret_code          bin,
+
+      inhibited         bit,
+      name_var          char(128) var,
+      namlen            bin,
+      rest              char(128) var,
+      kw_cl             char(max_cl) var,
+      q_partition       char(32) var,
+      x                 bin,
+      we_did_initialization   bit,
+      pm$info           like spl$info,
+      1  saved_swi      like swi_switches,
+      sp                ptr,
+      status            bin,
+      swapped           bit,
+      code              bin;
+
+
+   ret_code = e$nsuc;
+
+   /* check name length for legitimate values, and set to zero if invalid.
+      INFORMATION sends name length of -1, which causes string problems */
+
+   if 0 <= xnamlen & xnamlen <= 128 then
+      namlen = xnamlen;
+   else
+      namlen = 0;
+
+   extloc.gbl_address = addr(gbl$static_external); /* dynamic common kludge */
+   extloc.err_address = addr(err$static_external); /* dynamic common kludge */
+
+   /* preserve current attach point in case a simple file name is given
+      and current and home attach points are not the same */
+
+   swapped = false;
+   inhibited = false;
+   call sw$rao (saved_swi);
+   inhibited = true;
+   swapped = at$tmp();                      /* save current */
+   call at$hom (code);                      /* attach current to home */
+
+   we_did_initialization = gp$init ('user', '', abnormal_return);
+
+   /* restore current attach point */
+
+   if swapped then do;
+      call at$inv (k$cura, code);           /* close current */
+      if ^at$tmp() then                     /* restore current */
+         call at$hom (code);                /* failed - attach home */
+      end;
+
+   inhibited = false;                       /* enable interrupts */
+   call sw$on (saved_swi);
+
+   if we_did_initialization then
+      on condition (ANY$)
+         call gp$any;
+
+   on condition (err$condition_before_msg)
+      begin;
+      if err$es.type = err$primos_et then
+         ret_code = err$es.status1;      /* get it before it disappears */
+      if info.pow.xarray then
+         if info.xopt.rtnmsg then
+            substr (name, 1, namlen) = err$es.user_message;
+      goto abnormal_return;
+      end;
+
+
+   q_partition = '';
+
+   if gbl.trace_on then do;
+      sp = stackptr();
+      call ioa$ ('TRACE: SPOOL$ called from %p, args are:%.', -1, sp->sfh.ret_pb);
+      call ioa$ ('TRACE:    KEY = %d%.', -1, key);
+      call ioa$ ('TRACE:    NAME = %c%.', -1, name, namlen);
+      call ioa$ ('TRACE:    NAME LENGTH = %d%.', -1, xnamlen);
+      call ioa$ ('TRACE:    INFO array:%.', -1);
+      call ioa$ ('TRACE:         UNIT = %d%.', -1, info.file_unit);
+      call ioa$ ('TRACE:         POW = ''%6w%.', -1, info.pow.ftn);
+      call ioa$ ('TRACE:         FORM = "%c"%.', -1, info.form_type, 6);
+      if info.plot_size ^= 0 then
+         call ioa$ ('TRACE:         PLOT SIZE = %d%.', -1, info.plot_size);
+      if key = 3 then
+         call ioa$ ('TRACE:         PRT NAME = "%c"%.', -1, info.prt_name, 6);
+      if info.pow.defer then
+         call ioa$ ('TRACE:         DEFER TIME = %d%.', -1, info.defer_time);
+      if info.pow.at then
+         call ioa$ ('TRACE:         DESTINATION = "%c"%.', -1, info.destination,
+                    16);
+      if info.pow.bnrname then
+         call ioa$ ('TRACE:         ALIAS = "%c"%.', -1, info.bnr_name,
+                    16);
+      if info.pow.copies then
+         call ioa$ ('TRACE:         COPIES = %d%.', -1, info.copies_);
+      if info.pow.xarray then do;
+         call ioa$ ('TRACE:    EXTENDED info array:%.', -1);
+         call ioa$ ('TRACE:    XOPT = ''%6w%.', -1, info.xopt);
+         if info.xopt.ldev then
+            call ioa$ ('TRACE:         LDEV = %d%.', -1, info.ldev_);
+         end;
+      end;
+
+   pm$info.version = spl$info_version;
+
+   select (key);
+      when (1)
+         call copy_job;
+      when (2)
+         call open_job;
+      when (3)
+         call change_job;
+      when (4)
+         call close_job;
+      otherwise
+         call err$ (err$primos_et, 'Bad key in call to SPOOL$', e$bkey, 0, 0);
+      end;
+
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+abnormal_return:
+
+   if swapped then do;
+      call at$inv (k$cura, code);           /* close current */
+      if ^at$tmp() then                     /* restore current */
+         call at$hom (code);                /* failed - attach home */
+      end;
+
+   if inhibited then do;
+      inhibited = false;
+      call sw$on (saved_swi);
+      end;
+
+   if we_did_initialization then
+      call gp$terminate;
+   return;
+
+%page;
+
+/******************************************************************************/
+/*                                                                            */
+/*     KEY = 1  (copy file to queue)                                          */
+/*                                                                            */
+/******************************************************************************/
+
+copy_job: procedure;
+
+
+   /* Copy pathname given into a local CHAR() VAR and remove spaces
+      around the >'s in the pathname; this is for compatibility with
+      old SPOOL$, since it used TA$$ to do attaches */
+
+   name_var = substr(name, 1, namlen);
+   rest = trim(after(name_var, '>'), '10'b);
+   name_var = trim(before(name_var, '>'), '01'b);
+   do while (length(rest) > 0);
+      name_var = name_var || '>' || trim(before(rest, '>'), '01'b);
+      rest = trim(after(rest, '>'), '10'b);
+      end;
+
+   call make_command_line;
+   kw_cl = kw_cl || ' -' || kw$copyfile; /* force -COPYFILE for compatibility */
+   if ^spl$aj (name_var, kw_cl, q_partition, addr(pm$info)) then
+      call err$ (err$coding_et, 'SPL$AJ returned with an error', 0, 0, 0);
+
+   info.file_size = pm$info.file_size;
+   call ioa$rs (info.prt_name, 6, x, 'PRT%3zd', 7, pm$info.job_id);
+
+   ret_code = 0;                            /* spool successful */
+   return;
+
+end copy_job;
+
+%page;
+
+/******************************************************************************/
+/*                                                                            */
+/*     KEY = 2  (open file in queue)                                          */
+/*                                                                            */
+/******************************************************************************/
+
+open_job: proc;
+
+dcl
+   key      bin;
+
+
+   name_var = substr(name, 1, namlen);
+   call make_command_line;
+
+   if ^info.pow.bnrname then                /* open with no -AS option */
+      if name_var ^= '' then                /* use filename given */
+         kw_cl = kw_cl || ' -JOB_NAME ' || quote (trim (name_var, '11'b));
+
+   key = 0;
+   if info.file_unit = 0 then
+      key = k$getu;
+
+   if ^spl$oj (key, info.file_unit, kw_cl, q_partition, addr(pm$info)) then
+      call err$ (err$coding_et, 'SPL$OJ returned with an error', 0, 0, 0);
+
+   info.file_size = pm$info.file_size;
+   call ioa$rs (info.prt_name, 6, x, 'PRT%3zd', 7, pm$info.job_id);
+
+   ret_code = 0;                            /* spool successful */
+   return;
+
+end open_job;
+
+%page;
+
+
+/******************************************************************************/
+/*    MAKE_COMMAND_LINE  -- create keyword command line from options          */
+/******************************************************************************/
+
+make_command_line: proc;
+
+dcl
+   fs_date           bin(31),
+   dow               bin,
+   date_             char(28) var,
+   iso_date_         char(21);
+
+   kw_cl = '';
+
+   if info.pow.ftn then
+      kw_cl = kw_cl || ' -FTN -^NO_FORMAT';
+
+   if info.pow.lnum then
+      kw_cl = kw_cl || ' -LINE_NUMBERS';
+
+   if info.pow.nhe then
+      kw_cl = kw_cl || ' -NO_BANNER';
+
+   if info.pow.no_eject then
+      kw_cl = kw_cl || ' -NO_EJECT';
+
+   if info.pow.nfmt then
+      kw_cl = kw_cl || ' -NO_FORMAT -^FTN';
+
+   if info.pow.nfy then
+      kw_cl = kw_cl || ' -NOTIFY NOW';
+
+   if info.pow.plot then
+      kw_cl = kw_cl || ' -PLOT ' || trim(char(info.plot_size), '11'b);
+
+   if info.pow.xarray then
+      if info.xopt.truncate then
+         kw_cl = kw_cl || ' -TRUNCATE';
+
+   /* put time given (in minutes since midnight) with today's date,
+      convert minutes after midnight to quadseconds, then to visual format */
+
+   if info.pow.defer then do;
+      fs_date = date$();
+      addr(fs_date)->b31.wd2 = info.defer_time * 15;
+      call cv$fda (fs_date, dow, iso_date_);
+      kw_cl = kw_cl || ' -DEFER ' || iso_date_;
+      end;
+
+   if info.pow.at & info.destination ^= '' then
+      kw_cl = kw_cl || ' -AT ' || quote (translate(info.destination,
+                                                   uppercase, lowercase));
+
+   if info.pow.copies then
+      kw_cl = kw_cl || ' -COPIES ' || trim(char(info.copies_), '11'b);
+
+   /* don't insert form type if it is blank or the first word is zero;
+      setting the first word zero on a modify means not to change the form */
+
+   if info.form_type ^= '' & addr(info.form_type)->bin15 ^= 0 then
+      kw_cl = kw_cl || ' -FORM ' || quote (translate(info.form_type,
+                                                     uppercase, lowercase));
+
+   if info.pow.bnrname then
+      kw_cl = kw_cl || ' -JOB_NAME ' || quote (info.bnr_name);
+
+end make_command_line;
+
+
+
+/******************************************************************************/
+/*    QUOTE  --  trim trailing blanks and quote a string                      */
+/******************************************************************************/
+
+quote : procedure (argstr) returns (char(66) var);
+
+dcl
+   argstr   char(*),                        /* don't change this */
+
+   outstr   char(66) var;                   /* quoted output string */
+
+   outstr = trim (argstr, '01'b);           /* trim trailing blanks */
+   call gp$quote (outstr);
+   return (outstr);
+
+end quote;
+
+%page;
+
+
+/******************************************************************************/
+/*                                                                            */
+/*   KEY = 3   Change existing job                                            */
+/*                                                                            */
+/******************************************************************************/
+
+change_job: proc;
+
+dcl
+   job_id      bin;
+
+   job_id = -1;
+   on error
+      goto have_job_id;
+
+   job_id = bin (substr (prt_name, 4, 3));
+
+
+have_job_id:
+
+   if job_id = -1 then
+      call err$ (err$primos_et, 'Bad job id.', e$nsuc, 0, 0);
+
+   call make_command_line;
+
+   /* add options only valid for modify call */
+
+   if info.pow.xarray then do;
+
+      if info.xopt.rush then
+         kw_cl = kw_cl || ' -' || kw$deadline || ' NOW';
+
+      if info.xopt.norush then
+         kw_cl = kw_cl || ' -^' || kw$deadline;
+
+      if info.xopt.nodefer then
+         kw_cl = kw_cl || ' -^^' || kw$defer;
+      end;
+
+   if ^spl$cj (false, q_partition, job_id, kw_cl, addr(pm$info)) then
+      call err$ (err$coding_et, 'SPL$CJ returned with an error', 0, 0, 0);
+
+   ret_code = 0;                            /* spool successful */
+   return;
+
+end change_job;
+
+%page;
+
+/******************************************************************************/
+/*                                                                            */
+/*   KEY = 4   Close job and notify monitor                                   */
+/*                                                                            */
+/******************************************************************************/
+
+close_job: proc;
+
+   call gp$close ((info.file_unit));        /* don't change argument */
+   ret_code = 0;                            /* spool successful */
+   return;
+
+end close_job;
+
+end spool$;

@@ -1,0 +1,880 @@
+/* L2$IO.SPL, PrintMaster, Jim Wilcoxson, May 8, 1985                         */
+/* Line oriented level 2 driver.                                              */
+/* Copyright (C) 1985 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+l2$io : procedure (key, data_line, number);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>entry>ds$.ins.spl';
+%include '*>insert>l2.ins.spl';
+%include '*>entry>bio$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%include '*>entry>l2$scan_print_line.ins.spl';
+%include '*>entry>t$amlc.ins.spl';
+%include '*>entry>t$lmpc.ins.spl';
+%include '*>entry>t$vg.ins.spl';
+%list;
+
+dcl
+   key            bin,
+   number         bin,                      /* skip count or channel */
+   data_line      char(*),                  /* key = print or output_string */
+
+   code           bin,
+   status_vector  (3) bit(16) aligned,
+
+   value          char(kwl$chars_in_value) var,
+   1  value_struc based (addr(value)),      /* overlay for non-varying string */
+      2  value_len bin,
+      2  value_nv  char(length(value)),
+
+   valid_carrier_state     bin static,      /* -1 => don't check carrier */
+                                            /*  0 => okay if carrier low */
+                                            /*  1 => okay if carrier high */
+   calling_output_string   bit static init(false),
+   t$vg_already_skipped    bit static init(false);
+
+
+%replace
+   t$vg_crff   by '0D0C'b4,                 /* CR, FF */
+   t$vg_crlf   by '0D0A'b4;                 /* CR, LF */
+
+
+
+   select (key);
+      when (l2$output_string)
+         call output_string;
+      when (l2$print_line)
+         call print_line;
+      when (l2$skip_line)
+         call skip_line;
+      when (l2$skip_channel)
+         call skip_channel;
+      when (l2$online_test)
+         call online_test;
+
+      when (l2$device_init)
+         call device_init;
+      when (l2$device_terminate)
+         call device_terminate;
+
+      when (l2$job_init)
+         call job_init;
+      when (l2$job_terminate)
+         call job_terminate;
+
+      when (l2$device_reinit, l2$request, l2$file_command)
+         if handled (key, data_line, number) then ;
+      otherwise
+         call err$ (err$coding_et, 'Bad key in call', 0, 0, 0);
+      end;  /* select */
+   return;
+
+
+t$amlc_error:
+   call err$ (err$primos_et, 'T$AMLC error ' || trim(char(code),'10'b),
+              e$nsuc, 0, 0);
+
+unknown_device:
+   call err$ (err$user_et,
+          'Attempted output to unknown device; check -ASSIGN_DEVICE keyword.',
+          err$bad_device_interface_ue, 0, 0);
+
+%page;
+
+/******************************************************************************/
+/* DEVICE_INIT                                                                */
+/*                                                                            */
+/*    Determine device type from ASSIGN command and call level 3 driver       */
+/*    to initialize device characteristics.                                   */
+/******************************************************************************/
+
+device_init: procedure;
+
+dcl
+   i              bin,
+   p_kw           ptr;
+
+   /* set device type based on ASSIGN_DEVICE keyword */
+
+   l2.device_type = l2$unknown_dt;
+   if kwl$find_kw ('ASSIGN_DEVICE', ds.p_device_kwl, p_kw) then
+      if kwl$get_nth_value (p_kw, 1, value) then
+         value = translate (substr (value, 1, 2), uppercase, lowercase);
+dcl select_hack char(32); /*
+         select (value);
+*/       select_hack =  (value);
+         select (select_hack);
+            when ('PR') l2.device_type = l2$parallel_dt;   /* PRx */
+            when ('AM') l2.device_type = l2$amlc_dt;       /* AMLC xx */
+            when ('PL') l2.device_type = l2$versatec_dt;   /* PLOT */
+            when ('TE', 'TT') l2.device_type = l2$terminal_dt;   /* TERMINAL/TTY*/
+            when ('CE') l2.device_type = l2$centronics_dt; /* CExPR */
+            when ('MT') l2.device_type = l2$magtape_dt;    /* MTx */
+            otherwise
+               ;
+            end;
+
+   /* look for -CHECK_CARRIER keyword; values are HIGH and LOW, indicating
+      device is available when carrier is HIGH or LOW */
+
+   valid_carrier_state = -1;                /* don't check carrier */
+   if kwl$find_kw ('CHECK_CARRIER', ds.p_device_kwl, p_kw) then do;
+      valid_carrier_state = 2;
+      if kwl$get_nth_value (p_kw, 1, value) then do;
+         value = translate (value, uppercase, lowercase);
+/* select_hack
+         select (value);
+*/       select_hack =  (value);
+         select (select_hack);
+            when ('HIGH') valid_carrier_state = 1;
+            when ('LOW') valid_carrier_state = 0;
+            otherwise
+               ;
+            end;
+         end;
+      end;
+
+   if valid_carrier_state = 2 then
+      call err$ (err$user_et, 'Bad value for -CHECK_CARRIER keyword.',
+                 err$bad_value_ue, 0, 0);
+
+   /* initially assume driver can't handle anything */
+
+   l23.max_channel_skip = 1;                /* assume device can only eject */
+   l23.pad_char = ' ';
+   l23.scan_key = l2$invalid_scan_key;      /* make sure level 3 sets this */
+   l23.func_implemented = false;            /* set array false */
+   l23.func_implemented (l2$device_init) = true;   /* all devices do this */
+   l2.l3_driver = ds.level_3_driver;        /* calling sequence is different */
+
+   /* call level 3 driver, tell it to init */
+
+   if ^handled (l2$device_init, data_line, number) then
+      call err$ (err$coding_et, 'Level 3 driver didn''t initialize.', 0, 0, 0);
+
+   /* was scan key set? */
+
+   if l23.scan_key = l2$invalid_scan_key then
+      call err$ (err$coding_et, 'Level 3 didn''t set L2.SCAN_KEY.', 0, 0, 0);
+
+   /* word-oriented interfaces require padding output to word boundary */
+
+   select (l2.device_type);
+      when (l2$parallel_dt, l2$versatec_dt, l2$magtape_dt)
+         l23.scan_key = l23.scan_key + l2$pad_key;
+      otherwise
+         ;
+      end;
+
+   /* send out carriage return to reset printhead to column 1 */
+
+   select (l2.device_type);
+      when (l2$parallel_dt, l2$magtape_dt, l2$versatec_dt, l2$file_dt)
+         ;                            /* but not on these */
+      otherwise
+         call l2$io (l2$output_string, byte(141), 0);
+      end;
+
+   if kwl$find_kw ('DEVICE_INIT_FILE', ds.p_device_kwl, p_kw) then
+      do i = 1 by 1 while (kwl$get_nth_value (p_kw, i, value));
+         call download_file (value);
+         end;
+
+   if kwl$find_kw ('DEVICE_INIT_STRING', ds.p_device_kwl, p_kw) then
+      do i = 1 by 1 while (kwl$get_nth_value (p_kw, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+end device_init;
+
+%page;
+
+/******************************************************************************/
+/* DEVICE_TERMINATE                                                           */
+/*                                                                            */
+/*    Terminate and clean up a device.                                        */
+/*                                                                            */
+/******************************************************************************/
+
+device_terminate: proc;
+
+dcl
+   i        bin,
+   kwp      ptr;
+
+   if kwl$find_kw ('DEVICE_TERMINATE_FILE', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+          call download_file (value);
+          end;
+
+   if kwl$find_kw ('DEVICE_TERMINATE_STRING', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+   if handled (key, data_line, number) then
+      ;
+
+end device_terminate;
+
+%page;
+
+
+/******************************************************************************/
+/* PRINT_LINE                                                                 */
+/*                                                                            */
+/*    Print a single line.                                                    */
+/******************************************************************************/
+
+print_line: procedure;
+
+dcl
+   ffpos                bin,
+   truncated_line_len   bin,
+   truncated_line       char(truncated_line_len) based (addr(data_line)),
+   input_string         char (512);
+
+
+   if l2.in_align_mode then
+      call alignment_check;
+
+   /* do a quick truncate if print line too long - assumes argument is
+      not a constant */
+
+   if length (data_line) > l2.print_line_len then
+      truncated_line_len = l2.print_line_len;
+   else
+      truncated_line_len = length (data_line);
+
+   call l2$scan_print_line (truncated_line, truncated_line_len, ffpos,
+                            l23.scan_key, l23.pad_char);
+
+   /* if this is only a page eject, and this eject is to be ignored,
+      strip the eject off.  Ejects will continue to be ignored until
+      data is actually printed, or a line skip is done. */
+
+   if l2.ignore_next_eject then
+      if ffpos = 1 | (ffpos > 0 & substr (data_line, 1, ffpos-1) = '') then do;
+         data_line = substr (data_line, ffpos+1);
+         truncated_line_len = truncated_line_len - 1;
+         end;
+
+   if truncated_line_len > 0  &  ^l2.suppress_output then do;
+      if ^handled (l2$print_line, truncated_line, 0) then do;
+         call l2$io (l2$output_string, truncated_line, 0);
+
+         /* most devices require a CR after the print line */
+
+         select (l2.device_type);
+            when (l2$parallel_dt, l2$magtape_dt, l2$versatec_dt, l2$file_dt)
+               ;                            /* but these don't */
+            otherwise
+               call l2$io (l2$output_string, byte(141), 0);
+            end;
+         end;
+      l2.ignore_next_eject = false;
+      end;
+
+   if ffpos ^= 0 & ^l2.suppress_accounting then do;
+      call l2.accounting (l2$page, ffpos);
+      l2.paper_pos = 1;
+      end;
+
+   /* if this is an async line, grab and display any responses from the
+      device.  This is particularly important for PostScript devices */
+
+   if l2.device_type = l2$amlc_dt then do;
+      call t$amlc (ds.device_unit, addr (input_string), 512, t$amlc$input_all,
+                   status_vector, 1, code);
+      if code ^= 0 then
+         goto t$amlc_error;
+      if status_vector (1) > 0 then
+         call tnou (input_string, (status_vector (1)));
+      end;
+
+end print_line;
+
+%page;
+
+/******************************************************************************/
+/* SKIP_LINE                                                                  */
+/*                                                                            */
+/*    Skips "number" lines on the device.                                     */
+/******************************************************************************/
+
+skip_line: procedure;
+
+
+   if number <= 0 then
+      return;
+
+   if ^l2.suppress_output then do;          /* output enabled */
+      call skipper (number);
+      if ^l2.suppress_accounting then do;
+         l2.paper_pos = l2.paper_pos + number;
+         if l2.paper_pos > l23.lines_per_page then do;
+            call l2.accounting (l2$page, 0);
+            l2.paper_pos = mod (l2.paper_pos, l23.lines_per_page);
+            end;
+         end;
+      end;
+   else do;                                 /* output suppressed */
+      if l2.suppress_accounting then
+         call err$ (err$coding_et, 'Accounting and output suppressed?', 0, 0, 0);
+      l2.paper_pos = l2.paper_pos + number;
+      if l2.paper_pos > l23.lines_per_page then do;
+         call l2.accounting (l2$page, 0);
+         l2.paper_pos = mod (l2.paper_pos, l23.lines_per_page);
+         if ^l2.suppress_output then
+            call skipper (l2.paper_pos);
+         end;
+      end;
+
+
+   /* does actual skipping, checking level 3 driver first */
+
+   skipper: procedure (lines_to_skip);
+
+   dcl
+      lines_to_skip  bin,
+
+      (i,n)          bin,
+      t$vg_ls        (lines_to_skip) bit(16) aligned,
+      serial_ls      char (lines_to_skip) defined t$vg_ls;
+
+
+      if ^handled (l2$skip_line, '', lines_to_skip) then
+         select (l2.device_type);
+
+            when (l2$parallel_dt)
+               do n = 1 to lines_to_skip;
+                  call t$lmpc (ds.device_unit, null, 0, t$lmpc$skip_a_line,
+                               status_vector);
+                  end;
+
+            when (l2$versatec_dt) do;
+               n = lines_to_skip;
+               if t$vg_already_skipped then
+                  n = n - 1;
+               if n > 0 then do;
+                  n = n - 1;                /* T$VG always skips 1 more */
+                  do i = 1 to n;
+                     t$vg_ls(i) = t$vg_crlf;
+                     end;
+                  status_vector(1) = 0;     /* T$VG bug */
+                  call t$vg (ds.device_unit, addr(t$vg_ls), n, t$vg$print_line,
+                             status_vector);
+                  end;
+               t$vg_already_skipped = false;
+               end;
+
+            otherwise do;            /* amlc, terminal, centronics, unknown */
+               do i = 1 to lines_to_skip;
+                  substr(serial_ls,i,1) = byte(138);
+                  end;
+               call l2$io (l2$output_string, serial_ls, 0);
+               end;  /* otherwise */
+            end;  /* select */
+
+      l2.ignore_next_eject = false;
+
+   end skipper;
+
+end skip_line;
+
+%page;
+
+/******************************************************************************/
+/* SKIP_CHANNEL                                                               */
+/*                                                                            */
+/*    Skips to channel c; this may need to be simulated later on devices      */
+/*    without VFU capabilities.                                               */
+/******************************************************************************/
+
+skip_channel: procedure;
+
+   if ^l2.suppress_output then do;          /* output enabled */
+      if ^(number = 1 & l2.ignore_next_eject) then do;
+         if l2.in_align_mode then
+            call alignment_check;
+         call channel_skipper;
+         end;
+      end;
+
+   if number = 1 & ^l2.suppress_accounting then do;
+      call l2.accounting (l2$page, 0);
+      l2.paper_pos = 1;
+      end;
+
+
+   /* does device dependent channel skip */
+
+   channel_skipper: procedure;
+
+   dcl
+      t$lmpc_skip_command  bin,
+      serial_skip_command  char defined t$lmpc_skip_command,
+      t$vg_skip_command    bit(16) defined t$lmpc_skip_command;
+
+
+      if ^handled (l2$skip_channel, data_line, number) then
+         select (l2.device_type);
+
+            when (l2$parallel_dt) do;
+               if number = 1 then
+                  t$lmpc_skip_command = t$lmpc$skip_tof;
+               else if 2 <= number & number <= l23.max_channel_skip then
+                  t$lmpc_skip_command = t$lmpc$skip_channel + number;
+               else
+                  t$lmpc_skip_command = t$lmpc$skip_a_line;
+               call t$lmpc (ds.device_unit, null, 0,
+                            t$lmpc_skip_command, status_vector);
+               end;
+
+            when (l2$versatec_dt) do;
+               if number = 1 then
+                  t$vg_skip_command = t$vg_crff;    /* page eject */
+               else
+                  t$vg_skip_command = t$vg_crlf; /* skip line if out of range */
+               status_vector(1) = 0;        /* T$VG bug */
+               call t$vg (ds.device_unit, addr(t$vg_skip_command), 1,
+                          t$vg$print_line, status_vector);
+               t$vg_already_skipped = false;
+               end;
+
+            otherwise do;             /* amlc, terminal, centronics, unknown */
+               if number = 1 then
+                  serial_skip_command = byte(140);    /* form feed */
+               else
+                  serial_skip_command = byte(138);    /* line feed */
+               call l2$io (l2$output_string, serial_skip_command, 0);
+               end;
+            end;  /* select */
+
+      l2.ignore_next_eject = false;
+
+   end channel_skipper;
+
+end skip_channel;
+
+%page;
+
+
+/******************************************************************************/
+/* ONLINE_TEST                                                                */
+/*                                                                            */
+/*    Returns 1 in "number" if device is online, zero otherwise.              */
+/******************************************************************************/
+
+online_test: procedure;
+
+
+   select (l2.device_type);
+
+      when (l2$amlc_dt) do;
+         call t$amlc (ds.device_unit, null, 0, t$amlc$status, status_vector,
+                      1, code);
+         if code ^= 0 then
+            goto t$amlc_error;
+
+         if status_vector(2) = '0000'b4 then
+            number = 1;                     /* on-line (has carrier) */
+         else
+            number = 0;                     /* off-line (no carrier) */
+         end;
+
+      when (l2$parallel_dt) do;
+         call t$lmpc (ds.device_unit, null, 0, t$lmpc$read_status,
+                      status_vector);
+         if (status_vector(2) & t$lmpc$on_line) ^= '0000'b4 then
+            number = 1;                           /* on-line */
+         else
+            number = 0;                           /* off-line */
+         end;
+
+      when (l2$versatec_dt) do;
+         status_vector(1) = 0;              /* T$VG bug */
+         call t$vg (ds.device_unit, null, 0, t$vg$read_status, status_vector);
+         if (status_vector(2) & t$vg$not_on_line) = '0000'b4 then
+            number = 1;                     /* on-line */
+         else
+            number = 0;                     /* off-line */
+         end;
+
+      otherwise
+         number = 1;                        /* all others assumed online */
+      end;
+
+end online_test;
+
+%page;
+
+
+/******************************************************************************/
+/* OUTPUT_STRING                                                              */
+/*                                                                            */
+/*    Send a string of data to the device.  Translation is performed if       */
+/*    requested.  If the level 3 driver requests handling of this key, it     */
+/*    cannot call back into level 2.  A special check is made to detect       */
+/*    this.                                                                   */
+/*                                                                            */
+/******************************************************************************/
+
+output_string: procedure;
+
+dcl
+   carrier_state  bin,
+   out_string     char(length(data_line) + 1) aligned,
+   string_len     bin,
+   based_string   char(string_len) aligned based,
+   stringp        ptr options (short),
+   status         bin;
+
+
+   if calling_output_string then
+      call err$ (err$coding_et,
+               'Level 3 called back into level 2 during DS$OUTPUT_STRING call.',
+               0, 0, 0);
+
+   /* if null string, don't do anything; T$AMLC will give errors
+      when the string length is zero */
+
+   if length (data_line) = 0 then
+      return;
+
+   calling_output_string = true;
+   if handled (key, data_line, number) then do;
+      calling_output_string = false;
+      return;
+      end;
+
+   calling_output_string = false;
+
+   if ds.need_device_translate then do;
+      call gp$translate (data_line, out_string, length(data_line),
+                         ds.device_translation_table);
+      stringp = addr(out_string);
+      end;
+   else
+      stringp = addr(data_line);
+   string_len = length (data_line);
+
+   select (l2.device_type);
+
+      when (l2$terminal_dt)
+         call tnoua (stringp->based_string, string_len);
+
+      when (l2$amlc_dt) do;
+         if valid_carrier_state >= 0 then do;
+            call l2$io (l2$online_test, '', carrier_state);
+            do while (carrier_state ^= valid_carrier_state);
+               call sleep$ (one_second);
+               if ds$process_request (false) then ;
+               call l2$io (l2$online_test, '', carrier_state);
+               end;
+            end;
+         call t$amlc (ds.device_unit, stringp, string_len,
+                      t$amlc$print, status_vector, 1, code);
+         if code ^= 0 then
+            goto t$amlc_error;
+         end;
+
+      when (l2$parallel_dt) do;
+
+         /* pad odd-length strings with CR (no parity) for parallel interface
+            to prevent garbage in the last byte from going out */
+
+         if mod (string_len, 2) ^= 0 then do;
+            string_len = string_len + 1;
+            if stringp = addr(data_line) then do;
+               stringp = addr(out_string);
+               out_string = data_line;
+               end;
+            substr (out_string, string_len, 1) = byte(13);
+            end;
+        call t$lmpc (ds.device_unit, stringp,
+                      divide (string_len, 2, 15),
+                      t$lmpc$print_line, status_vector);
+         end;
+
+      when (l2$versatec_dt) do;
+         status_vector(1) = 0;              /* T$VG bug */
+         call t$vg (ds.device_unit, stringp,
+                    divide (string_len + 1, 2, 15),
+                    t$vg$print_line, status_vector);
+         t$vg_already_skipped = true;
+         end;
+
+      when (l2$centronics_dt) do;
+         call cp$ ('ASR 1', status, status);
+         call tnoua (stringp->based_string, string_len);
+         call cp$ ('ASR 0', status, status);
+         end;
+
+      otherwise
+         goto unknown_device;
+      end;
+
+end output_string;
+
+%page;
+
+/******************************************************************************/
+/* JOB_INIT                                                                   */
+/*                                                                            */
+/*    Initialize a job.                                                       */
+/*                                                                            */
+/******************************************************************************/
+
+job_init: proc;
+
+dcl
+   i        bin,
+   kwp      ptr;
+
+   if kwl$find_kw ('JOB_INIT_FILE', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call download_file (value);
+         end;
+
+   if kwl$find_kw ('JOB_INIT_STRING', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+   if handled (key, data_line, number) then
+      ;
+
+   if kwl$find_kw ('JOB_INIT_FILE', ds.p_job_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call download_file (value);
+         end;
+
+   if kwl$find_kw ('JOB_INIT_STRING', ds.p_job_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+end job_init;
+
+%page;
+
+/******************************************************************************/
+/* JOB_TERMINATE                                                              */
+/*                                                                            */
+/*    Terminate and clean up a job.                                           */
+/*                                                                            */
+/******************************************************************************/
+
+job_terminate: proc;
+
+dcl
+   i        bin,
+   kwp      ptr;
+
+   if kwl$find_kw ('JOB_TERMINATE_FILE', ds.p_job_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call download_file (value);
+         end;
+
+   if kwl$find_kw ('JOB_TERMINATE_STRING', ds.p_job_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+   if handled (key, data_line, number) then
+      ;
+
+   if kwl$find_kw ('JOB_TERMINATE_FILE', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+          call download_file (value);
+          end;
+
+   if kwl$find_kw ('JOB_TERMINATE_STRING', ds.p_device_kwl, kwp) then
+      do i = 1 by 1 while (kwl$get_nth_value (kwp, i, value));
+         call l2$io (l2$output_string, value_nv, 0);
+         end;
+
+end job_terminate;
+
+%page;
+
+/******************************************************************************/
+/* DOWNLOAD_FILE                                                              */
+/*                                                                            */
+/*    Download a file to the device for (JOB DEVICE)_(INIT TERMINATE)_FILE    */
+/*    keywords.  If any line begins with ^001^005 or ^201^005, rest of file   */
+/*    is sent in "raw" mode - no translation, linefeeds, etc.  Otherwise,     */
+/*    the file is sent with translation enabled, & CRLF is sent after each    */
+/*    line UNLESS the line ends with a backslash.                             */
+/******************************************************************************/
+
+download_file: proc (filename);
+
+dcl
+   filename char(*) var,                    /* pathname of file to download */
+
+   c2       char(2) based,
+   lfcr     bit(16) static init ('8A8D'b4), /* linefeed & carriage-return */
+   is_binary bit,                           /* true if "binary" download file */
+   fp       ptr,                            /* pointer to file control block */
+   pos      bin(31),                        /* word position of this line */
+   translate_save bit,
+   unit     bin,                            /* file unit */
+   buf_ptr  ptr,
+   buf      char(4096) var based (buf_ptr),
+   1  buf_bit16 based (buf_ptr),            /* bit16 overlay of buf */
+      2  len      bin,
+      2  bit16    bit(16),
+   1  buf_nonvar based (buf_ptr),           /* non-varying overlay of buf */
+      2  len      bin,
+      2  chars    char(length(buf)) aligned;
+
+
+   fp = null;
+   unit = 0;
+   buf_ptr = null;
+   is_binary = false;
+   translate_save = ds.need_device_translate;
+
+   /* abort the download if an error occurs */
+
+   on condition (err$condition_after_msg)
+      goto end_download;
+
+   allocate buf set (buf_ptr);
+   call gp$open_path (k$read+k$getu, filename, unit);
+   fp = bio$init_file (unit, 0);
+
+   do while (read_file());
+
+      /* test for the binary control sequence at the start of the line */
+
+      if ^is_binary
+       & length (buf) >= 2
+       & (buf_bit16.bit16 = '0105'b4
+          | buf_bit16.bit16 = '8105'b4) then do;
+               is_binary = true;
+               ds.need_device_translate = false;
+               end;
+
+      /* not a control sequence; output string/buffer and possibly CR/LF */
+
+      else
+         if ^is_binary & substr (buf, length (buf), 1) = '\' then do;
+            buf_nonvar.len = buf_nonvar.len - 1;
+            if buf_nonvar.len > 0 then
+               call l2$io (l2$output_string, buf_nonvar.chars, 0);
+            end;
+         else do;
+            call l2$io (l2$output_string, buf_nonvar.chars, 0);
+            call l2$io (l2$output_string, addr (lfcr)->c2, 0);
+            end;
+
+      end;  /* do while read_file */
+
+end_download:
+
+   ds.need_device_translate = translate_save;
+   if buf_ptr ^= null then do;
+      free buf_ptr->buf;
+      buf_ptr = null;
+      end;
+   if fp ^= null then do;
+      call bio$close_file (fp);
+      unit = 0;
+      end;
+   if unit ^= 0 then
+      call gp$close (unit);
+
+
+   read_file: proc returns (bit);
+
+      if ^is_binary then
+         return (bio$read_line (fp, buf, pos));
+      else
+         return (bio$read_buffer (fp, buf, 70)); /* max 70 words */
+
+   end read_file;
+
+end download_file;
+
+%page;
+
+
+/******************************************************************************/
+/* ALIGNMENT_CHECK                                                            */
+/*                                                                            */
+/*    Called when the device is in alignment mode; checks for the device      */
+/*    changing from on-line to off-line to on-line, and sets a flag to tell   */
+/*    the main print loop to resume printing at the alignment page if this    */
+/*    occurs.                                                                 */
+/******************************************************************************/
+
+alignment_check : procedure;
+
+dcl
+   was_offline       bit aligned,
+   online_flag       bin;
+
+   was_offline = false;
+   call l2$io (l2$online_test, '', online_flag);
+   do while (online_flag = 0);
+      was_offline = true;
+      if ds$process_request (false) then;
+      call sleep$ (one_second);
+      call l2$io (l2$online_test, '', online_flag);
+   end;
+
+   if was_offline then
+      l2.need_to_realign = true;
+
+end alignment_check;
+
+/******************************************************************************/
+/* HANDLED                                                                    */
+/*                                                                            */
+/*    Calls level 3 driver if necessary, and checks return code.              */
+/*    Returns true if function was handled by level 3,                        */
+/*            false if function should be handled by this level.              */
+/******************************************************************************/
+
+handled: procedure (key, data, n) returns (bit);
+
+dcl
+   key            bin,
+   data           char(*),
+   n              bin,
+
+   return_code    bin;                      /* return code from level 3 */
+
+
+   if l23.func_implemented (key) then do;
+      return_code = l2.l3_driver (key, data, n);
+      select (return_code);
+         when (l2$func_handled_rc)
+            return (true);
+         when (l2$func_not_handled_rc)
+            return (false);
+         when (l2$unrecognized_func_rc)
+            call err$ (err$coding_et,
+                       'Level 3 didn''t recognize a requested function.',
+                       0, 0, 0);
+         otherwise
+            call err$ (err$coding_et,
+                       'Level 3 returned unrecognized return code.',
+                       0, 0, 0);
+         end;
+      end;
+
+   return (false);
+
+end handled;
+
+end l2$io;

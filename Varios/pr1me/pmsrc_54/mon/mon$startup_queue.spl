@@ -1,0 +1,423 @@
+/* MON$STARTUP_QUEUE.SPL, PrintMaster, Jeff Hostetler, May 24, 1984           */
+/* Function to verify that the current directory is a valid spool queue       */
+/* and read all jobs.                                                         */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+mon$startup_queue: proc (partition);
+
+%nolist;
+%include '*>insert>gbl_ext.ins.spl';
+%include '*>insert>mon.ins.spl';
+%include '*>entry>mon$queue_job.ins.spl';
+%include '*>entry>mon$create_job.ins.spl';
+%include '*>entry>mon$unattach.ins.spl';
+%include '*>entry>sq$.ins.spl';
+%include '*>entry>spl$.ins.spl';
+%include '*>entry>err$.ins.spl';
+%include '*>entry>gp$.ins.spl';
+%include '*>entry>kwl$.ins.spl';
+%include '*>entry>primos.ins.spl';
+%list;
+
+   %replace
+      any_type    by -1;                    /* ignore file type */
+
+   dcl
+      partition            char(32) var,
+
+      deleted_entries      bin,
+      jep                  ptr,
+      kwl_sd_unit          bin,
+      pc_sd_unit           bin,
+      pj_excl_sd_unit      bin,
+      pj_updt_sd_unit      bin,
+      queue_pj_in          bin,
+      other_queue          bin,
+      reading_job_kwl      bit,
+      fs_code              bin,
+      dir_unit             bin,
+      job_id               bin,
+      last_job_id          bin,
+      (p_kw, p_kwl)        ptr,
+      value_buffer         char(kwl$chars_in_value) var;
+
+%page;
+
+   fs_code = 0;
+   p_kwl = null;
+   reading_job_kwl = false;
+   deleted_entries = 0;
+
+   kwl_sd_unit = 0;        pc_sd_unit = 0;
+   pj_excl_sd_unit = 0;    pj_updt_sd_unit = 0;
+   dir_unit = 0;
+
+   on condition (cleanup$)
+      call cleanup;
+
+   call ioa$ ('Reading queue on partition %v.%.', -1, partition);
+
+   call at$abs (k$seth, partition, gbl$spool_queue, fs_code);
+   if fs_code ^= 0 then
+      goto clean_up;
+
+   /* Open each queue file (create if necessary) */
+   /*    and check the type and read/write lock. */
+
+   dir_unit = gp$open_curdir ();
+   call check_queue_file (sq$q_kwl_name, k$excl);
+   call check_queue_file (sq$q_pc_name, k$excl);
+   call check_queue_file (sq$q_pj_excl_name, k$excl);
+   call check_queue_file (sq$q_pj_updt_name, k$updt);
+   call gp$close (dir_unit);
+
+   /* find last entry in kwl directory with a file present */
+
+   call open_queue (k$read, sq$q_kwl_name, kwl_sd_unit);
+   partition = gp$partition_name (kwl_sd_unit);
+   last_job_id = last_file_entry (kwl_sd_unit);
+   call gp$close (kwl_sd_unit);
+
+   /* Read through the queue and verify each job.  */
+   /* Delete those that have problems. */
+
+   on condition (err$condition_before_msg)
+      begin;
+
+      dcl
+         was_reading_kwl   bit;
+
+      was_reading_kwl = reading_job_kwl;
+      reading_job_kwl = false;
+
+      if err$es.type = err$primos_et  &  err$es.status1 = e$fius then
+         if was_reading_kwl then do;
+            call ioa$ ('Job %d is open.%.', -1, job_id);
+            goto do_next_job;
+            end;
+         else do;
+            fs_code = err$es.status1;
+            call ioa$ ('Error occurred reading entry %d:%.', -1, job_id);
+            call err$print_error_message;
+            goto clean_up;
+            end;
+
+      if was_reading_kwl then do;
+         if ^(err$es.type = err$user_et  /* print msg unless not found */
+          & err$es.status1 = err$job_not_found_ue) then do;
+            call ioa$ ('Error occurred reading entry %d:%.', -1, job_id);
+            call err$print_error_message;
+            end;
+         goto completely_delete_the_job;
+         end;
+      goto clean_up;
+      end;  /* on condition err$condition_before_msg */
+
+   do job_id = 0 to last_job_id;
+
+      /* Read the KWL for the job.  Should an error occur, the on-unit */
+      /* will delete the job. */
+
+      reading_job_kwl = true;
+      if spl$lj (partition, job_id, p_kwl, false) then
+         ;
+      reading_job_kwl = false;
+
+      if kwl$find_kw (kw$copies_left, p_kwl, p_kw) then
+         if kwl$get_nth_value (p_kw, 1, value_buffer) then
+            if verify(value_buffer, digits) = 0 then
+               if bin(value_buffer) = 0 then do;
+                  call ioa$ ('Entry %d has zero copies left.%.', -1, job_id);
+                  goto completely_delete_the_job;
+                  end;
+
+      call open_queue (k$rdwr, sq$q_pj_excl_name, pj_excl_sd_unit);
+      call open_queue (k$rdwr, sq$q_pj_updt_name, pj_updt_sd_unit);
+
+      if kwl$find_kw (kw$copyfile, p_kwl, p_kw) then do;
+         if kwl$find_kw (kw$inuse_ok, p_kwl, p_kw) then do;
+            queue_pj_in = pj_updt_sd_unit;
+            other_queue = pj_excl_sd_unit;
+            end;
+         else do;
+            queue_pj_in = pj_excl_sd_unit;
+            other_queue = pj_updt_sd_unit;
+            end;
+         if entry_present (queue_pj_in, job_id, ft$$dam_file) then
+            if ^entry_present (other_queue, job_id, any_type) then
+               ;                            /* job is okay */
+            else do;
+               call ioa$ ('PJ file for entry %d was in both queues.%.', -1,
+                          job_id);
+               call sq$delete_entry (other_queue, job_id);
+               end;
+         else do;
+            call ioa$ ('Job %d''s printfile is missing.%.', -1, job_id);
+            goto completely_delete_the_job;
+            end;
+         end;
+      else do;                              /* COPYFILE not found in KWL */
+         if entry_present (pj_updt_sd_unit, job_id, any_type) then do;
+            call ioa$ ('Job %d had a printfile in the UPDT queue but no -COPYFILE.%.',
+                       -1, job_id);
+            call sq$delete_entry (pj_updt_sd_unit, job_id);
+            end;
+         if entry_present (pj_excl_sd_unit, job_id, any_type) then do;
+            call ioa$ ('Job %d had a printfile in the EXCL queue but no -COPYFILE.%.',
+                       -1, job_id);
+            call sq$delete_entry (pj_excl_sd_unit, job_id);
+            end;
+         end;
+      goto job_is_ok;
+
+      /* otherwise, something is wrong */
+
+completely_delete_the_job:
+
+      call delete_this_entry (job_id);
+      deleted_entries = deleted_entries + 1;
+      goto do_next_job;
+
+job_is_ok:
+      jep = mon$create_job (p_kwl);         /* convert to job entry */
+      call mon$queue_job (jep);
+
+
+do_next_job:
+      call gp$close (pj_updt_sd_unit);
+      call gp$close (pj_excl_sd_unit);
+      end; /* of do job_id */
+
+   /* We reached the end of the KWL queue.  Since the queue was not held
+      open during the verify, jobs could have been added.  All other
+      queue directories will be truncated to the same number of jobs
+      CURRENTLY in the KWL queue.  The KWL queue must be held open
+      during the truncates to prevent new jobs from being added. */
+
+   call open_queue (k$rdwr, sq$q_kwl_name, kwl_sd_unit);
+   last_job_id = last_file_entry (kwl_sd_unit);
+   call truncate_queue (kwl_sd_unit, last_job_id);
+
+   call open_queue (k$rdwr, sq$q_pc_name, pc_sd_unit);
+   call truncate_queue (pc_sd_unit, last_job_id);
+   call gp$close (pc_sd_unit);
+
+   call open_queue (k$rdwr, sq$q_pj_excl_name, pj_excl_sd_unit);
+   call truncate_queue (pj_excl_sd_unit, last_job_id);
+   call gp$close (pj_excl_sd_unit);
+
+   call open_queue (k$rdwr, sq$q_pj_updt_name, pj_updt_sd_unit);
+   call truncate_queue (pj_updt_sd_unit, last_job_id);
+   call gp$close (pj_updt_sd_unit);
+   call gp$close (kwl_sd_unit);
+   call ioa$ ('Queue read; %d entries deleted/empty.%.', -1, deleted_entries);
+
+clean_up:
+
+   call cleanup;
+   if fs_code ^= 0 then
+      call err$ (err$primos_et+err$warning_et,
+                 'Verifying possible print queue on disk '||
+                 partition, fs_code, 0, 0);
+   return;
+
+
+cleanup: procedure;
+
+   /* Close all files and return. */
+
+   call gp$close (dir_unit);
+   call gp$close (pj_excl_sd_unit);
+   call gp$close (pj_updt_sd_unit);
+   call gp$close (pc_sd_unit);
+   call gp$close (kwl_sd_unit);
+   call mon$unattach;
+
+end cleanup;
+
+
+
+/******************************************************************************/
+/*                                                                            */
+/* Internal procedure to return the last entry number that has a file.        */
+/* If no entries have files, -1 is returned.                                  */
+/*                                                                            */
+/******************************************************************************/
+
+last_file_entry: procedure (unit) returns (bin);
+
+dcl
+   unit        bin,
+
+   entry       bin,
+   last_entry  bin;
+
+   last_entry = -1;
+   do entry = 0 repeat last_entry+1 while (sq$position (k$full, unit, entry));
+      last_entry = entry;
+      end;
+   return (last_entry);
+
+end last_file_entry;
+
+
+
+open_queue: procedure (key, name, unit);
+
+dcl
+   key      bin,
+   name     char(*) var,
+   unit     bin;
+
+   if unit = 0 then
+      call gp$open_file (key+k$getu+k$nsgs, name, unit);
+
+end open_queue;
+
+
+%page;
+/* mon$startup_queue.delete_this_entry, PrintMaster, Jeff Hostetler, May 24, 1984*/
+/******************************************************************************/
+
+   delete_this_entry: proc (entry_nr);
+
+      dcl
+         entry_nr    bin;
+
+      on condition (cleanup$)
+         call cleanup;
+
+      on condition (err$condition_after_msg)
+         goto cant_delete_job;
+
+      call open_queue (k$rdwr, sq$q_pj_excl_name, pj_excl_sd_unit);
+      call sq$delete_entry (pj_excl_sd_unit, entry_nr);
+      call gp$close (pj_excl_sd_unit);
+
+      call open_queue (k$rdwr, sq$q_pj_updt_name, pj_updt_sd_unit);
+      call sq$delete_entry (pj_updt_sd_unit, entry_nr);
+      call gp$close (pj_updt_sd_unit);
+
+      call open_queue (k$rdwr, sq$q_pc_name, pc_sd_unit);
+      call sq$delete_entry (pc_sd_unit, entry_nr);
+      call gp$close (pc_sd_unit);
+
+      call open_queue (k$rdwr, sq$q_kwl_name, kwl_sd_unit);
+      call sq$delete_entry (kwl_sd_unit, entry_nr);
+      call gp$close (kwl_sd_unit);
+      return;
+
+   cant_delete_job:
+
+      call ioa$ ('Can''t delete job %d.%.', -1, entry_nr);
+      end delete_this_entry;
+
+%page;
+/* mon$startup_queue.check_queue_file, PrintMaster, Jeff Hostetler, May 24, 1984*/
+/******************************************************************************/
+
+   check_queue_file: proc (name, rwlock);
+
+      dcl
+         name        char(*) var,
+
+         dir_entry   like fs$entry_format,
+         rwlock      bin,
+         type        bin,
+         unit        bin;
+
+
+      unit = 0;
+      on condition (cleanup$)
+         call gp$close (unit);
+
+   read_entry:
+
+      call ent$rd (dir_unit, name, addr(dir_entry), fs$wds_in_file_entry, fs_code);
+
+      if fs_code = e$fntf then do;
+         call gp$open_file (k$writ + k$getu + k$nsgs, name, unit);
+         call gp$close (unit);
+         goto read_entry;
+         end;
+
+      if dir_entry.type ^= ft$$sam_seg_dir then
+         call err$ (err$primos_et, '', e$ntsd, 0, 0);
+
+      if dir_entry.rwlock ^= rwlock then do;
+         call satr$$ (k$rwlk, (name), length(name), rwlock, fs_code);
+         if fs_code ^= 0 then
+            call err$ (err$primos_et, '', fs_code, 0, 0);
+         end;
+
+      end check_queue_file;
+
+%page;
+/* mon$startup_queue.truncate_queue, PrintMaster, Jeff Hostetler, May 24, 1984*/
+/******************************************************************************/
+
+   truncate_queue: proc (unit, entry_nr);
+
+      dcl
+         unit     bin,
+         entry_nr bin,
+
+         y        bin;
+
+      call sgdr$$ (k$msiz, unit, entry_nr + 1, (0), fs_code);
+      if fs_code ^= 0 then do;
+         y = entry_nr + 1;
+         do while (sq$position (k$full, unit, y));
+            call sq$delete_entry (unit, y);
+            call ioa$ ('Entry %d (trash) deleted.%.', -1, y);
+            y = y + 1;
+            end;
+         end;
+
+      /* we want entry+1 entries in the segment directory, numbered
+         "zero" to "entry"; since 512 segdir entries can be held in
+         a single disk records, round the number of entries required
+         up to the next multiple of 512 */
+
+      call sgdr$$ (k$msiz, unit, divide (entry_nr+512,512,15)*512, (0), fs_code);
+
+      return;
+      end truncate_queue;
+
+%page;
+/* mon$startup_queue.entry_present, PrintMaster, Jeff Hostetler, May 25, 1984 */
+/* Returns true iff the entry is present and is of the type requested.        */
+/******************************************************************************/
+
+   entry_present: proc (unit, entry_nr, type)
+                  returns (bit);
+
+      dcl
+         unit     bin,
+         entry_nr bin,
+         type     bin,
+
+         status   bin,
+         e_unit   bin,
+         file_type   bin;
+
+      call sgdr$$ (k$spos, unit, entry_nr, status, fs_code);
+      if status ^= sgdr$$file_present then
+         return (false);
+
+      if type = any_type then
+         return (true);
+
+      call srch$$ (bin(k$read+k$iseg+k$getu,15), unit, 0, e_unit,
+                   file_type, fs_code);
+      call gp$close (e_unit);
+      if fs_code = e$fius then              /* can't check type, but say it's ok */
+         return (true);
+      if fs_code ^= 0 then
+         call err$ (err$primos_et, '', fs_code, 0, 0);
+
+      return (file_type = type);
+      end entry_present;
+
+   end mon$startup_queue;

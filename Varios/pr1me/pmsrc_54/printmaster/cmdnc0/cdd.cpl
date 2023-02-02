@@ -1,0 +1,384 @@
+/* CDD.CPL, PrintMaster, Jeff Hostetler, June 19, 1984                        */
+/* PrintMaster command to help the user configure a device.                   */
+/*                                                                            */
+/* Usage:  CDD [system_partition] [-BRIEF]                                    */
+/*    or:  CDD -HELP                                                          */
+/*                                                                            */
+/* Copyright (C) 1984 J.E. Wilcoxson, J.L. Hostetler.  All rights reserved.   */
+/******************************************************************************/
+
+&args partition: entry; ~
+      brief_sw:  -brief; ~
+      help_sw:   -help
+
+&s rev := 5.4
+type '[Create Device Def '%rev%']'
+type 'Copyright (C) 198-1988 Merit Software, Inc.'
+type
+
+&if ^ [null %help_sw%] &then &do
+   type 'Usage:  CDD system_partition [-BRIEF]'
+   type '   or:  CDD -HELP'
+   type
+   type 'SYSTEM_PARTITION is the partition name of the system directory PRINTMASTER*.'
+   type
+   &return
+   &end
+
+
+/* Initialize variables used by main procedure.
+
+&s pgm := CDD
+&s pmsd := PRINTMASTER*
+&s prog := PRINTMASTER*>PROGRAMS
+&s klib := PRINTMASTER*>LIBRARY
+&s maxlen := 27
+&s blank_line :=
+
+&s partition := [r %prog%>GET_PARTITION_NAME %partition%]
+&if [null %partition%] &then &return
+
+/* Let's see if they have enough rights to the system directory.
+/* Bomb if not.
+
+R %prog%>CPL$CALAC$ <%partition%>%pmsd% DALURW -PRINT
+
+&severity &error &ignore
+
+/* Throughout the program it will be assumed that if -BRIEF was given
+/* we have an experienced user and aren't quite so noisy.
+
+&if [null %brief_sw%] &then &do
+   type 'Enter the name of the device to be created.  This must a valid filename'
+   type 'and less than '[calc %maxlen% + 1]' characters.  This will be the name used by operators when'
+   type 'controlling the device.'
+   type
+   &end
+
+&s sev := 0
+&s device := [r %prog%>GET_FILENAME -PROMPT 'Device name (blank to stop)' ~
+                                    -MAX %maxlen% -MIN 0]
+&do &while [length %device%] ^= 0  &  %sev% = 0
+
+   type 'Is there a destination associated with '%device%','
+   &if [query 'similiar to Prime''s -AT concept (no)' FALSE] &then &do
+      &s destination := [response 'Destination' '']
+      &if [length %destination%] > 0 &then ~
+         &s destination := [translate [trim %destination%]]
+      &if %destination% = %device% &then ~
+         &s destination :=
+      &end
+   &else ~
+      &s destination :=
+
+   &s destination := %device%' '%destination%
+   type
+
+   &s banner := PRINTMASTER*>BANNER_LETTERS
+   &s level_3_driver := ''
+   &s capabilities := L2
+   &s form_type := ''
+
+   &s evfu := [query 'Does '%device%' have an EVFU (no)' FALSE]
+   &s uppercase := ^ [query 'Does it have lowercase (yes)' TRUE]
+   &s idle_mins := -1
+   &if [query 'Should it logout when idle (no)' FALSE] &then &do
+      &s idle_ok := FALSE
+      &s idle_error_message := 'Must be an integer number of minutes, please reenter'
+      &s idle_prompt := 'After how many minutes (60)'
+      &do &until %idle_ok%
+         &s idle_mins := [response %idle_prompt% 60]
+         &if [verify %idle_mins% 0123456789] = 0 &then &s idle_ok := TRUE
+         &else type %idle_error_message%
+         &s idle_prompt := 'Logout after idle for how many minutes (60)'
+         &end
+      &end
+
+   &s trunc := [query 'Should it truncate lines longer than -CHARS_PER_LINE (no)' FALSE]
+
+   &s speed_ok := FALSE
+   &s speed_error_message := 'Speed must be an integer between 1 and 9999, please reenter'
+   &do &until %speed_ok%
+      &s speed := [response 'Device speed (unknown)' 0]
+      &if [verify %speed% 0123456789] = 0 ~
+         &then &if %speed% >= 0  &  %speed% <= 9999 ~
+                  &then &s speed_ok := TRUE
+                  &else type %speed_error_message%
+         &else type %speed_error_message%
+      &end
+
+   &s size_ok := FALSE
+   &s size_error_message := 'Value must be an integer between 1 and 32767, please reenter'
+   &do &until %size_ok%
+      &s size_limit := [response 'Print file size limit (none)' NONE]
+      &if [translate [quote %size_limit%]] = 'NONE' &then &do
+         &s size_ok := TRUE
+         &s size_limit := NONE
+         &end
+      &else ~
+         &if [verify %size_limit% 0123456789] = 0 ~
+            &then &if %size_limit% >= 1  &  %size_limit% <= 32767 ~
+                     &then &s size_ok := TRUE
+                     &else type %size_error_message%
+            &else type %size_error_message%
+      &end
+   type
+
+
+   /* Now we must find out what general type of device we have.
+
+   type How is %device% connected to the system:
+
+   &if [query 'Is this a PARALLEL device (i.e. PR0, PR1, etc.) (no)' FALSE] ~
+      &then &s generic_device_type := URC
+   &else &if [query 'Is this an AMLC device (no)' FALSE] ~
+      &then &s generic_device_type := AMLC
+   &else &if [query 'Is this a TERMINAL device (no)' FALSE] ~
+      &then &s generic_device_type := TERMINAL
+   &else &if [query 'Is this a PLOT device (no)' FALSE] ~
+      &then &s generic_device_type := PLOT
+   &else &s generic_device_type := CUSTOM
+
+
+
+   /* Now ask questions relating to each general type of device.
+
+   &if %generic_device_type% = URC &then &do
+
+      /* For all devices using the parallel interface (URC)
+      /*    ask the following questions.
+
+      &do &until %satisfied%
+         &s unit := [response 'PR number of device (0, 1, 2, or 3)' x]
+         &if [verify %unit% 0123] = 0  &  [length %unit%] = 1 &then &do
+            &s URC_assign_device := PR%unit%
+            &s URC_device_unit := %unit%
+            &s satisfied := TRUE
+            &end
+         &else &s satisfied := FALSE
+         &end
+
+      &end                                  /* of URC questions.
+
+   &else &if %generic_device_type% = AMLC &then &do
+
+      /* For devices that use an AMLC device
+      /*   ask the following questions.
+
+      &do &until %satisfied%
+         &s line := [response 'AMLC line number (in octal) of device' x]
+         &if [verify %line% 01234567] = 0 &then &do
+            &s AMLC_device_unit := [octal %line%]
+            &if [query 'Enable X-OFF/X-ON (yes)' TRUE] ~
+               &then &s AMLC_assign_device := AMLC TTY %line% 2/160000
+               &else &s AMLC_assign_device := AMLC TTY %line% 2/140000
+            &if [query 'Should carrier be checked (no)' FALSE] &then &do
+               &if [query '   Transmit on HIGH carrier (yes)' TRUE] ~
+                  &then &s AMLC_carrier := HIGH
+                  &else &s AMLC_carrier := LOW
+               &end
+            &else &s AMLC_carrier := ''
+            &s satisfied := TRUE
+            &end
+         &else &s satisfied := FALSE
+         &end
+
+      &end                                  /* of AMLC questions.
+
+   &else &if %generic_device_type% = TERMINAL &then &do
+
+      /* For devices that print on a terminal
+      /*   ask the following questions.
+
+      &s TERMINAL_assign_device := TERMINAL
+
+      &end                                  /* of TERMINAL questions.
+
+   &else &if %generic_device_type% = PLOT &then &do
+
+      /* For devices that use the (Versatec/Gould) PLOT port
+      /*   ask the following questions.
+
+      &s PLOT_assign_device := PLOT
+
+      &end
+
+   &else &if %generic_device_type% = CUSTOM &then &do
+
+      /* Insert stuff here as needed.
+
+      &end
+   type
+
+   /* Now figure out the Level 3 driver to be used.
+
+   type What type of printer is %device%:
+
+   &if [query 'Is it a DataProducts compatible printer (no)' FALSE] ~
+      &then &s level_3_driver := L3$DP
+   &else &if [query 'Is it a Printronix (no)' FALSE] ~
+      &then &s level_3_driver := L3$PX
+   &else &if [query 'Is it a PostScript printer (no)' FALSE] ~
+      &then &s level_3_driver := L3$POSTSCRIPT
+   &else &if [query 'Is it a Xerox 2700-II (no)' FALSE] ~
+      &then &s level_3_driver := L3$X2700
+   &else &if [query 'Is it an HP LaserJet (no)' FALSE] ~
+      &then &s level_3_driver := L3$LASERJET
+   &else &if [query 'Is it a custom device (no)' FALSE] &then &do
+      &s l3 := ''
+      &do &until [length %l3%] > 0
+         &s l3 := [r %prog%>GET_FILENAME -PROMPT '   Name of level 3 device driver subroutine' ~
+                                         -MAX 29 -MIN 1]
+         &end
+      &s level_3_driver := %l3%
+      &end
+   &else &do
+      /* Yank this TTY stuff later...
+      &if %generic_device_type% = TERMINAL ~
+         &then &s level_3_driver := L3$TTY
+         &else &s level_3_driver := L3$STANDARD
+      type A standard printer type has been assumed.
+      &end
+   type
+
+   /* i)  See if they have a form keyword list.
+
+   &if [null %brief_sw%] &then &do
+      type 'Enter the default FORM type for this '%device%'; this will be associated'
+      type 'with the device when it initializes.  This must be a filename and less than'
+      type '30 characters.'
+      type
+      &end
+
+   /* Get the library kwl name.  If blank assume no library file.  Otherwise, see
+   /* if the file already exists or if we have to ask them to create it.  But
+   /* before we look it up we must append the required suffix.
+
+   &s valid_form_type_given := FALSE
+   &do &while ^ %valid_form_type_given%
+
+      &s form_type := [r %prog%>GET_FILENAME -PROMPT 'Default FORM type (blank)' -MIN 0 -MAX 29]
+
+      &if [null %form_type%] &then  ~
+         &s form_type_s := '      '
+      &else &if [index %form_type% .KF] = 0 &then ~
+         &s form_type_s := %form_type%.KF      /* append suffix
+      &else &if [index %form_type% .KF] ^= [calc [length %form_type%] - 2] &then ~
+         &s form_type_s := %form_type%.KF      /* append suffix (.KF is in middle)
+      &else &s form_type_s := %form_type%      /* suffix already present
+
+      &if [null %form_type%] &then ~
+         &s valid_form_type_given := TRUE
+      &else &if ^ [exists <%partition%>%klib%>%form_type_s%] &then &do
+         &if [query [quote FORM %form_type% not found.  Would you like to create it (yes)] TRUE] &then &do
+            type
+            CFD %partition% -FORM %form_type%
+            &if %severity$% ^= 0 &then ~
+               &return %severity$% &message Device %device% not created.
+            &s valid_form_type_given := TRUE
+            &end
+         &else type
+         &end
+      &else &s valid_form_type_given := TRUE
+      &end
+
+   /* Set up the device keyword list.
+
+   COMO <%partition%>%pmsd%>DEVICES>%device%.TF -NTTY
+/*
+/* Include references to device capabilities, general device defaults,
+/*   and the default form type.
+/*
+   type [quote -USING %pmsd%>DEVICES>%capabilities%]
+   &if [exists <%partition%>%pmsd%>DEVICES>DEVICE_DEFAULTS.KF] &then ~
+      type [quote %pmsd%>DEVICES>DEVICE_DEFAULTS.KF]
+   &if [null %form_type%] &then ~
+      type [quote -FORM '      ']
+   &else ~
+      type [quote %klib%>%form_type%]
+   type [quote -BANNER_LETTER_FILE %banner%]
+   type [quote -DEVICE_SPEED %speed%]
+   type [quote -JOB_SIZE_LIMIT %size_limit%]
+   type -AT
+   &do dest &list [unquote %destination%]
+      type %dest%
+   &end
+   &if %uppercase%             &then type [quote -UPPERCASE]
+   &if %evfu%                  &then type [quote -EVFU]
+   &if %idle_mins% ^= -1       &then type [quote -TIME_BEFORE_SHUTDOWN %idle_mins%]
+   &if %trunc%                 &then type [quote -TRUNCATE]
+   type [quote -LEVEL_3_DRIVER %level_3_driver%]
+
+   &if %generic_device_type% = URC &then &do
+      type [quote -ASSIGN_DEVICE [unquote %URC_assign_device%]]
+      type [quote -DEVICE_UNIT [unquote %URC_device_unit%]]
+      &end
+   &else &if %generic_device_type% = AMLC &then &do
+      type [quote -ASSIGN_DEVICE [unquote %AMLC_assign_device%]]
+      type [quote -DEVICE_UNIT [unquote %AMLC_device_unit%]]
+      &if %AMLC_carrier% ^= '' &then type [quote -CHECK_CARRIER %AMLC_carrier%]
+      &end
+   &else &if %generic_device_type% = TERMINAL &then &do
+      type [quote -ASSIGN_DEVICE [unquote %TERMINAL_assign_device%]]
+      &end
+   &else &if %generic_device_type% = PLOT &then &do
+      type [quote -ASSIGN_DEVICE [unquote %PLOT_assign_device%]]
+      &end
+   &else &if %generic_device_type% = CUSTOM &then &do
+      &end
+   COMO -END -TTY
+
+   /* Now delete old device files.
+
+   &if [exists <%partition%>%pmsd%>DEVICES>%device%.KF] &then ~
+      DELETE <%partition%>%pmsd%>DEVICES>%device%.KF -NQ -NVFY
+   &if [exists <%partition%>%pmsd%>DEVICES>%device%.CPL] &then ~
+      DELETE <%partition%>%pmsd%>DEVICES>%device%.CPL -NQ -NVFY
+
+   /* Try to create new device keyword file.
+
+   EKF <%partition%>%pmsd%>DEVICES>%device% -CREATE <%partition%>%pmsd%>DEVICES>%device%.TF
+   &if %severity$% = 0 &then ~
+      &if [query 'Does '%device%' require any special keywords (no)' FALSE] &then &do
+         type 'Enter special keywords required.'
+         EKF <%partition%>%pmsd%>DEVICES>%device% -EDIT
+         &end
+      &else type
+
+   &if %severity$% ^= 0 &then &do
+      &if [exists <%partition%>%pmsd%>DEVICES>%device%.KF] &then ~
+         DELETE <%partition%>%pmsd%>DEVICES>%device%.KF -NQ -NVFY
+      type Device %device% not created.
+      &end
+   &else &do
+      /* If no error creating the keyword file then:
+      /*    Create the CPL file (Use the COMO file to create it.)
+
+      COMO <%partition%>%pmsd%>DEVICES>%device%.CPL -NTTY
+      type '/* '%device%'.CPL, PrintMaster, Created by CDD, '[date -cal]
+      type '/* CPL program to start the device '%device%'.'
+      type '/* Copyright (C) 1984-1988 Merit Software, Inc.  All rights reserved.'
+      type '/******************************************************************************'
+      type
+      type 'A '%pmsd%
+      type 'COMO *>COMO>'%device%'.COMO'
+      type 'RWLOCK *>COMO>'%device%'.COMO UPDT'
+      type 'SSR *>DEVICES>DEVICE.ENTRY$.SR -NO_SYSTEM'
+      type 'R *>PROGRAMS>DRIVER -USING *>DEVICES>'%device%' -DEVICE_NAME '%device%
+      type '&return %severity$%'
+      COMO -END -TTY
+
+      type PrintMaster device %device% created.
+      &end
+
+   DELETE <%partition%>%pmsd%>DEVICES>%device%.TF -NQ -NVFY
+   type
+
+   &s device := ''
+   &if %sev% = 0 &then ~
+      &s device := [r %prog%>GET_FILENAME -PROMPT 'Device name (blank to stop)' ~
+                                          -MAX %maxlen% -MIN 0]
+   &else type
+   &end
+
+&return
