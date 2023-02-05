@@ -1,0 +1,2494 @@
+new_kermit: old_kermit:
+latest_kermit: frog:
+kermit: proc;
+/********************************************************************/
+/*  This is a packet-based communications program implementing      */
+/*  the Kermit protocol.  The target is a microcomputer running     */
+/*  a local version of Kermit.                                      */
+/********************************************************************/
+
+/********************************************************************/
+/*>>>>>>>>>>>>>  Copyright (C) Oakland University 1983  <<<<<<<<<<<<*/
+/*>>>>>>>>>>>>>  Copyright (C) Oakland University 1984  <<<<<<<<<<<<*/
+/*>>>  Copying without fee is permitted provided that the copies  <<*/
+/*>>>  are not made or distributed for commercial advantage and  <<<*/
+/*>>>>>>>>>>>>>>>>  credit to the source is given.  <<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+/********************************************************************/
+/*  The Version 1 protocol supporting send and receive with most    */
+/*  of the commands in the help file implemented was finished       */
+/*  around Sept 20, 1983.                                           */
+/*                                                                  */
+/*                                                                  */
+/*  The Author of this program is:                                  */
+/*  .          Paul Amaranth                                        */
+/*  .          Oakland University                                   */
+/*  .          Academic Computer Services                           */
+/*  .          Rochester, MI  48063                                 */
+/*  .          (313) 377 - 4329                                     */
+/*                                                                  */
+/*  Please send copies of any changes to me at the above address.   */
+/*                                                                  */
+/*                                                                  */
+/*  UPDATES:                                                        */
+/*                                                                  */
+/*      11/30/83  Added previous_pkt_no proc to return number of    */
+/*                previous packet PGA                               */
+/*                                                                  */
+/*      Version Numbering:  <rewrite>.<major_change><twiddle>       */
+/*                                                                  */
+/*      1/84  2.0 Many features added, some at suggestion of jkc of */
+/*            MIT.  -set now works, improved error checks, ..       */
+/*            and . commands added, file-warning operational,       */
+/*            improved status message, -show, internal on-line      */
+/*            help and more.                                        */
+/*                                                                  */
+/*            The program itself has been divided into two separate */
+/*            modules, kermit performs the user interface services  */
+/*            and kermit_ serves as the protocol machine.           */
+/*                                                                  */
+/*            The kermit protocol as set forth in version           */
+/*            5 of the Kermit Protocol Manual is more or less       */
+/*            supported except  for file attributes.                */
+/*                                                                  */
+/*     6/84   2.0c  Most changes completed, although a few holes    */
+/*            are left.  Time to get it out the door.               */ 
+/*                                                                  */
+/*     7/84   2.0d  Tidied up help files - Put all online help      */
+/*            info into a single segment.                           */
+/*                                                                  */
+/*     7/84   2.0e  Checksum negotiation bug fixed                  */
+/*                  CRC fixed.  Packet length check bug fixed       */
+/*                                                                  */
+/*     8/84   2.0f  Download nack problem, ioa_ formatting detail   */
+/*                                                                  */
+/*     8/84   2.0g  Download nack problem, server bug, repeat "ing  */
+/*                                                                  */
+/*     9/84   2.0h  Fix 300 baud timing problem                     */
+/*                                                                  */
+/********************************************************************/
+
+/*************************  METERING VARIABLES **********************/
+
+    dcl meter_enable bit(1) init(true);
+    dcl kermit_mbx_ctl_arg char(5) var static init("-pn");  /* Make null string for psn.proj mbx */
+    dcl kermit_mbx char(168) var static init(">udd>acs>pga>meter>kermit.mbx");
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>  Declarations  <<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+
+/********************************************************************/
+/*  Constants                                                       */
+/********************************************************************/
+
+    dcl big   char(26) static static options(constant)
+              init("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    dcl sml   char(26) static static options(constant)
+              init("abcdefghijklmnopqrstuvwxyz");
+    dcl numbers char(10) static options(constant) init("0123456789");
+    dcl null_char   char(1) based(addr(control_char.NULL));
+    dcl null_str    char(1) var static init("") options(constant);
+    dcl space       char(1) static init(" ") options(constant);
+    dcl colon       char(1) static init(":") options(constant);
+    dcl car_ret     fixed bin  static options(constant) init(13);
+    dcl false bit(1) static static options(constant) init("0"b);
+    dcl blank char(1) static static options(constant) init(" ");
+    dcl ampersand char(1) static options(constant) init("&");
+    dcl true  bit(1) static static options(constant) init("1"b);
+
+    dcl carraige_return char(1) based(addr(control_char.CR));
+    dcl line_feed       char(1) based(addr(control_char.LF));
+
+
+    dcl kermit_info_dir char(168) static init(">am>KERMIT>info");
+
+
+
+/********************************************************************/
+/*  Symbols                                                         */
+/********************************************************************/
+
+    dcl 1 misc_symbols static,
+         2  max_packet_size  fixed bin init(94),
+         2  my_quote     char(1) init("#"),
+         2  my_pad       fixed bin init(0),
+         2 my_pad_char fixed bin init(0),
+         2 my_end_of_line fixed bin init(13);
+
+
+
+/********************************************************************/
+/*  Blck transfer framing character info structures.                */
+/********************************************************************/
+
+    dcl 1 orig_framing_chars static aligned,
+          2 start_char char(1) unaligned,
+          2 end_char char(1) unaligned;
+
+/********************************************************************/
+/*  Global variables                                                */
+/********************************************************************/
+
+/*==================  Begin kermit_info.incl.pl1  ==================*/
+
+
+    dcl 1 kermit_info based(info_ptr),
+          2 state      char(2),          /* Present state of automaton */
+          2 size       fixed bin,        /* Size of present data       */
+          2 send_parameters,
+            3 stimint     fixed bin(71),   /* Timeout for foreign host on sends */
+            3 sp_size    fixed bin,        /* Maximum send packet size */
+            3 pad        fixed bin,        /* How much padding to send */
+            3 pad_char   fixed bin,        /* Padding  character to send */
+            3 delay_time fixed bin(71),    /* Time to delay for sends     */
+            3 end_of_line fixed bin,       /* End-of-line to send */
+          2 receive_parameters,
+            3 rp_size    fixed bin,        /* Maximum receive packet size */
+            3 remote_quote  char(1),       /* Quote character, incomming data */
+            3 r_eol       fixed bin,       /* End-of-line to receive */
+            3 rtimint   fixed bin(71),     /* Timeout for host on receives */
+          2 max_try   fixed bin,         /* Times to retry a packet */
+          2 num_try   fixed bin,         /* Times this packet retried */
+          2 eight_bit_quote_char char(1),/* Char for quoting 8 bit stuff */
+          2 repeat_char  char(1),        /* CHar for flagging repeat sequences */
+          2 chktype fixed bin,           /* Type of check code to actually use */
+          2 current_packet_no fixed bin, /* Looking for msg number ... */
+          2 behavior_switches,
+            3 trace_sw bit(1),           /* Log packets to trace file   */
+            3 debug_sw bit(1),           /* Obtain packets from ext. proc */
+            3 eight_bit_quote bit(1),    /* Parity quoting allowed    */
+            3 repeat_allowed  bit(1),    /* Character compression allowed */
+            3 repeat_threshold fixed bin, /* Min # of chars to compress */
+            3 text_mode bit(1),          /* Type of files to send, init true */
+            3 file_warning_sw bit(1),    /* Overwrite file warning */
+          2 pointers,
+            3 file_list_ptr ptr,         /* Ptr to list of files          */
+            3 tty_iocb ptr,              /* Ptr to tty iocb for modes sw. */
+            3 input_bfr_ptr ptr,         /* Ptr to input buffer           */
+            3 orig_fc_ptr ptr,           /* Ptr to orig. framing chars    */
+            3 misc_symbol_ptr ptr,       /* Ptr to structure holding some symbls */
+          2 other_info,
+            3 default_dir char(168),     /* Default for send or receive  */
+            3 term_modes char(256),      /* To setup terminal for transfer */
+            3 old_term_modes char(512),  /* For restoring term on completion */
+            3 cur_file  fixed bin,       /* Current file pointer in list    */
+            3 allowed_ck_codes char(3),  /* Allowed error check codes        */
+            3 default_ck_code fixed bin, /* Type of check code to use by default */
+            3 help_dir char(168),        /* Help directory */
+          2 status_indicators,
+            3 return_code fixed bin(35),
+            3 total_packet_trns fixed bin,
+            3 total_packet_rcvd fixed bin,
+            3 total_retry_count  fixed bin,
+            3 files_rcvd fixed bin,
+            3 files_trns fixed bin,
+            3 failures   fixed bin,
+            3 last_file_transferred char(168); /* Name of last file */
+
+/*===================  End kermit_info.incl.pl1  ===================*/
+
+
+    dcl init bit(1) static init("0"b);  /* Flag for static initialization */
+
+    dcl server_mode bit(1) init(false);  /* Slave? */
+
+
+    dcl 1 files static,            /* List of files to send/receive   */
+          2 total_num fixed bin init(100),
+          2 num_files fixed bin init(0),
+          2 names (100),
+            3 dir char(168),
+            3 entry char(32);
+
+    dcl current_version char(10) var static init("2.0h");
+    dcl version_date char(8) var static init("8/31/84");
+
+/*===============  Begin control_constants.incl.pl1  ===============*/
+
+/********************************************************************/
+/*  This structure avoids using embedded control characters in      */
+/*  the source. Multics characters are nine bits.                   */
+/********************************************************************/
+
+
+    dcl 1 binary_codes static options(constant) aligned,
+          2 bits_NULL bit(9) init("000000000"b),
+          2 bits_CR   bit(9) init("000001101"b),
+          2 bits_LF   bit(9) init("000001010"b),
+          2 bits_CTL_Z bit(9) init("000011010"b),
+          2 bits_SOH   bit(9) init("000000001"b),
+          2 bits_tilde bit(9) init("001111110"b);
+
+    dcl 1 overlay_chars based(addr(binary_codes)) aligned,
+          2 NULL char(1),
+          2 CR   char(1),
+          2 LF   char(1),
+          2 CTL_Z char(1),
+          2 SOH   char(1),
+          2 tilde char(1);
+
+/*================  End control_constants.incl.pl1  ================*/
+
+
+/********************************************************************/
+/*  More variables                                                  */
+/********************************************************************/
+
+    dcl arg_lst_ptr ptr;
+    dcl code     fixed bin(35);
+    dcl cur_inpt_bfr_len fixed bin(21);
+    dcl input_buffer char(input_bfr_len) aligned;
+    dcl input_bfr_len fixed bin(21) static init(100);
+    dcl info_ptr ptr static;   /* ptr to pass info to kermit_ */
+    dcl iox_$user_io ptr static external;
+    dcl nargs fixed bin;
+    dcl prog char(6) static init("kermit");
+    dcl server_used bit(1) init(false);
+
+    dcl cum_pkt_trns fixed bin init(0);
+    dcl cum_pkt_rcvd fixed bin init(0);
+    dcl cum_pkt_retry fixed bin init(0);
+    dcl cum_files_trns fixed bin init(0);
+    dcl cum_files_rcvd fixed bin init(0);
+    dcl cum_failures fixed bin init(0);
+
+
+/********************************************************************/
+/*  Error codes                                                     */
+/********************************************************************/
+
+    dcl bad_command      fixed bin static options(constant) init(1);
+    dcl bad_file_spec    fixed bin static options(constant) init(2);
+    dcl bad_help_option  fixed bin static options(constant) init(3);
+    dcl bad_set_parm     fixed bin static options(constant) init(4);
+    dcl bad_set_spec     fixed bin static options(constant) init(5);
+    dcl bad_show_spec    fixed bin static options(constant) init(6);
+    dcl bad_syntax       fixed bin static options(constant) init(7);
+    dcl missing_set_parm fixed bin static options(constant) init(8);
+    dcl mssng_set_parm_val fixed bin static options(constant) init(9);
+    dcl non_numeric_val  fixed bin static options(constant) init(10);
+    dcl bad_octal_val    fixed bin static options(constant) init(11);
+    dcl bad_dir_name     fixed bin static options(constant) init(12);
+    dcl not_dir_name     fixed bin static options(constant) init(13);
+
+/********************************************************************/
+/*  Multics error codes                                             */
+/********************************************************************/
+
+    dcl error_table_$action_not_performed fixed bin(35) external;
+    dcl error_table_$bad_arg fixed bin(35) external;
+    dcl error_table_$badstar fixed bin(35) external;
+    dcl error_table_$dirseg fixed bin(35) external;
+    dcl error_table_$noarg fixed bin(35) external;
+    dcl error_table_$noentry  fixed bin(35) external;
+
+
+
+/********************************************************************/
+/*  Multics routines                                                */
+/********************************************************************/
+
+    dcl check_star_name_$entry entry (char(*), fixed bin(35));
+    dcl com_err_ entry options(variable);
+    dcl com_err_$suppress_name entry options(variable);
+    dcl cu_$arg_count entry (fixed bin);
+    dcl cu_$arg_list_ptr  entry (ptr);
+    dcl cu_$arg_ptr_rel entry (fixed bin, ptr, fixed bin(21), fixed bin(35), ptr);
+    dcl cu_$cp      entry(ptr, fixed bin(21), fixed bin(35));
+    dcl cv_oct_check_ entry(char(*), fixed bin(35)) returns(fixed bin(35));
+    dcl expand_pathname_ entry(char(*), char(*), char(*), fixed bin(35));
+    dcl get_temp_segment_ entry (char(*), ptr, fixed bin(35));
+    dcl get_wdir_   entry returns(char(168));
+    dcl hcs_$star_ entry (char(*), char(*), fixed bin(2), ptr, fixed bin, ptr, ptr, fixed bin(35));
+    dcl hcs_$status_minf entry (char(*), char(*), fixed bin(1), fixed bin(2), fixed bin(24), fixed bin(35));
+    dcl ioa_        entry options(variable);
+    dcl ioa_$nnl    entry options(variable);
+    dcl ioa_$rsnnl  entry options(variable);
+    dcl iox_$control   entry(ptr, char(*), ptr, fixed bin(35));
+    dcl iox_$get_line  entry(ptr, ptr, fixed bin(21), fixed bin(21), fixed bin(35));
+    dcl iox_$modes entry (ptr, char(*), char(*), fixed bin(35));
+    dcl send_message_silent entry options(variable);
+
+
+
+/********************************************************************/
+/*  Kermit routines to handle actual file transfer                  */
+/********************************************************************/
+
+    dcl kermit_$send entry (ptr, fixed bin(35), char(*) var);
+    dcl kermit_$receive entry (ptr, fixed bin(35), char(*) var);
+    dcl kermit_$server  entry (ptr, fixed bin(35), char(*) var);
+
+
+
+/********************************************************************/
+/*  Builtin functions                                               */
+/********************************************************************/
+
+    dcl null builtin;
+    dcl length builtin;
+    dcl time   builtin;
+
+
+/********************************************************************/
+/*  Conditions                                                      */
+/********************************************************************/
+
+    dcl program_interrupt condition;
+
+
+/********************************************************************/
+/*  Initialize stuff                                                */
+/********************************************************************/
+
+
+if ^init then
+do;
+/********************************************************************/
+/*  Set up static area for protocol machine parameters.  This       */
+/*  area also serves as a communication channel between the         */
+/*  machine and the user interface.                                 */
+/********************************************************************/
+
+   call get_temp_segment_ (prog, info_ptr, code);
+   if code ^= 0 then
+   do;
+     call com_err_ (code, prog, "Allocating segment for kermit info.");
+     return;
+     end;
+
+   help_dir = kermit_info_dir;   /* Server got to know where its at too */
+   repeat_threshold = 4;
+   remote_quote = my_quote;
+   pad = 0;
+   rp_size = max_packet_size;
+   stimint = 20;
+   sp_size = max_packet_size;
+   pad_char = my_pad_char;
+   end_of_line = car_ret;
+   my_pad = 0;
+   delay_time = 8;
+   file_warning_sw = false;
+   r_eol = car_ret;
+   rtimint = 20;
+   init = true;
+   text_mode = true;
+   repeat_char = tilde;
+   repeat_allowed = true;
+   eight_bit_quote_char = blank;
+   eight_bit_quote = false;
+   allowed_ck_codes = "123";  /* Allowed checksum types */
+   orig_fc_ptr = addr(orig_framing_chars);
+   file_list_ptr = addr(files);
+   misc_symbol_ptr = addr(misc_symbols);
+   default_ck_code = 1;
+   max_try = 10;         /* Set up for maximum of 10 retries */
+   total_packet_trns = 0;  /* Status indicators */
+   total_packet_rcvd = 0;
+   total_retry_count = 0;
+   last_file_transferred = "";
+   term_modes = "rawi,rawo,no_outp,8bit,^echoplex,crecho,lfecho,^replay," ||
+                "^polite,^breakall,blk_xfer,force,ctl_char";
+   end;
+
+
+current_packet_no = 0;
+num_try = 0;
+num_files = 0;
+cur_file = 0;
+debug_sw = false;
+
+failures = 0;
+files_trns = 0;
+files_rcvd = 0;
+
+/* Get and store terminal modes so terminal can be reset to init config. */
+tty_iocb = iox_$user_io;
+call iox_$modes(tty_iocb, " ", old_term_modes, code);
+if code ^= 0 then  /* Bad news, cant get terminal modes */
+do;
+   call com_err_ (code, prog, "getting terminal modes.");
+   return;
+   end;
+
+call iox_$control (tty_iocb, "get_framing_chars", orig_fc_ptr, code);
+if code ^= 0  then /* Can't get block mode framing characters */
+do;
+   call com_err_ (code, prog, "getting block framing characters");
+   return;
+   end;
+
+input_bfr_ptr = addr(input_buffer);
+default_dir = get_wdir_();
+
+more_commands = true;
+
+
+/********************************************************************/
+/*  Main Procedure                                                  */
+/********************************************************************/
+
+call cu_$arg_count(nargs);
+if nargs > 0 then
+do;
+   call cu_$arg_list_ptr (arg_lst_ptr);
+   call process_command_args (arg_lst_ptr, nargs);
+   end;
+
+else
+do;
+   on program_interrupt goto mn_lp;
+   mn_lp:
+   do while(more_commands);
+      error = false;
+      call get_command(ret_structure);
+      call check_syntax(ret_structure);
+      if ^error then call exec_command(ret_structure);
+                else call print_err_msg(error_code, err_msg);
+      end;
+   end;
+
+if meter_enable then call meter_usage;
+
+return;
+
+process_command_args: proc (arg_list_ptr, nargs);
+/********************************************************************/
+/*  Process the multics command line args.  These can be -logout    */
+/*  for automatic logout on successful completion of the            */
+/*  operation, -server for server mode,                             */
+/*  -send <star_name> to send a group of files, -receive            */
+/*  [<path_name]> to receive a file, -set <option_list> to          */
+/*  set parameters or -status to print the status of  last trans.   */
+/********************************************************************/
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>  Declarations  <<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+    dcl nargs fixed bin;
+    dcl indx fixed bin;
+    dcl cindx fixed bin;
+    dcl indx2 fixed bin;
+    dcl argl fixed bin(21);
+
+    dcl num_options fixed bin static init(8) options(constant);
+    dcl com_arg(num_options) char(20) var init
+        ("-logout", "-server", "-receive", "-send", "-set", "-debug",
+          "-status", "-show");
+
+    dcl err_msg char(100) var;
+    dcl set_str char(200) var;
+
+    dcl file_str char(200) var;
+    dcl arg char(argl) based(argp);
+
+    dcl arg_list_ptr ptr;
+    dcl argp ptr;
+
+
+    dcl found bit(1);
+    dcl required bit(1) init(true);
+    dcl auto_logout bit(1) init(false);
+    dcl server_mode bit(1) init(false);
+    dcl receive     bit(1) init(false);
+    dcl send        bit(1) init(false);
+    dcl set         bit(1) init(false);
+    dcl show_stat   bit(1) init(false);
+    dcl show_parm   bit(1) init(false);
+
+    dcl code fixed bin(35);
+
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+on program_interrupt goto end_it;
+
+indx = 1;
+do while (indx ^> nargs);
+   call cu_$arg_ptr_rel (indx, argp, argl, code, arg_list_ptr);
+
+   found = false;
+   cindx = 1;
+   do while (cindx ^> num_options  &  ^found);
+     if com_arg(cindx) = arg then found = true;
+                             else cindx = cindx + 1;
+     end;
+   goto case(cindx);
+
+   case(1): /* -logout */
+            auto_logout = true;
+            goto endcase;
+
+   case(2): /* -server */
+            server_mode = true;
+            goto endcase;
+
+   case(3): /* -receive [<path_name>] */
+            receive = true;
+            call cu_$arg_ptr_rel (indx+1, argp, argl, code, arg_list_ptr);
+            if code ^= 0 then file_str = ""; /* Nothing else on line */
+                         else file_str = arg;
+            if substr(file_str,1,1) = "-" then file_str = ""; /* Oops ctrl arg */
+                       else indx = indx + 1;
+            file_str = rtrim(file_str);
+            call check_filenames(file_str, ^required, num_files, files.names, code, err_msg);
+            if num_files > 1  |  code ^= 0  then
+            do;
+              call com_err_ (code, prog, err_msg);
+              return;
+              end;
+            cur_file = num_files;  /* 0 or 1 */
+            goto endcase;
+
+   case(4): /* -send <star_name> */
+            send = true;
+            indx = indx + 1;
+            call cu_$arg_ptr_rel (indx, argp, argl, code, arg_list_ptr);
+            if code ^= 0 then
+            do;
+              call com_err_ (0, prog, "Missing file name.");
+              return;
+              end;
+            file_str = arg;
+            call check_filenames (file_str, required, num_files, files.names, code, err_msg);
+            if code ^= 0 then
+            do;
+              call com_err_ (code, prog, err_msg);
+              return;
+              end;
+            cur_file = 1;  /* First in list */
+            goto endcase;
+
+
+   case(5): /* -set <option_list> */
+            set_str = null_str;
+            do indx2 = indx+1 to nargs;
+              call cu_$arg_ptr_rel (indx2, argp, argl, code, arg_list_ptr);
+              set_str = set_str || arg || blank;
+              end;
+            call handle_set_args (set_str, nargs-indx, code, err_msg);
+            if code ^= 0 then
+            do;
+              call com_err_ (code, prog, err_msg);
+              return;
+              end;
+            set = true;
+            indx = nargs;
+            goto endcase;
+
+   case(6): /* Debug */
+            debug_sw = true;
+            goto endcase;
+
+   case(7): /* -status */
+            show_stat = true;
+            goto endcase;
+
+   case(8): /* -show */
+            show_parm = true;
+            goto endcase;
+
+   case(9): /* Bad control arg */
+            call com_err_ (error_table_$bad_arg, prog, arg);
+            return;
+
+   endcase:
+   indx = indx + 1;
+   end;
+
+/********************************************************************/
+/*  Make sure only one of send or receive specified.                */
+/********************************************************************/
+if ^send & ^receive & ^server_mode & ^set  &  ^show_stat & ^show_parm  then
+do;
+   call com_err_ (0, prog, "You must specify either -send <path>, -receive [<path>] or -server");
+   return;
+   end;
+
+if send & receive  & ^server_mode then
+do;
+   call com_err_ (0, prog, "You can send, or receive, but not both at once.");
+   return;
+   end;
+
+if (send | receive) & server_mode then
+do;
+   call com_err_ (0, prog, "Server mode is not compatible with send or receive args.");
+   return;
+   end;
+
+/********************************************************************/
+/*  Actual transfer                                                 */
+/********************************************************************/
+
+if server_mode then
+do;
+   call kermit_$server (info_ptr, code, err_msg);
+   server_used = true;
+   end;
+
+else
+if send then
+do;
+   call kermit_$send (info_ptr, code, err_msg);
+   end;
+
+else
+if receive then
+do;
+   call kermit_$receive (info_ptr, code, err_msg);
+   end;
+
+else
+do;
+   if show_stat then call disp_status;
+   if show_parm then call display_parms(12);
+   end;
+
+if code = 0  &  auto_logout then
+/********************************************************************/
+/*  Logout if specified and no errors in transmission.              */
+/********************************************************************/
+do;
+   call exec_com("logout");
+   end;
+
+if code ^= 0 then
+do;
+   call com_err_ (code, prog, err_msg);
+   end;
+
+end_it:
+call add_in_totals;  /* Keep track of usage */
+return;
+end process_command_args;
+
+handle_set_args: proc(set_str, nargs, code, error_msg);
+/********************************************************************/
+/*  This procedure parses the set command arguments and executes    */
+/*  the requests                                                    */
+/*  It operates by reformatting the control args to look like set   */
+/*  commands typed in the request loop.  In this way the same       */
+/*  routines can be used to check and execute them as in the        */
+/*  request loop.                                                   */
+/********************************************************************/
+
+    dcl set_str char(*) var;
+    dcl error_msg char(*) var;
+
+    dcl item char(200) var;
+    dcl orig_item char(200) var;
+    dcl found bit(1);
+    dcl indx fixed bin;
+
+    dcl set_option(13) char(15) var init (
+        "SEND", "RECEIVE", "REC", "DELAY", "FILE-WARNING", "FW",
+        "TRACE", "DIR", "TEXT", "CHECKTYPE", "PARITY", "REPEAT", "MODES");
+    dcl string_indx(13) fixed bin init (
+         0,      0,          0,     1,       2,             2,
+         3,      4,          5,     6,         7,         8,         9);
+    dcl set char(3) static init("set");
+
+    dcl op_code fixed bin;
+
+    dcl code fixed bin(35);
+    dcl nargs fixed bin;
+
+    dcl com_string(9) char(200) var init((9)(1)"");
+
+    dcl send_item fixed bin init(0);
+    dcl rec_item fixed bin init(0);
+
+    dcl send_str(nargs) char(20) var;  /* Worst case size */
+    dcl rec_str(nargs) char(20) var;
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+/********************************************************************/
+/*  Segregate various parms into separate variables                 */
+/********************************************************************/
+
+code = 0;
+
+if nargs < 2 then
+do;
+   code = error_table_$noarg;
+   error_msg = "-set requires at least two parameters.";
+   return;
+   end;
+
+
+do while(length(set_str) > 0  &  code = 0);
+
+   call get_item(set_str, item);
+   orig_item = item;
+   item = translate(item, big, sml);
+
+   found = false;
+   do indx = 1 to dim(set_option,1) while(^found);
+     if set_option(indx) = item then
+     do;
+       found = true;
+       op_code = indx;
+       end;
+     end;
+
+   if ^found  &  op_code = 0 then op_code = dim(set_option,1)+1;
+   goto case(op_code);
+
+
+   case(1): /* send */
+            /* Normally I hate null thens, but this appears to be the easiest */
+            /* way to handle this  problem.  This allows things of the sort   */
+            /* -set send <args..> receive <args..> send <args>                */
+            /* Ive only included this to avoid complaints if I hadn't         */
+            if item = set_option(1) & send_item > 0  then;
+            else do;
+              send_item = send_item + 1;
+              send_str(send_item) = item;
+              end;
+            goto endcase;
+
+   case(2): /* receive */
+   case(3): /* rec */
+            /* See comment above. */
+            if (item = set_option(2) | item = set_option(3)) & rec_item > 0 then;
+            else do;
+              rec_item = rec_item + 1;
+              rec_str(rec_item) = item;
+              end;
+            goto endcase;
+
+   case(4): /* delay */          case(5): /* file warning */
+   case(6): /* fw */             case(7): /* trace */
+   case(8): /* dir */            case(9): /* text */
+   case(10): /* checktype */     case(11): /* parity */
+   case(12): /* repeat */        case(13): /* modes */
+             com_string(string_indx(op_code))
+                = com_string(string_indx(op_code)) || orig_item || blank;
+             goto endcase;
+
+   case(14): /* Unrecognized keyword */
+            code = error_table_$bad_arg;
+            error_msg = orig_item;
+            goto endcase;
+
+   endcase: end;
+
+if code ^= 0 then return;  /* Bail out at this point */
+
+/********************************************************************/
+/*  Perform syntax check and execute options                        */
+/********************************************************************/
+
+ret_structure.error = false;
+
+/********************************************************************/
+/*  First syntax check.  Execute if options ok.                     */
+/********************************************************************/
+
+do indx = 1 to 9;
+   if com_string(indx) ^= null_str then
+   do;
+     line = set || blank || com_string(indx);
+     line = rtrim(line);
+     call check_syntax (ret_structure);
+     if error then
+     do;
+       code = error_table_$bad_arg;
+       error_msg = com_string(indx);
+       return;
+       end;
+     call exec_command (ret_structure);
+     end;
+   end;
+
+
+
+/********************************************************************/
+/*  Send and Receive options require special processing since       */
+/*  they may contain a list that must be parsed out properly.  A    */
+/*  subroutine handles this.                                        */
+/********************************************************************/
+
+if rec_item > 0 then
+do;
+   call process_parms (rec_str, rec_item, code, error_msg);
+   if code ^= 0 then return;
+   end;
+
+if send_item > 0 then
+do;
+   call process_parms (send_str, send_item, code, error_msg);
+   if code ^= 0 then return;
+   end;
+
+/********************************************************************/
+/*  All finished.                                                   */
+/********************************************************************/
+
+return;
+
+process_parms: proc (string, num, code, error_msg); /* Int to handle_set_args */
+/********************************************************************/
+/*  Process pairs of send or receive options                        */
+/********************************************************************/
+
+    dcl string(*) char(*) var;
+    dcl num fixed bin;
+    dcl code fixed bin(35);
+    dcl error_msg char(*) var;
+    dcl prefix char(30) var;
+    dcl indx fixed bin;
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+if num < 3 then
+do;
+   code = error_table_$noarg;
+   do indx = 1 to num;
+     error_msg = error_msg || string(indx) || blank;
+     end;
+   return;
+   end;
+
+ret_structure.error = false;
+ret_structure.parm = 0;
+ret_structure.parm_val = 0;
+
+prefix = set || blank || string(1) || blank;
+indx = 2;
+
+do while (indx ^> num);
+   /* Send pairs of opitons over */
+   line = prefix || string(indx) || blank;
+   indx = indx + 1;
+   if indx > num then
+   do;
+     code = error_table_$noarg;
+     error_msg = string (indx-1);
+     return;
+     end;
+
+   line = line || string (indx);
+   call check_syntax (ret_structure);
+
+   if error then
+   do;
+     code = error_table_$bad_arg;
+     error_msg = string(indx-1) || blank || string(indx);
+     return;
+     end;
+
+   call exec_command (ret_structure);
+   if error then
+   do;
+     code = error_table_$bad_arg;
+     error_msg = string(indx-1) || blank || string(indx);
+     return;
+     end;
+
+   indx = indx + 1;
+   end;
+
+/********************************************************************/
+/*  All options now covered.                                        */
+/********************************************************************/
+
+return;
+end process_parms;
+end handle_set_args;
+
+
+
+get_command: proc(ret_structure);
+/********************************************************************/
+/*  Read a command from the terminal and put it into the comm       */
+/*  structure.                                                      */
+/********************************************************************/
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+    dcl prompt char(16) static options(constant) init("Kermit-Multics> ");
+
+call read_term (prompt, line);
+
+return;
+end get_command;
+
+
+
+
+read_term: proc (prompt, line);
+/********************************************************************/
+/*  This procedure handles the direct io to and from the terminal   */
+/********************************************************************/
+
+    dcl prompt char(*);
+    dcl line char(*) var;
+
+call ioa_$nnl(prompt);
+call iox_$get_line (tty_iocb, input_bfr_ptr, input_bfr_len, cur_inpt_bfr_len, code);
+line = substr(input_buffer,1,cur_inpt_bfr_len-1);
+
+
+return;
+end read_term;
+
+check_syntax: proc(ret_structure);
+/********************************************************************/
+/*  Take line apart and check its syntax.  Set pieces into          */
+/*  ret_structure.                                                  */
+/********************************************************************/
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>  Declarations  <<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+    dcl str char(20);
+    dcl t_line char(255) var;
+    dcl item   char(255) var;
+    dcl non_trans_item char(255) var;
+
+    dcl command(16) char(20) var init (
+        "SEND", "RECEIVE", "HELP", "?", "EXIT", "QUIT", "Q", "SET", "SHOW",
+        "EXEC", "E", "..", "STATUS", "DEBUG", "SERVER", ".");
+
+    dcl set_types(13) char(15) var init
+        ("SEND", "RECEIVE", "REC", "DELAY", "FILE-WARNING", "FW",
+         "TRACE", "DIR", "TEXT", "CHECKTYPE", "REPEAT", "PARITY", "MODES");
+
+    dcl set_type_code(13) fixed bin init
+        (1,        2,        2,      3,       4,              4,
+         5,        6,        7,       8,         9,       10,        11);
+
+
+    dcl option(8) char(20) var init (
+        "PACKET-LENGTH", "PADDING", "PADCHAR", "TIMEOUT",
+        "END-OF-LINE", "QUOTE", "ON", "OFF");
+
+    dcl found bit(1) init(false);
+    dcl required bit(1) init(true);
+
+    dcl indx fixed bin;
+
+    dcl delay_type        fixed bin static options(constant) init(3);
+    dcl dir_type          fixed bin static options(constant) init(6);
+    dcl check_type        fixed bin static options(constant) init(8);
+    dcl all_type          fixed bin static options(constant) init(12);
+
+    dcl send_code    fixed bin static options(constant) init(1);
+    dcl receive_code fixed bin static options(constant) init(2);
+    dcl stop_code    fixed bin static options(constant) init(3);
+    dcl set_code     fixed bin static options(constant) init(4);
+    dcl show_code    fixed bin static options(constant) init(5);
+    dcl help_code    fixed bin static options(constant) init(6);
+    dcl exec_code    fixed bin static options(constant) init(7);
+    dcl status_code  fixed bin static options(constant) init(8);
+    dcl null_command fixed bin static options(constant) init(9);
+    dcl debug_code   fixed bin static options(constant) init(10);
+    dcl server_code  fixed bin static options(constant) init(11);
+    dcl id_code      fixed bin static options(constant) init(12);
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+if line || blank = blank then
+do;
+   command_code = null_command;
+   return;
+   end;
+
+t_line = line;
+if length(t_line)>2 then 
+  if substr(t_line,1,2) = ".." then t_line = ".. " || substr(t_line,3);
+  /* Allow ..command type of thing */
+
+call get_item(t_line, item);
+item = translate(item,big,sml);
+do indx = 1 to dim(command,1) while(^found);
+   if command(indx) = item then
+   do;
+     found = true;
+     command_code = indx;
+     end;
+   end;
+
+if ^found then
+do;
+   error = true;
+   error_code = bad_command;
+   return;
+   end;
+goto case(command_code);
+
+case(1)  : /* Send files down to micro */
+           call check_filenames(t_line, required, num_files, files.names, code, err_msg);
+           if code ^= 0 then
+           do;
+             error = true;
+             error_code = code;
+             end;
+           else
+           do;
+             command_code = send_code;
+             end;
+           cur_file = 1;
+           goto endcase;
+
+case(2)  : /* Receive files from micro */
+           call check_filenames(t_line, ^required, num_files, files.names, code, err_msg);
+           if num_files > 1  |  code ^= 0 then
+           do;
+             error = true;
+             if code ^= 0 then error_code = code;
+             else error_code = bad_file_spec;
+             end;
+           else
+             command_code = receive_code;
+             cur_file = num_files;  /* Will be a 0 or 1 */
+           goto endcase;
+
+
+case(3)  :
+case(4)  : /* Help comamnd */
+           found = false;
+           t_line = translate(t_line, big, sml);
+           do indx = 1 to dim(command,1) while(^found);
+             if command(indx) = t_line then
+             do;
+               found = true;
+               parm = indx;
+               end;
+             end;
+           if ^found then
+           do;
+             if t_line = "" then parm = help_code;
+             else
+             do;
+               error = true;
+               error_code = bad_help_option;
+               end;
+             end;
+           command_code = help_code;
+           goto endcase;
+
+
+case(5)  :
+case(6)  :
+case(7)  :  /* Exit or Quit */
+            if t_line ^= "" then
+            do;
+              error = true;
+              error_code = bad_syntax;
+              end;
+            else command_code = stop_code;
+            goto endcase;
+
+
+case(8)  : /* Set Parameters */
+           command_code = set_code;
+           call parse_set_parms (t_line, ret_structure);
+           goto endcase;
+
+case(9)  : /* Show Parameter values */
+           t_line = translate(t_line,big,sml);
+           if t_line = "" then type = all_type;
+           else
+           do;
+             found = false;
+             do indx = 1 to dim(set_types,1) while(^found);
+               if set_types(indx) = t_line then
+               do;
+                 found = true;
+                 type = set_type_code(indx);
+                 end;
+               end;
+             if ^found then
+             do;
+               error = true;
+               error_code = bad_show_spec;
+               end;
+             end;
+           command_code = show_code;
+           goto endcase;
+
+case(10) :
+case(11) :
+case(12) : /* Send a line to Multics */
+           command_code = exec_code;
+           line = t_line;
+           goto endcase;
+
+case(13) : /* Show the current status of transmission (error or complete) */
+           command_code = status_code;
+           goto endcase;
+
+case(14) : /* Debug switch - on or off */
+          command_code = debug_code;
+          found = false;
+          parm = 0;
+          do indx = 7 to dim(option,1) while(^found); /* On or off only */
+             if option(indx) = t_line then
+             do;
+               parm = indx;
+               found = true;
+               end;
+             end;
+          if ^found then
+          do;
+            error = true;
+            error_code = bad_syntax;
+            end;
+          goto endcase;
+
+case(15) : /* Turn on server mode */
+           command_code = server_code;
+           goto endcase;
+
+case(16) : /* Identify myself */
+           command_code = id_code;
+           goto endcase;
+
+endcase: return;
+end check_syntax;
+
+parse_set_parms: proc (t_line, ret_structure);
+/********************************************************************/
+/*  Parse the set arguments                                         */
+/********************************************************************/
+
+    dcl t_line char(*) var;
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+
+    dcl option(8) char(20) var init (
+        "PACKET-LENGTH", "PADDING", "PADCHAR", "TIMEOUT",
+        "END-OF-LINE", "QUOTE", "ON", "OFF");
+
+    dcl set_types(13) char(15) var init
+        ("SEND", "RECEIVE", "REC", "DELAY", "FILE-WARNING", "FW",
+         "TRACE", "DIR", "TEXT", "CHECKTYPE", "REPEAT", "PARITY", "MODES");
+    dcl set_type_code(13) fixed bin init
+        (1,        2,        2,      3,       4,              4,
+         5,        6,        7,       8,   9,   10,   11);
+
+
+    dcl found bit(1);
+    dcl item char(255) var;
+    dcl indx fixed bin;
+
+    dcl on  char(5) static init("ON");
+    dcl off char(5) static init("OFF");
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+call get_item (t_line, item);
+item = translate(item, big, sml);
+
+found = false;
+indx = 1;
+do while (indx ^> dim(set_types, 1)  &  ^found);
+   if set_types(indx) = item then
+  do;
+     found = true;
+     type = set_type_code(indx);
+     end;
+   else indx = indx + 1;
+   end;
+
+if ^found then
+do;
+   error = true;
+   error_code = bad_set_spec;
+   return;
+   end;
+
+goto case(type);
+
+
+case(1):  /* Send */
+case(2):  /* Receive, Rec */
+          call get_item (t_line, item);
+          item = translate(item, big, sml);
+          found = false;
+          indx = 1;
+          do while (indx ^> dim(option,1)  &  ^found);
+            if option(indx) = item then
+            do;
+              parm = indx;
+              found = true;
+              end;
+            else indx = indx + 1;
+            end;
+
+         if ^found then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           return;
+           end;
+
+         if t_line = "" then
+         do;
+           error = true;
+           error_code = mssng_set_parm_val;
+           return;
+           end;
+
+        goto pcase(parm);
+
+        pcase(1): /* packet-length */
+        pcase(2): /* padding */
+        pcase(4): /* timeout */     /*** Decimal args ***/
+                  if verify (t_line, numbers) > 0 then
+                  do;
+                    error = true;
+                    error_code = non_numeric_val;
+                    return;
+                    end;
+                  parm_val = fixed(t_line);
+                  goto end_pcase;
+
+        pcase(3): /* padchar */
+        pcase(5): /* end of line */
+        pcase(6): /* quote char */   /* Octal arg */
+                  parm_val = cv_oct_check_(rtrim(t_line), code);
+                  if code ^= 0 | (code=0 & parm_val>127) then
+                  do;
+                    error = true;
+                    error_code = bad_octal_val;
+                    return;
+                    end;
+                  goto end_pcase;
+
+        pcase(7): /* on */
+        pcase(8): /* off */
+                  error = true;
+                  error_code = bad_set_parm;
+                  return;
+
+        end_pcase: goto endcase;
+
+
+case(3):  /* Delay n */
+          if t_line = "" | verify (t_line, numbers) > 0 then
+          do;
+            error = true;
+            error_code = non_numeric_val;
+            return;
+            end;
+          parm_val = fixed(t_line);
+          goto endcase;
+
+case(4):  /* File warning */
+case(5):  /* Trace        */
+case(7):  /* Text         */
+case(9):  /* Repeat       */
+case(10): /* Parity       */
+          item = translate (t_line, big, sml);
+          if item ^= on  &  item ^= off then
+          do;
+            error = true;
+            error_code = bad_set_parm;
+            return;
+            end;
+          if option(8) = item then parm=8;
+          if option(7) = item then parm=7;
+          goto endcase;
+
+case(8):  /* Checktype */
+          if t_line ^= "1"  &  t_line ^= "2"  &  t_line ^= "3" then
+          do;
+            error = true;
+            error_code = bad_set_parm;
+            return;
+            end;
+          parm_val = fixed(t_line);
+          goto endcase;
+
+case(6):  /* Dir */
+case(11): /* Modes */
+          if t_line = "" | index(t_line, blank)> 0 then
+          do;
+            error = true;
+            error_code = bad_set_parm;
+            return;
+            end;
+          line = t_line;
+          goto endcase;
+
+endcase: return;
+
+end parse_set_parms;
+
+
+get_item: proc(line, item);
+/********************************************************************/
+/*  Chop off an item in line and return it.                         */
+/********************************************************************/
+
+    dcl line char(*) var;
+    dcl item char(*) var;
+
+    dcl indx fixed bin;
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+line = ltrim(line);
+line = line || blank;
+indx = index(line,blank);
+item = substr(line,1,indx);
+item = rtrim(item);
+
+if indx < length(line) then line = substr(line,indx+1);
+                       else line = "";
+line = rtrim(line);
+return;
+end get_item;
+
+
+check_filenames: proc (list, must_be_there, num_files, file_list, code, error_msg);
+/********************************************************************/
+/*  Decode list into separate file names.  List may be a            */
+/*  starname or a single file name.                                 */
+/********************************************************************/
+
+    dcl list char(*) var;
+    dcl num_files fixed bin;
+    dcl 1 file_list(*),
+          2 dir char(*),
+          2 entry char(*);
+
+    dcl must_be_there bit(1);
+    dcl code fixed bin(35);
+    dcl error_msg char(*) var;
+
+    dcl t_list char(80);
+    dcl dirname char(168);
+    dcl entryname char(32);
+
+    dcl resp char(10) var;
+
+    dcl seg_ptr ptr;
+    dcl entry_ptr ptr;
+    dcl name_ptr ptr;
+
+    dcl count fixed bin;
+    dcl indx  fixed bin;
+    dcl dir_seg_type fixed bin(2);
+    dcl seg_type bit(2) init("01"b) static;
+
+    dcl 1 entries(count) aligned based(entry_ptr),
+          (2 type bit(2),
+           2 nnames fixed bin(15),
+           2 nindex fixed bin(17)) unaligned;
+
+    dcl names (sum(nnames(*))) char(32) aligned based(name_ptr);
+
+    dcl name_area area(10000);
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+code = 0;
+error_msg = "";
+num_files = 0;
+if list = "" then   /* Null name list */
+do;
+   if must_be_there then
+   do;
+     code = error_table_$noarg;
+     error_msg = "File name required.";
+     end;
+   return;
+   end;
+
+t_list = list;
+if index(t_list,">") > 0  |  index(t_list,"<") > 0 then
+   call expand_pathname_ (t_list, dirname, entryname, code);
+else
+ do;
+   dirname = default_dir;
+   entryname = rtrim(t_list);
+   end;
+
+if code ^= 0 then
+do;
+   error_msg = list;
+   return;
+   end;
+
+call check_star_name_$entry (entryname, code);
+
+if code = 0 then /* Not a starname, single entry */
+do;
+   /* Check to make sure that if present, it is a seg and not a dir and */
+   /* that it is present when we expect it (ie during send)             */
+   call hcs_$status_minf (dirname, entryname, 1, dir_seg_type, 0, code);
+   if code = error_table_$noentry & must_be_there then
+   do;
+     error_msg = "The segment must exist to send it.";
+     return;
+     end;
+   else
+   if code ^= 0  &  code ^= error_table_$noentry then
+   do;
+     error_msg = rtrim(dirname) || ">" || rtrim(entryname);
+     return;
+     end;
+   else
+   if dir_seg_type = 2 then /* Cant do this to a dir */
+   do;
+     error_msg = rtrim(dirname) || ">" || rtrim(entryname);
+     code = error_table_$dirseg;
+     return;
+     end;
+   if file_warning_sw & ^must_be_there & code = 0 then
+   do;
+     call ioa_("WARNING: file ^a>^a already exists and will be overwritten.",
+                dirname, entryname);
+
+     /* command_query_$yes_no, except this works on non-Multics machines */
+     resp = " ";
+     do while(resp ^= "Y"  &  resp ^= "N");
+       call read_term ("Do you want to continue? (y or n):", resp);
+       resp = translate(resp, big, sml);
+       end;
+
+     if resp ^= "Y" then
+     do;
+       code = error_table_$action_not_performed;
+       error_msg = "";
+       return;
+       end;
+     end;
+   code = 0;  /* May be noentry */
+   num_files = 1;
+   file_list(1).dir = dirname;
+   file_list(1).entry = entryname;
+   return;
+   end;
+
+if code ^= 1  &  code ^= 2 then
+do;
+   /* Bad starname */
+   code = error_table_$badstar;
+   error_msg = list;
+   return;
+   end;
+
+/********************************************************************/
+/*  Have a good starname, expand it                                 */
+/********************************************************************/
+
+seg_ptr = addr(name_area);
+
+call hcs_$star_ (dirname, entryname, 2, seg_ptr, count, entry_ptr, name_ptr, code);
+if code ^= 0 then
+do;
+   error_msg = list;
+   return;
+   end;
+
+do indx = 1 to count;
+   if type(indx) = seg_type then
+   do;
+     num_files = num_files + 1;
+     dir(num_files) = dirname;
+     entry(num_files) = names(nindex(indx));
+     end;
+   end;
+
+if num_files = 0 then
+do;
+   code = error_table_$dirseg;
+   error_msg = "Star name does not match any segments.";
+   end;
+
+
+return;
+end check_filenames;
+
+print_err_msg: proc(err_code, err_msg);
+/********************************************************************/
+/*  Print an error message on the terminal.                         */
+/********************************************************************/
+
+    dcl err_code fixed bin(35);
+    dcl err_msg char(*) var;
+
+    dcl errors (29) char(80) var static init (
+        "Unrecognized command.  No action performed.",
+        "Bad file specification.",
+        "Unrecognized help option.",
+        "Bad parameter on set command.",
+        "Bad specification on set command.",
+        "Bad parameter on show command.",
+        "Improper syntax.",
+        "Missing parameter on set command.",
+        "Missing parameter value on set command.",
+        "Non-numeric value where number should be.",
+        "Bad value for octal argument.",
+        "Bad directory name.",
+        "That directory does not exist.",
+        /* Reserved for future syntax errors */
+        "", "", "", "", "", "", "",
+        "Too many retries",
+        "Wrong packet type.",
+        "Entered an unexpected state.",
+        "Wrong packet number.",
+        "Error on host CPU.",
+        "File missing for send request.",
+        "Record quota overflow; insufficient space available.",
+        "File already exists; transmission aborted.",
+        "Can't get segment for transmission.");
+
+if err_code < 100 then
+  call ioa_("Kermit ERROR: "|| errors(err_code));
+else
+  call com_err_ (err_code,"Kermit ERROR", err_msg);
+return;
+end print_err_msg;
+
+
+
+exec_command: proc(ret_structure);
+/********************************************************************/
+/*  This procedure is a case statement for the execution of         */
+/*  kermit commands.                                                */
+/********************************************************************/
+
+/*=================  Begin ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<*/
+
+    dcl 1 ret_structure,
+          2 line char(255) var,
+          2 more_commands bit(1),
+          2 command_code fixed bin,
+          2 error bit(1),
+          2 error_code fixed bin(35),
+          2 err_msg char(255) var,
+          2 type fixed bin,
+          2 parm fixed bin,
+          2 parm_val fixed bin;
+    
+/*==================  End ret_structure.incl.pl1  <<<<<<<<<<<<<<<<<<*/
+
+
+    dcl code fixed bin(35) init(0);
+    dcl err_msg char(100) var;
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+goto case(command_code);  /* Errors won't get to here */
+
+case(1) : /* Send file(s) down to micro */
+          call zero_counters;
+          call kermit_$send (info_ptr, code, err_msg);
+          call add_in_totals;
+          goto endcase;
+
+case(2) : /* Receive file(s) from micro */
+          call zero_counters;
+          call kermit_$receive (info_ptr, code, err_msg);
+          call add_in_totals;
+          goto endcase;
+
+case(3) : /* Quit */
+          more_commands = false;
+          goto endcase;
+
+case(4) : /* Set command */
+          call set_options(type, parm, parm_val, line);
+          goto endcase;
+
+case(5) : /* Show current settings */
+          call display_parms(type);
+          goto endcase;
+
+case(6) : /* Help */
+          call help_rtn (line, code);
+          goto endcase;
+
+case(7) : /* Pass a line through to the command processor */
+          call exec_com (line);
+          goto endcase;
+
+case(8) : /* Show status of last transmission */
+          call disp_status;
+          goto endcase;
+
+case(9) : /* Null command */
+          goto endcase;
+
+case(10): /* Debug */
+          call set_debug (parm);
+          goto endcase;
+
+case(11): /* Server */
+          call zero_counters;
+          call kermit_$server (info_ptr, code, err_msg);
+          server_used = true;
+          call add_in_totals;
+          goto endcase;
+
+case(12): /* Identification */
+          call ioa_ ("Multics - kermit   Version ^a of ^a.",
+                      current_version, version_date);
+          goto endcase;
+
+endcase: if code ^= 0 then /* But some might come back from the protocol */
+         do;               /* machine, so let the user know.             */
+           call com_err_ (code, prog, err_msg);
+           end;
+         return;
+end exec_command;
+
+
+add_in_totals: proc;
+/********************************************************************/
+/*  Add in totals for metering purposes.                            */
+/********************************************************************/
+
+cum_pkt_rcvd = cum_pkt_rcvd + total_packet_rcvd;
+cum_pkt_trns = cum_pkt_trns + total_packet_trns;
+cum_pkt_retry = cum_pkt_retry + total_retry_count;
+
+cum_files_rcvd = cum_files_rcvd + files_rcvd;
+cum_files_trns = cum_files_trns + files_trns;
+cum_failures = cum_failures + failures;
+
+return;
+end add_in_totals;
+
+
+zero_counters: proc;
+/********************************************************************/
+/* Reset kermit_ meters                                             */
+/********************************************************************/
+
+files_rcvd = 0;
+files_trns = 0;
+failures = 0;
+
+total_packet_trns = 0;
+total_packet_rcvd = 0;
+total_retry_count = 0;
+
+return;
+end zero_counters;
+
+
+
+set_debug: proc (val);
+/********************************************************************/
+/*  Turn the debug switch on or off.  This is in a separate         */
+/*  procedure from set_options because the command syntax is        */
+/*  different.                                                      */
+/********************************************************************/
+
+    dcl val fixed bin;
+
+if val = 7 then
+do;
+   debug_sw = true;
+   call ioa_ ("Debug enabled.");
+   call ioa_ ("WARNING: Linkage faults will occur unless kermit_db_ is available.");
+   end;
+else debug_sw = false;
+
+return;
+end set_debug;
+
+
+set_options: proc(type, parm, parm_val, str);
+/********************************************************************/
+/*  Set global variables according to commands                      */
+/********************************************************************/
+
+    dcl type fixed bin;
+    dcl parm fixed bin;
+    dcl parm_val fixed bin;
+
+    dcl error bit(1) init(false);
+    dcl error_code fixed bin(35);
+
+    dcl send fixed bin static init(1);
+    dcl on   fixed bin static init(7);
+
+    dcl char char(1);
+
+    dcl str char(*) var;
+    dcl f_str char(length(str));
+    dcl dirname char(168);
+    dcl entryname char(32);
+
+    dcl dir_seg_type fixed bin(2);
+
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+goto case(type);
+
+case(1): /* Send     */
+case(2): /* Receive  */
+         if parm > 6 then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           end;
+         else
+         do;
+           goto pcase(parm);
+
+           pcase(1): /* Packet length */
+                     if parm_val < 5  |  parm_val > max_packet_size then
+                     do;
+                       error = true;
+                       error_code = bad_set_parm;
+                       end;
+                     else
+                     if type = send then sp_size = parm_val;
+                                    else rp_size = parm_val;
+                     goto end_pcase;
+
+           pcase(2): /* Number of padding characters */
+                     if type = send then my_pad = parm_val;
+                                    else pad = parm_val;
+                     goto end_pcase;
+
+           pcase(3): /* Padding character */
+                     char = substr(collate(),parm_val+1,1);
+                     if type = send then my_pad_char = parm_val;
+                                    else pad_char = parm_val;
+                     goto end_pcase;
+
+           pcase(4): /* Timeout interval */
+                     if type = send then stimint = parm_val;
+                                    else rtimint = parm_val;
+                     goto end_pcase;
+
+           pcase(5): /* End of line terminator */
+                     if type = send then end_of_line = parm_val;
+                                    else r_eol = parm_val;
+                     goto end_pcase;
+
+           pcase(6): /* Quote character */
+                     char = substr(collate(),parm_val+1,1);
+                     if type = send then my_quote = char;
+                     else
+                     do;
+                       error = true;
+                       error_code = bad_set_parm;
+                       end;
+
+           end_pcase: ;
+           end;
+        goto endcase;
+
+
+case(3): /* Delay */
+         delay_time = parm_val;
+         goto endcase;
+
+case(4): /* File warning */
+         if parm < 7 then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           end;
+         else
+         if parm = on then file_warning_sw = true;
+                      else file_warning_sw = false;
+         goto endcase;
+
+case(5): /* Trace facility */
+         if parm < 7 then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           end;
+         else
+         if parm = on then trace_sw = true;
+                      else trace_sw = false;
+         goto endcase;
+
+case(6): /* Change the default working directory */
+         if translate(str,big,sml) = "-WD" then
+         do;
+           default_dir = get_wdir_();
+           end;
+         else
+         do;
+           f_str = str;
+           call expand_pathname_(f_str, dirname, entryname, error_code);
+           if error_code ^= 0 then
+           do;
+             error = true;
+             error_code = bad_dir_name;
+             end;
+           else
+           do;
+             call hcs_$status_minf (dirname, entryname, 1, dir_seg_type, 0, error_code);
+             if error_code ^= 0 then
+             do;
+               error = true;
+               error_code = bad_dir_name;
+               end;
+             else
+             if dir_seg_type ^= 2 then
+             do;
+               error = true;
+               error_code = not_dir_name;
+               end;
+             else
+             do;
+               default_dir = rtrim(dirname) || ">" || rtrim(entryname);
+               end;
+             end;
+           end;
+         goto endcase;
+
+
+case(7): /* Text/Binary mode */
+         if parm < 7 then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           end;
+         else
+         if parm = on then text_mode = true;
+                      else text_mode = false;
+         goto endcase;
+
+case(8): /* Check code value */
+         if parm_val > length(allowed_ck_codes)  |
+            parm_val = 0 then /*Assumes impl. in order */
+         do;
+           error = true;
+           error_code = bad_set_parm;  /* Maybe a better error message?   */
+           end;
+         else
+           default_ck_code = parm_val;
+         goto endcase;
+
+case(9): /* Turn repeat capability on or off */
+         if parm < 7 then
+         do;
+           error = true;
+           error_code = bad_set_parm;
+           end;
+         else
+         if parm = on then repeat_allowed = true;
+                      else repeat_allowed = false;
+         goto endcase;
+
+case(10): /* Parity */
+          if parm < 7 then
+          do;
+            error = true;
+            error_code = bad_set_parm;
+            end;
+          else
+          if parm = on then eight_bit_quote = true;
+                       else eight_bit_quote = false;
+          goto endcase;
+
+case(11): /* Modes setting */
+          f_str = str;
+          call iox_$modes (tty_iocb, f_str, "", code);
+          error_code = code;
+          call iox_$modes (tty_iocb, old_term_modes, "", code);
+          if error_code ^= 0 then error = true;
+             else term_modes = f_str;
+          goto endcase;
+
+
+endcase: ;
+
+if error then call print_err_msg(error_code, "");
+
+return;
+end set_options;
+
+display_parms: proc(type);
+/********************************************************************/
+/*  Display various parameters on command.                          */
+/********************************************************************/
+
+    dcl type fixed bin;
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+
+goto case(type);
+
+case(1): /* Send parameters */
+         call disp_send;
+         goto endcase;
+
+case(2): /* Receive parameters */
+         call disp_receive;
+         goto endcase;
+
+case(3): /* Delay time */
+         call disp_delay;
+         goto endcase;
+
+case(4): /* File warning */
+         call disp_fw;
+         goto endcase;
+
+case(5): /* Display Trace status */
+         call disp_trace;
+         goto endcase;
+
+case(6): /* Display default directory */
+         call disp_dir;
+         goto endcase;
+
+case(7): /* Mode */
+         call disp_mode;
+         goto endcase;
+
+case(8): /* Type of checksum */
+         call disp_ckcd;
+         goto endcase;
+
+case(9): /* Repeat */
+         call disp_rpt;
+         goto endcase;
+
+case(10): /* Parity */
+         call disp_par;
+         goto endcase;
+
+case(11): /* Modes string */
+         call disp_modes;
+         goto endcase;
+
+case(12): /* Everything */
+         call disp_send;
+         call disp_receive;
+         call disp_mode;
+         call disp_delay;
+         call disp_fw;
+         call disp_dir;
+         call disp_ckcd;
+         goto endcase;
+
+endcase: return;
+end display_parms;
+
+
+disp_send: proc;
+/********************************************************************/
+/*  Display send parameters                                         */
+/********************************************************************/
+
+call ioa_("");
+call ioa_("(Set Parm Name)      Send Parameters");
+call ioa_("------------------------------------------------");
+call ioa_("(PACKET-LENGTH) Packet size: ^d (decimal)",sp_size);
+call ioa_("(PADDING)       Number of padding characters: ^d",my_pad);
+call ioa_("(PADCHAR)       Pad character: ^o (octal)", my_pad_char);
+call ioa_("(TIMEOUT)       Timeout interval: ^d seconds",stimint);
+call ioa_("(END-OF-LINE)   End of line character: ^o (octal)",end_of_line);
+call ioa_("(QUOTE)         Quote character: ^o (octal)", index(collate(),my_quote)-1);
+
+return;
+end disp_send;
+
+
+
+disp_receive: proc;
+/********************************************************************/
+/*  Display similar parameters for receive.                         */
+/********************************************************************/
+
+
+call ioa_("");
+call ioa_("(Set Parm Name)        Receive Parameters");
+call ioa_("-----------------------------------------------");
+call ioa_("(PACKET-LENGTH)  Packet size: ^d (decimal)",rp_size);
+call ioa_("(PADDING)        Number of padding characters: ^d",pad);
+call ioa_("(PADCHAR)        Pad character: ^o (octal)",pad_char);
+call ioa_("(TIMEOUT)        Timeout interval: ^d seconds",rtimint);
+call ioa_("(END-OF-LINE)    End of line character: ^o (octal)",r_eol);
+call ioa_("(QUOTE)          Quote character: ^o (octal)",index(collate(),remote_quote)-1);
+return;
+end disp_receive;
+
+
+disp_delay: proc;
+
+call ioa_ ("");
+call ioa_("Initial delay: ^d seconds.", delay_time);
+return;
+end disp_delay;
+
+
+
+disp_fw: proc;
+
+call ioa_ ("");
+if file_warning_sw then call ioa_("File warning switch is ON.");
+                   else call ioa_("File warning switch is OFF.");
+return;
+end disp_fw;
+
+
+disp_trace: proc;
+call ioa_("");
+if trace_sw then call ioa_("The trace facility is ON.");
+            else call ioa_("The trace facility is OFF.");
+return;
+end disp_trace;
+
+disp_dir: proc;
+call ioa_("");
+call ioa_("The default directory is: " || rtrim(default_dir));
+return;
+end disp_dir;
+
+disp_rpt: proc;
+
+call ioa_();
+if repeat_allowed then call ioa_("Repeat quoting will be requested.");
+                  else call ioa_("Repeat quoting will not be done.");
+return;
+end disp_rpt;
+
+
+disp_par: proc;
+
+call ioa_();
+if eight_bit_quote then call ioa_("Parity quoting will be requested.");
+                   else call ioa_("Parity quoting will not be done.");
+return;
+end disp_par;
+
+
+
+disp_modes: proc;
+
+call ioa_();
+call ioa_ ("Modes string: ^a", term_modes);
+return;
+end disp_modes;
+
+
+disp_mode: proc;
+
+   if text_mode then call ioa_("Text mode is in effect.");
+                 else call ioa_("Binary mode is in effect.");
+return;
+end disp_mode;
+
+disp_ckcd: proc;
+
+    dcl msg(3) char(50) var static init (
+        "TYPE 1  Single byte checksum - Kermit standard",
+        "TYPE 2  Double byte checksum",
+        "TYPE 3  CRC checksum");
+
+call ioa_ (msg(default_ck_code));
+return;
+end disp_ckcd;
+
+
+disp_status: proc;
+/********************************************************************/
+/*  Display the status of the last transmission                     */
+/********************************************************************/
+
+    dcl msgs(4) char(80) var static init (
+        "Too many retries on last packet; transmission aborted.",
+        "Wrong packet type on transmitted packet.",
+        "Unexpected program state entered; transmission aborted.",
+        "Wrong packet number on transmitted packet.");
+
+    dcl indx fixed bin;
+
+
+
+if return_code = 0 then
+do;
+   if last_file_transferred = "" then call ioa_ ("No previous transfer.");
+   else
+   do;
+     call ioa_ ("Transmission ending with ^a was successful.", last_file_transferred);
+     call ioa_ ("^d total packets were transferred with ^d retries.",
+                 total_packet_trns+total_packet_rcvd, total_retry_count);
+     end;
+   end;
+
+else
+do;
+   call ioa_ ("Transmission ending with ^a was not successful.", last_file_transferred);
+   if return_code < 100 then
+   do;
+     indx = return_code - 20;
+     call ioa_ (msgs(indx));
+     end;
+   else
+     call com_err_$suppress_name (return_code, prog);
+   end;
+
+return;
+end disp_status;
+
+exec_com: proc(line);
+/********************************************************************/
+/*  Pass line along to the command processor.                       */
+/********************************************************************/
+
+    dcl line char(*) var;
+    dcl com_line char(length(line)) aligned init(line);
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+call cu_$cp(addr(com_line), length(line), code);
+
+return;
+end exec_com;
+
+
+help_rtn: proc(line, code);
+/********************************************************************/
+/*  This routine serves as an interface to the help subsystem.      */
+/*  In its current draft version, it wil not intercept some         */
+/*  error conditions raised by help.                                */
+/********************************************************************/
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>  Declarations  <<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+/*	BEGIN OF:	help_args_.incl.pl1		  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  */
+
+	/*  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  * */
+	/*									*/
+	/* Name:   help_args_.incl.pl1						*/
+	/*									*/
+	/* This include file declares the structure used by the help command and other subsystems	*/
+	/* to pass info segment selection and printing control information to the help_		*/
+	/* subroutine.  This based structure is NEVER allocated.  Instead, the caller of help_	*/
+	/* must call help_$init to get a pointer to a temporary segment which is used for	*/
+	/* storage for the structure.  The structure contains 5 arrays with refer extents,	/*
+	/* allowing complete freedom in the numbers of selection values given.  Typically, the	*/
+	/* caller fills in the arrays at the top of the structure first, growing the arrays	*/
+	/* as each new element is added.  After each array is filled, the caller begins filling	*/
+	/* in the next array.  Note that, on return from help_$init, all of the arrays have 0	*/
+	/* extents, except that the search_dirs array contains the list of directories to be	*/
+	/* searched in to find info segments, as defined by the search facility.  The caller	*/
+	/* may of course change or replace these search directories.			*/
+	/*									*/
+	/* A legend describing the variable naming convention follows.			*/
+	/*									*/
+	/*   STARTING LETTER	STANDS FOR					*/
+	/*	P		pointer to					*/
+	/*	L		length of						*/
+	/*	D		descriptor of					*/
+	/*	S		switch						*/
+	/*	V		version						*/
+	/*									*/
+	/* Status									*/
+	/*									*/
+	/* 0) Created:   October, 1978    by Gary Dixon					*/
+	/*									*/
+	/*  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  * */
+
+     dcl	1 help_args aligned based (Phelp_args),		/* help's input arguments.			*/
+	  2 version		fixed bin,	/* = 1, currently. Use Vhelp_args_1.		*/
+						/*	(set by help_$init, checked by caller)	*/
+	  2 Sctl,					/* control argument switches.			*/
+						/*	(SET BY CALLER OF help_)		*/
+	   (3 he_only,				/*   print only a heading, nothing else.	*/
+	    3 he_pn,				/*   when heading printed, include info pathname.	*/
+	    3 he_info_name,				/*   when heading printed, include info_name.	*/
+	    3 he_counts,				/*   when heading printed, include line counts.	*/
+						/*   If none of the 3 switches above are set,	*/
+						/*   then only info header is incl. in heading.	*/
+	    3 title,				/*   -title				*/
+	    3 scn,				/*   -section				*/
+	    3 srh,				/*   -search				*/
+	    3 bf,					/*   -brief				*/
+	    3 ca,					/*   -control_arg				*/
+	    3 ep,					/*   -entry_point				*/
+	    3 all)		bit(1) unal,	/*   -all					*/
+	    3 pad1		bit(25) unal,
+	  2 Nsearch_dirs		fixed bin,	/* number of info_segment (or other) search dirs.	*/
+						/*	(set by help_$init, CALLER CAN CHANGE)	*/
+	  2 Npaths		fixed bin,	/* number of info segment names.		*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 Ncas			fixed bin,	/* number of control arg names given with -ca	*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 Nscns			fixed bin,	/* number of section substrings.		*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 Nsrhs			fixed bin,	/* number of search strings.			*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 min_Lpgh		fixed bin,	/* minimum length of a paragraph.		*/
+						/*	(set by help_$init, CALLER CAN CHANGE)	*/
+	  2 max_Lpgh		fixed bin,	/* maximum lines in group of aggregated paragraphs*/
+						/* or in paragraphs constructed by help_.	*/
+						/*	(set by help_$init, CALLER CAN CHANGE)	*/
+	  2 Lspace_between_infos	fixed bin,	/* spaces inserted between infos when several	*/
+						/* printed by one invocation.			*/
+						/*	(set by help_$init, CALLER CAN CHANGE)	*/
+	  2 min_date_time		fixed bin(71),	/* do not process infos modified before this date.*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 pad2 (10) 		fixed bin,	/* reserved for future expansion.		*/
+
+	/*		End of fixed-length part of the structure.				*/
+
+	  2 search_dirs (0 refer (help_args.Nsearch_dirs))
+				char (168) unal,	/* directories help_ will look in to find info	*/
+						/*   segments when relative paths (without < or >)*/
+						/*   are given.  When help_$init is called, the	*/
+						/*   current search rules (from a search list of	*/
+						/*   caller's choice) will be given here.  Caller	*/
+						/*   may modify this list if desired before	*/
+						/*   calling help_.				*/
+	  2 path (0 refer (help_args.Npaths)),		/* names of sought info segments.		*/
+	    3 value		char(425) varying,	/*   These are the args themselves, without	*/
+	    					/*   processing by expand_pathname_, etc.	*/
+						/*   Their length is length(path) + length("$")	*/
+						/*   + length(entry_point_name).		*/
+						/*   Note that entry_point_names can be 256 chars.*/
+						/*	(SET BY CALLER OF help_)		*/
+	    3 info_name		char(32) unal,	/*   name of logical info to be printed.	*/
+						/*	(SET BY CALLER OF help_)		*/
+						/*   "" = help_ should set this to entry part	*/
+						/*        of path.value, minus the suffix.	*/
+						/*   other = logical info name not a name on the	*/
+						/* 	   physical info segment.		*/
+	    3 dir (1)		char(168) unal,	/*   dir part of a pathname (set by help_).	*/
+	    3 ent			char(32) unal,	/*   ent part of name (set by help_).		*/
+	    3 ep			char(32) varying,	/*   entry point part of name. (set by help_)	*/
+	    3 code		fixed bin(35),	/*   error code while processing this path.	*/
+						/*     (set by help_)			*/
+	    3 S,					/*   switches indicating path type.		*/
+	     (4 pn_ctl_arg,				/*     -pn ctl given before this path. 		*/
+						/*     	(SET BY CALLER OF help_)		*/
+	      4 info_name_not_starname,		/*     caller-supplied path.info_name is not a	*/
+						/*       star name, even if it has * or ? chars.	*/
+						/*     	(SET BY CALLER OF help_)		*/
+	      4 less_greater,			/*     A < or > appears in path.value.		*/
+						/*     	(set by help_)			*/
+	      4 starname_ent,			/*     on if ent is a starname.		*/
+						/*	(set by help_)			*/
+	      4 starname_info_name,			/*     on if info_name is a starname.		*/
+						/*	(set by help_)			*/
+	      4 separate_info_name) 	bit(1) unal,	/*     on if info_name given by caller.		*/
+						/*	(set by help_)			*/
+	      4 pad3	 	bit(30) unal,
+	  2 ca (0 refer (help_args.Ncas))		/* the ctl_arg names, without leading - just as	*/
+				char(32) varying,	/*   req'd by the -ca ctl_arg of help.		*/
+						/*	(SET BY CALLER OF help_)		*/
+	  2 scn (0 refer (help_args.Nscns))		/* substrings sought in section titles.		*/
+				char(80) varying,	/*	(SET BY CALLER OF help_)		*/
+	  2 srh (0 refer (help_args.Nsrhs))		/* search strings.				*/
+				char(80) varying,	/*	(SET BY CALLER OF help_)		*/
+	Phelp_args		ptr,
+	Vhelp_args_1		fixed bin int static options(constant) init(1);
+
+     dcl	help_			entry (char(*), ptr, char(*), fixed bin, fixed bin(35)),
+	help_$init		entry (char(*), char(*), char(*), fixed bin, ptr, fixed bin(35)),
+	help_$term		entry (char(*), ptr, fixed bin(35));
+
+/*	END OF:	help_args_.incl.pl1		  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  */
+
+
+    dcl line char(*) var;
+    dcl code fixed bin(35);
+    dcl progress fixed bin;
+    dcl t_line char(100) var;
+
+
+
+/********************************************************************/
+/*>>>>>>>>>>>>>>>>>>>>>>>>>>>  Procedure  <<<<<<<<<<<<<<<<<<<<<<<<<<*/
+/********************************************************************/
+
+call help_$init (prog, "", "", Vhelp_args_1, Phelp_args, code);
+if code ^= 0 then return;
+
+Sctl.all = true;
+
+if substr(line,1,1) = "?" then t_line = rtrim(substr(line||blank, 2));
+else t_line = rtrim(substr(line||blank, 5));
+t_line = ltrim(t_line);
+
+if t_line = "" then t_line = prog;
+
+Nsearch_dirs = 1;
+search_dirs(1) = kermit_info_dir;
+Npaths = 1;
+path(1).value =  t_line;
+path(1).info_name = " ";
+
+call help_ (prog, Phelp_args, "k.info", progress, code);
+
+call help_$term (prog, Phelp_args, (0));
+code = 0;  /* help_ already has printed error msgs if any */
+
+return;
+end help_rtn;
+
+
+meter_usage: proc;
+/********************************************************************/
+/*   If metering was enabled, send a message to the specified mail  */
+/*   box with the particulars of this invokation of kermit.         */
+/********************************************************************/
+
+    dcl msg_string char(55);
+    dcl len fixed bin(21);
+    dcl server_ind char(1) init("R");
+
+
+if cum_files_trns + cum_files_rcvd + cum_failures = 0 then return;  /* No transfers */
+
+
+if server_used then server_ind = "S";
+
+call ioa_$rsnnl ("^d TP   ^d RP   ^d RT   ^d FS   ^d FR   ^d FF", msg_string, len,
+                  cum_pkt_trns, cum_pkt_rcvd, cum_pkt_retry, cum_files_trns,
+                  cum_files_rcvd, cum_failures);
+msg_string = rtrim(msg_string) || blank || server_ind;
+
+
+call send_message_silent (kermit_mbx_ctl_arg, kermit_mbx, msg_string);
+return;
+
+end meter_usage;
+
+end kermit;
