@@ -1,0 +1,192 @@
+BEGIN                                                                   00001000
+COMMENT LIBRARY COMPARE PROGRAM;                                        00002000
+COMMENT OPERATION OF LIBCOMP/DISK:                                      00003000
+COMMAND THROUGH THE SPO.  THE INPUT TAPE, NAMED "TAPE", MAY BE          00004000
+FILE-EQUATED TO A SPECIFIC LIBRARY TAPE OR IL-ED AFTER THE RUN          00005000
+HAS BEGUN.  IF COMMON IS SET NON-ZERO, A PRINTED LISTING OF ALL         00006000
+FILENAMES CONTAINED ON THE TAPE IS IMMEDIATELY PRINTED.  FROM THIS      00007000
+POINT ON, LIBCOMP READS THROUGH THE LIBRARY TAPE, PICKING OFF ONE       00008000
+FILE AT A TIME AND CHECKING IT WORD FOR WORD AGAINST THE ORIGINAL       00009000
+COPY, WHICH HAD BETTER STILL BE ON DISK.  IF LIBCOMP WAS STARTED        00010000
+UNDER A USERCODE WHICH CANNOT ACCESS THE ORRIGINAL FILE, OR THE         00011000
+ORIGINAL IS NO LONGER ON DISK, A MESSAGE TO THAT EFFECT IS BOTH         00012000
+PRINTED AND SENT OUT OVER THE SPO.  IF END OF FILE IS DETECTED          00013000
+ON EITHER DISK OR THE TAPE BEFORE IT SHOULD BE, A MESSAGE NOTING THAT   00014000
+IS OUTPUT ALSO.  OTHERWISE, THE WORD-FOR-WORD COMPARE IS MADE, AND      00015000
+EACH TIME AN ERROR IS DETECTED A MESSAGE OF THE FORM                    00016000
+"BAD DUMP, MID/FID" IS SENT TO THE SPO, AND THE BAD RECORD              00017000
+(A THIRTY-WORD DISK SEGMENT) IS DUMPED TO THE PRINTER. ALL ERROR        00018000
+MESSAGES APPEAR ON BOTH THE SPO AND PRINTER, AND NO PRINTER OUTPUT      00019000
+WILL BE GENERATED IF NO ERRORS ARE DETECTED. AT THE END OF THE          00020000
+COMPARE, A MESSAGE (EITHER "||||| LIBRARY COMPARE OK |||" OR            00021000
+"||||| BAD LIBRARY COMPARE |||||") IS OUTPUT JUST OVER THE SPO.         00022000
+;                                                                       00023000
+INTEGER COMMON;                                                         00024000
+FORMAT                                                                  00025000
+    NAMELST("FILE",I4," = ",A1,A6,"/",A1,A6),                           00026000
+    MISTAKE(//,A1,A6,"/",A1,A6," UNEQUAL COMPARE - SEGMENT",I8,         00027000
+         ", WORD",I3),                                                  00028000
+    TAPEREC(//,"TAPE RECORD IS:"),                                      00029000
+    DISKREC(//,"DISK RECORD IS:"),                                      00030000
+    EOFTAPE(//,A1,A6,"/",A1,A6," END OF FILE ON TAPE - BLOCK",I6),      00031000
+    EOFDISK(//,A1,A6,"/",A1,A6," END OF FILE ON DISK - SEGMENT",I8),    00032000
+    NOTPRES(//,A1,A6,"/",A1,A6," NOT NOW ON DISK"),                     00033000
+    NOTMINE(//,A1,A6,"/",A1,A6," NOT ACCESSIBLE TO LIBCOMP");           00034000
+SWITCH FORMAT FINALMSG ~                                                00035000
+    ("||||| LIBRARY COMPARE OK |||||~"),                                00036000
+    ("||||| BAD LIBRARY COMPARE |||||~");                               00037000
+FILE IN TAPE(1,1023);                                                   00038000
+FILE OUT LINE 1 (2,17);                                                 00039000
+FILE OUT SPO 11 (2,10);                                                 00040000
+BOOLEAN ERRORSW,PRESENTSW;                                              00041000
+INTEGER FINALSW;                                                        00042000
+INTEGER S,STOP,SEGNO,  I,J,K,L,Z,BLKNO,LTOP;                            00043000
+INTEGER SR,SB,RB;                                                       00044000
+INTEGER SEGSPEROW,SEGSLASROW,SEGSLASBLK;                                00045000
+INTEGER ARRAY NAME,TREC[0:1022],H,DREC[0:30];                           00046000
+REAL W;                                                                 00047000
+DEFINE FILENAME =                                                       00048000
+              NAME[I].[6:6],NAME[I],NAME[I+1].[6:6],NAME[I+1] #;        00049000
+LABEL EOFT,NEXT;                                                        00050000
+ARRAY TEMP[0:30];                                                       00051000
+% % % % % % % % % %                                                     00052000
+DEFINE GETIT = 7(IF SC ! " " THEN DS ~ CHR)#;                           00053000
+STREAM PROCEDURE SPOUT(X,M,F);                                          00054000
+BEGIN DI ~ X; DS ~ 9 LIT "BAD DUMP ";                                   00055000
+SI ~ M; GETIT; DS ~ LIT "/";                                            00056000
+SI ~ F; GETIT; DS ~ LIT "~";                                            00057000
+END SPOUT;                                                              00058000
+% % % % % % % %                                                         00059000
+REAL STREAM PROCEDURE DISKADR(A);                                       00060000
+BEGIN SI ~ A; SI ~ SI - 8; DI ~ LOC DISKADR; DS ~ 8 OCT; END;           00061000
+% % % % % % % %                                                         00062000
+INTEGER STREAM PROCEDURE CHECK(T,D);                                    00063000
+BEGIN SI ~ T; DI ~ D; TALLY ~ 0;                                        00064000
+30(IF 8 SC ! DC THEN JUMP OUT ELSE TALLY ~ TALLY + 1);                  00065000
+CHECK ~ TALLY;                                                          00066000
+END;                                                                    00067000
+% % % % % % % % % %                                                     00068000
+PROCEDURE DOMP(ARRY,INDX,ONTO);                                         00069000
+VALUE INDX; INTEGER INDX;                                               00070000
+ARRAY ARRY[*]; FILE ONTO;                                               00071000
+    BEGIN                                                               00072000
+    ARRAY L[0:5,0:15];                                                  00073000
+    INTEGER I;                                                          00074000
+         DEFINE DOIT =                                                  00075000
+              6(2(8(DS~3RESET;3(IF SB THEN DS~SET ELSE DS~RESET;SKIP SB 00076000
+                        )); DS~LIT" "); DS~2LIT"  ")#;                  00077000
+    STREAM PROCEDURE DMP(AR,L0,L1,L2,L3,L4);                            00078000
+         BEGIN                                                          00079000
+         SI ~ AR;                                                       00080000
+         DI ~ L0; DOIT;                                                 00081000
+         DI ~ L1; DOIT;                                                 00082000
+         DI ~ L2; DOIT;                                                 00083000
+         DI ~ L3; DOIT;                                                 00084000
+         DI ~ L4; DOIT;                                                 00085000
+         END;                                                           00086000
+    DMP(ARRY[INDX],L[0,0],L[1,0],L[2,0],L[3,0],L[4,0]);                 00087000
+    FOR I ~ 0 STEP 1 UNTIL 4 DO WRITE(ONTO,15,L[I,*]);                  00088000
+    END;                                                                00089000
+% % % % % % % % % %                                                     00090000
+% % % % % % % % % %                                                     00091000
+READ(TAPE,1023,NAME[*]);                                                00092000
+IF COMMON ! 0 THEN                                                      00093000
+    BEGIN                                                               00094000
+    FOR I ~ 0 STEP 2 WHILE NAME[I] ! 12 DO                              00095000
+         WRITE(LINE[DBL],NAMELST,(I DIV 2) + 1,                         00096000
+               NAME[I].[6:6],NAME[I],NAME[I+1].[6:6],NAME[I+1]);        00097000
+    WRITE(LINE[PAGE]);                                                  00098000
+    END;                                                                00099000
+CLOSE(TAPE,*);                                                          00100000
+FOR I ~ 0 STEP 2 WHILE NAME[I] ! 12 DO                                  00101000
+    BEGIN                                                               00102000
+    ERRORSW ~ FALSE;                                                    00103000
+    SEGNO ~ BLKNO ~ 0;                                                  00104000
+    READ(TAPE,30,H[*]);                                                 00105000
+    SB ~ H[0].[42:6];                                                   00106000
+    RB ~ H[0].[30:12];                                                  00107000
+    SR ~ SB/RB;                                                         00108000
+    SEGSLASROW ~ ((H[7]+1) MOD H[8]) | SR;                              00109000
+    SEGSPEROW ~ H[8] | SR;                                              00110000
+    LTOP ~ (SEGSPEROW + 29) DIV 30;                                     00111000
+    SEGSLASBLK ~ SEGSPEROW MOD 30;                                      00112000
+         BEGIN                                                          00113000
+         FILE IN DISK DISK SERIAL (2,30,300);                           00114000
+         LABEL LASTROW,DOROW,READISK,READIT,NEXTBLK;                    00115000
+         FILL DISK WITH NAME[I],NAME[I+1];                              00116000
+         SEARCH(DISK,TEMP[*]);                                          00117000
+         IF TEMP[0] < 0 THEN                                            00118000
+              BEGIN                                                     00119000
+              WRITE(LINE,NOTPRES,FILENAME);                             00120000
+              WRITE(SPO,NOTPRES,FILENAME);                              00121000
+              PRESENTSW ~ FALSE;                                        00122000
+              GO TO NEXT;                                               00123000
+              END                                                       00124000
+         ELSE IF TEMP[0] = 0 THEN                                       00125000
+              BEGIN                                                     00126000
+              WRITE(LINE,NOTMINE,FILENAME);                             00127000
+              WRITE(SPO,NOTMINE,FILENAME);                              00128000
+              PRESENTSW ~ FALSE;                                        00129000
+              GO TO NEXT;                                               00130000
+              END                                                       00131000
+         ELSE PRESENTSW ~ TRUE;                                         00132000
+         FOR J ~ 10 STEP 1 WHILE H[J] NEQ 0 AND J NEQ 30 DO             00133000
+              BEGIN                                                     00134000
+              IF J = 29 THEN GO TO LASTROW;                             00135000
+              IF H[J+1] ! 0 THEN GO TO DOROW;                           00136000
+LASTROW:      IF SEGSLASROW = 0 THEN GO TO DOROW;                       00137000
+              LTOP ~ (SEGSLASROW + 29) DIV 30;                          00138000
+              SEGSLASBLK ~ SEGSLASROW MOD 30;                           00139000
+DOROW:        FOR L ~ 1 STEP 1 UNTIL LTOP DO                            00140000
+                   BEGIN                                                00141000
+                   READ(TAPE,900,TREC[*])[EOFT];                        00142000
+                   READ(DISK[NO])[NEXT];                                00143000
+                   W ~ DISKADR(DISK(0));                                00144000
+                   BLKNO ~ BLKNO + 1;                                   00145000
+                   STOP ~ 29;                                           00146000
+                   IF L = LTOP THEN IF SEGSLASBLK ! 0 THEN              00147000
+                        STOP ~ SEGSLASBLK - 1;                          00148000
+READISK:           FOR S ~ 0 STEP 1 UNTIL STOP DO                       00149000
+                        BEGIN                                           00150000
+                        READ(DISK,30,DREC[*])[NEXT];                    00151000
+                        W ~ W + 1;                                      00152000
+                        SEGNO ~ SEGNO + 1;                              00153000
+                        IF (K ~ CHECK(TREC[30|S],DREC[0])) < 30 THEN    00154000
+                             BEGIN                                      00155000
+                             WRITE(LINE,MISTAKE,FILENAME,W,K);          00156000
+                             IF NOT ERRORSW THEN                        00157000
+                                  BEGIN                                 00158000
+                                  SPOUT(TEMP,NAME[I],NAME[I+1]);        00159000
+                                  WRITE(SPO,10,TEMP[*]);                00160000
+                                  FINALSW ~ 1;                          00161000
+                                  END;                                  00162000
+                             ERRORSW ~ TRUE;                            00163000
+                             WRITE(LINE,TAPEREC);                       00164000
+                             DOMP(TREC,30|S,LINE);                      00165000
+                             WRITE(LINE,DISKREC);                       00166000
+                             DOMP(DREC,0,LINE);                         00167000
+                             END;                                       00168000
+READIT:                 END;                                            00169000
+NEXTBLK:           END;                                                 00170000
+              END;                                                      00171000
+         END;                                                           00172000
+    IF FALSE THEN                                                       00173000
+EOFT:    BEGIN                                                          00174000
+         WRITE(LINE,EOFTAPE,FILENAME,BLKNO);                            00175000
+         WRITE(SPO,EOFTAPE,FILENAME,BLKNO);                             00176000
+         ERRORSW ~ TRUE;                                                00177000
+         END;                                                           00178000
+NEXT:                                                                   00179000
+    CLOSE(TAPE,*);                                                      00180000
+    IF PRESENTSW THEN                                                   00181000
+         BEGIN                                                          00182000
+         COMMENT CLOSE DISK FILE, RESTORING RECORD SIZE, ETC;           00183000
+         FILE IN DISK DISK SERIAL (2,H[0].[1:14],H[0].[15:15]);         00184000
+         FILL DISK WITH NAME[I],NAME[I+1];                              00185000
+         READ(DISK);                                                    00186000
+         END;                                                           00187000
+    END;                                                                00188000
+REWIND(TAPE);                                                           00189000
+WRITE(SPO,FINALMSG[FINALSW]);                                           00190000
+          END.                                                          00191000
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999

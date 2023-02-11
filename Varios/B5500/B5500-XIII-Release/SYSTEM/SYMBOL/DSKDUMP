@@ -1,0 +1,215 @@
+BEGIN %ABSOLUTE ADDRESS NORMAL STATE DISK DUMP PROGRAM                  00000100
+%ENTER (MIX)AX(STARTING ADDRESS),(#OF SEGS TO BE DUMPED)~               00000200
+INTEGER PRT25;%USED FOR SETTING PRINT OPTIONS                           00000300
+INTEGER PRT26;%IF NEQ 0 CAUSES FORCED EXIT FROM "DUMPDISK"              00000400
+INTEGER PRT27;%IF NEQ 0,*DON"T * CALL "KEYIN"                           00000500
+INTEGER PRT30;%IF NON-ZERO,RECORD DATA FOR EACH I/O                     00000600
+REAL MASK;%DETERMINES WHAT BITS IN RD TO IGNORE                         00000700
+FILE OUT D DISK SERIAL[1:1](1,30);                                      00000800
+%START DEFINES                                                          00000900
+DEFINE SPC=STREAM PROCEDURE#;                                           00001000
+DEFINE ISPC=INTEGER STREAM PROCEDURE #;                                 00001100
+DEFINE BSPC=BOOLEAN STREAM PROCEDURE #;                                 00001200
+DEFINE PC=PROCEDURE #;                                                  00001300
+DEFINE BPC=BOOLEAN PROCEDURE #;                                         00001400
+DEFINE IPC=INTEGER PROCEDURE #;                                         00001500
+DEFINE RPC=REAL PROCEDURE #;                                            00001600
+DEFINE DESC=IODESC[0]#;                                                 00001700
+DEFINE RD=A[32]#;                                                       00001800
+    DEFINE OCTADE=DS~3RESET;3(IF SB THEN DS~SET ELSE DS~RESET;SKIP SB)#;00001900
+DEFINE OCTAL=PRT25 MOD 3=0#;                                            00002000
+DEFINE BCL=PRT25 MOD 3=1#;                                              00002100
+DEFINE BCLANDOCT=PRT25 MOD 3=2#;                                        00002200
+DEFINE PRINTING=PRT25 LEQ 5#;                                           00002300
+DEFINE SINGLE=PRT25 DIV 3=1#;                                           00002400
+DEFINE FORCEDEXIT=PRT26 NEQ 0#;                                         00002500
+DEFINE ACCEPTING=PRT27=0#;                                              00002600
+DEFINE TRACE=PRT30 NEQ 0#;%% IF NON-ZERO RECORD DATA FOR EACH I/O       00002700
+%END DEFINES                                                            00002800
+INTEGER DKBUF;%ADDRESS OF DISK ADDRESS WORD IN BUFFER                   00002900
+REAL IOMASK;%USED TO SLEEP ON                                           00003000
+ARRAY IODESC[0:0];%DISK IODESC                                          00003100
+ARRAY A[0:32];%0 IS DK ADR;1-30 IS SEG;31 IS OLD IODESC;32 IS RES DESC  00003200
+FILE DISKBUG 4(2,17);%RECORDS TRACE INFO                                00003300
+ARRAY TRACEBUF[0:16];%RESERVED FOR DIAGNOSTIC INFO                      00003400
+INTEGER RETRY,MAXRETRY;%ACTUAL RETRY COUNT,MAX NR BEFORE GIVING UP      00003500
+FILE SPO 11(1,10);                                                      00003600
+INTEGER ADR,NR,MAXADR;%STARTING ADDRESS,#SEGS TO BE DUMPED,ENDING ADR.  00003700
+INTEGER INX;%STEP INDEX                                                 00003800
+FILE P 1(2,17);                                                         00003900
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %   00004000
+ISPC ABSADD(A); BEGIN SI~A;ABSADD~SI END;                               00004100
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 00004200
+SPC MOVE(A,B,N);VALUE N;BEGIN SI~A;DI~B;DS~N WDS END;                   00004300
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %   00004400
+SPC BUFMOVE(A,B,N);VALUE N;                                             00004500
+BEGIN LOCAL NDIV64;                                                     00004600
+    SI~LOC N;DI~LOC NDIV64;SI~SI+6;DI~DI+7;DS~CHR;                      00004700
+    SI~A;DI~B;                                                          00004800
+    SI~SI-8;%PT AT DISK ADDRESS                                         00004900
+    NDIV64(DS~63WDS;DS~WDS);DS~N WDS;                                   00005000
+END BUFMOVE;                                                            00005100
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %   00005200
+SPC DISKMSG(DESC,RD,ADR,RETRY,T);VALUE DESC,RD,ADR,RETRY;               00005300
+BEGIN                                                                   00005400
+    DI~T;17(DS~8LIT" ");DI~T;                                           00005500
+    SI~LOC DESC;                                                        00005600
+    DS~7LIT"IODESC=";                                                   00005700
+    16(OCTADE);                                                         00005800
+    DS~8LIT";RESULT=";                                                  00005900
+    SI~LOC RD;                                                          00006000
+    16(OCTADE);                                                         00006100
+    SI~LOC ADR;                                                         00006200
+    DS~9LIT";ADDRESS=";                                                 00006300
+    DS~7DEC;                                                            00006400
+    DS~7LIT";RETRY=";                                                   00006500
+    DS~6DEC;                                                            00006600
+    DS~LIT".";DI~DI-7;DS~5 FILL;                                        00006700
+END DISKMSG;                                                            00006800
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 00006900
+PC DISKTRACE(I);VALUE I;INTEGER I;                                      00007000
+BEGIN                                                                   00007100
+    OWN INTEGER OLDADR;                                                 00007200
+    IF I=1 THEN IF ADR NEQ OLDADR THEN WRITE(DISKBUG);                  00007300
+    OLDADR~ADR;                                                         00007400
+    DISKMSG(DESC,RD,ADR,RETRY,TRACEBUF[*]);                             00007500
+    IF I=1 THEN WRITE(DISKBUG,17,TRACEBUF[*])                           00007600
+    ELSE WRITE(P,17,TRACEBUF[*]);                                       00007700
+END DISKTRACE;                                                          00007800
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 00007900
+PC PRL(F,MASK);VALUE MASK;FILE F;REAL MASK;                             00008000
+BEGIN                                                                   00008100
+    SPC POLISH(P);VALUE P;                                              00008200
+    BEGIN                                                               00008300
+         CI~CI+P;                                                       00008400
+         DS~24LIT"D910Y64ID9Y@D9190)0RD94(";%                           00008500
+END POLISH;                                                             00008600
+%%% CODE IS AS FOLLOWS:                                                 00008700
+%%% 2411 ZP1                                                            00008800
+%%% 0100 CMX                                                            00008900
+%%% 7006 MASK                                                           00009000
+%%% 0431 SSN                                                            00009100
+%%% 2411 ZP1                                                            00009200
+%%% 7013 [TOPIO]                                                        00009300
+%%% 2411 ZP1                                                            00009400
+%%% 0111 PRL                                                            00009500
+%%% 0055 NOOP                                                           00009600
+%%% 0051 DEL                                                            00009700
+%%% 2411 ZP1                                                            00009800
+%%% 0435 XIT                                                            00009900
+%%%                                                                     00010000
+POLISH(1);                                                              00010100
+END PRL;                                                                00010200
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 00010300
+BPC DISKREAD;%THE ESSENCE                                               00010400
+BEGIN                                                                   00010500
+    %UTILITY PROCS                                                      00010600
+    SPC FIX(F,OLDESC,BUF,SKELDESC,OCTADR);VALUE BUF,SKELDESC,OCTADR;    00010700
+         BEGIN SI~F;DI~OLDESC;DS~WDS;%SAVE ORIG DESC                    00010800
+         SI~LOC SKELDESC;DI~F;DS~WDS;%MOVE TO TANK                      00010900
+         SI~LOC OCTADR;DI~BUF;DS~8DEC;%PUT BCL DISK ADR IN BUF          00011000
+    END FIX;                                                            00011100
+    %                                                                   00011200
+    SPC UNFIX(OLDESC,F);BEGIN SI~OLDESC;DI~F;DS~WDS END;%RESTORE DESC   00011300
+    %                                                                   00011400
+DO                                                                      00011500
+BEGIN                                                                   00011600
+FIX(D,A[31],DKBUF,DESC,ADR);                                            00011700
+PRL(D,DESC&REAL(NOT BOOLEAN(MASK))[25:40:8]);                           00011800
+WAIT(ABSADD(D),IOMASK);%                                                00011900
+MOVE(D,RD,1);%SAVE RD WHICH OVERWROTE IODESC                            00012000
+UNFIX(A[31],D);                                                         00012100
+IF TRACE THEN DISKTRACE(1);                                             00012200
+END UNTIL (DISKREAD~RD.[26:7]=0) OR RETRY~RETRY+1 GEQ MAXRETRY;         00012300
+BUFMOVE(D(0),A[0],31);                                                  00012400
+END READING A SEGMENT FROM DISK;                                        00012500
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %   00012600
+PC INITIALIZE;%DOES EVERYTHING NEEDED TO CALL "DISKREAD"                00012700
+BEGIN                                                                   00012800
+    FILL IODESC[*] WITH OCT1300362140100000;%FOOL PROGRAMRELEASE        00012900
+    DESC~DESC&(DKBUF~ABSADD(D(0))-1)[33:33:15];%OPEN FILE               00013000
+    IOMASK~0&1[19:47:1];%                                               00013100
+    MASK~0&255[40:40:8];%INHIBIT RETRY ACTION                           00013200
+    MAXRETRY~10;%                                                       00013300
+    INX~1;%ALLOW USER TO CHANGE IT                                      00013400
+END OF DISK SETTING UP;                                                 00013500
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %   00013600
+PC KEYIN;%HANDLES AND CHECKS SPO INPUT                                  00013700
+BEGIN                                                                   00013800
+FORMAT ENTER("#ENTER STARTING SEGMENT",""",",",""","STARTING ADDRESS"), 00013900
+       REINX("#OLD INDEX =",I9,"; ENTER NEW INDEX");                    00014000
+OWN BOOLEAN SPOUTED;                                                    00014100
+LABEL START,PAR,EOF,GETINX;                                             00014200
+START:%                                                                 00014300
+IF NOT SPOUTED THEN BEGIN WRITE(SPO,ENTER);SPOUTED~TRUE END;            00014400
+    READ(SPO,//,ADR,NR)[EOF:PAR];                                       00014500
+    WRITE(SPO,//,ADR,NR);                                               00014600
+    INX~INX&NR[1:1:1];                                                  00014700
+    IF ADR LSS 0 THEN %CHANGE INDEX                                     00014800
+    BEGIN                                                               00014900
+    GETINX:%                                                            00015000
+         WRITE(SPO,REINX,INX);                                          00015100
+         READ(SPO,//,INX)[EOF:PAR];                                     00015200
+         WRITE(SPO,//,INX);                                             00015300
+         ADR~-ADR;                                                      00015400
+    END;                                                                00015500
+    IF (MAXADR~ADR+NR-SIGN(NR)) LSS 0 THEN MAXADR~0;                    00015600
+    IF FALSE THEN PAR:IF ADR LSS 0 THEN GO GETINX ELSE                  00015700
+    BEGIN SPOUTED~FALSE;GO START END;                                   00015800
+    IF FALSE THEN EOF:INX~1/0;                                          00015900
+END KEYIN;                                                              00016000
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 00016100
+PC PRINTSEG; BEGIN INTEGER I,J;ARRAY L[0:16];                           00016200
+    DEFINE WRITELINE=IF SINGLE THEN WRITE(P,17,L[*]) ELSE               00016300
+                                    WRITE(P[DBL],17,L[*])#;             00016400
+    SPC EDIT(A,L,B,N);VALUE B,N;                                        00016500
+    BEGIN LABEL LOOP,OCTAL,BCL,BIGBCL,XIT;                              00016600
+          SI~A;DI~L;17(DS~8LIT" ");DI~L;                                00016700
+          B(SI~SI-7;DS~7CHR;DI~DI+1;JUMP OUT TO LOOP);DI~DI+8;          00016800
+         LOOP:CI~CI+N;                                                  00016900
+              GO OCTAL;                                                 00017000
+              GO BCL;                                                   00017100
+              GO BIGBCL;                                                00017200
+         OCTAL:6(2(8(OCTADE);DI~DI+1);DI~DI+1);GO XIT;                  00017300
+         BCL:   10(DS~8CHR;DI~DI+2);GO XIT;                             00017400
+         BIGBCL:6(2(4(DS~CHR;DI~DI+1);DI~DI+1);DI~DI+1);GO XIT;         00017500
+         XIT:%                                                          00017600
+    END EDIT;                                                           00017700
+    %                                                                   00017800
+    IF PRINTING THEN BEGIN                                              00017900
+    FOR I~1 STEP IF BCL THEN 10 ELSE 6 UNTIL 30 DO                      00018000
+    BEGIN                                                               00018100
+         IF BCLANDOCT THEN                                              00018200
+         BEGIN                                                          00018300
+              EDIT(A[I],L[*],REAL(I=1),0);                              00018400
+              WRITELINE;                                                00018500
+              EDIT(A[I],L[*],FALSE,2);                                  00018600
+              WRITELINE;                                                00018700
+         END                                                            00018800
+         ELSE%ONE OR THE OTHER                                          00018900
+         BEGIN                                                          00019000
+         EDIT(A[I],L[*],REAL(I=1),PRT25 MOD 3 DIV 1);                   00019100
+              WRITELINE;                                                00019200
+         END;                                                           00019300
+    END LOOP;                                                           00019400
+    WRITE(P[DBL]) END ELSE                                              00019500
+    BEGIN                                                               00019600
+%ADD ADDITIONAL EDITING CODE HERE;ALSO,REDEFINE "PRINTING"              00019700
+    END;                                                                00019800
+END PRINTSEG;                                                           00019900
+% % % % % % % % % % % % % % % % % % % % %  % % % % % % % % % % % % % %  00020000
+PC DUMPDISK;                                                            00020100
+BEGIN LABEL OWT;INTEGER I;BOOLEAN B;                                    00020200
+    I~ADR;                                                              00020300
+    FOR ADR~ADR STEP INX UNTIL MAXADR DO                                00020400
+    IF FORCEDEXIT THEN GO OWT ELSE                                      00020500
+    IF (B~DISKREAD) AND PRINTING THEN PRINTSEG ELSE                     00020600
+    IF NOT B THEN DISKTRACE(0);                                         00020700
+    OWT:IF NOT ACCEPTING THEN ADR~I;%TO RECYCLE                         00020800
+    PRT26~0;                                                            00020900
+END OF DUMPDISK;                                                        00021000
+% * * * * * * * * * * * * * *  START CODE  * * * * * * * * * * * * * *  00021100
+         INITIALIZE;%                                                   00021200
+         DO BEGIN IF ACCEPTING THEN KEYIN;DUMPDISK END UNTIL FALSE;     00021300
+END.                                                                    00021400
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999

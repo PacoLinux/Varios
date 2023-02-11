@@ -1,0 +1,269 @@
+BEGIN                                                                   00010000
+%%% MERGE/CANDE SOURCE PROGRAM, 6-70. %%%                               00010100
+REAL COMMON;                                                            00010200
+SAVE ARRAY ERR[0:4],A,N[0:30],B,PARAMS[0:10];                           00010300
+FILE IN SOURCEFIL DISK SERIAL (2,0,0);                                  00010400
+FILE IN MERGFIL   DISK SERIAL (2,0,0);                                  00010500
+FILE OUT OUTFIL   DISK SERIAL [20:600] (2,10,300,SAVE 1);               00010600
+FILE OUT NEWTAB   DISK SERIAL [20:30 ] (2,30,300,SAVE 1);               00010700
+BOOLEAN BRAAK,DELTOG,MERGREAD,RESEQ,REVTOG,SEQCHK,SFLG,SUPPRESS,OK;     00010800
+BOOLEAN MAKTAB;                                                         00010810
+LABEL  EMPTY,  FULL,  NEXTPARAM,  TESTREAD,  READMERG,  HAVEMERG,       00010900
+MERGFILES,  EOFSOURCE,  EOFMERG,  EXIT;                                 00011000
+REAL LASTMERGE;                                                         00011010
+REAL  ADJ,  BASE,  EOFPTR,  ENDELETE,  ENDRESEQ,  EOFMARK,  HRANGE,     00011100
+INCR,  LINE,  LRANGE,  LREC,  MERGESEQ,  NCT,  NMG,  NPARAMS,  NPTR,    00011200
+OUTSEQ,  PC,  PREVSEQ,  REC,  SOURCESEQ,  STRTDELETE,  STRTRESEQ,  USER;00011300
+%***********************************************************************00011400
+REAL STREAM PROCEDURE HDR(F,N); VALUE N;                                00011500
+%***********************************************************************00011600
+   BEGIN                                                                00011700
+   SI:=F;  3(SI:=SI-8); DI:=LOC F; DS:=WDS;                             00011800
+   SI:=F; 14(SI:=SI+8); DI:=LOC F; DS:=WDS;                             00011900
+   SI:=F;  N(SI:=SI+8); DI:=LOC HDR; DS:=WDS;                           00012000
+   END STREAM PROCEDURE HDR;                                            00012100
+%***********************************************************************00012200
+PROCEDURE DISKWAIT(I,A,S,D);                                            00012300
+VALUE I,S,D; REAL I,S,D; ARRAY A[*]; COMMUNICATE(-8);                   00012400
+%***********************************************************************00012500
+PROCEDURE TWXOUT(A,N,T);                                                00012600
+%***********************************************************************00012700
+VALUE N,T;                                                              00012800
+REAL A,N,T;                                                             00012900
+   BEGIN  COMMUNICATE(-11);                                             00013000
+   BRAAK := BOOLEAN(T); % MCP RETURNS 1 IF BREAK OCCURRED.              00013100
+   END;                                                                 00013200
+%***********************************************************************00013300
+REAL PROCEDURE INPCONV(X); REAL X;                                      00013400
+%***********************************************************************00013410
+   BEGIN REAL SEQ;                                                      00013420
+   REAL STREAM PROCEDURE INCONV(X);                                     00013430
+      BEGIN SI:=X; DI:=LOC INCONV; DS:=8OCT; END;                       00013440
+   IF (SEQ:=ABS(INCONV(X))) GTR 99999999 THEN SEQ:=99999999;            00013450
+   INPCONV:=SEQ;                                                        00013460
+   END PROCEDURE INPCONV;                                               00013500
+%***********************************************************************00013600
+STREAM PROCEDURE OUTCONV(A,N); VALUE N;                                 00013700
+   BEGIN SI:=LOC N; DI:=A; DS:=8DEC; END;                               00013800
+%***********************************************************************00013900
+STREAM PROCEDURE MOVE(N,A,B); VALUE N;                                  00014000
+   BEGIN SI:=A; DI:=B; DS:=N WDS; END;                                  00014100
+%***********************************************************************00014200
+STREAM PROCEDURE INFORMUSER(A,NMBR,LAST); VALUE NMBR,LAST;              00014300
+%***********************************************************************00014400
+   BEGIN LOCAL SV;                                                      00014500
+   DI:=A; SV:=DI; SI:=LOC NMBR; DS:=8DEC; DI:=SV; DS:=7FILL;            00014600
+   SI:=SV; DI:=SV; 8(IF SC=" " THEN SI:=SI+1 ELSE DS:=CHR);             00014700
+   DS:=36LIT" RECORDS MERGED (LAST RECORD MERGED=";                     00014800
+   SV:=DI; SI:=LOC LAST; DS:=8DEC; DI:=SV; DS:=7FILL;                   00014900
+   SI:=SV; DI:=SV; 8(IF SC=" " THEN SI:=SI+1 ELSE DS:=CHR);             00014910
+   DS:=16LIT")               ";                                         00014920
+   END STREAM PROCEDURE INFORMUSER;                                     00014930
+%***********************************************************************00015000
+STREAM PROCEDURE MAKERR(ERR,N1,N2); VALUE N1,N2;                        00015100
+%***********************************************************************00015200
+   BEGIN LOCAL SV;                                                      00015300
+   DI:=ERR; DS:=15LIT"SEQUENCE ERROR:"; SV:=DI;                         00015400
+   SI:=LOC N1; DS:=8 DEC; DI:=SV; DS:=7FILL;                            00015500
+   DI:=SV; DI:=DI+8; DS:=2LIT" -";                                      00015600
+   SV:=DI; SI:=LOC N2; DS:=8DEC; DI:=SV; DS:=7FILL;                     00015700
+   END STREAM PROCEDURE MAKERR;                                         00015800
+%***********************************************************************00015900
+PROCEDURE ERROR(N1,N2); VALUE N1,N2; REAL N1,N2;                        00016000
+%***********************************************************************00016100
+   BEGIN                                                                00016200
+   MAKERR(ERR,N1,N2); TWXOUT(ERR[0],33,1);                              00016300
+   END PROCEDURE ERROR;                                                 00016400
+%***********************************************************************00016500
+A[0]:=0; DISKWAIT(1,A,30,COMMON); % GET ESP RECORD                      00016600
+USER := A[2];                                                           00016700
+OUTCONV(LINE,A[1].[40:8]); % DECIMAL LINE NUMBER                        00016800
+IF (MAKTAB:=A[9].[6:12]="1S") THEN % TAB FILES REQUIRED                 00016810
+FILL NEWTAB    WITH "  "&"1T"[6:36:12]&LINE[18:30:18],USER;             00016900
+FILL MERGFIL   WITH A[3], A[4];                                         00017000
+FILL OUTFIL    WITH A[9], USER; % OUTPUT FILE NAME                      00017100
+FILL SOURCEFIL WITH A[10],USER;                                         00017200
+IF RESEQ := A[5] NEQ 0 THEN                                             00017300
+   BEGIN                                                                00017400
+   STRTRESEQ:=A[5]; % LOWER BOUND FOR RESEQUENCE                        00017500
+   ENDRESEQ :=A[6]; % UPPER BOUND FOR RESEQUENCE                        00017600
+   INCR     :=A[8]; % RESEQUENCE INCREMENT                              00017700
+   BASE     :=A[7]-INCR; % RESEQUENCE BASE;                             00017800
+   END;                                                                 00017900
+IF DELTOG := A[11] NEQ 0 THEN % DELETING PART OF SOURCEFILE             00018000
+   BEGIN                                                                00018100
+   STRTDELETE := A[11];                                                 00018200
+   ENDELETE   := A[12];                                                 00018300
+   SUPPRESS := TRUE; % DONT PRINT NUMBER MERGED                         00018400
+   END;                                                                 00018500
+NPARAMS := A[1].[27:6];  % PARAMETER COUNT                              00018600
+SFLG    := A[1].[3:1]=0; % ON, IF TYPE DATA FILE;                       00018700
+REVTOG := A[1].[5:1]=1; % REVERSE MERGE                                 00018750
+SUPPRESS := (A[1].[8:1]=1) OR SUPPRESS; % SUPPRESS MESSAGES             00018800
+PREVSEQ := NCT := -1;                                                   00018900
+LREC    := 0;                                                           00019000
+EOFMARK :=100000000;                                                    00019100
+READ(SOURCEFIL,10,A[*])[EMPTY];                                         00019200
+SOURCESEQ := INPCONV(A[9]); GO TO FULL;                                 00019300
+EMPTY: SOURCESEQ := EOFMARK;                                            00019400
+FULL:                                                                   00019500
+IF SEQCHK := NPARAMS GTR 0 THEN % PARAMETERS SPECIFIED                  00019600
+   BEGIN                                                                00019700
+   MOVE(9,A[21],PARAMS);                                                00019800
+   READ SEEK(MERGFIL[0]); EOFPTR:=HDR(MERGFIL,7); % EOF POINTER         00019900
+   REC:=0; NPARAMS:=NPARAMS-1; MERGESEQ:=PC:=-1; LREC:=1;               00020000
+NEXTPARAM:                                                              00020100
+   LREC := LREC -1;                                                     00020200
+   LRANGE:=HRANGE:=PARAMS[PC:=PC+1];                                    00020300
+   IF LRANGE=100000000 THEN % "END"                                     00020400
+      BEGIN                                                             00020500
+      READ(MERGFIL[EOFPTR],14,B[*])[EOFMERG]; READ(MERGFIL);            00020600
+      GO TO HAVEMERG;                                                   00020700
+      END;                                                              00020800
+   IF PC LSS NPARAMS THEN % MORE PARAMETERS AVAILABLE                   00020900
+   IF PARAMS[PC+1].[1:1]=1 THEN % RANGE SPECIFIED                       00021000
+   HRANGE:=PARAMS[PC:=PC+1].[21:27];                                    00021100
+   IF NOT SFLG THEN % RECORD LOCATION SPECIFIED                         00021200
+      BEGIN                                                             00021300
+      READ SEEK(MERGFIL[LREC:=LRANGE-1]);                               00021400
+      GO TO READMERG; % SKIP BINARY SEARCH                              00021500
+      END;                                                              00021600
+   IF MERGESEQ = LRANGE THEN % ALREADY HAVE THIS RECORD                 00021700
+      BEGIN LREC:=LREC + 1; GO TO HAVEMERG; END;                        00021800
+   IF (EOFPTR-LREC) LSS 30 THEN GO TO READMERG; % SKIP BINARY SEARCH    00021900
+   REC:=LREC+(EOFPTR-LREC) DIV 2; % START IN THE CENTER OF RANGE        00022000
+   GO TO TESTREAD;                                                      00022100
+      DO BEGIN                                                          00022200
+      IF LRANGE LSS MERGESEQ THEN % MOVE BACK, NOT LSS 0                00022300
+      REC:=(REC:=REC-ADJ)|REAL(REC.[1:1]=0) ELSE % MOVE UP              00022400
+      IF REC:=(LREC:=REC)+ADJ GTR EOFPTR THEN REC:=EOFPTR;              00022500
+TESTREAD:                                                               00022600
+      READ(MERGFIL[REC],14,B[*]);                                       00022700
+      MERGESEQ:=INPCONV(B[9]);                                          00022800
+      IF MERGESEQ=LRANGE THEN % MATCHING RECORD                         00022900
+         BEGIN LREC:=REC; READ(MERGFIL); GO TO HAVEMERG; END;           00023000
+      ADJ:=(REC-LREC) DIV 2;                                            00023100
+      END UNTIL ADJ LEQ 1;                                              00023200
+   READ SEEK(MERGFIL[LREC]); % NOT FOUND IN BINARY SEARCH, GO BACK      00023300
+   END; % IF PARAMETERS SPECIFIED                                       00023400
+%........                                                               00023500
+READMERG:                                                               00023600
+%........                                                               00023700
+READ(MERGFIL,10,B[*])[EOFMERG];                                         00023800
+LREC := LREC + 1;                                                       00023900
+MERGESEQ := IF SFLG THEN INPCONV(B[9]) ELSE LREC;                       00024000
+IF SEQCHK THEN                                                          00024100
+   BEGIN                                                                00024200
+   IF MERGESEQ LSS LRANGE THEN GO TO READMERG; % TOO LOW                00024300
+   IF MERGESEQ GTR HRANGE THEN % TOO HIGH                               00024400
+   IF SEQCHK:=PC LSS NPARAMS THEN GO NEXTPARAM ELSE GO EOFMERG;         00024500
+   END; % IF SEQCHK                                                     00024600
+%........                                                               00024700
+HAVEMERG:                                                               00024800
+%........                                                               00024900
+OUTSEQ := MERGESEQ;                                                     00025000
+NMG := NMG + 1;                                                         00025100
+IF RESEQ  THEN % RESEQUENCE THE MERGE FILE                              00025200
+IF OK OR MERGESEQ GEQ STRTRESEQ THEN                                    00025300
+IF RESEQ:=OK:=MERGESEQ LEQ ENDRESEQ THEN % RECORDS ARE IN RANGE         00025400
+   BEGIN                                                                00025500
+   OUTSEQ := BASE := BASE + INCR; % CALCULATE NEW SEQ. NUMBER           00025600
+   OUTCONV(B[9],OUTSEQ); % MOVE NUMBER TO MERGEFILE RECORD              00025700
+   END;                                                                 00025800
+IF OUTSEQ LEQ PREVSEQ THEN % OUT OF SEQUENCE                            00025900
+   BEGIN                                                                00026000
+   IF NOT BRAAK THEN ERROR(PREVSEQ,OUTSEQ); % TELL THE USER             00026100
+   OUTSEQ := PREVSEQ + 2; % ADJUST SEQUENCE NUMBER                      00026200
+   OUTCONV(B[9],OUTSEQ);                                                00026300
+   END;                                                                 00026400
+PREVSEQ := OUTSEQ;                                                      00026500
+%.........                                                              00026600
+MERGFILES:                                                              00026700
+%.........                                                              00026800
+IF DELTOG THEN IF SOURCESEQ GEQ STRTDELETE THEN % DELETE THIS SECTION   00026900
+   BEGIN                                                                00027000
+   DELTOG := FALSE;                                                     00027100
+   WHILE SOURCESEQ LEQ ENDELETE DO                                      00027200
+      BEGIN                                                             00027300
+      READ(SOURCEFIL,10,A[*])[EOFSOURCE];                               00027400
+      SOURCESEQ := INPCONV(A[9]);                                       00027500
+      END WHILE STATEMENT;                                              00027600
+   END DELETING SOURCEFILE SECTION;                                     00027700
+IF MAKTAB THEN                                                          00027750
+IF NPTR := NPTR + 1 GTR 29 THEN % SEGMENT IS FILLED                     00027800
+   BEGIN                                                                00027900
+   WRITE(NEWTAB,30,N[*]);                                               00028000
+   NPTR:=0;                                                             00028100
+   END;                                                                 00028200
+IF SOURCESEQ LSS OUTSEQ THEN % WRITE SOURCE FIRST                       00028300
+   BEGIN                                                                00028400
+   WRITE(OUTFIL,10,A[*]);                                               00028500
+IF MAKTAB THEN                                                          00028550
+   N[NPTR]:=0 & (NCT:=NCT+1)[4:32:16] & SOURCESEQ[21:21:27];            00028600
+   READ(SOURCEFIL,10,A[*])[EOFSOURCE];                                  00028700
+   SOURCESEQ:=IF SFLG THEN INPCONV(A[9]) ELSE LREC;                     00028800
+   GO TO MERGFILES;                                                     00028900
+   END;                                                                 00029000
+IF SOURCESEQ GTR OUTSEQ THEN % WRITE MERGE RECORD FIRST                 00029100
+   BEGIN                                                                00029200
+   WRITE(OUTFIL,10,B[*]); LASTMERGE:=OUTSEQ;                            00029300
+IF MAKTAB THEN                                                          00029350
+   N[NPTR]:=0&(NCT:=NCT+1)[4:32:16]&OUTSEQ[21:21:27];                   00029400
+   GO TO READMERG;                                                      00029500
+   END;                                                                 00029600
+% OUTSEQ = SOURCESEQ                                                    00029700
+MERGREAD:=TRUE; % IN CASE OF EOF BRANCH                                 00029800
+IF REVTOG THEN                                                          00029900
+   BEGIN                                                                00029910
+   WRITE(OUTFIL,10,B[*]); LASTMERGE:=OUTSEQ;                            00029920
+   END                                                                  00029930
+ELSE                                                                    00030000
+   BEGIN                                                                00030010
+   WRITE(OUTFIL,10,A[*]); NMG:=NMG-1;                                   00030020
+   END;                                                                 00030030
+IF MAKTAB THEN                                                          00030050
+N[NPTR]:=0&(NCT:=NCT+1)[4:32:16]&OUTSEQ[21:21:27];                      00030100
+READ(SOURCEFIL,10,A[*])[EOFSOURCE];                                     00030200
+SOURCESEQ := INPCONV(A[9]);                                             00030300
+MERGREAD:=FALSE;                                                        00030400
+GO TO READMERG;                                                         00030500
+%.........                                                              00030600
+EOFSOURCE:                                                              00030700
+%.........                                                              00030800
+IF OUTSEQ=EOFMARK THEN GO TO EXIT; % FINISHED                           00030900
+SOURCESEQ:=EOFMARK;                                                     00031000
+IF MERGREAD THEN % EOFSOURCE AND SOURCE SEQ. = MERGE SEQ.               00031100
+   BEGIN MERGREAD:=FALSE; GO TO READMERG; END                           00031200
+ELSE GO TO MERGFILES;                                                   00031300
+%........                                                               00031400
+EOFMERG:                                                                00031500
+%.......                                                                00031600
+IF SOURCESEQ=EOFMARK THEN GO TO EXIT; % FINISHED                        00031700
+OUTSEQ:=MERGESEQ:=EOFMARK;                                              00031800
+GO TO MERGFILES;                                                        00031900
+%....                                                                   00032000
+EXIT:                                                                   00032100
+%....                                                                   00032200
+IF MAKTAB THEN                                                          00032300
+   BEGIN                                                                00032400
+   IF NPTR:=NPTR+1 GTR 29 THEN                                          00032500
+      BEGIN                                                             00032600
+      WRITE(NEWTAB,30,N[*]);                                            00032700
+      NPTR:=0;                                                          00032800
+      END;                                                              00032900
+   N[NPTR]:=EOFMARK;                                                    00033000
+   WRITE(NEWTAB,30,N[*]);                                               00033100
+   READ(NEWTAB[0],30,N[*]);                                             00033200
+   N[0]:=NCT; % EOF POINTER                                             00033300
+   WRITE(NEWTAB[0],30,N[*]);                                            00033400
+   LOCK(NEWTAB,*);                                                      00033500
+   END; % IF MAKTAB                                                     00033600
+CLOSE(SOURCEFIL); CLOSE(MERGFIL); LOCK(OUTFIL,*);                       00033700
+IF NOT SUPPRESS THEN                                                    00033800
+   BEGIN                                                                00033900
+   INFORMUSER(A,NMG,LASTMERGE);                                         00034000
+   TWXOUT(A[0],52,1);                                                   00034100
+   END;                                                                 00034200
+COMMON := NMG;                                                          00034300
+END PROGRAM.                                                            00034400
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999

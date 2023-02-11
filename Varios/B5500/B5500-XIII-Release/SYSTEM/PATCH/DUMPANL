@@ -1,0 +1,2366 @@
+              % DCMCP MEMORY DUMP ANALYZER PROGRAM %                    00001000
+BEGIN                                                                   00002000
+    BOOLEAN COMMON;                                                     00003000
+    REAL MYSTACKADR;%SET WITH"(MIX)IN26"OR COMMON CONTROL CARD          00004000
+DEFINE DUMPAVAILTOG=COMMON.[46:1]#;%COMMON=2 DUMPS AVAILABLE AREAS      00005000
+DEFINE DONTDUMPCODE      =COMMON.[45:1]#;%COMMON=4 STOPS CODE DUMP      00006000
+DEFINE DUMPBUFSINALPHOCT=COMMON.[44:1]#;%COMMON=8 DPS BUFS IN ALPH/OCT  00007000
+DEFINE DUMPBYMIX=COMMON.[43:1]#;%COMMON=16 DPS SGL MIX(GIVEN BY MYMIX)  00008000
+DEFINE DONTDUMPRT=COMMON.[42:1]#;%COMMON=32 STOPS DP OF PRT             00009000
+DEFINE DOUBLESPACE=COMMON.[41:1]#;%COMMON=64 PRINTS MEMORY DBL-SPACED   00010000
+DEFINE PRINTARRAYTOG=COMMON.[40:1]#;% COMMON=128                        00011000
+%COMMON=256                                                             00012000
+DEFINE DUMPALPHAOCTAL=COMMON.[38:1]#;%COMMON=512 DPS CORE IN ALPHA/OCT  00013000
+DEFINE DUMPALPHAONLY=COMMON.[37:1]#;%COMMON=1024 DPS CORE IN ALPHA ONLY 00014000
+DEFINE NODUMP=DUMPALPHAOCTAL AND DUMPALPHAONLY#;%COMMON=1536            00015000
+DEFINE MAXCOMMONVALUE=2047#;%                                           00016000
+BOOLEAN PRT27;%USED FOR DEBUGGING ONLY                                  00017000
+BOOLEAN DUMPINGBUFFER;%TRUE IFF TYPE 3 LINK & WE WANT ALPHA/OCTAL  DP   00018000
+INTEGER USERMIX;                                                        00019000
+INTEGER MYMIX;                                                          00020000
+BOOLEAN MUSTACCEPT;%IF TRUE, CALL READSPO                               00021000
+LABEL EOPROG;                                                           00022000
+FORMAT FINI(49("*")," END OF DUMP ANALYZE ",49("*"));                   00023000
+INTEGER PRTMAX,INTMAX,INFOMAX;                                          00024000
+DEFINE PRTBASE=129#;%FIRST PRT CELL ALLOCATED BY ESPOL                  00025000
+DEFINE ACTUALPRTBASE=112#;% FIRST PRT CELL AS PER MCP DEFINE            00026000
+DEFINE PRTSMAX=80#; % UPPER LIMIT OF PRTS ARRAY                         00027000
+REAL LEVEL;% MARK LEVEL OF THE MCP                                      00028000
+INTEGER KLASS;% IDENTIFIER CLASS,AS DETERMINED BY ESPOL                 00029000
+INTEGER NAMESIZE,NAMSSIZE;                                              00030000
+DEFINE NSNAME[NSNAME1]=NAME[NSNAME1].[8:10]#;                           00031000
+INTEGER INAMESIZE,INAMSSIZE;                                            00032000
+DEFINE ISNAME[ISNAME1]=INAME[ISNAME1].[8:10]#;                          00033000
+ARRAY SEGZERO[0:29];                                                    00034000
+BOOLEAN  MCP;% FILL/PRT DETERMINED WHAT MODULES WERE INCLUDED           00035000
+STREAM PROCEDURE MOVE(S,D,W); VALUE W;                                  00036000
+BEGIN SI:=S; DI:=D; DS:= W WDS ; END MOVE;                              00037000
+FILE IN DISK DISK SERIAL "MCP""PRT"(2,30);%MOVED TO OUTER BLOCK         00038000
+FILE SPO 11(1,10);                                                      00039000
+FILE P 4(3,15);                                                         00040000
+PROCEDURE READARRAY(WORDSIZE,ANAME,BASE);                               00041000
+VALUE WORDSIZE,BASE;                                                    00042000
+INTEGER WORDSIZE,BASE;                                                  00043000
+ARRAY ANAME[*];                                                         00044000
+BEGIN                                                                   00045000
+    INTEGER I,SEGS,N;                                                   00046000
+    ARRAY BUF[0:29];                                                    00047000
+    N:=WORDSIZE MOD 30;                                                 00048000
+    SEGS:=(WORDSIZE+29) DIV 30;                                         00049000
+    SEGS:=SEGS-1;                                                       00050000
+    FOR I:=0 STEP 1 UNTIL SEGS DO                                       00051000
+    BEGIN                                                               00052000
+         READ(DISK,30,BUF[*]);                                          00053000
+         MOVE(BUF,ANAME[BASE+30|I],IF I !SEGS OR N=0 THEN 30 ELSE N);   00054000
+    END;                                                                00055000
+    IF PRT27 THEN BEGIN WRITE(P[PAGE]); WRITE(P[DBL],<"BASE=",          00056000
+    I5," SIZE=",I5>,BASE,WORDSIZE); FOR I:=BASE STEP 1 UNTIL            00057000
+    BASE+WORDSIZE -1 DO BEGIN MOVE(ANAME[ I],BUF[0],1);                 00058000
+    WRITE(P,1,BUF[*]) END END;                                          00059000
+END OF READARRAY;                                                       00060000
+IF MYSTACKADR:=REAL(COMMON) LEQ MAXCOMMONVALUE                          00061000
+THEN MYSTACKADR:=-1 ELSE COMMON:=COMMON AND BOOLEAN(0);                 00062000
+COMMENT:TO GET OPTIONS,USE"(MIX)IN25" AND/OR COMMON CONTROL CARD;       00063000
+IF COMMON THEN NAMESIZE:=NAMSSIZE:=INAMESIZE:=INAMSSIZE:=1 ELSE         00064000
+BEGIN                                                                   00065000
+READARRAY(30,SEGZERO[*],0);                                             00066000
+CLOSE(DISK);                                                            00067000
+LEVEL:="XIII "; % MARK LEVEL                                            00068000
+MCP:=BOOLEAN(SEGZERO[1]);% COMPILE-TIME OPTIONS                         00069000
+NAMESIZE:=SEGZERO[2]+1;% # OF MCP PRT CELLS(ABOVE @200)                 00070000
+NAMSSIZE:=SEGZERO[3];% # OF WORDS THE MCP IDENTIFIERS OCCUPY            00071000
+INAMESIZE:=SEGZERO[4]+1;% # OF INTRINSICS                               00072000
+INAMSSIZE:=SEGZERO[5];% # OF WORDS THE INTRINSIC IDENTIFIERS OCCUPY     00073000
+END SEGZEROSTUFF;                                                       00074000
+MUSTACCEPT:=DUMPBUFSINALPHOCT OR DUMPBYMIX;                             00075000
+USERMIX:=-1;                                                            00076000
+MYMIX:=-1;                                                              00077000
+INFOMAX:=4|PRTSMAX+3;                                                   00078000
+% % % % % % % % % % % % % INNER BLOCK BEGINS % % % % % % % % % % % % %  00079000
+BEGIN                                                                   00080000
+    INTEGER I;                                                          00081000
+    REAL R;                                                             00082000
+    BOOLEAN SGLTOG;                                                     00082100
+    ARRAY PRTS[0:PRTSMAX];                                              00083000
+    ARRAY INFO[0:INFOMAX+1];                                            00084000
+    ARRAY NAME[PRTBASE:PRTBASE+NAMESIZE -1];                            00085000
+    ARRAY NAMS[0:NAMSSIZE-1];                                           00086000
+    ARRAY INAME[0:INAMESIZE-1];                                         00087000
+    ARRAY INAMS[0:INAMSSIZE-1];                                         00088000
+    ARRAY XNAME[ACTUALPRTBASE:201];                                     00089000
+    ARRAY XNAMS[0:18];                                                  00090000
+    DEFINE XSNAME[XSNAME1]=XNAME[XSNAME1].[8:10]#;                      00091000
+    INTEGER MIXMAX;%MIXMAX OBTAINED IN "GETPRTENTRIES"                  00092000
+    REAL VJOBNUM,VBED;                                                  00093000
+    DEFINE STAXMAX=80#;%                                                00094000
+    ARRAY STAX[0:STAXMAX-1]; INTEGER MAXSTK,BEDSTK;                     00095000
+COMMENT:THE DEFINES BELOW MUST CORRESPOND TO THOSE IN FILL/PRT;         00096000
+    DEFINE BREAKOUT      = MCP.[47:1]#,                                 00097000
+           CHECKLINK     = MCP.[46:1]#,                                 00098000
+           DATACOM       = MCP.[45:1]#,                                 00099000
+           DCLOG         = MCP.[44:1]#,                                 00100000
+           DCSPO         = MCP.[43:1]#,                                 00101000
+           DEBUGGING     = MCP.[42:1]#,                                 00102000
+           DFX           = MCP.[41:1]#,                                 00103000
+           DISKLOG       = MCP.[40:1]#,                                 00104000
+           DUMPP         = MCP.[39:1]#,                                 00105000
+           INQUIRY       = MCP.[38:1]#,                                 00106000
+           SAVERESULTS   = MCP.[37:1]#,                                 00107000
+           SHAREDISK     = MCP.[36:1]#,                                 00108000
+           STATISTICS    = MCP.[35:1]#,                                 00109000
+           AUXMEM        = MCP.[34:1]#,                                 00110000
+           RJE           = MCP.[33:1]#,                                 00110100
+           MAXOPT        =15#;%                                         00111000
+    ARRAY MEMORY[0:63,0:511];                                           00112000
+    DEFINE TYPMAX=22#;%                                                 00113000
+    DEFINE M=MEMORY#, %                                                 00114000
+       FF=[18:15]#,%                                                    00115000
+       CF=[33:15]#,%                                                    00116000
+      CTF=[18:33:15]#,%                                                 00117000
+           ROW=[33:6]#, %                                               00118000
+           COL=[39:9]#; %                                               00119000
+    DEFINE DEFINEDMIXMAX=9#;%MIXMAX NOW OBTAINED FM PRT MOTHER          00120000
+    DEFINE SLATE            = PRTS[00]#,                                00121000
+           NSLATE           = PRTS[01]#,                                00122000
+           LSLATE           = PRTS[02]#,                                00123000
+           ESPBIT           = PRTS[03]#,                                00124000
+           AVAIL            = PRTS[04]#,                                00125000
+           MSTART           = PRTS[05]#,                                00126000
+           MEND             = PRTS[06]#,                                00127000
+           TOGLE            = PRTS[07]#,                                00128000
+           BED              = PRTS[08]#,                                00129000
+           PRT              = PRTS[12]#,                                00130000
+           JAR              = PRTS[13]#,                                00131000
+           INTRNSC          = PRTS[14]#,                                00132000
+           SHEET            = PRTS[15]#,                                00133000
+           JOBNUM           = PRTS[16]#,                                00134000
+           PRYOR            = PRTS[17]#,                                00135000
+           NFO              = PRTS[18]#,                                00136000
+           ISTACK           = PRTS[19]#,                                00137000
+           PROCTIME         = PRTS[20]#,                                00138000
+           IOTIME           = PRTS[21]#,                                00139000
+           CHANNEL          = PRTS[22]#,                                00140000
+           FINALQUE         = PRTS[23]#,                                00141000
+           LOCATQUE         = PRTS[24]#,                                00142000
+           IOQUEAVAIL       = PRTS[25]#,                                00143000
+           IOQUE            = PRTS[26]#,                                00144000
+           UNIT             = PRTS[27]#,                                00145000
+           TINU             = PRTS[28]#,                                00146000
+           WAITQUE          = PRTS[29]#,                                00147000
+           NEXTWAIT         = PRTS[30]#,                                00148000
+           FIRSTWAIT        = PRTS[31]#,                                00149000
+           LABELTABLE       = PRTS[32]#,                                00150000
+           MULTITABLE       = PRTS[33]#,                                00151000
+           RDCTABLE         = PRTS[34]#,                                00152000
+           OPTION           = PRTS[35]#,                                00153000
+           MESSAGEHOLDER    = PRTS[36]#,                                00154000
+           PRNTABLE         = PRTS[37]#,                                00155000
+           INITIALIZE       = PRTS[38]#,                                00156000
+           P1MIX            = PRTS[39]#,                                00157000
+           P2MIX            = PRTS[40]#,                                00158000
+           NOTHINGTODO      = PRTS[41]#,                                00159000
+           STACKOVERFLOW    = PRTS[42]#,                                00160000
+           RETURN           = PRTS[43]#,                                00161000
+           DIRECTORYBUILDER = PRTS[44]#,                                00162000
+           DCQPTSTACK       = PRTS[45]#,                                00163000
+           SAVERESULT        = PRTS[46]#,                               00164100
+           AUXDATA           = PRTS[47]#,                               00164110
+           AUXCODE           = PRTS[48]#,                               00164120
+           EUIO              = PRTS[49]#,                               00164130
+           PEOIO             = PRTS[50]#,                               00164140
+           AVTABLE           = PRTS[51]#,                               00164150
+           REPLY             = PRTS[52]#,                               00164160
+           TRANSACTION       = PRTS[53]#,                               00164170
+           DALOC             = PRTS[54]#,                               00164180
+           MEMASK            = PRTS[55]#,                               00164190
+           CTABLE            = PRTS[56]#,                               00164200
+           FS                = PRTS[57]#,                               00164210
+           DBARRAY           = PRTS[58]#,                               00164220
+           ATTACHED          = PRTS[59]#,                               00164230
+           STATION           = PRTS[60]#,                               00164240
+           DCQARA            = PRTS[61]#,                               00164250
+           USERSTA           = PRTS[62]#,                               00164260
+           TUSTABYMIX        = PRTS[63]#,                               00164270
+           QTIMES            = PRTS[64]#,                               00164275
+           EUQ               = PRTS[65]#,                               00164280
+           CIDROW            = PRTS[66]#,                               00164285
+          DUMMY             = DUMMY#;%                                  00164999
+PROCEDURE FILLINFO;                                                     00165000
+FILL INFO[*] WITH %                                                     00166000
+"SLATE   ",0,0,26,                     % 00                             00167000
+"NSLATE  ",0,0,22,                     % 01                             00168000
+"LSLATE  ",0,0,22,                     % 02                             00169000
+"ESPBIT  ",0,0,10,                     % 03                             00170000
+"AVAIL   ",0,0,23,                     % 04                             00171000
+"MSTART  ",0,0,23,                     % 05                             00172000
+"MEND    ",0,0,23,                     % 06                             00173000
+"TOGLE   ",0,0,22,                     % 07                             00174000
+"BED     ",0,0,26,                     % 08                             00175000
+0,0,0,0,                               % 09                             00176000
+0,0,0,0,                               % 10                             00177000
+0,0,0,0,                               % 11                             00178000
+"PRT     ",0,0,26,                     % 12                             00179000
+"JAR     ",0,0,26,                     % 13                             00180000
+"INTRNSC ",0,0,26,                     % 14                             00181000
+"SHEET   ",0,0,26,                     % 15                             00182000
+"JOBNUM  ",0,0,22,                     % 16                             00183000
+"PRYOR   ",0,0,26,                     % 17                             00184000
+"NFO     ",0,0,26,                     % 18                             00185000
+"ISTACK  ",0,0,26,                     % 19                             00186000
+"PROCTIME",0,0,26,                     % 20                             00187000
+"IOTIME  ",0,0,26,                     % 21                             00188000
+"CHANNEL ",0,0,26,                     % 22                             00189000
+"FINALQUE",0,0,26,                     % 23                             00190000
+"LOCATQUE",0,0,26,                     % 24                             00191000
+"IOQUEAVA","IL      ",0,22,            % 25                             00192000
+"IOQUE   ",0,0,26,                     % 26                             00193000
+"UNIT    ",0,0,26,                     % 27                             00194000
+"TINU    ",0,0,26,                     % 28                             00195000
+"WAITQUE ",0,0,26,                     % 29                             00196000
+"NEXTWAIT",0,0,22,                     % 30                             00197000
+"FIRSTWAI","T       ",0,22,            % 31                             00198000
+"LABELTAB","LE      ",0,26,            % 32                             00199000
+"MULTITAB","LE      ",0,26,            % 33                             00200000
+"RDCTABLE",0,0,26,                     % 34                             00201000
+"OPTION  ",0,0,22,                     % 35                             00202000
+"MESSAGEH","OLDER   ",0,22,            % 36                             00203000
+"PRNTABLE",0,0,26,                     % 37                             00204000
+"INITIALI","ZE      ",0,10,            % 38                             00205000
+"P1MIX   ",0,0,22,                     % 39                             00206000
+"P2MIX   ",0,0,22,                     % 40                             00207000
+"NOTHINGT","ODO     ",0,32,            % 41                             00208000
+"STACKOVE","RFLOW   ",0,32,            % 42                             00209000
+"RETURN  ",0,0,32,                     % 43                             00210000
+"DIRECTOR","YBUILDER",0,10,            % 44                             00211000
+"DCQPTSTA","CK      ",0,22,            % 45                             00212000
+"SAVERESU","LT      ",0,26,              % 46                           00212100
+"AUXDATA ",0,0,26,                       % 47                           00212200
+"AUXCODE ",0,0,26,                       % 48                           00212300
+"EUIO    ",0,0,26,                       % 49                           00212400
+"PEUIO   ",0,0,26,                       % 50                           00212450
+"AVTABLE ",0,0,26,                       % 51                           00212500
+"REPLY   ",0,0,26,                       % 52                           00212550
+"TRANSACT","ION     ",0,26,              % 53                           00212600
+"DALOC   ",0,0,26,                       % 54                           00212625
+"MEMASK  ",0,0,26,                       % 55                           00212650
+"CTABLE  ",0,0,26,                       % 56                           00212675
+"FS      ",0,0,26,                       % 57                           00212700
+"DBARRAY ",0,0,26,                       % 58                           00212725
+"ATTACHED",0,0,26,                       % 59                           00212750
+"STATION ",0,0,26,                       % 60                           00212775
+"DCQARA  ",0,0,26,                       % 61                           00212800
+"USERSTA ",0,0,26,                       % 62                           00212825
+"TUSTABYM","IX      ",0,26,              % 63                           00212850
+"QTIMES  ",0,0,26,                       % 64                           00212875
+"EUQ     ",0,0,26,                       % 65                           00212880
+"CIDROW  ",0,0,26,                       % 66                           00212885
+0;%                                                                     00213000
+COMMENT**************************************************************** 00214000
+    FOR EACH IDENTIFIER DEFINED IN THE ARRAY "PRTS", THERE MUST BE      00215000
+    A CORRESPONDING 4 WORD ENTRY IN "INFO".  THE FIRST THREE WORDS      00216000
+    ARE RESERVED FOR THE IDENTIFIER TEXT.  THE FOURTH MUST CONTAIN      00217000
+    THE CLASS OF THE IDENTIFIER AS DETERMINED BY THE ESPOL COMPILER.    00218000
+    THIS CLASS APPEARS IN THE FIRST FOUR COLUMNS OF THE STUFF CARD      00219000
+    FOR THIS IDENTIFIER.  IF THE CLASS IS NOT KNOWN, A ZERO MAY BE      00220000
+    USED IN THE "INFO" ENTRY FOR IT. HOWEVER USING A CLASS OF ZERO WILL 00221000
+    INCREASE THE TIME NEEDED TO LOCATE THE PRT ADDRESS OF AN            00222000
+    IDENTIFIER.  NOTE THAT ALTHOUGH ARRAY "PRTS" MAY CONTAIN GAPS       00223000
+    "INFO" MUST CONTAIN A DUMMY ENTRY COMPRISED OF ALL ZEROES(SEE,FOR   00224000
+    INSTANCE, PRTS[9], PRTS[10], AND PRTS[11]).                         00225000
+    FOR CONVENIENCE, THE CLASS NUMBERS THAT THE ESPOL COMPILER MAY      00226000
+    ASSIGN AND WHICH MAY APPEAR ON A STUFF CARD ARE LISTED BELOW:       00227000
+         PROCID              =10#,                                      00228000
+         STRPROCID           =12#,                                      00229000
+         BOOSTRPROCID        =13#,                                      00230000
+         REALSTRPROCID       =14#,                                      00231000
+         INTSTRPROCID        =15#,                                      00232000
+         BOOPROCID           =17#,                                      00233000
+         REALPROCID          =18#,                                      00234000
+         INTPROCID           =19#,                                      00235000
+         BOOID               =21#,                                      00236000
+         REALID              =22#,                                      00237000
+         INTID               =23#,                                      00238000
+         BOOARRAYID          =25#,                                      00239000
+         REALARRAYID         =26#,                                      00240000
+         INTARRAYID          =27#,                                      00241000
+         NAMEID              =30#,                                      00242000
+         INTNAMEID           =31#,                                      00243000
+         LABELID             =32#,                                      00244000
+**********************************************************************; 00245000
+PROCEDURE SETUPXNAMEANDXNAMS;                                           00246000
+BEGIN                                                                   00247000
+    STREAM PROCEDURE FILLXNAMS(XNAMS);                                  00248000
+    BEGIN                                                               00249000
+         DI:=XNAMS;                                                     00250000
+         DS:= 8LIT"NT1     ";                                           00251000
+         DS:= 8LIT"NT2     ";                                           00252000
+         DS:= 8LIT"NT3     ";                                           00253000
+         DS:= 8LIT"NT4     ";                                           00254000
+         DS:= 8LIT"NT5     ";                                           00255000
+         DS:= 8LIT"NT6     ";                                           00256000
+         DS:= 8LIT"NT7     ";                                           00257000
+         DS:= 8LIT"DATE    ";                                           00258000
+         DS:= 8LIT"CLOCK   ";                                           00259000
+         DS:= 8LIT"XCLOCK  ";                                           00260000
+         DS:= 8LIT"READY   ";                                           00261000
+         DS:= 8LIT"--------";                                           00262000
+         DS:= 8LIT"KLUMP   ";                                           00263000
+         DS:=16LIT"FIRSTDECK       ";                                   00264000
+         DS:= 8LIT"LASTDECK";                                           00265000
+         DS:= 8LIT"DIRDSK  ";                                           00266000
+         DS:= 8LIT"MEMORY  ";                                           00267000
+         DS:= 8LIT"RRRMECH ";                                           00268000
+    END OF FILLXNAMS;                                                   00269000
+    ARRAY T[ACTUALPRTBASE:213];                                         00270000
+    INTEGER I,J;                                                        00271000
+    FILL T[*] WITH % XNAMES                                             00272000
+         123,1,00,                                                      00273000
+         120,1,01,                                                      00274000
+         119,1,02,                                                      00275000
+         127,1,03,                                                      00276000
+         125,1,04,                                                      00277000
+         124,1,05,                                                      00278000
+         126,1,06,                                                      00279000
+         128,1,07,                                                      00280000
+         112,1,08,                                                      00281000
+         113,1,09,                                                      00282000
+         114,1,10,                                                      00283000
+         115,1,11,                                                      00284000
+         116,1,12,                                                      00285000
+         117,2,13,                                                      00286000
+         118,1,15,                                                      00287000
+         122,1,16,                                                      00288000
+         129,1,17,                                                      00289000
+         121,1,18;%                                                     00290000
+    FILLXNAMS(XNAMS);                                                   00291000
+    J:=ACTUALPRTBASE-1;                                                 00292000
+    FOR I:=ACTUALPRTBASE STEP 3 UNTIL 211 DO                            00293000
+    XNAME[J:=J+1]:=0&T[I][8:38:10]&T[I+1][18:33:15]&T[I+2][33:33:15];   00294000
+END SETTING UP XNAMEANDXNAMS;                                           00295000
+    DEFINE NEXTPAGE=WRITE(P[PAGE])#;                                    00296000
+    FORMAT STARS(20("*****")),                                          00297000
+           STARZ(*("*"));                                               00298000
+FORMAT MCPHDR("DCMCP.",A5," COMPILE-TIME OPTIONS:");                    00299000
+SWITCH FORMAT MCPOPT:=(        "BREAKOUT")                              00300000
+                          ,(    "CHECKLINK")                            00301000
+                          ,(    "DATACOM")                              00302000
+                          ,(    "DCLOG")                                00303000
+                          ,(    "DCSPO")                                00304000
+                          ,(    "DEBUGGING")                            00305000
+                          ,(    "DFX")                                  00306000
+                          ,(    "DISKLOG")                              00307000
+                          ,(    "DUMP")                                 00308000
+                          ,(    "INQUIRY")                              00309000
+                          ,(    "SAVERESULTS")                          00310000
+                          ,(    "SHAREDISK")                            00311000
+                          ,(    "STATISTICS")                           00312000
+                          ,(    "AUXMEM")                               00313000
+                          ,(    "RJE")                                  00313100
+                                            ;                           00314000
+ALPHA ARRAY ID[0:2];%USED TO CONTAIN AN IDENT WHOSE PRT LOC IS SOUGHT   00315000
+PROCEDURE TABLELOOKUP(ID,LOC);ARRAY ID[0];INTEGER LOC;                  00316000
+BEGIN                                                                   00317000
+INTEGER I,N;                                                            00318000
+BOOLEAN STREAM PROCEDURE GOTIDENT(A,N,B);VALUE N;                       00319000
+BEGIN SI:=A;DI:=B;TALLY:=0;                                             00320000
+    IF N SC = DC THEN TALLY:=1;                                         00321000
+    GOTIDENT:=TALLY;                                                    00322000
+END GOTIDENT;                                                           00323000
+KLASS:=KLASS-1;                                                         00324000
+FOR I:= 129 STEP 1 UNTIL PRTMAX DO                                      00325000
+IF N:=NAME[I].[18:30] NEQ 0 THEN                                        00326000
+IF N.FF=LOC OR LOC=0 THEN                                               00327000
+IF KLASS LEQ 0 OR KLASS=NAME[I].[3:5] THEN                              00328000
+IF GOTIDENT(NAMS[N.CF],N:=8|N.FF,ID[0]) THEN                            00329000
+BEGIN                                                                   00330000
+         LOC:=I;                                                        00331000
+         I:=PRTMAX+2;%FORCE FALL THRU                                   00332000
+END;                                                                    00333000
+ IF I GEQ PRTMAX +2 THEN ELSE LOC:=-1;                                  00334000
+END OF TABLELOOKUP;                                                     00335000
+DEFINE GETIDLOC(GETIDLOC1,GETIDLOC2,GETIDLOC3,GETIDLOC4)=               00336000
+         BEGIN                                                          00337000
+              FILL ID[*] WITH GETIDLOC1,GETIDLOC2,GETIDLOC3;            00338000
+              TABLELOOKUP(ID,GETIDLOC4);                                00339000
+         END#;%                                                         00340000
+PROCEDURE FIXDEFINES;                                                   00341000
+BEGIN COMMENT********************************************************** 00342000
+    THIS PROCEDURE IS RESPONSIBLE FOR FINDING THE PRT LOCATION OF AN    00343000
+    IDENTIFIER DEFINED IN "PRTS" FOR WHICH THERE IS A CORRESPONDING     00344000
+    ENTRY IN "INFO".  IT DOES THIS BY CALLING "TABLELOOKUP" TO          00345000
+    PERFORM A LINEAR SEARCH OF "NAMES" TO LOCATE AN IDENTIFIER IN       00346000
+    "NAMS" AND COMPARE IT WITH THE ONE GIVEN IN "INFO".  IF AN          00347000
+    IDENTIFIER CAN NOT BE LOCATED IN "NAMS", THE "PRTS" ELEMENT IS      00348000
+    LEFT UNCHANGED--OTHERWISE, THE ADDRESS OBTAINED IS STORED           00349000
+    IN "PRTS".********************************************************; 00350000
+    INTEGER I,LOC;                                                      00351000
+    INTEGER STREAM PROCEDURE IDLENGTH(A);                               00352000
+         BEGIN LOCAL L; SI:=LOC L; DI:=A;                               00353000
+           3(IF 8SC=DC THEN JUMP OUT ELSE BEGIN TALLY:=TALLY+1;         00354000
+             SI:=LOC L END);   IDLENGTH:=TALLY;                         00355000
+         END IDLENGHTH;                                                 00356000
+    FILLINFO;                                                           00357000
+    FOR I:=0 STEP 4 UNTIL INFOMAX DO                                    00358000
+    IF (LOC:=IDLENGTH(INFO[I]))=0 THEN ELSE BEGIN                       00359000
+         MOVE(INFO[I],ID[0],3); KLASS:=INFO[I+3];                       00360000
+         TABLELOOKUP(ID,LOC);                                           00361000
+         PRTS[I/4]:=IF LOC GTR 0 THEN LOC ELSE PRTS[I/4] END;           00362000
+    KLASS:=0;                                                           00363000
+    IF PRT27.[46:1] THEN FOR I:=0 STEP 1 UNTIL PRTSMAX DO               00364000
+    WRITE(P,<"PRTS[",I3,"]= ",I4>,I,PRTS[I]);                           00365000
+END FIXING DEFINES;                                                     00366000
+INTEGER STREAM PROCEDURE NUMSCN(B);                                     00367000
+%RETURN -2,IF NON-NUMERIC,-1, IF NULL INPUT,0-99 OTHERWISE              00368000
+BEGIN                                                                   00369000
+    LABEL L,XIT;                                                        00370000
+    LOCAL T,N;                                                          00371000
+    SI:=B;SI:=SI-1;DI:=LOC T;                                           00372000
+    L: SI:=SI+1; IF SC=" " THEN GO L;                                   00373000
+    2(IF SC="~" THEN JUMP OUT ELSE IF SC=" " THEN JUMP OUT ELSE         00374000
+         IF SC LSS "0" THEN% NON-NUMERIC                                00375000
+         BEGIN                                                          00376000
+              DI:=LOC NUMSCN;                                           00377000
+              DS:=8LIT"+0000002";%-2                                    00378000
+              JUMP OUT TO XIT;                                          00379000
+         END                                                            00380000
+         ELSE% NUMERIC                                                  00381000
+         BEGIN                                                          00382000
+              TALLY:=TALLY+1;                                           00383000
+              DS:=CHR;                                                  00384000
+         END);                                                          00385000
+    N:=TALLY; SI:= LOC N; SI:=SI+7; DI:=LOC NUMSCN;                     00386000
+    IF SC="0" THEN DS:=8LIT"+0000001"%-1(NULL SCAN)                     00387000
+    ELSE                                                                00388000
+    BEGIN% CONVERT 1 OR 2 DIGITS                                        00389000
+         SI:=LOC T;                                                     00390000
+         DS:=N OCT;                                                     00391000
+    END;                                                                00392000
+    XIT:%                                                               00393000
+END NUMSCN;                                                             00394000
+BOOLEAN STREAM PROCEDURE BITON(W,B);                                    00395000
+    VALUE B;                                                            00396000
+BEGIN                                                                   00397000
+    SI:=W;SKIP B SB;                                                    00398000
+    IF SB THEN TALLY:=1;                                                00399000
+    BITON:=TALLY;                                                       00400000
+END OF BITON;                                                           00401000
+PROCEDURE NEXTITEM;                                                     00402000
+    BEGIN                                                               00403000
+        WRITE(P);                                                       00404000
+        WRITE(P[DBL],STARS);                                            00405000
+     END;                                                               00406000
+PROCEDURE PRINTMCPOPTIONS;                                              00407000
+BEGIN                                                                   00408000
+    WRITE(P[DBL],MCPHDR,LEVEL);                                         00409000
+    FOR I:=13,0 STEP 1 UNTIL 9,14,10,11,12  DO                          00410000
+    IF BITON(MCP,47-I) THEN WRITE(P,MCPOPT[I]);                         00411000
+    WRITE(P[DBL]);                                                      00412000
+END OF PRINTMCPOPTIONS;                                                 00413000
+DEFINE   DATE      =(119)#,                                             00414000
+         CLOCK     =(120)#,                                             00415000
+         XCLOCK    =(121)#;                                             00416000
+    BOOLEAN ARRAY MODON[0:7];                                           00417000
+    INTEGER ARRAY ITD[0:9];                                             00418000
+    ARRAY RTD[0:5];                                                     00419000
+    DEFINE TIMEANALYZED           = ITD[0]#,                            00420000
+           DATEANALYZED           = ITD[1]#,                            00421000
+           TIMETAKEN              = ITD[2]#,                            00422000
+           DATETAKEN              = ITD[3]#,                            00423000
+           TIMELASTHL             = ITD[4]#,                            00424000
+           SINCSLASTHL            = ITD[5]#,                            00425000
+           MINUTES                = ITD[6]#,                            00426000
+           SECONDS                = ITD[7]#,                            00427000
+           DAYS                   = ITD[8]#,                            00428000
+           YEARS                  = ITD[9]#;                            00429000
+    DEFINE DATX                   = RTD[0]#,                            00430000
+           XCLOCX                 = RTD[1]#,                            00431000
+           CLOCX                  = RTD[2]#,                            00432000
+           TEMP                   = RTD[3]#,                            00433000
+           KINDS                  = RTD[4]#,                            00434000
+           MCPVERSION             = RTD[5]#;                            00435000
+   FORMAT OUT FMXX("DATE ANALYZED ",I2,"/",I2,"/",I2/                   00436000
+   "TIME ANALYZED ",I2,":",I2,":",I2),                                  00437000
+   X1("MCP VERSION NUMBER ",I2/                                         00438000
+   "DATE TAKEN   ",I2,"/",I2,"/",I2/                                    00439000
+   "TIME TAKEN    ",I2,":",I2,":",I2),                                  00440000
+   X1MARKXI("MCP VERSION NUMBER ",A1,A*/                                00441000
+              "DATE TAKEN    ",I2,"/",I2,"/",I2 /                       00442000
+              "TIME TAKEN    ",I2,":",I2,":",I2),                       00443000
+   FMX2("TIME OF THE LAST HALT-LOAD ",I2,":",I2,":",I2),                00444000
+FMX3("TIME SINCE LAST HALT-LOAD  ",I2,":",I2,":",I2);                   00445000
+     FORMAT BADBED("********* BAD BED ENTRY *********");                00446000
+     FORMAT BADDATE ("BAD DATE TAKEN ....."),                           00447000
+            BADXCLOCK ("BAD TIME TAKEN ....."),                         00448000
+            BADCLOCK("BAD TIME OF H/L");                                00449000
+        FORMAT BADCELL3("WORD 3 HAS THE FLAG BIT ON.....");             00450000
+     PROCEDURE TIMES (WHEN,HRS,MIN,SEC);                                00451000
+     REAL WHEN;  INTEGER SEC,MIN,HRS;                                   00452000
+     BEGIN                                                              00453000
+     INTEGER T;                                                         00454000
+IF WHEN LSS 0 OR WHEN GTR 5184000 THEN HRS:=MIN:=SEC:=100 %OVERFLOW     00455000
+            ELSE BEGIN T:=WHEN;                                         00456000
+            HRS:=T DIV 216000;                                          00457000
+            MIN:=T DIV 3600 MOD 60;                                     00458000
+            SEC:=T DIV 60 MOD 60;       END;                            00459000
+     END OF TIMES PROCEDURE;                                            00460000
+     PROCEDURE DATES(ADATE,MONTH,DAY,YEAR);                             00461000
+     VALUE ADATE;                                                       00462000
+     ALPHA ADATE;                                                       00463000
+     INTEGER MONTH,DAY,YEAR ;                                           00464000
+        BEGIN                                                           00465000
+          REAL Y,D,M;                                                   00466000
+          LABEL ON;                                                     00467000
+          ARRAY DAYTABLE [0:11];                                        00468000
+          STREAM PROCEDURE CONV (YEAR,DAY,DAT );                        00469000
+           VALUE DAT ;                                                  00470000
+           BEGIN                                                        00471000
+     SI:= LOC DAT;                                                      00472000
+     SI := SI +3;                                                       00473000
+     DI := YEAR; DS := 2 OCT;                                           00474000
+     DI := DAY; DS := 3 OCT;                                            00475000
+           END;                                                         00476000
+          FILL DAYTABLE [*] WITH                                        00477000
+           0,31,59,90,120,151,181,212,243,273,304,334;                  00478000
+          CONV (Y,D,ADATE);                                             00479000
+          IF ((Y MOD 4)=0) AND (Y!0) THEN                               00480000
+            BEGIN                                                       00481000
+              IF D =60 THEN                                             00482000
+                BEGIN                                                   00483000
+     M := 1; GO TO ON;                                                  00484000
+                END;                                                    00485000
+              IF D > 60 THEN D:=D-1;                                    00486000
+            END;                                                        00487000
+     FOR M := 0 STEP 1 UNTIL 11 DO                                      00488000
+            IF DAYTABLE [M] GEQ D THEN GO TO ON;                        00489000
+          ON:                                                           00490000
+     MONTH := M;                                                        00491000
+      IF M=0 THEN D:=0 ELSE %GO AHEAD                                   00492000
+     DAY := D - DAYTABLE[M-1];                                          00493000
+     YEAR :=Y;                                                          00494000
+        END OF PROCEDURE DATE;  %RCC                                    00495000
+    INTEGER MAXMOD,MAXCOR;                                              00496000
+    INTEGER TABLESLOC;                                                  00497000
+    BOOLEAN LNKSOK,AVALNKOK,SOMOKF,SOMOKB;                              00498000
+PROCEDURE READSPO;                                                      00499000
+BEGIN                                                                   00500000
+    ARRAY A[0:2];                                                       00501000
+    LABEL REPT,AGN;                                                     00502000
+    DEFINE QM=12#;%%                                                    00503000
+    FORMAT WHATBUFMIX("#WHAT MIX FOR BUF DP",A1),                       00504000
+    WHATMIX("#WHAT MIX DP",A1),                                         00505000
+    MIXDP("***MIX=",I2," TO BE DP-ED"),                                 00506000
+         ALLBUFS("***ALL BUFS TO BE DP-ED"),                            00507000
+         MIXBUF("***MIX=",I2," BUFS TO BE DP-ED")                       00508000
+              ;%                                                        00509000
+    IF DUMPBYMIX THEN                                                   00510000
+    BEGIN                                                               00511000
+    AGN:WRITE(SPO,WHATMIX,QM);                                          00512000
+         READ(SPO,3,A[*]);                                              00513000
+         IF MYMIX:=NUMSCN(A) LEQ 0 OR MYMIX GTR  DEFINEDMIXMAX          00514000
+         THEN GO AGN ELSE                                               00515000
+         WRITE(SPO,MIXDP,MYMIX);                                        00516000
+    END GETTING PARTICULAR MIX;                                         00517000
+    IF DUMPBUFSINALPHOCT THEN                                           00518000
+    BEGIN                                                               00519000
+    REPT:WRITE(SPO,WHATBUFMIX,QM);                                      00520000
+         READ(SPO,3,A[*]);                                              00521000
+    IF (USERMIX:=NUMSCN(A)) LSS 0 OR USERMIX GTR DEFINEDMIXMAX          00522000
+    THEN GO REPT ELSE                                                   00523000
+         IF USERMIX=0 THEN WRITE(SPO,ALLBUFS) ELSE                      00524000
+         WRITE(SPO,MIXBUF,USERMIX);                                     00525000
+    END GETTING BUFFER INFO;                                            00526000
+END OF READSPO;                                                         00527000
+    % UTILITY PROCEDURES                                                00528000
+    REAL PROCEDURE OCTAL(N);%                                           00529000
+        VALUE N; %                                                      00530000
+        INTEGER N;%                                                     00531000
+        % N.[1:23]=0 SO THAT IF N CONTAINS AT MOST A HALF-WORD THEN     00532000
+        % OCTAL IF PRINTED USING O FORMAT, OR A FORMAT FOR FEWER OCTADES00533000
+        % WILL BE THE OCTAL REPRESENTATION OF N                         00534000
+    OCTAL:=N.[45:3]&(IF N>7 THEN OCTAL(N.[24:21]) ELSE 0)[3:9:39];      00535000
+    REAL STREAM PROCEDURE CHRS(AT,SKIPPING,MANY);                       00536000
+        VALUE SKIPPING,MANY; %                                          00537000
+        % RETURNING THE 7 OR LESS CHRS REQUIRED                         00538000
+    BEGIN                                                               00539000
+        SI:=AT; SI:=SI+SKIPPING;                                        00540000
+        DI:=LOC CHRS; DS:=8 LIT"0"; DI:=DI-MANY;                        00541000
+        DS:=MANY CHR;                                                   00542000
+    END CHRS;                                                           00543000
+    INTEGER PROCEDURE HIHALF(LOC);                                      00544000
+        VALUE LOC;                                                      00545000
+        INTEGER LOC; %                                                  00546000
+    HIHALF:=CHRS(M[LOC.ROW,LOC.COL],0,4); %                             00547000
+    INTEGER PROCEDURE LOHALF(LOC); %                                    00548000
+        VALUE LOC;                                                      00549000
+        INTEGER LOC; %                                                  00550000
+    LOHALF:=CHRS(M[LOC.ROW,LOC.COL],4,4); %                             00551000
+    BOOLEAN STREAM PROCEDURE FLGBIT(WORD);                              00552000
+    BEGIN                                                               00553000
+        SI:=WORD; %                                                     00554000
+        IF SB THEN TALLY:=1; %                                          00555000
+        FLGBIT:=TALLY; %                                                00556000
+    END FLGBIT; %                                                       00557000
+ARRAY THISROW,LASTROW[0:11]; %                                          00558000
+SAVE ARRAY ALINE[0:18];                                                 00559000
+BOOLEAN STREAM PROCEDURE COMPAREWORDS(S,D,W);                           00560000
+    VALUE W;                                                            00561000
+BEGIN                                                                   00562000
+    LABEL XIT;                                                          00563000
+    SI:=S;DI:=D;                                                        00564000
+    W(IF 8 SC NEQ DC THEN JUMP OUT TO XIT);                             00565000
+    TALLY:=1;                                                           00566000
+    XIT:COMPAREWORDS:=TALLY;                                            00567000
+END COMPARING WORDS;                                                    00568000
+    PROCEDURE PRINT(FROM,TOO); %                                        00569000
+        VALUE FROM,TOO; %                                               00570000
+        INTEGER FROM,TOO; %                                             00571000
+    BEGIN %                                                             00572000
+         DEFINE FORI = FOR I := 0 STEP 1 UNTIL Z1 DO#; %                00573000
+    DEFINE OCTADE = (DS:=3 RESET;3(IF SB THEN DS:=SET ELSE              00574000
+                     DS:=RESET;SKIP SB))# ;                             00575000
+STREAM PROCEDURE BUILD(FROM,LINE,XA,NA,XB,NB,NC,AL,AO); %               00576000
+VALUE FROM,NA,NB,NC,AL,AO; %                                            00577000
+         BEGIN  DI:=LINE;SI:=LOC FROM;SI:=SI+5;SKIP 3SB;                00578000
+         5 OCTADE; DS := LIT " "; AO( SI := XA; %                       00579000
+                NA(DS:=LIT" ";2(DS:=LIT" ";8 OCTADE));SI:=XB;           00580000
+                NB(DS:=LIT" ";2(DS:=LIT" ";8 OCTADE));                  00581000
+         NC(DS:=19LIT" "); DS:=LIT" "); %                               00582000
+      AL(SI:=XA;NA(DS:=LIT" ";DS:=8 CHR); %                             00583000
+         SI:=XB;NB(DS:=LIT" ";DS:=8 CHR); %                             00584000
+         NC(DS:=9LIT" "); DS:=6 LIT " "); END BUILD; %                  00585000
+STREAM PROCEDURE MV(A,B); BEGIN SI:=A;DI:=B;DS:= WDS END MV;            00586000
+        BOOLEAN MATCH,FIRST,LAST,STARD;                                 00587000
+        INTEGER I,R,STARCOUNT;                                          00588000
+         BOOLEAN AL,AO;     INTEGER Z,Z1; %                             00589000
+        Z1:=(Z:=IF AL:=DUMPALPHAONLY THEN 12 ELSE %                     00590000
+             6-2|REAL(AL:=AO:=  DUMPALPHAOCTAL OR %                     00591000
+                        DUMPALPHAONLY OR %                              00592000
+         (DUMPBUFSINALPHOCT AND DUMPINGBUFFER))) - 1; %                 00593000
+        IF NOT (AL OR AO) THEN AO:=TRUE ELSE AO:=AO AND TRUE; %         00594000
+        AO:=AO AND TRUE; AL:=AL AND TRUE; %                             00595000
+        STARCOUNT:=IF Z=12 THEN 114 ELSE IF Z=6 THEN 120 ELSE 119;      00596000
+        FIRST:=TRUE;                                                    00597000
+        TOO:=TOO.[32:16]; FROM:=FROM.[32:16];                           00598000
+        IF TOO>FROM THEN %                                              00599000
+        DO %                                                            00600000
+        BEGIN %                                                         00601000
+         IF NOT LAST := (TOO - FROM LEQ Z) THEN % NOT LAST LINE         00602000
+            BEGIN                                                       00603000
+                 IF FIRST THEN                                          00604000
+                 BEGIN                                                  00605000
+IF FROM.ROW=(FROM+Z).ROW THEN MOVE(M[FROM.ROW,FROM.COL],LASTROW,Z)      00606000
+ELSE %                                                                  00607000
+                 FORI MV(M[(FROM+I).ROW,(FROM+I).COL],                  00608000
+                   LASTROW[I]);                                         00609000
+                 STARD:=FALSE;                                          00610000
+                 FIRST:=FALSE;                                          00611000
+                 END                                                    00612000
+                 ELSE                                                   00613000
+                 BEGIN                                                  00614000
+IF FROM.ROW=(FROM+Z).ROW THEN MOVE(M[FROM.ROW,FROM.COL],THISROW,Z)      00615000
+ELSE %                                                                  00616000
+                 FORI MV(M[(FROM+I).ROW,(FROM+I).COL],                  00617000
+                           THISROW[I]);                                 00618000
+         IF (MATCH:=COMPAREWORDS(THISROW[0],LASTROW[0],Z)) %            00619000
+                             AND NOT STARD THEN                         00620000
+                 BEGIN                                                  00621000
+                       IF DOUBLESPACE THEN                              00622000
+                       WRITE(P[DBL],STARZ,STARCOUNT) ELSE               00623000
+                       WRITE(P,STARZ,STARCOUNT);                        00624000
+                      STARD:=TRUE;                                      00625000
+                 END;                                                   00626000
+                 IF NOT MATCH THEN                                      00627000
+                 BEGIN                                                  00628000
+                      STARD:=FALSE;                                     00629000
+                   MOVE(THISROW,LASTROW,Z); %                           00630000
+                 END;                                                   00631000
+                 END;                                                   00632000
+            END;% IF NOT LAST                                           00633000
+            IF LAST    OR                                               00634000
+                 NOT STARD OR                                           00635000
+                 NOT MATCH THEN                                         00636000
+            BEGIN                                                       00637000
+         R := MIN(Z,TOO-FROM); %                                        00638000
+         IF(FROM+R).ROW NEQ FROM.ROW THEN % CROSS ROW ROUND             00639000
+         BUILD(FROM,ALINE[*],M[FROM.ROW,FROM.COL],512-FROM.COL,         00640000
+              M[(FROM+R).ROW,0],(FROM+R).COL,IF R LSS Z THEN %          00641000
+        Z-R ELSE 0,AL,AO) ELSE %  STILL IN SAME ROW OF M ARRAY          00642000
+         BUILD(FROM ,ALINE[*],M[FROM.ROW,FROM.COL],R,                   00643000
+              M[0,0],0,IF R LSS Z THEN Z-R ELSE 0,AL,AO); %             00644000
+         IF DOUBLESPACE THEN WRITE(P[DBL],18,ALINE[*]) ELSE             00645000
+         WRITE(P,18,ALINE[*]);                                          00646000
+            END; %                                                      00647000
+        END UNTIL (FROM := FROM + Z) GEQ TOO; %                         00648000
+        WRITE(P); %                                                     00649000
+    END PRINT; %                                                        00650000
+FORMAT ITEM(A5," = ",2(O,X1),A5,X89);                                   00651000
+    BOOLEAN PROCEDURE PDATADESC(AT,WHAT); VALUE AT;                     00651100
+                                          INTEGER AT; REAL WHAT;FORWARD;00651200
+    ARRAY LINE[0:14];                                                   00652000
+    PROCEDURE DISPLAYIT(WHAT,RANGE,ADR);                                00653000
+        VALUE WHAT,RANGE,ADR;                                           00654000
+        INTEGER WHAT,ADR;                                               00655000
+        BOOLEAN RANGE;                                                  00656000
+    BEGIN                                                               00657000
+        INTEGER H,L,T;                                                  00658000
+        BOOLEAN PP;                                                     00658100
+        T:=IF PP:=(ADR=0) THEN WHAT ELSE ADR;                           00658500
+        IF NOT PP THEN IF PDATADESC(T,H) AND H.[8:10] NEQ 0 THEN ELSE   00658600
+        RANGE:=FALSE;                                                   00658700
+        WRITE(LINE[*],ITEM,OCTAL(T),                                    00659000
+                OCTAL(H:=HIHALF(T)),                                    00660000
+                OCTAL(L:=LOHALF(T)),                                    00661000
+                IF RANGE THEN OCTAL(H.[32:10]+L.CF-1)                   00662000
+                ELSE "     ");                                          00663000
+        IF 129{WHAT AND WHAT{PRTMAX THEN                                00664000
+        MOVE(NAMS[NAME[WHAT].CF],LINE[4],                               00665000
+                 NAME[WHAT].FF);                                        00666000
+    IF SGLTOG THEN WRITE(P,17,LINE[*]) ELSE                             00666500
+        IF PP THEN                                                      00666900
+    WRITE(P[DBL],17,LINE[*]);                                           00667000
+    END DISPLAYIT;                                                      00668000
+    DEFINE DISPLAY(DISPLAY1,DISPLAY2)=                                  00668100
+           DISPLAYIT(DISPLAY1,DISPLAY2,0)#;                             00668200
+    BOOLEAN PROCEDURE OPERAND(AT,WHAT); %                               00669000
+        VALUE AT; %                                                     00670000
+        INTEGER AT; %                                                   00671000
+        REAL WHAT; %                                                    00672000
+    BEGIN %                                                             00673000
+        INTEGER R,C; %                                                  00674000
+        IF FLGBIT(M[R:=AT.ROW,C:=AT.COL]) THEN %                        00675000
+        OPERAND:=FALSE %                                                00676000
+        ELSE %                                                          00677000
+        BEGIN %                                                         00678000
+            WHAT:=M[R,C]; %                                             00679000
+            OPERAND:=TRUE; %                                            00680000
+        END; %                                                          00681000
+    END OPERAND; %                                                      00682000
+    BOOLEAN PROCEDURE DESCRIPTOR(AT,WHAT,KIND);                         00683000
+        VALUE AT;                                                       00684000
+        INTEGER AT;                                                     00685000
+        REAL WHAT,KIND;                                                 00686000
+    BEGIN                                                               00687000
+        INTEGER R,C;                                                    00688000
+        IF (KIND:=OCTAL(CHRS(M[R:=AT.ROW,C:=AT.COL],0,1)))}"40" THEN    00689000
+        BEGIN                                                           00690000
+            DESCRIPTOR:=TRUE;                                           00691000
+            WHAT:=CHRS(M[R,C],1,7);                                     00692000
+        END;                                                            00693000
+    END DESCRIPTOR;                                                     00694000
+    BOOLEAN PROCEDURE PDATADESC(AT,WHAT);                               00695000
+        VALUE AT;                                                       00696000
+        INTEGER AT;                                                     00697000
+        REAL WHAT;                                                      00698000
+    BEGIN                                                               00699000
+        INTEGER KIND;                                                   00700000
+        IF DESCRIPTOR(AT,WHAT,KIND) AND                                 00701000
+           KIND="50"     THEN                                           00702000
+        PDATADESC:=TRUE;                                                00703000
+    END;                                                                00704000
+BOOLEAN PROCEDURE CONTROLDESC(AT,WHAT);                                 00705000
+    VALUE AT;                                                           00706000
+    INTEGER AT;                                                         00707000
+    REAL WHAT;                                                          00708000
+BEGIN                                                                   00709000
+    INTEGER TYP;                                                        00710000
+    CONTROLDESC:=DESCRIPTOR(AT,WHAT,TYP) AND                            00711000
+                 TYP.[40:1]=1  AND                                      00712000
+                 TYP.[45:1]=0;                                          00713000
+END CONTROLDESC;                                                        00714000
+    INTEGER MINLNK,MINBAD,MAXBAD,MAXLNK; %                              00715000
+    BOOLEAN NEEDCHECKAVAILNKS;%FALSE IF DPMT DUMP                       00716000
+     ARRAY COMMT[0:19]; BOOLEAN COMNT;                                  00717000
+          PROCEDURE MCPENTRIES;                                         00718000
+            BEGIN                                                       00719000
+            DISPLAY(BED,FALSE);                                         00720000
+            DISPLAY(PRT,FALSE);                                         00721000
+            DISPLAY(JAR,FALSE);                                         00722000
+            DISPLAY(INTRNSC,FALSE);                                     00723000
+            DISPLAY(SHEET,FALSE);                                       00724000
+            DISPLAY(JOBNUM,FALSE);                                      00725000
+            DISPLAY(NFO,FALSE);                                         00726000
+            DISPLAY(ISTACK,FALSE);                                      00727000
+            DISPLAY(WAITQUE,FALSE);                                     00728000
+            DISPLAY(P1MIX,FALSE);                                       00729000
+            DISPLAY(P2MIX,FALSE);                                       00730000
+            END;                                                        00731000
+      PROCEDURE GETPRTENTRIES;                                          00732000
+       BEGIN                                                            00733000
+          REAL ADR,WC,PRTROW,L;                                         00734000
+          REAL ADRR;                                                    00735000
+          INTEGER I,K;                                                  00736000
+          ARRAY MIX[0:40];                                              00737000
+          FORMAT PRTOUT(X10,"PRT LOCATIONS:"/                           00738000
+                 X20,"MIX",X20,"PRT"/),                                 00739000
+             F1( X20, A2,X20, A5);                                      00740000
+          FORMAT BADPRT("********BAD PRT DESCRIPTOR*******");           00741000
+          LABEL XIT;                                                    00742000
+          LABEL NEXT;                                                   00743000
+  IF NOT(PDATADESC(PRT,L) AND L.CF NEQ 0 AND L.[8:10] GTR 0             00744000
+         AND L.[8:10] LSS 41) THEN BEGIN                                00745000
+         MIXMAX:=DEFINEDMIXMAX;%                          FOR LINK CK   00746000
+           WRITE (P,BADPRT); GO XIT END;                                00747000
+       ADR:= L.[33:15];                                                 00748000
+       WC:= L.[8:10];                                                   00749000
+       K:=-1;                                                           00750000
+       MIXMAX:=WC-1;                                                    00751000
+      FOR I:= 1 STEP 1 UNTIL (WC-1) DO BEGIN                            00752000
+       IF PDATADESC(ADR+I,PRTROW) THEN ELSE PRTROW:=0;                  00753000
+          IF PRTROW =0 THEN                                             00754000
+             GO TO NEXT;                                                00755000
+           K:=K+1;                                                      00756000
+           MIX[K]:= I; % SAVE MIX NUMBER                                00757000
+           MIX[K:=K+1]:= PRTROW;                                        00758000
+           NEXT:                                                        00759000
+           END; % OF FINDING PRTS & VALID MIXES;                        00760000
+        WRITE(P,PRTOUT);                                                00761000
+        WRITE(P,F1,FOR I:=0 STEP 1 UNTIL K DO OCTAL(MIX[I].[33:15]));   00762000
+         XIT:                                                           00763000
+       END OF GETPRTENTRIES;                                            00764000
+INTEGER STREAM PROCEDURE MCPCNT(A);  VALUE A;                           00765000
+BEGIN  SI:=LOC A;  SI:=SI+2;                                            00766000
+    6(IF TOGGLE THEN TALLY:=TALLY+1 ELSE IF SC NEQ "0" THEN             00767000
+      TALLY:=TALLY+1;SI:=SI+1);    MCPCNT:=TALLY;                       00768000
+END OF MCPCNT;%                                                         00769000
+PROCEDURE DATIME;                                                       00770000
+BEGIN INTEGER I; BOOLEAN B;                                             00771000
+      IF NOT COMMON THEN BEGIN                                          00772000
+        IF NOT OPERAND(3,MCPVERSION) THEN WRITE(P,BADCELL3);            00773000
+         IF FLGBIT(M[DATE.ROW,DATE.COL]) THEN                           00774000
+           WRITE(P,BADDATE) ELSE                                        00775000
+             BEGIN                                                      00776000
+                DATX := M[DATE.ROW,DATE.COL];                           00777000
+                DATES(DATX,DATETAKEN,DAYS,YEARS);                       00778000
+             END;  %  OF DATE                                           00779000
+        IF FLGBIT(M[XCLOCK.ROW,XCLOCK.COL]) THEN                        00780000
+     WRITE (P,BADXCLOCK) ELSE                                           00781000
+             BEGIN                                                      00782000
+                XCLOCX := M[XCLOCK.ROW,XCLOCK.COL];                     00783000
+                TIMES(XCLOCX,TIMETAKEN,MINUTES,SECONDS);                00784000
+             END;   %    OF XCLOCK                                      00785000
+    WRITE(P,X1MARKXI,IF B:=(I:=MCPCNT(MCPVERSION) GTR 6)                00786000
+            THEN MCPVERSION.[6:6] ELSE " ", IF B THEN 6 ELSE IF I=0     00787000
+            THEN 1 ELSE I,MCPVERSION,DATETAKEN,DAYS,YEARS,              00788000
+            TIMETAKEN,MINUTES,SECONDS);                                 00789000
+      END;                                                              00790000
+       DATES(TIME(0),DATEANALYZED,DAYS,YEARS);                          00791000
+        TIMES(TIME(1),TIMEANALYZED,MINUTES,SECONDS);                    00792000
+ WRITE(P,FMXX,DATEANALYZED,DAYS,YEARS,TIMEANALYZED,MINUTES,SECONDS);    00793000
+       IF COMMON THEN WRITE(P);                                         00794000
+       IF NOT COMMON THEN BEGIN                                         00795000
+       IF FLGBIT(M[CLOCK.ROW,CLOCK.COL]) THEN                           00796000
+         WRITE(P,BADCLOCK) ELSE                                         00797000
+             BEGIN                                                      00798000
+                CLOCX := M[CLOCK.ROW,CLOCK.COL];                        00799000
+            IF XCLOCX LSS CLOCX THEN XCLOCX:=XCLOCX+5184000;            00800000
+            TIMES(XCLOCX-CLOCX,TIMELASTHL,MINUTES,SECONDS);             00801000
+                WRITE(P,FMX2,TIMELASTHL,MINUTES,SECONDS);               00802000
+                TIMES(CLOCX,SINCSLASTHL,MINUTES,SECONDS);               00803000
+                WRITE(P[DBL],FMX3,SINCSLASTHL,MINUTES,SECONDS);         00804000
+           END ; %OF CLOCK                                              00805000
+       END;                                                             00806000
+END;% OF DATIME                                                         00807000
+PROCEDURE PRINTARRAYROW(PRTLOC,INX); VALUE PRTLOC,INX;                  00807100
+                                     INTEGER PRTLOC,INX;                00807110
+BEGIN                                                                   00807120
+    INTEGER LOC,SIZE;                                                   00807130
+    BOOLEAN TOG,COMSAVE;                                                00807140
+    LABEL AGAIN;                                                        00807150
+    STREAM PROCEDURE FIXLINE(LINE,INX); VALUE INX;                      00807160
+    BEGIN LOCAL A,B;                                                    00807170
+         SI:=LINE;4(SI:=SI+8);                                          00807180
+         32(IF SC=" " THEN JUMP OUT ELSE SI:=SI+1);                     00807190
+         A:=SI; DI:=A; DS:=LIT"["; A:=DI;                               00807200
+         SI:=LOC INX; DS:=4 DEC; B:=DI;                                 00807210
+         DI:=A; DS:=3 FILL; DI:=B;                                      00807230
+         DS:=3LIT",*]";                                                 00807240
+    END FIXLINE;                                                        00807250
+    IF TOG:=BOOLEAN(INX.[1:1]) THEN                                     00807260
+    DISPLAY(PRTLOC,TRUE);                                               00807270
+    INX:=ABS(INX);                                                      00807275
+    COMSAVE:=COMMON;                                                    00807280
+    COMMON:=FALSE;                                                      00807290
+    DOUBLESPACE:=TRUE;                                                  00807300
+    IF PRTLOC GEQ 129 AND PRTLOC LEQ PRTMAX THEN                        00807310
+AGAIN:                                                                  00807320
+    IF PDATADESC(PRTLOC,LOC) THEN                                       00807330
+    IF (SIZE:=LOC.[8:10]) NEQ 0 THEN                                    00807340
+    IF TOG THEN PRINT(LOC:=LOC.CF,MIN(MAXCOR,LOC+SIZE)) ELSE            00807350
+    BEGIN                                                               00807360
+         DISPLAYIT(PRTLOC,TRUE,PRTLOC:=LOC.CF+INX);                     00807370
+         FIXLINE(LINE,INX);                                             00807380
+         WRITE(P[DBL],15,LINE[*]);                                      00807390
+         TOG:=TRUE;                                                     00807400
+         GO AGAIN;                                                      00807410
+    END;                                                                00807420
+    COMMON:=COMSAVE;                                                    00807430
+END PRINTARRAYROW;                                                      00807440
+DEFINE PRINTARRAY(PRINTARRAY1)=                                         00807450
+       PRINTARRAYROW(PRINTARRAY1,-1)#;                                  00807460
+DEFINE PA=PRINTARRAY#,PAROW=PRINTARRAYROW#;                             00807470
+PROCEDURE PRINTSELECTEDARRAYS;                                          00807500
+BEGIN                                                                   00807510
+    INTEGER I;                                                          00807515
+    IF PRINTARRAYTOG THEN                                               00807520
+    BEGIN                                                               00807530
+         WRITE(P[PAGE]);                                                00807540
+    IF DFX THEN PA(EUQ);                                                00807550
+    PA(MEMASK);                                                         00807560
+    PA(QTIMES);                                                         00807570
+    PA(STATION);                                                        00807575
+    FOR I:=0 STEP 1 UNTIL 15 DO PAROW(STATION,I);                       00807580
+    END;                                                                00807890
+END PRINTSELECTEDARRAYS;                                                00807900
+BOOLEAN BADCOMMENT;                                                     00808000
+FORMAT COMNTPAR("---PARITY ERROR OCCURRED IN COMMENTS BLOCK...");       00809000
+    PROCEDURE LOAD;                                                     00810000
+    BEGIN                                                               00811000
+        FILE IN MDUMP 2(2,513); LABEL EOT;                              00812000
+        LABEL FLAG,PAR,BADTM,IGNOREPAR;%                                00813000
+        FORMAT BADEOF("---INVALID TAPE MARK AFTER BLOCK # ",I2),        00814000
+              PARERR ("---IRRECOVERABLE PARITY IN BLOCK # ",I2),        00815000
+              FLAGERR("---FLAG BIT IN WORD ZERO OF BLOCK # ",I2);       00816000
+        ARRAY A[0:512];                                                 00817000
+        STREAM PROCEDURE MOVE(S,D);                                     00818000
+        BEGIN                                                           00819000
+            SI:=S; DI:=D;                                               00820000
+            16(DS:=32 WDS);                                             00821000
+        END MOVE;                                                       00822000
+        INTEGER I;                                                      00823000
+     COMNT~BADCOMMENT~FALSE;                                            00824000
+     FOR I:=0 STEP 1 UNTIL 63 DO                                        00825000
+        BEGIN                                                           00826000
+            READ(MDUMP,513,A[*])[BADTM:PAR];%                           00827000
+            IF FLGBIT(A) THEN GO FLAG ELSE                              00828000
+            IF NOT BOOLEAN(A[0].[1:1]) THEN                             00829000
+            BEGIN                                                       00830000
+                MODON[A[0].[33:3]]:=TRUE;                               00831000
+                MOVE(A[1],M[A[0].ROW,0]);                               00832000
+            END ELSE I:=I+7;%ONLY 1 BLOCK IS WRITTEN PER ABSENT MOD     00833000
+        END;                                                            00834000
+     READ(MDUMP,20,COMMT[*])[EOT:IGNOREPAR];%                           00835000
+       IF FALSE THEN IGNOREPAR:BADCOMMENT~TRUE;                         00836000
+      COMNT := TRUE;                                                    00837000
+        EOT: CLOSE(MDUMP);                                              00838000
+        IF COMMON THEN                                                  00839000
+        ELSE                                                            00840000
+        BEGIN                                                           00841000
+        IF MUSTACCEPT THEN READSPO;                                     00842000
+        IF PRT27 THEN READARRAY(30,SEGZERO[*],0) ELSE                   00843000
+         SPACE(DISK,1);                                                 00844000
+         READARRAY(NAMESIZE,NAME[*],PRTBASE);                           00845000
+         READARRAY(NAMSSIZE,NAMS[*],0);                                 00846000
+        READARRAY(INAMESIZE,INAME[*],0);                                00847000
+         READARRAY(INAMSSIZE,INAMS[*],0);                               00848000
+        CLOSE(DISK);                                                    00849000
+        END;                                                            00850000
+        MAXMOD:=7; %                                                    00851000
+        WHILE NOT MODON[MAXMOD] DO MAXMOD:=MAXMOD-1;                    00852000
+        MAXCOR:=4096|(MAXMOD+1)-1; %                                    00853000
+    IF COMMON THEN ELSE                                                 00854000
+    BEGIN                                                               00855000
+        PRTMAX:=PRTBASE+NAMESIZE-1;                                     00856000
+        INTMAX:=INAMESIZE-1;                                            00857000
+        FOR I:=PRTBASE STEP 1 UNTIL PRTMAX DO NSNAME[I]:=               00858000
+        NSNAME[I]+PRTBASE;                                              00859000
+        FOR I:=0 STEP 1 UNTIL INTMAX DO ISNAME[I]:=                     00860000
+        ISNAME[I]+PRTBASE;                                              00861000
+        FIXDEFINES;                                                     00862000
+        SETUPXNAMEANDXNAMS;                                             00863000
+    END;                                                                00864000
+     IF FALSE THEN BEGIN                                                00865000
+     BADTM:WRITE(SPO,BADEOF,I); GO EOPROG;                              00866000
+     PAR:   WRITE(SPO,PARERR,I+1); GO EOPROG;                           00867000
+     FLAG:  WRITE(SPO,FLAGERR,I+1); GO EOPROG;  END;                    00868000
+    END LOAD;                                                           00869000
+PROCEDURE CHECKPRTFILE;%                                                00870000
+%SIGNALS USER IF MCP/PRT FILE *MIGHT* BE THE WRONG ONE                  00871000
+BEGIN                                                                   00872000
+REAL LOC,TYP,I;                                                         00873000
+REAL MYTYPE;                                                            00874000
+LABEL BAD,MAYBE;                                                        00875000
+DEFINE CHECKFORLABELDESCRIPTOR=IF LOC LSS 0 THEN GO BAD ELSE            00876000
+       IF DESCRIPTOR(LOC,I,TYP) AND TYP=MYTYPE THEN ELSE GO MAYBE#;     00877000
+DEFINE CHECKFORPROGRAMDESCRIPTOR=CHECKFORLABELDESCRIPTOR#;              00878000
+FORMAT BADPRT("---YOUR MCP/PRT FILE IS WRONG..."),                      00879000
+INCOMPAT("---MCP/PRT FILE NOT COMPATIBLE WITH MCPS PRT IN MEMORY...");  00880000
+DEFINE ERRMESS(ERRMESS1)=BEGIN WRITE(SPO,ERRMESS1);                     00881000
+              WRITE(P[PAGE],ERRMESS1) END#;%                            00882000
+MYTYPE:="76";                                                           00883000
+IF (LOC:=NOTHINGTODO) NEQ 0 THEN                                        00884000
+CHECKFORLABELDESCRIPTOR;                                                00885000
+IF (LOC:=STACKOVERFLOW) NEQ 0 THEN                                      00886000
+CHECKFORLABELDESCRIPTOR;                                                00887000
+IF (LOC:=RETURN) NEQ 0 THEN                                             00888000
+CHECKFORLABELDESCRIPTOR;                                                00889000
+MYTYPE:="75";                                                           00890000
+IF (LOC:=DIRECTORYBUILDER)=0 THEN LOC:=-1;                              00891000
+CHECKFORPROGRAMDESCRIPTOR;                                              00892000
+IF FALSE THEN MAYBE:ERRMESS(INCOMPAT);                                  00893000
+IF FALSE THEN BAD:ERRMESS(BADPRT);                                      00894000
+END OF CHECKPRTFILE;                                                    00895000
+PROCEDURE DUMPMCPSPRT;                                                  00896000
+BEGIN                                                                   00897000
+FORMAT HDR(X42,"D C M C P S  P R T"/                                    00898000
+           X42,"- - - - - -  - - -"///,                                 00899000
+           2("PRT",X5,"CONTENTS",X16,"NAME",X28)/),                     00900000
+        DASHES(120("-")),                                               00901000
+        F(X8,"MEMORY MODS: ",8I1),                                      00902000
+        PRTITEM(2(A5," = ",O,X1,O,X39));                                00903000
+INTEGER LOC,N;                                                          00904000
+IF NOT COMMON THEN                                                      00905000
+BEGIN                                                                   00906000
+CHECKPRTFILE;                                                           00907000
+IF NOT DONTDUMPRT THEN BEGIN DATIME; WRITE(P[DBL]) END;                 00908000
+PRINTMCPOPTIONS;                                                        00909000
+IF DONTDUMPRT THEN ELSE                                                 00910000
+BEGIN                                                                   00911000
+   WRITE(P[DBL],HDR);                                                   00912000
+   FOR LOC:=ACTUALPRTBASE STEP 1 UNTIL PRTBASE DO                       00913000
+   BEGIN                                                                00914000
+       WRITE(LINE[*],PRTITEM,OCTAL(LOC),OCTAL(HIHALF(LOC)),             00915000
+          OCTAL(LOHALF(LOC)),OCTAL(N:=XSNAME[LOC]),                     00916000
+          OCTAL(HIHALF(N)),OCTAL(LOHALF(N)));                           00917000
+       MOVE(XNAMS[XNAME[LOC].CF],LINE[4],XNAME[LOC].FF);                00918000
+       MOVE(XNAMS[XNAME[N].CF],LINE[12],XNAME[N].FF);                   00919000
+       WRITE(P,15,LINE[*]);                                             00920000
+   END;                                                                 00921000
+   WRITE(P,DASHES);                                                     00922000
+   FOR LOC:=PRTBASE+1 STEP 1 UNTIL PRTMAX DO                            00923000
+   BEGIN                                                                00924000
+       WRITE(LINE[*],PRTITEM,OCTAL(LOC),OCTAL(HIHALF(LOC)),             00925000
+          OCTAL(LOHALF(LOC)),OCTAL(N:=NSNAME[LOC]),                     00926000
+          OCTAL(HIHALF(N)),OCTAL(LOHALF(N)));                           00927000
+       MOVE(NAMS[NAME[LOC].CF],LINE[4],NAME[LOC].FF);                   00928000
+       MOVE(NAMS[NAME[N].CF],LINE[12],NAME[N].FF);                      00929000
+       WRITE(P,15,LINE[*]);                                             00930000
+   END;                                                                 00931000
+   NEXTPAGE;                                                            00932000
+END;                                                                    00933000
+END;                                                                    00934000
+WRITE(P[DBL],F,FOR N:=0 STEP 1 UNTIL 7 DO                               00935000
+      [IF MODON[N] THEN N ELSE 10]);                                    00936000
+DATIME;                                                                 00937000
+IF NOT COMMON THEN                                                      00938000
+BEGIN                                                                   00939000
+    MCPENTRIES;                                                         00940000
+    GETPRTENTRIES; NEXTPAGE;                                            00941000
+END;                                                                    00942000
+END OF DUMP OF MCPS PRT;                                                00943000
+    PROCEDURE CHECKMEMORYLINKS;                                         00944000
+    BEGIN %                                                             00945000
+        BOOLEAN ZEROK; REAL V0; %                                       00946000
+        BOOLEAN MSTARTOK; REAL VMSTART; %                               00947000
+        BOOLEAN NOWRAPAROUND;                                           00947100
+        REAL LINK,VLINK,PREVLINK;                                       00948000
+        INTEGER AVAILN,AVAILT,AVAILM;                                   00949000
+        BOOLEAN PROCEDURE LINKOK(WORD); %                               00950000
+            VALUE WORD; %                                               00951000
+            REAL WORD; %                                                00952000
+        LINKOK:=WORD.[3:6]{TYPMAX AND %                                 00953000
+            WORD.[9:6]{MIXMAX     AND                                   00954000
+            WORD.[15:3]=0; %                                            00955000
+       FORMAT RANGE(X8,"PRIMARY LINKS FROM ",A5," TO ",A5," ARE OK"),   00956000
+               BAD(X8,A6," LINK AT ",A5," IS NOT OK"),                  00957000
+        BADPRIMARY(X8,"PRIMARY LINK AT ",A5," IS NOT OK"),              00958000
+               AVLBAD(X8,"AVAILABLE STORAGE TOTALS DO NOT CROSS CHECK"),00959000
+               AVL(X8,"AVAILABLE LINKS ARE OK, TOTALING",               00960000
+                   I4,"(DECIMAL) AREAS OF ",A5,"(",I5,                  00961000
+                   ") WORDS UP TO ",A5,"(",I5,") WORDS EACH");          00962000
+        INTEGER N,T,M; %                                                00963000
+        DISPLAY(0,FALSE);                                               00964000
+        DISPLAY(MSTART,FALSE);                                          00965000
+        DISPLAY(MEND,FALSE);                                            00966000
+        DISPLAY(AVAIL,FALSE);                                           00967000
+        ZEROK:=OPERAND(0,V0)        AND                                 00968000
+            V0.[1:2]=1              AND                                 00969000
+    V0.[03:15]=0            AND                                         00970000
+            V0.FF=(MAXLNK:=MAXCOR-2) AND                                00971000
+            V0.CF GTR 1023 AND V0.CF LSS 4096 AND                       00972000
+            OPERAND(V0.CF,T) AND LINKOK(T) AND T.FF=0;                  00972400
+        MSTARTOK:=OPERAND(MSTART,VMSTART) AND                           00973000
+            VMSTART.[1:35]=0        AND %                               00974000
+            VMSTART GTR 1023 AND VMSTART LSS 4096;                      00975000
+        IF LNKSOK:=MSTARTOK OR ZEROK THEN                               00976000
+        MINLNK:=LINK:=IF MSTARTOK AND ZEROK THEN MAX(V0.CF,VMSTART)     00976100
+        ELSE IF MSTARTOK THEN VMSTART ELSE                              00976200
+        IF ZEROK THEN V0.CF ELSE 0;                                     00976300
+        IF LNKSOK:=MSTARTOK THEN MINLNK:=LINK:=VMSTART; %               00977000
+        AVALNKOK:=TRUE;                                                 00978000
+        T:=0;                                                           00978100
+        WHILE LNKSOK AND MAXLNK>PREVLINK DO %                           00979000
+        IF LNKSOK:=(OPERAND(LINK,VLINK) AND                             00980000
+                    LINKOK(VLINK)       AND %                           00981000
+                    VLINK.FF=PREVLINK   AND %                           00982000
+                   (IF LINK=MAXLNK                                      00983000
+                    THEN VLINK.CF=0 %                                   00984000
+                    ELSE VLINK.CF>LINK))THEN                            00985000
+        BEGIN %                                                         00986000
+            PREVLINK:=LINK; %                                           00987000
+            LINK:=VLINK.CF; %                                           00988000
+            IF AVALNKOK THEN %                                          00989000
+            IF BOOLEAN(VLINK.[1:1]) THEN %                              00990000
+            IF AVALNKOK:=MAXLNK>PREVLINK THEN %                         00991000
+            IF AVALNKOK:=(OPERAND(PREVLINK+1,VLINK) AND %               00992000
+                          VLINK.[1:17]=0) THEN %                        00993000
+            BEGIN %                                                     00994000
+                AVAILN:=AVAILN+1; %                                     00995000
+                AVAILT:=AVAILT+VLINK.FF; %                              00996000
+                AVAILM:=MAX(AVAILM,VLINK.FF); %                         00997000
+            END; %                                                      00998000
+        END; %                                                          00999000
+    IF NOT ZEROK THEN WRITE(P,BADPRIMARY,0);                            00999100
+    IF LNKSOK THEN WRITE(P,RANGE,IF ZEROK THEN 0 ELSE OCTAL(MINLNK),    01000000
+    OCTAL(MAXLNK))             ELSE                                     01001000
+        BEGIN %                                                         01002000
+            IF SOMOKF:=PREVLINK>MINLNK THEN                             01003000
+            BEGIN %                                                     01004000
+            WRITE(P,RANGE,IF ZEROK THEN 0 ELSE OCTAL(MINLNK),           01005000
+                   OCTAL(PREVLINK));                                    01006000
+            WRITE(P,BADPRIMARY,OCTAL(LINK));%                           01007000
+            END; %                                                      01008000
+            MINBAD:=LINK;                                               01009000
+            PREVLINK:=0; %                                              01010000
+            LINK:=MAXLNK; %                                             01011000
+            WHILE OPERAND(LINK,VLINK) AND %                             01012000
+                LINKOK(VLINK)         AND                               01013000
+                VLINK.CF=PREVLINK     AND %                             01014000
+                LINK>VLINK.FF         DO %                              01015000
+            BEGIN %                                                     01016000
+                PREVLINK:=LINK; %                                       01017000
+                LINK:=VLINK.FF; %                                       01018000
+            END; %                                                      01019000
+            IF PREVLINK=0 THEN MAXBAD:=MAXCOR+1 ELSE %                  01020000
+            WRITE(P,RANGE,OCTAL(MAXLNK),OCTAL(MAXBAD:=PREVLINK)); %     01021000
+            WRITE(P,BADPRIMARY,OCTAL(LINK));%                           01022000
+            SOMOKB:=PREVLINK>0;                                         01023000
+        END; %                                                          01024000
+        NOWRAPAROUND:=TRUE;                                             01025000
+        IF AVALNKOK:=(OPERAND(AVAIL,PREVLINK) AND                       01026000
+            PREVLINK=MAXLNK+1       AND %                               01027000
+            OPERAND(PREVLINK,VLINK) AND %                               01028000
+            VLINK.[1:17]=0          AND %                               01029000
+            VLINK.FF=32767)         THEN %                              01030000
+        BEGIN %                                                         01031000
+            WHILE AVALNKOK AND %                                        01032000
+                  NOWRAPAROUND AND                                      01032100
+                  (IF LNKSOK THEN AVAILN GTR N ELSE TRUE) AND           01033000
+                  (IF LNKSOK THEN AVAILT GTR T ELSE TRUE) AND           01034000
+            (IF LNKSOK THEN AVAILM GEQ M  ELSE TRUE) DO                 01035000
+            IF NOWRAPAROUND:=(MAXCOR GTR LINK:=VLINK.CF                 01036000
+                             AND LINK GTR 0) THEN                       01036100
+            IF AVALNKOK:=(OPERAND(LINK-1,VLINK) AND %                   01037000
+                LINKOK(VLINK)        AND %                              01038000
+                BOOLEAN(VLINK.[1:1])  AND %                             01039000
+                OPERAND(LINK+1,VLINK) AND %                             01040000
+                VLINK=PREVLINK        AND %                             01041000
+                OPERAND(LINK,VLINK)   AND %                             01042000
+                VLINK.[1:17]=0        AND %                             01043000
+                VLINK.CF!LINK)        THEN %                            01044000
+            BEGIN %                                                     01045000
+                N:=N+1;                                                 01046000
+                T:=T+VLINK.FF; %                                        01047000
+                M:=MAX(M,VLINK.FF); %                                   01048000
+                PREVLINK:=LINK; %                                       01049000
+            END; %                                                      01050000
+            IF NOT AVALNKOK THEN WRITE(P,BAD,"AVALBL",OCTAL(LINK)) ELSE 01051000
+            IF LNKSOK AND                                               01051100
+              NOT(AVALNKOK:=                                            01052000
+                LNKSOK AND                                              01052100
+                AVAILN=N AND %                                          01053000
+                AVAILT=T AND %                                          01054000
+                AVAILM=M AND %                                          01055000
+                VLINK.CF=MAXLNK+1) THEN WRITE(P,AVLBAD) ELSE %          01056000
+            WRITE(P,AVL,N,OCTAL(T),T,OCTAL(M),M);                       01057000
+         TABLESLOC:=IF LNKSOK AND OPERAND(MAXLNK,T)                     01058000
+                        THEN T.FF ELSE -1;                              01059000
+        END ELSE WRITE(P,BAD,"AVALBL",OCTAL(MAXLNK+1));                 01060000
+        WRITE(P[DBL]); %                                                01061000
+    END; %                                                              01062000
+    ARRAY MIXSTK[0:43];                                                 01063000
+    PROCEDURE GETSTACKSFROMTHEBED;                                      01064000
+    BEGIN                                                               01065000
+        INTEGER I;                                                      01066000
+        INTEGER MIX;                                                    01067000
+    INTEGER M; BOOLEAN B;                                               01068000
+    FORMAT DUPBED(X8,"DUPLICATE BED ENTRY FOR MIX=",I2,                 01069000
+                 " ,CHECK BED AT ADDRESS = ",A5,                        01070000
+                 " (THIS ENTRY IGNORED)");                              01071000
+        REAL V,TYP;                                                     01072000
+        IF OPERAND(JOBNUM,VJOBNUM) THEN                                 01073000
+        IF VJOBNUM.[1:8]=0 AND                                          01074000
+           VJOBNUM.[47:1]=0 AND                                         01075000
+           PDATADESC(BED,VBED) AND                                      01076000
+           VJOBNUM{VBED.[8:10] THEN                                     01077000
+        BEGIN                                                           01078000
+            VBED:=VBED.CF;                                              01079000
+            FOR I:=0 STEP 2 UNTIL VJOBNUM DO                            01080000
+            IF DESCRIPTOR(VBED+I,V,TYP) THEN                            01081000
+        IF B:=((MIX:=V.[6:2]&TYP[43:45:3]) GTR 0                        01082000
+            AND (M:=MIXSTK[MIX]) NEQ 0)    THEN                         01083000
+    WRITE(P,DUPBED,M,OCTAL(VBED+I))                                     01084000
+        ELSE                                                            01085000
+        BEGIN                                                           01086000
+            BEDSTK:=MAXSTK:=MAXSTK+1;                                   01087000
+                MIXSTK[MIX]:=BEDSTK;                                    01088000
+                STAX[BEDSTK]:=                                          01089000
+                    V.FF&                                               01090000
+                    I[8:38:10]&                                         01091000
+                    (REAL(MIX>0))[7:47:1];                              01092000
+            END;                                                        01093000
+        END;                                                            01094000
+    IF B THEN WRITE(P[DBL]);                                            01095000
+    END GETSTACKSFROMTHEBED;                                            01096000
+    PROCEDURE DUMPMEMORYANDNOTESTACKS(FROM,TOO);                        01097000
+        VALUE FROM,TOO;                                                 01098000
+        INTEGER FROM,TOO;                                               01099000
+    BEGIN                                                               01100000
+        BOOLEAN BEDDED;                                                 01101000
+        REAL L;                                                         01102000
+          FORMAT ITEM(X2,A3," =",2(X4,A5));                             01103000
+          REAL R,ADR,Q,LL; BOOLEAN INTR,QT;                             01104000
+        REAL X, AVSIZE;                                                 01105000
+        REAL ISTACKV;BOOLEAN ISTACKOK,IRSTACK;                          01106000
+        BOOLEAN MYTOG;                                                  01107000
+        REAL DCQPTSTACK,DCQPTSTACKV;                                    01108000
+        BOOLEAN DCSTACK,DCHIT;                                          01109000
+        DEFINE DC=DCQPTSTACK#,DCV=DCQPTSTACKV#;                         01110000
+        BOOLEAN GOTSEGDICT;                                             01111000
+        INTEGER N,STK;                                                  01112000
+        INTEGER MX,TP;                                                  01113000
+        FORMAT AVAILABLE(X27,"**** AVAILABLE SIZE=",A5,"(",I5,")"),     01114000
+               USERSTACKPRT(X27,"MIX=",I2," STACK-PRT"),                01115000
+               MIXUSE(X27,"MIX=",I2,X1,A6),                             01116000
+               SEGDICT(X27,"MIX=",I2," SEGMENT-DICTIONARY"),            01117000
+               MCPUSE(X27,"MCP--",A6),                                  01118000
+               MCPSTACK(X27,"MCP INDEPENDENT-RUNNER STACK"),            01119000
+               INTARRAY(X27,"MCPS INTRNSC ARRAY"),                      01120000
+               TABLEAREA(X27,"MCP TABLES");                             01121000
+        ARRAY ATP[0:TYPMAX+1];                                          01122000
+        IF DATACOM THEN                                                 01123000
+        BEGIN                                                           01124000
+              DCSTACK:=DC GTR 129 AND OPERAND(DC,DCV)                   01125000
+                        AND DCV NEQ 0 AND DCV.[1:32]=0                  01126000
+                        AND (DCV:=DCV.CF) GTR 1023 AND                  01127000
+                        OPERAND(DCV,R) AND R=0 AND                      01128000
+                        OPERAND(DCV-1,Q) AND Q.[9:6]=0 AND              01129000
+                   (Q.[3:6]=0 OR Q.[3:6]=12) AND Q.[2:1]=1;             01130000
+        END OF LOCATING DCQPTSTACK AFTER MANY CHECKS;                   01131000
+        ISTACKOK:=PDATADESC(ISTACK,ISTACKV) AND                         01132000
+                  ISTACKV.[8:10] GTR 0    AND                           01133000
+                  (ISTACKV:=ISTACKV.CF) GTR 0;                          01134000
+        INTR:=PDATADESC(INTRNSC,ADR) AND ADR.FF=0;                      01135000
+          ADR:=ADR.CF;  FILL ATP[*] WITH                                01136000
+               "UNKNWN","CODE  ","DATA  ","IO-BUF",                     01137000
+               "ALGFIB","INQBUF","COBFIB","INTSEG",                     01138000
+               "HEADER","     9","    10","    11","STACK ",            01139000
+              "SCRDIR","    14","    15","    16","    17",             01140000
+           "    18","    19","CIDROW","    21","    22",                01141000
+              "@@@@@@";%"@" DENOTES UNRECOGNIZED LINK TYPE              01142000
+        WHILE FROM<TOO DO                                               01143000
+        BEGIN                                                           01144000
+        IRSTACK:=FALSE;                                                 01145000
+       DCHIT:=FALSE;                                                    01146000
+       MYTOG:=FALSE;                                                    01147000
+    GOTSEGDICT:=FALSE;                                                  01148000
+            N:=(L:=M[FROM.ROW,FROM.COL]).CF;                            01149000
+            IF BOOLEAN(L.[1:1]) THEN                                    01150000
+    BEGIN                                                               01151000
+         AVSIZE:=                                                       01152000
+         IF OPERAND(FROM+1,X) AND X.[1:17]=0 THEN                       01153000
+         X.FF ELSE -10000;                                              01154000
+         WRITE(P[DBL],AVAILABLE,IF AVSIZE LSS 0 THEN "*****" ELSE       01155000
+              OCTAL(AVSIZE),AVSIZE);                                    01156000
+    IF NODUMP THEN ELSE                                                 01157000
+    PRINT(FROM,IF DUMPAVAILTOG OR                                       01158000
+              NEEDCHECKAVAILNKS THEN N ELSE FROM+3);                    01159000
+       END                                                              01160000
+            ELSE                                                        01161000
+            BEGIN                                                       01162000
+   QT:=OPERAND(FROM+1,Q);                                               01163000
+    IF L.[3:6] GTR TYPMAX THEN L.[3:6]:=TYPMAX+1;%FLAG AS UNRECOGNIZED  01164000
+    IF MX:=L.[9:6] NEQ 0 AND TP:=L.[3:6]=2 AND                          01165000
+   OPERAND(FROM+2,X) AND X=("BBBB"&"BBBB"[1:25:23]) AND                 01166000
+    ((CONTROLDESC(FROM+3,X) AND X.FF=0)                                 01167000
+                        OR                                              01168000
+    (OPERAND(FROM+3,X) AND X=0 AND CONTROLDESC(FROM+4,X) AND X.FF=0))   01169000
+    THEN WRITE(P[DBL],USERSTACKPRT,MX) ELSE                             01170000
+    IF GOTSEGDICT:=( MX NEQ 0 AND TP=1 AND L.[2:1]=1 AND                01171000
+                        OPERAND(FROM+2,X) AND X.[1:37]=0 AND            01172000
+                        OPERAND(FROM+3,X) AND X.[1:2] LEQ 2 AND         01173000
+                        X.[3:5]=0 AND X.CF NEQ 0)                       01174000
+    THEN WRITE(P[DBL],SEGDICT,MX)       ELSE                            01175000
+    IF R:=L.[9:6] NEQ 0 THEN WRITE(P[DBL],MIXUSE,R,ATP[L.[3:6]]) ELSE   01176000
+   IF R:=L.[3:6]=1 AND QT THEN DISPLAY(Q.CF,FALSE) ELSE IF              01177000
+   R=7 AND QT AND INTR AND OPERAND(ADR+(LL:=Q.[8:10]),R)                01178000
+  AND R:=R.CF>1023 AND LL LEQ INTMAX THEN BEGIN                         01179000
+   WRITE(LINE[*],ITEM,OCTAL(LL),OCTAL(R),OCTAL(R+Q.FF-1));              01180000
+   MOVE(INAMS[INAME[LL].CF],LINE[4],INAME[LL].FF);                      01181000
+   WRITE(P[DBL],7,LINE[*]); END ELSE                                    01182000
+        IF (DCSTACK AND DCHIT:=(DCV-1=FROM)) OR                         01183000
+    (L.[2:1]=1 AND (TP=0 OR TP=12) AND MX=0 AND                         01184000
+        ISTACKOK        AND                                             01185000
+        (IRSTACK:=((CONTROLDESC(FROM+2,R)   AND                         01186000
+              R.FF=ISTACKV+1)  OR                                       01187000
+                  (CONTROLDESC(FROM+3,R)  AND                           01188000
+                 R.FF=ISTACKV+1))))                                     01189000
+    THEN WRITE(P[DBL],MCPSTACK) ELSE                                    01190000
+    IF FROM=TABLESLOC THEN WRITE(P[DBL],TABLEAREA) ELSE                 01191000
+    IF FROM=ADR-2 THEN WRITE(P[DBL],INTARRAY) ELSE                      01192000
+    WRITE(P[DBL],MCPUSE,ATP[L.[3:6]]);                                  01193000
+      STK:=-1;    BEDDED:=FALSE;                                        01194000
+        WHILE BEDSTK GEQ STK:=STK+1 AND NOT BEDDED DO                   01195000
+         IF BEDDED:=                                                    01196000
+    (LL:=STAX[STK].CF GTR FROM AND N GTR LL) THEN                       01197000
+    IF STAX[STK].FF=0 THEN STAX[STK].FF:=FROM+2;                        01198000
+IF NOT BEDDED AND  (IRSTACK  OR                                         01199000
+        L.[3:6]=12 OR                                                   01200000
+       (MYTOG:=(MYSTACKADR GTR FROM AND MYSTACKADR LSS N)) OR           01201000
+        (DCSTACK AND DCHIT))  THEN                                      01202000
+STAX[MAXSTK:=MAXSTK+1]:=(N-1)&(FROM+2)[18:33:15]                        01203000
+                        & REAL(NOT MYTOG)[6:47:1];                      01204000
+    DUMPINGBUFFER:=L.[3:6]=3 AND                                        01205000
+              (IF USERMIX=0 THEN TRUE ELSE                              01206000
+              L.[9:6]=USERMIX) ;                                        01207000
+    IF NODUMP THEN ELSE                                                 01208000
+          PRINT(FROM,IF (DONTDUMPCODE AND NOT GOTSEGDICT AND            01209000
+              (TP=1 OR TP=7))                                           01210000
+                             OR                                         01211000
+                   (DUMPBYMIX AND                                       01212000
+                        (IF MX=0 THEN FALSE                             01213000
+                        ELSE MX NEQ MYMIX))                             01214000
+                             THEN FROM+2 ELSE N);                       01215000
+            END;                                                        01216000
+              DUMPINGBUFFER:=FALSE;                                     01217000
+            FROM:=N;                                                    01218000
+        END;                                                            01219000
+    END DUMP MEMORY AND NOTE STACKS;                                    01220000
+    ARRAY MCPROG[0:255];                                                01221000
+    INTEGER MAXMCPROG,ESP;                                              01222000
+    ARRAY OUTERBLOCK[0:0];%                                             01223000
+    PROCEDURE SEQUENCE(ARAY,LIM);                                       01224000
+        VALUE LIM;                                                      01225000
+        ARRAY ARAY[0];                                                  01226000
+        INTEGER LIM;                                                    01227000
+    BEGIN                                                               01228000
+        INTEGER T,L;                                                    01229000
+        REAL V;                                                         01230000
+        STREAM PROCEDURE MOVE(S,D,D32,M32);                             01231000
+            VALUE D32,M32;                                              01232000
+        BEGIN                                                           01233000
+            SI:=S; DI:=D;                                               01234000
+            D32(DS:=32 WDS);                                            01235000
+            DS:=M32 WDS;                                                01236000
+        END MOVE;                                                       01237000
+        T:=LIM;                                                         01238000
+        WHILE (T:=T-1)}0 DO                                             01239000
+        BEGIN                                                           01240000
+            I:=LIM;                                                     01241000
+            L:=(V:=ARAY[T]).CF;                                         01242000
+            WHILE ARAY[I].CF>L DO                                       01243000
+                I:=I-1;                                                 01244000
+            IF (L:=I-T)>0 THEN                                          01245000
+            BEGIN                                                       01246000
+                MOVE(ARAY[T+1],ARAY[T],L.[37:6],L.[43:5]);              01247000
+                ARAY[I]:=V;                                             01248000
+            END;                                                        01249000
+        END;                                                            01250000
+    END SEQUENCE;                                                       01251000
+    PROCEDURE GETSORTANDLISTMCPROG(B); VALUE B; BOOLEAN B;              01252000
+    BEGIN                                                               01253000
+        REAL R;                                                         01254000
+        INTEGER TYP;                                                    01255000
+    FORMAT TOTALPROCS(///"### A TOTAL OF ",I3," MCP PROCEDURES ",       01256000
+           "WERE PRESENT IN MEMORY"),                                   01257000
+           F(X8,"PRESENT MCP PROCEDURES"//                              01258000
+                "PRT",X5,"DESCRIPTOR",X8,"THRU"//);                     01259000
+        IF NOT B THEN % SORT/*DONT* LIST                                01259500
+        BEGIN                                                           01259600
+        IF DESCRIPTOR(ESPBIT,R,TYP) AND TYP="75" THEN                   01260000
+        MCPROG[MAXMCPROG:=0]:=                                          01261000
+            (ESP:=R.CF)&                                                01262000
+            (ESP+R.[8:10]-1)[18:33:15]&                                 01263000
+            ESPBIT[8:38:10]                                             01264000
+        ELSE MAXMCPROG:=-1;                                             01265000
+        IF MAXMCPROG NEQ -1 THEN                                        01265900
+       OUTERBLOCK[0]:=(PRTMAX+1)&(ESP-1) CTF;                           01266000
+        FOR I:=129 STEP 1 UNTIL PRTMAX DO                               01267000
+        IF DESCRIPTOR(I,R,TYP) AND                                      01268000
+         (TYP="75" OR TYP="77" OR TYP="74") AND                         01269000
+           R.CF!ESP          THEN                                       01270000
+        MCPROG[MAXMCPROG:=MAXMCPROG+1]:=                                01271000
+            R.CF&                                                       01272000
+            (R.CF+R.[8:10]-1)[18:33:15]&                                01273000
+            I[8:38:10];                                                 01274000
+        SEQUENCE(MCPROG,MAXMCPROG);                                     01275000
+        END ELSE % LIST ONLY                                            01275500
+        BEGIN                                                           01275600
+        NEXTPAGE;                                                       01276000
+        WRITE(P,F);                                                     01277000
+        FOR I:=0 STEP 1 UNTIL MAXMCPROG DO                              01278000
+        DISPLAY(MCPROG[I].[8:10],TRUE);                                 01279000
+        WRITE(P,TOTALPROCS,MAXMCPROG+1);                                01280000
+        END;                                                            01280500
+    END GET SORT AND LIST PRESENT MCP PROGRAM SEGMENTS;                 01281000
+DEFINE GETANDSORTMCPROG=                                                01281400
+       GETSORTANDLISTMCPROG(FALSE)#;                                    01281410
+DEFINE LISTMCPROG=                                                      01281420
+       GETSORTANDLISTMCPROG(TRUE)#;                                     01281430
+PROCEDURE DUMPMCPSAVECODE;                                              01281500
+% SEPARATES & IDENTIFIES SAVE PROCEDURES & ARRAYS                       01281510
+BEGIN                                                                   01281520
+    BOOLEAN OK;                                                         01281530
+    INTEGER T,SIZE;                                                     01281535
+    INTEGER I,J,LASTADR,THISPROG,NEXTPROG;                              01281540
+    OK:=SGLTOG:=TRUE;                                                   01281550
+    LASTADR:=ESP;                                                       01281560
+    FOR I:=0 STEP 1  WHILE OK AND I LEQ MAXMCPROG DO                    01281570
+    IF OK:=(THISPROG:=MCPROG[I]).FF LSS MINLNK THEN                     01281580
+    BEGIN                                                               01281590
+         DISPLAY(THISPROG.[8:10],TRUE);                                 01281600
+         PRINT(THISPROG.CF,LASTADR:=THISPROG.FF+1) ;                    01281610
+         IF OK:=(NEXTPROG:=MCPROG[I+1].CF) LSS  MINLNK THEN             01281620
+         WHILE NEXTPROG NEQ LASTADR DO                                  01281630
+         BEGIN                                                          01281640
+              FOR J:=129 STEP 1 UNTIL PRTMAX DO                         01281650
+              IF PDATADESC(J,T) THEN                                    01281660
+              IF (SIZE:=T.[8:10]) NEQ 0 THEN                            01281670
+              IF (T:=T.CF) = LASTADR THEN                               01281680
+              BEGIN                                                     01281690
+                   DISPLAY(J,TRUE);                                     01281700
+                   J:=1023;                                             01281710
+              END;                                                      01281715
+              PRINT(T,MIN(LASTADR:=T+SIZE,NEXTPROG));                   01281720
+              IF LASTADR GTR NEXTPROG THEN NEXTPROG:=LASTADR;           01281725
+         END;                                                           01281730
+    END;                                                                01281735
+    PRINT(LASTADR,MINLNK);                                              01281740
+    SGLTOG:=FALSE;                                                      01281745
+END DUMPMCPSAVECODE;                                                    01281750
+    ARRAY INTSP[0:INAMESIZE-1];                                         01282000
+    INTEGER INTSPMAX;                                                   01283000
+    PROCEDURE GETSORTANDLISTINTRINSICS;                                 01284000
+    BEGIN                                                               01285000
+        INTEGER IMAX,TYP;                                               01286000
+        REAL ADR,R,L;                                                   01287000
+        FORMAT ITEM(X2,A3," =",2(X4,A5)),                               01288000
+            F(X8,"PRESENT INTRINSICS"//                                 01289000
+                  "INDEX",X7,"FROM",X5,"THRU"/);                        01290000
+        INTSPMAX:=-1;                                                   01291000
+        IF DESCRIPTOR(INTRNSC,ADR,TYP) AND TYP="50" THEN                01292000
+        BEGIN                                                           01293000
+            IMAX:=ADR.[8:10]-1;                                         01294000
+            ADR:=ADR.CF;                                                01295000
+            IF IMAX>0 THEN                                              01296000
+            FOR I:=1 STEP 1 UNTIL IMAX DO                               01297000
+            IF OPERAND(ADR+I,R) AND R.CF>1023 THEN                      01298000
+            INTSP[INTSPMAX:=INTSPMAX+1]:=                               01299000
+                R.CF&                                                   01300000
+                (IF OPERAND(R.CF-1,L) AND                               01301000
+                    0<(L:=L.FF) AND                                     01302000
+                    L{1023 THEN                                         01303000
+                R.CF+L-1 ELSE R.CF)[18:33:15]&                          01304000
+                I[8:38:10];                                             01305000
+        END;                                                            01306000
+        IF INTSPMAX}0 THEN                                              01307000
+        BEGIN                                                           01308000
+            NEXTPAGE;                                                   01309000
+            DISPLAY(INTRNSC,TRUE);                                      01310000
+       WRITE(P[DBL],F);                                                 01311000
+            SEQUENCE(INTSP,INTSPMAX);                                   01312000
+            FOR I:=0 STEP 1 UNTIL INTSPMAX DO                           01313000
+            BEGIN                                                       01314000
+                WRITE(LINE[*],ITEM,OCTAL(L:=INTSP[I].[8:10]),           01315000
+                      OCTAL(INTSP[I].CF),                               01316000
+                      OCTAL(INTSP[I].FF));                              01317000
+                IF L{INTMAX THEN                                        01318000
+                MOVE(INAMS[INAME[L].CF],LINE[4],                        01319000
+                           INAME[L].FF);                                01320000
+                WRITE(P[DBL],7,LINE[*]);                                01321000
+            END;                                                        01322000
+        END;                                                            01323000
+    END GET SORT AND LIST PRESENT INTRINSICS;                           01324000
+    STREAM PROCEDURE MOVC(S,SP,D,DP,W,C);                               01325000
+        VALUE SP,DP,W,C;                                                01326000
+    BEGIN                                                               01327000
+        SI:=S; SI:=SI+SP;                                               01328000
+        DI:=D; DI:=DI+DP;                                               01329000
+        W(DS:=8 CHR); DS:=C CHR;                                        01330000
+    END MOVC;                                                           01331000
+    BOOLEAN PROCEDURE WITHIN(ARAY,AMAX,ITEM,RESULT,PLUS);               01332000
+        VALUE AMAX,ITEM;                                                01333000
+        ARRAY ARAY[0];                                                  01334000
+        INTEGER AMAX,ITEM,RESULT,PLUS;                                  01335000
+    BEGIN                                                               01336000
+        BOOLEAN FOUND;                                                  01337000
+        LABEL EXIT;                                                     01338000
+        IF AMAX}0 THEN                                                  01339000
+        FOR I:=0 STEP 1 UNTIL AMAX DO                                   01340000
+        IF FOUND:=                                                      01341000
+            (ARAY[I].CF{ITEM AND ITEM {ARAY[I].FF) THEN                 01342000
+        BEGIN                                                           01343000
+            RESULT:=ARAY[I].[8:10];                                     01344000
+            PLUS:=ITEM-ARAY[I].CF;                                      01345000
+            GO TO EXIT;                                                 01346000
+        END;                                                            01347000
+        EXIT: WITHIN:=FOUND;                                            01348000
+    END WITHIN;                                                         01349000
+    ARRAY PROGS[0:3,0:255]; INTEGER PROWS;                              01350000
+    INTEGER PROCEDURE SPREAD(AT,F,C);VALUE AT;                          01351000
+         INTEGER AT,F,C;           FORWARD;                             01352000
+    PROCEDURE DUMPSTACK(INX);                                           01353000
+        VALUE INX;                                                      01354000
+        INTEGER INX;                                                    01355000
+    BEGIN                                                               01356000
+        INTEGER TOS,BOS,SEG,ADR,H,L,PRO,I;                              01357000
+        REAL V,R;                                                       01358000
+        REAL TOSORIG,X,Y; BOOLEAN WOOPS;                                01359000
+        LABEL ERROWT;                                                   01360000
+        LABEL SKIPEEE;                                                  01361000
+        LABEL SQUEEZE,CUTBACK,XIT;                                      01362000
+        DEFINE CD=WOOPS #;                                              01363000
+        DEFINE DELTA=50#;                                               01364000
+        DEFINE MAXSTACKSIZE=512#;% MAX STACK BELOW TOS WE"LL DUMP       01365000
+        BOOLEAN NORMAL,FOUND;                                           01366000
+        FORMAT HD(X8,"STACK FROM ",A5," DOWN TO ",A5),                  01367000
+               TRITEM(A5," = ",A6,2(X1,A5)),                            01368000
+               S(X8,"BED[",A3,"] =",A6,X1,A5,X1,A5,", MASK= ",          01369000
+                 A6,2(X1,A5)),                                          01370000
+               C(X8,3A6,X1,A4,"(",I4,")","  + ",                        01371000
+                   A4,"(",I4,":" I1,")");                               01372000
+        NEXTITEM;                                                       01373000
+        WRITE(P[DBL],HD,                                                01374000
+              IF (TOS:=STAX[INX].CF) LSS 127 THEN "*****"               01375000
+                ELSE OCTAL(TOS),                                        01376000
+            IF (BOS:=STAX[INX].FF) LSS 64 THEN "*****"                  01377000
+                ELSE OCTAL(BOS));                                       01378000
+      IF BOS LSS 64 THEN BOS:=0;                                        01379000
+      IF TOS LSS 127 THEN TOS:=0;                                       01380000
+    IF TOS=0 THEN GO ERROWT;%E.G. IN EARLY SELECTRUN                    01381000
+        NORMAL:=BOOLEAN(STAX[INX].[7:1]);                               01382000
+        IF INX=0 OR INX>BEDSTK THEN                                     01383000
+        BEGIN                                                           01384000
+     IF NORMAL THEN                                                     01385000
+     BEGIN                                                              01386000
+         WRITE(P[DBL],TRITEM,OCTAL(TOS),OCTAL(SPREAD(TOS,H,L)),         01387000
+                OCTAL(H),OCTAL(L));                                     01388000
+         TOS:=TOS-1;                                                    01389000
+    END;                                                                01390000
+    IF NOT NORMAL AND BOS=64 THEN                                       01391000
+FOR TOS:=127 STEP -1 UNTIL ACTUALPRTBASE DO                             01392000
+BEGIN                                                                   01393000
+    WRITE(LINE[*],TRITEM,OCTAL(TOS),OCTAL(SPREAD(TOS,H,L)),             01394000
+          OCTAL(H),OCTAL(L));                                           01395000
+    MOVE(XNAMS[XNAME[TOS].CF],LINE[5],XNAME[TOS].FF);                   01396000
+    WRITE(P[DBL],8,LINE[*]);                                            01397000
+END;                                                                    01398000
+    IF BOOLEAN(STAX[INX].[6:1]) THEN BEGIN                              01399000
+        TOSORIG:=TOS;                                                   01400000
+    SQUEEZE:DO TOS:=TOS-1 UNTIL (WOOPS:=TOS LEQ BOS) OR                 01401000
+                          CONTROLDESC(TOS,X);                           01402000
+    IF WOOPS THEN BEGIN TOS:=TOS+10; GO XIT END;                        01403000
+    CUTBACK:IF (Y:=X.FF) GEQ BOS AND                                    01404000
+             Y LEQ BOS +1         AND                                   01405000
+            CD:=CONTROLDESC(Y,X) THEN                                   01406000
+              BEGIN                                                     01407000
+                   TOS:=MIN(TOSORIG,TOS+DELTA);                         01408000
+                   GO XIT;                                              01409000
+              END                                                       01410000
+              ELSE                                                      01411000
+              IF Y GTR BOS +1 AND  Y LSS TOS                            01412000
+                  AND CD     THEN                                       01413000
+                 GO CUTBACK;                                            01414000
+        GO SQUEEZE;                                                     01415000
+    XIT:                                                                01416000
+    END;                                                                01417000
+        SKIPEEE:                                                        01418000
+            IF OPERAND(TOS,V) THEN                                      01419000
+IF ((V="EEEE"&"EEEE"[1:25:23]) AND NOT NORMAL) OR                       01420000
+            ((V="[[[["&"[[[["[1:25:23]) AND                             01421000
+                    NORMAL)            THEN                             01422000
+            WHILE OPERAND(TOS-1,R) AND R=V DO                           01423000
+            TOS:=TOS-1;                                                 01424000
+            IF NOT NORMAL THEN                                          01425000
+            IF OPERAND(TOS-2,R) THEN                                    01426000
+            IF R=V THEN                                                 01427000
+            BEGIN                                                       01428000
+                 FOR I:=TOS,TOS-1 DO                                    01429000
+                 WRITE(P[DBL],TRITEM,OCTAL(I),OCTAL(R:=SPREAD(I,H,L)),  01430000
+                       OCTAL(H),OCTAL(L));                              01431000
+                 TOS:=TOS-2;                                            01432000
+                 GO SKIPEEE;                                            01433000
+            END;                                                        01434000
+        END                                                             01435000
+        ELSE                                                            01436000
+        BEGIN                                                           01437000
+    WRITE(P[DBL],S,OCTAL(V~STAX[INX].[8:10]),                           01438000
+            OCTAL(SPREAD(V~V+VBED.CF,H,L)),                             01439000
+            OCTAL(H),OCTAL(L),                                          01440000
+            OCTAL(R~SPREAD(V+1,H,L)),                                   01441000
+            OCTAL(H),OCTAL(L));                                         01442000
+            IF OCTAL(R.[30:6])="74" THEN                                01443000
+            IF WITHIN(MCPROG,MAXMCPROG,V:=V.CF,SEG,ADR) THEN            01444000
+            BEGIN                                                       01445000
+                WRITE(LINE[*],C,"COMPLE","X SLEE","P AT  ",             01446000
+                   OCTAL(SEG),SEG,OCTAL(ADR),ADR,R.[40:2]);             01447000
+                MOVE(NAMS[NAME[SEG].CF],LINE[7],                        01448000
+                          NAME[SEG].FF);                                01449000
+                WRITE(P[DBL],15,LINE[*]);                               01450000
+            END                                                         01451000
+            ELSE WRITE(P);                                              01452000
+        END;                                                            01453000
+        IF BOS=0 THEN BOS:=MAX(0,TOS-(IF NORMAL THEN MAXSTACKSIZE-1     01454000
+                   ELSE 128)) ELSE                                      01454100
+        IF BOS>TOS THEN BOS:=MAX(0,TOS-1);                              01455000
+        IF TOS-BOS GEQ MAXSTACKSIZE                                     01456000
+              THEN BOS:=TOS-MAXSTACKSIZE+1;                             01457000
+        FOR I:=TOS STEP -1 UNTIL BOS DO                                 01458000
+        BEGIN                                                           01459000
+            WRITE(P[DBL],TRITEM,OCTAL(I),OCTAL(R~SPREAD(I ,H,L)),       01460000
+                   OCTAL(H),                                            01461000
+                   OCTAL(L));                                           01462000
+            PRO:=-1;                                                    01463000
+            FOUND:=FALSE;                                               01464000
+    IF CONTROLDESC(I,X) AND (X.CF GTR 0) THEN                           01465000
+            BEGIN                                                       01466000
+                IF FOUND:=                                              01467000
+                    WITHIN(MCPROG,MAXMCPROG,L.CF,SEG,ADR) AND           01468000
+                  TRUE  THEN                                            01469000
+                BEGIN                                                   01470000
+                    WRITE(LINE[*],C,"MCP SE","GMENT ","AT    ",         01471000
+                   OCTAL(SEG),SEG,OCTAL(ADR),ADR,R.[40:2]);             01472000
+                        MOVE(NAMS[NAME[SEG].CF],LINE[7],                01473000
+                              NAME[SEG].FF);                            01474000
+                END                                                     01475000
+                ELSE                                                    01476000
+            IF FOUND:=WITHIN(OUTERBLOCK,0,L.CF,SEG,ADR) THEN            01477000
+       WRITE(LINE[*],C,"MCP OU","TER BL","OCK   ",                      01478000
+                0,0,OCTAL(L),L,R.[40:2])                                01479000
+            ELSE                                                        01480000
+                IF FOUND:=WITHIN(INTSP,INTSPMAX,L.CF,SEG,ADR) THEN      01481000
+                BEGIN                                                   01482000
+                    WRITE(LINE[*],C,"INTRIN","SIC NU","MBER  ",         01483000
+                     OCTAL(SEG),SEG,OCTAL(ADR),ADR,R.[40:2]);           01484000
+                     MOVE(INAMS[INAME[SEG].CF],LINE[7],                 01485000
+                               INAME[SEG].FF);                          01486000
+                END                                                     01487000
+                ELSE                                                    01488000
+                IF NORMAL THEN                                          01489000
+                WHILE (PRO:=PRO+1){PROWS AND NOT FOUND DO               01490000
+                IF FOUND:=WITHIN(PROGS[PRO,*],PROGS[PRO,255],           01491000
+                    L.CF,SEG,ADR)            THEN                       01492000
+                WRITE(LINE[*],C,"SEGMEN","T NUMB","ER    ",             01493000
+                    OCTAL(SEG),SEG,OCTAL(ADR),ADR,R.[40:2]);            01494000
+            END;                                                        01495000
+                IF NOT FOUND AND NORMAL THEN                            01496000
+                IF OPERAND(I,X) AND X.[1:1]=1 AND X.[3:1]=0             01497000
+                THEN%POSSIBLE CODE (OVERLAID)                           01498000
+                IF FOUND:=( (Y:=X.FF) GTR BOS   AND                     01499000
+                             Y LSS I         AND                        01500000
+                             (SEG:=X.CF) NEQ 0      AND                 01501000
+                             SEG LSS 1023         AND                   01502000
+                              CONTROLDESC(Y,R))                         01503000
+                THEN%                                                   01504000
+                WRITE(LINE[*],C,"SEGMEN","T NUMB","ER(*) ",             01505000
+                        OCTAL(SEG),SEG,OCTAL(ADR~R.CF),ADR,X.[10:2]);   01506000
+                IF FOUND THEN                                           01507000
+            WRITE(P[DBL],15,LINE[*]);                                   01508000
+        END;                                                            01509000
+    ERROWT:                                                             01510000
+    END DUMPING A STACK;                                                01511000
+    INTEGER PROCEDURE SPREAD(AT,F,C);                                   01512000
+        VALUE AT;                                                       01513000
+        INTEGER AT,F,C;                                                 01514000
+    BEGIN                                                               01515000
+        SPREAD:=CHRS(M[AT.ROW,AT.COL],0,3);                             01516000
+        C:=(F:=CHRS(M[AT.ROW,AT.COL],3,5)).CF;                          01517000
+        F:=F.FF;                                                        01518000
+    END SPREAD;                                                         01519000
+    PROCEDURE DUMPROGRAMS;                                              01520000
+    BEGIN                                                               01521000
+        INTEGER MIX,TYP,PRTH,PRTF,H,F,C,FPB,SD,AIT,S;                   01522000
+    INTEGER L; ALPHA STARBLANK;                                         01523000
+        INTEGER A;                                                      01524000
+        REAL JAR00;                                                     01525000
+        REAL STARS,JAR0,PRT0;                                           01526000
+        BOOLEAN PRTOK;                                                  01526100
+        FORMAT HD(A5," = ",A6,2(X1,A5),X2,A1,X1,*A6),                   01527000
+         H1(X8,"PROGRAM:",X8,"/",X7,", MIX =",I2);                      01528000
+        INTEGER PCOL,SIZ,RO,CL,RP;                                      01529000
+        REAL SEGS,SGM;                                                  01530000
+        REAL SEG,ADR;                                                   01531000
+        ARRAY LSTD[0:3];                                                01532000
+        FORMAT SEGH(X8,"PRESENT PROGRAM SEGMENTS"//                     01533000
+                    "SEGMENT SIZE  AT    THRU"//),                      01534000
+        BADSIZE(8("*")," INVALID SEGMENT DICTIONARY SIZE ",8("*")),     01535000
+        BADSDESC(8("*")," BAD SEGMENT DICTIONARY DESCRIPTOR ",8("*")),  01536000
+            SEGMENT(X3,2(A4,X1),2(X1,A5),X2,A3,A1),                     01537000
+                PD(A5," = ",A6,X1,2(A5,X1),", R+",A4,", +",A4);         01538000
+        STARS:="****"; STARS.[6:18]:=STARS.[24:18];                     01539000
+        IF DESCRIPTOR(JAR,JAR0,TYP) AND TYP="50" THEN                   01540000
+        JAR0:=JAR0.CF;                                                  01541000
+        IF (PRTOK:=PDATADESC(PRT,PRT0)) THEN                            01542000
+        PRTH:=SPREAD(PRT,PRTF,PRT0);                                    01543000
+        IF PRT0>0 THEN                                                  01544000
+        FOR MIX:=1 STEP 1 UNTIL MIXMAX DO                               01545000
+IF DESCRIPTOR(PRT0+MIX,R,TYP) AND TYP="50"                              01546000
+              AND                                                       01547000
+(NOT DUMPBYMIX OR (DUMPBYMIX AND MYMIX=MIX))                            01548000
+THEN                                                                    01549000
+        BEGIN                                                           01550000
+        NEXTPAGE;                                                       01551000
+            WRITE(LINE[*],H1,MIX);                                      01552000
+            IF                                                          01553000
+                IF JAR0=0 THEN FALSE                                    01554000
+                ELSE                                                    01555000
+                DESCRIPTOR(JAR0+MIX,JAR00,TYP) AND TYP="50"             01556000
+                AND (JAR00~JAR00.CF) GTR 0         THEN                 01557000
+            BEGIN                                                       01558000
+                MOVC(M[(A:=JAR00).ROW,A.COL],1,                         01559000
+                     LINE[2],1,0,7);                                    01560000
+                MOVC(M[(A:=A+1).ROW,A.COL],1,                           01561000
+                     LINE[3],1,0,7);                                    01562000
+            END                                                         01563000
+            ELSE                                                        01564000
+            BEGIN                                                       01565000
+                MOVC(STARS,1,LINE[2],1,0,7);                            01566000
+                MOVC(STARS,1,LINE[3],1,0,7);                            01567000
+            END;                                                        01568000
+            WRITE(P[DBL],15,LINE[*]);                                   01569000
+            NEXTITEM;                                                   01570000
+            WRITE(P,HD,                                                 01571000
+                OCTAL(PRT),                                             01572000
+                OCTAL(PRTH),OCTAL(PRTF),OCTAL(PRT0)," ",                01573000
+                2,"PRT[*,","*]    ",                                    01574000
+                OCTAL(PRT0+MIX),                                        01575000
+                OCTAL(SPREAD(PRT0+MIX,F,R)),OCTAL(F),OCTAL(R),          01576000
+                IF F=0 THEN " " ELSE "*",                               01577000
+                3,"PRT[MI","X,*], ","CF=R  ",                           01578000
+                OCTAL(R+3),                                             01579000
+                OCTAL(H:=SPREAD(R+3,F,FPB)),OCTAL(F),OCTAL(FPB),        01580000
+                IF OCTAL(H.[30:6])="50" THEN " " ELSE "*",              01581000
+                2,"R+3, F","PB    ",                                    01582000
+                OCTAL(R+4),                                             01583000
+                OCTAL(H:=SPREAD(R+4,F,SD)),OCTAL(F),OCTAL(SD),          01584000
+                IF OCTAL(H.[30:6])="50" THEN " " ELSE "*",              01585000
+                4,"R+4, S","EGMENT"," DICTI","ONARY ",                  01586000
+                OCTAL(R+6),                                             01587000
+                OCTAL(H:=SPREAD(R+6,F,AIT)),OCTAL(F),OCTAL(AIT),        01588000
+                IF BOOLEAN(H.[30:1]) THEN " " ELSE "*",                 01589000
+                2,"R+6, A","IT    ",                                    01590000
+                OCTAL(R+7),                                             01591000
+                OCTAL(H:=SPREAD(R+7,F,C)),OCTAL(F),OCTAL(C),            01592000
+                IF H.[30:2]=3 AND F<R AND C=0 THEN " " ELSE "*",        01593000
+                7,"R+7, L","AST MS","CW FOR"," WHICH"," MSFF ",         01594000
+                  "WAS FA","LSE   ",                                    01595000
+                OCTAL(R+8),                                             01596000
+                OCTAL(H:=SPREAD(R+8,F,C)),OCTAL(F),OCTAL(C),            01597000
+                " ",                                                    01598000
+                2,"R+10, ","INCW  ",                                    01599000
+                OCTAL(R+9),                                             01600000
+                OCTAL(H:=SPREAD(R+9,F,C)),OCTAL(F),OCTAL(C),            01601000
+                IF H=0 AND F=0 THEN " " ELSE "*",                       01602000
+                9,"R+11, ","LITERA","L FOR ","LAST C","OMMUNI",         01603000
+                  "CATE OR"," PROGR","AM REL","EASE  ",                 01604000
+                OCTAL(R+10),                                            01605000
+                OCTAL(H:=SPREAD(R+10,S,C)),OCTAL(S),OCTAL(C),           01606000
+                IF OCTAL(H.[30:6])="50" AND 0<S AND S<R AND R=C         01607000
+                THEN " " ELSE "*",                                      01608000
+                5,"R+12, ","FF = B","OTTOM ","OF THE"," STACK");        01609000
+            NEXTITEM;                                                   01610000
+            PROGS[PROWS:=0,255]:=PCOL:=-1;                              01611000
+            IF DESCRIPTOR(R+4,SD,TYP) AND TYP="50" THEN                 01612000
+            IF OPERAND(SD:=SD.CF,SEGS) AND SEGS.[1:37]=0 THEN           01613000
+            BEGIN                                                       01614000
+                WRITE(P,SEGH);                                          01615000
+                FOR SEG:=1 STEP 1 UNTIL SEGS DO                         01616000
+                IF OPERAND(SD+SEG,SGM) AND                              01617000
+                    (ADR:=SGM.FF)>1023 THEN                             01618000
+                BEGIN                                                   01619000
+                    SIZ:=                                               01620000
+        IF (OPERAND(ADR-1,SIZ)  AND                                     01621000
+              SIZ.CF=SEG)                        OR                     01623000
+              (OPERAND(ADR-1,SIZ)     AND                               01624000
+              OPERAND(ADR-2,H)     AND                                  01625000
+              H.[3:6]=7      AND                                        01626000
+              SIZ.[8:10]=SGM.CF)      THEN                              01627000
+                        SIZ.FF ELSE 0;                                  01628000
+                    IF BOOLEAN(SGM.[2:1]) THEN                          01629000
+              BEGIN                                                     01630000
+                   L:=SGM.CF;                                           01631000
+                   STARBLANK:="*";                                      01632000
+                   FOR I:=0 STEP 1 UNTIL INTSPMAX DO                    01633000
+                   IF INTSP[I].[8:10]=L THEN                            01634000
+                   BEGIN                                                01635000
+                        STARBLANK:=" ";                                 01636000
+                        I:=INTSPMAX+2;                                  01637000
+                   END;                                                 01638000
+                   WRITE(LINE[*],SEGMENT,OCTAL(SEG),OCTAL(SIZ),         01639000
+                        OCTAL(ADR),IF SIZ=0 THEN STARS ELSE             01640000
+                        OCTAL(ADR+SIZ-1),OCTAL(L),STARBLANK);           01641000
+                   IF L LEQ INTMAX THEN                                 01642000
+                   MOVE(INAMS[INAME[L].CF],LINE[4],INAME[L].FF);        01643000
+                   WRITE(P,7,LINE[*]);                                  01644000
+              END                                                       01645000
+                    ELSE                                                01646000
+                    BEGIN                                               01647000
+                        IF (PCOL:=PCOL+1)=255 THEN                      01648000
+                        BEGIN                                           01649000
+                            PROGS[PROWS,255]:=254;                      01650000
+                            PROWS:=PROWS+1;                             01651000
+                            PCOL:=0;                                    01652000
+                        END;                                            01653000
+                        PROGS[PROWS,PCOL]:=                             01654000
+                            ADR&                                        01655000
+                            (IF SIZ=0 THEN 0 ELSE ADR+SIZ-1)[18:33:15]& 01656000
+                            SEG[8:38:10];                               01657000
+                    END;                                                01658000
+                END;                                                    01659000
+                IF (PROGS[PROWS,255]:=PCOL)}0 THEN                      01660000
+                BEGIN                                                   01661000
+                    FOR RO:=0 STEP 1 UNTIL PROWS DO                     01662000
+                    SEQUENCE(PROGS[RO,*],PROGS[RO,255]);                01663000
+                    SEGS:=PROWS+1;                                      01664000
+                    FOR I:=0 STEP 1 UNTIL PROWS DO                      01665000
+                    BEGIN                                               01666000
+                        SEGS:=SEGS+PROGS[I,255];                        01667000
+                        LSTD[I]:=0;                                     01668000
+                    END;                                                01669000
+                    FOR SEG:=1 STEP 1 UNTIL SEGS DO                     01670000
+                    BEGIN                                               01671000
+                        RO:=0;                                          01672000
+                        IF PROWS>0 THEN                                 01673000
+                        FOR I:=1 STEP 1 UNTIL PROWS DO                  01674000
+                        IF LSTD[RO]=255 OR                              01675000
+                            (LSTD[I]<255 AND                            01676000
+                            PROGS[I,LSTD[I]].CF<PROGS[RO,LSTD[RO]].CF)  01677000
+                                                             THEN       01678000
+                        RO:=I;                                          01679000
+                        WRITE(P,SEGMENT,                                01680000
+                                OCTAL((SGM:=PROGS[RO,LSTD[RO]]).[8:10]),01681000
+                                IF SGM.FF=0 THEN STARS ELSE             01682000
+                                    OCTAL(SGM.FF-SGM.CF+1),             01683000
+                                OCTAL(SGM.CF),OCTAL(SGM.FF));           01684000
+                        LSTD[RO]:=LSTD[RO]+1;                           01685000
+                    END;                                                01686000
+                END;                                                    01687000
+    END                                                                 01688000
+        ELSE WRITE(P[DBL],BADSIZE) ELSE WRITE(P[DBL],BADSDESC);         01689000
+         IF (AIT:=MIXSTK[MIX]) = 0 THEN                                 01690000
+            STAX[0]:=                                                   01691000
+                (R-1)&                                                  01692000
+            (S-1)[18:33:15]&                                            01693000
+              1[7:47:1] ELSE                                            01694000
+        BEGIN                                                           01694100
+         IF STAX[AIT].FF=0 THEN STAX[AIT].FF:=S-1;                      01695000
+        MIXSTK[MIX]:=0;                                                 01695100
+        END;                                                            01695200
+         DUMPSTACK(AIT);                                                01696000
+    IF DUMPBYMIX AND MYMIX=MIX THEN MIX:=MIXMAX+1;%XIT                  01697000
+        END;                                                            01698000
+        IF PRTOK THEN                                                   01698100
+        FOR MIX:=1 STEP 1 UNTIL MIXMAX DO                               01698200
+        IF(AIT:=MIXSTK[MIX]) NEQ 0 THEN STAX[AIT].[7:1]:=0;             01698300
+        COMMENT THE ABOVE WILL CAUSE ANY STACKS ASLEEP, ASSOCIATED WITH 01698400
+        A MIX INDEX, BUT NOT DUMPED IN THIS PROCEDURE,TO BE DUMPED      01698500
+        LATER AS CONTROL STATE STATES.  ;                               01698600
+    END DUMPING NORMAL STATE PROGRAM INFO;                              01699000
+    PROCEDURE DUMPCONTROLSTACKS;                                        01700000
+    BEGIN                                                               01701000
+        FORMAT H(X8,"CONTROL STATE STACKS");                            01702000
+        REAL V,R,A;                                                     01703000
+         INTEGER INX,I;                                                 01704000
+        NEXTPAGE;                                                       01705000
+        WRITE(P[DBL],H);                                                01706000
+         STAX[0]:=127&64[18:33:15];                                     01707000
+        DUMPSTACK(0);                                                   01708000
+        NEXTPAGE;                                                       01709000
+         I:=-1;                                                         01710000
+        IF DESCRIPTOR(ISTACK,A,R) AND R="50" THEN                       01711000
+        IF (V:=A.[8:10])>0 AND (A:=A.CF)>0 THEN                         01712000
+         I:=A+V-1;                                                      01713000
+     IF BEDSTK GTR 0 THEN                                               01714000
+     FOR INX:=1 STEP 1 UNTIL BEDSTK DO                                  01715000
+        IF BOOLEAN(STAX[INX].[7:1]) THEN ELSE                           01716000
+    BEGIN                                                               01717000
+         R:=STAX[INX].CF;                                               01718000
+         IF R GTR A AND R LEQ I THEN                                    01719000
+         BEGIN % ISTACK ASLEEP                                          01720000
+              STAX[INX].FF:=A;                                          01721000
+              NEXTITEM;                                                 01722000
+              DISPLAY(ISTACK,TRUE);                                     01723000
+              I:=0;% SO DONT DUMP ISTACK TWICE                          01724000
+         END SPECIAL ISTACK STUFF;                                      01725000
+         DUMPSTACK(INX);                                                01726000
+    NEXTPAGE;                                                           01727000
+    END OF DUMPING BEDDED CONTROL STATE STACKS ;                        01728000
+    IF I GTR 0 THEN % ISTACK AWAKE                                      01729000
+    BEGIN                                                               01730000
+         STAX[0]:=I&A[18:33:15];                                        01731000
+         NEXTITEM;                                                      01732000
+         DISPLAY(ISTACK,TRUE);                                          01733000
+         DUMPSTACK(0);                                                  01734000
+       NEXTPAGE;                                                        01735000
+      END;                                                              01736000
+  IF MAXSTK GTR BEDSTK THEN %MORE C.S. STACKS TO DP                     01737000
+  FOR INX:=BEDSTK+1 STEP 1 UNTIL MAXSTK DO                              01738000
+  BEGIN                                                                 01739000
+    DUMPSTACK(INX);                                                     01740000
+    IF INX LSS MAXSTK THEN NEXTPAGE;                                    01741000
+  END;                                                                  01742000
+    END DUMPING CONTROL STATE STACKS;                                   01743000
+    PROCEDURE DUMPMCPINFO;                                              01744000
+    BEGIN                                                               01745000
+        REAL R,A,N,L,TA,TS,MA,MS,LA,LS,RA,RS,PA,PS;                     01746000
+    DEFINE MAXMESSAGES=100#;                                            01747000
+        INTEGER TYP,S,C;                                                01748000
+        BOOLEAN TINUOK;                                                 01749000
+        STREAM PROCEDURE MOVD(S,D,W);                                   01750000
+            VALUE W;                                                    01751000
+        BEGIN                                                           01752000
+            LABEL EXIT;                                                 01753000
+            SI:=S; DI:=D;                                               01754000
+            W(8(IF SC="~" THEN JUMP OUT 2 TO EXIT; DS:=CHR));           01755000
+            SI:=SI-1; DI:=DI-1;                                         01756000
+            EXIT: DS:=CHR;                                              01757000
+        END MOVD;                                                       01758000
+        FORMAT SE(A3," = ",2(O,X1),X24,"(",O,X1,O,")"),                 01759000
+    NULLMESSAGES("### NO SPO MESSAGES QUEUED"),                         01760000
+    NULLSLATE("### NO INDEPENDENT-RUNNERS TO BE INITIATED"),            01761000
+              NOMEMXI(  ,"TOGLE.[15:6]",X2," = ",A2,", NOMEM"),         01762000
+              TFXI(X8,"BIT ",I2," = ",I1,", ",X28),                     01763000
+                TF(X8,"BIT ",I2," = ",I1,", ",*A6/);                    01764000
+        BOOLEAN STREAM PROCEDURE BITON(W,B);                            01765000
+            VALUE B;                                                    01766000
+        BEGIN                                                           01767000
+            SI:=W; SKIP B SB;                                           01768000
+            IF SB THEN TALLY:=1;                                        01769000
+            BITON:=TALLY;                                               01770000
+        END;                                                            01771000
+    ARRAY TB[0:143];                                                    01772000
+        REAL UA,US,IA,IS,FA,FS;                                         01773000
+        FORMAT LUN(A3),                                                 01774000
+            FT(A1,X1,A2,X1,A1,X1,A3,X1,A2,X1,A1,X1,A2,X1,A3),           01775000
+            RT(A3,X1,A2,X1,A4,X1,A6,X1,A3),                             01776000
+            PT(A1,X1,A1,X1,A5,X1,A5,X1,A6),                             01777000
+            IOATH(X8,"FIELDS OF WORDS IN THE I/O ASSIGNMENT TABLES:"//  01778000
+            X8,"TINU"/                                                  01779000
+            X12,"  [0:3]"/                                              01780000
+            X12,"1 [3:5]   HARDWARE UNIT NUMBER"/                       01781000
+            X12,"  [8:3]"/                                              01782000
+            X12,"2 [11:7]  POWER OF 2"/                                 01783000
+            X12,"  [18:6]"/                                             01784000
+            X12,"3 [24:1]  IN=0, OUT=1"/                                01785000
+            X12,"  [25:5]"/                                             01786000
+            X12,"4 [30:18] UNIT MNEMONIC"//                             01787000
+            X8,"RDCTABLE"/                                              01788000
+            X12,"  [0:8]"/                                              01789000
+            X12,"1 [8:6]   MIX INDEX IF ASSIGNED"/                      01790000
+            X12,"2 [14:10] REEL NUMBER"/                                01791000
+            X12,"3 [24:17] CREATION DATE"/                              01792000
+            X12,"4 [41:7]  CYCLE"//                                     01793000
+            X8,"PRNTABLE"/                                              01794000
+            X12,"  [0:1]"/                                              01795000
+            X12,"1 [1:1]   IF WRITE RING PRESENT"/                      01796000
+            X12,"  [2:13]"/                                             01797000
+            X12,"2 [15:15] ADDRESS OF TOP I/O DESCRIPTOR"/              01798000
+            X12,"3 [30:18] PHYSICAL REEL NUMBER"//                      01799000
+            "LUN",X6,                                                   01800000
+            "TINU",X24,                                                 01801000
+            "MULTITABLE",X4,                                            01802000
+            "LABELTABLE",X4,                                            01803000
+            "RDCTABLE",X24,                                             01804000
+            "PRNTABLE"/                                                 01805000
+            X9,                                                         01806000
+            X2,"1",X4,"2",X6,"3",X4,"4",X8,                             01807000
+            X14,X14,                                                    01808000
+            X4,"1",X2,"2",X4,"3",X6,"4",X8,                             01809000
+            X2,"1",X7,"2",X5,"3",X5);                                   01810000
+            BOOLEAN PROCEDURE VARIFY(WHAT,A,S,B);                       01811000
+                VALUE WHAT,B;                                           01812000
+            INTEGER WHAT;                                               01813000
+            REAL A,S;                                                   01814000
+            BOOLEAN B;                                                  01814500
+        BEGIN                                                           01815000
+                DISPLAY(WHAT,B);                                        01816000
+            VARIFY:=                                                    01817000
+                DESCRIPTOR(WHAT,A,S) AND                                01818000
+                S="50" AND                                              01819000
+                (S:=A.[8:10])>0 AND                                     01820000
+                (A:=A.CF)>0 AND                                         01821000
+                (A+S-1)<MAXCOR;                                         01822000
+        END VARIFY;                                                     01823000
+        DEFINE VERIFY(VERIFY1,VERIFY2,VERIFY3)=                         01823100
+               VARIFY(VERIFY1,VERIFY2,VERIFY3,FALSE)#;                  01823300
+        FORMAT IOQSH("FIELDS OF WORDS IN THE I/O-QUEUE TABLES"//        01824000
+            X8,"UNIT"/                                                  01825000
+            X12,"  [0:1]"/                                              01826000
+            X12,"1 [1:4]   UNIT TYPE"/                                  01827000
+            X12,"2 [5:8]   ERROR FIELD"/                                01828000
+            X12,"3 [13:1]  UNIT NOT READY"/                             01829000
+            X12,"4 [14:1]  ERROR FLAG"/                                 01830000
+            X12,"5 [15:1]  WAITING FOR AN I/O CHANNEL"/                 01831000
+            X12,"6 [16:2]  I/O IN PROCESS"/                             01832000
+            X12,"7 [18:15] INDEX OF FIRST I/O REQUEST"/                 01833000
+            X12,"8 [33:15] INDEX OF LAST I/O REQUEST"//                 01834000
+            X8,"LOCATQUE"/                                              01835000
+            X12,"  [0:3]   = 5, DESCRIPTOR BITS"/                       01836000
+            X12,"1 [3:5]   MIX INDEX"/                                  01837000
+            X12,"  [8:4]"/                                              01838000
+            X12,"2 [12:6]  LOGICAL UNIT NUMBER"/                        01839000
+            X12,"3 [18:15] INDEX OF NEXT I/O REQUEST"/                  01840000
+            X12,"4 [33:15] ADDRESS OF I/O DESCRIPTOR"//                 01841000
+    "LUN/  TINU  ",                                                     01842000
+            "UNIT",X31,                                                 01843000
+            "IOQUE",X19,                                                01844000
+            "LOCATQUE",X21,                                             01845000
+            "FINALQUE",X11/                                             01846000
+            "INDEX",X7,                                                 01847000
+            X2,"1",X2,"2",X3,"3",X1,"4",X1,"5",                         01848000
+                X1,"6",X1,"7",X5,"8",X11,X24,                           01849000
+            X2,"1",X5,"2",X2,"3",X5,"4"//                               01850000
+                                           ),                           01851000
+    IFO(A5,X2,A3),                                                      01852000
+            UFO(A1,X1,A2,X1,A3,4(X1,A1),2(X1,A5)),                      01853000
+            WFO(O,X1,O),                                                01854000
+            LFO(A1,3(X1,A2),2(X1,A5));                                  01855000
+        NEXTPAGE;                                                       01856000
+        DISPLAY(TOGLE,FALSE);                                           01857000
+        IF OPERAND(TOGLE,R) THEN                                        01858000
+        BEGIN                                                           01859000
+    WRITE(P[DBL],NOMEMXI,OCTAL(R.[15:6]));                              01860000
+    FOR I:=1 STEP 1 UNTIL 13 DO                                         01861000
+        IF BITON(R,I) THEN WRITE(P,TF,I,1,-1);                          01862000
+        FILL TB[*] WITH                                                 01863000
+        "        ","        ","        ",%00%BIT 00(NEVER USED)         01864000
+        "        ","        ","        ",%03%BIT 01                     01865000
+        "        ","        ","        ",%06%BIT 02                     01866000
+        "        ","        ","        ",%09%BIT 03                     01867000
+"        ","        ","        ",%12%BIT 04                             01868000
+"        ","        ","        ",%15%BIT 05                             01869000
+"        ","        ","        ",%18%BIT 06                             01870000
+        "        ","        ","        ",%21%BIT 07                     01871000
+        "        ","        ","        ",%24%BIT 08                     01872000
+        "        ","        ","        ",%27%BIT 09                     01873000
+        "        ","        ","        ",%30%BIT 10                     01874000
+        "        ","        ","        ",%33%BIT 11                     01875000
+        "        ","        ","        ",%36%BIT 12                     01876000
+        "        ","        ","        ",%39%BIT 13                     01877000
+"BREAKTOG","        ","        ",%42%BIT 14                             01878000
+        "        ","        ","        ",%45%BIT 15                     01879000
+        "        ","        ","        ",%48%BIT 16                     01880000
+        "        ","        ","        ",%51%BIT 17                     01881000
+        "        ","        ","        ",%54%BIT 18                     01882000
+        "        ","        ","        ",%57%BIT 19                     01883000
+        "        ","        ","        ",%60%BIT 20                     01884000
+        "CDFREE  ","        ","        ",%63%BIT 21                     01885000
+        "FINDINGA","DDRESS  ","        ",%66%BIT 22                     01886000
+        "SCRATCHD","IRECTORY","READY   ",%69%BIT 23                     01887000
+        "MCPFREE ","        ","        ",%72%BIT 24                     01888000
+        "INQPTSTO","PPED    ","        ",%75%BIT 25                     01889000
+        "DCQPTSTO","PPED    ","        ",%78%BIT 26                     01890000
+        "DCWAITIN","G       ","        ",%81%BIT 27                     01891000
+        "SMWSTOPP","ED      ","        ",%84%BIT 28                     01892000
+        "NINETEEN","NOTREADI","NG      ",%87%BIT 29                     01893000
+        "STARTOG ","        ","        ",%90%BIT 30                     01894000
+        "EGGSELEC","TSTOPPED","        ",%93%BIT 31                     01895000
+        "REMOTELO","GFREE   ","        ",%96%BIT 32                     01896000
+        "SPOEDNUL","LOG     ","        ",%99%BIT 33                     01897000
+        "INTFREE ","        ","        ",%102%BIT 34                    01898000
+        "QTRDY   ","        ","        ",%105%BIT 35                    01899000
+        "NOBACKTA","LK      ","        ",%108%BIT 36                    01900000
+        "KEYBOARD","READY   ","        ",%111%BIT 37                    01901000
+        "BUMPTUTI","TIME    ","        ",%114%BIT 38                    01902000
+        "ABORTABL","E       ","        ",%117%BIT 39                    01903000
+        "NSECONDR","EADY    ","        ",%120%BIT 40                    01904000
+        "HOLDFREE","        ","        ",%123%BIT 41                    01905000
+        "USERDISK","READY   ","        ",%126%BIT 42                    01906000
+        "STOREDY ","        ","        ",%129%%BIT 43                   01907000
+        "STACKUSE","        ","        ",%132%BIT 44                    01908000
+        "SHEETFRE","E       ","        ",%135%BIT 45                    01909000
+        "STATUSBI","T       ","        ",%138%BIT 46                    01910000
+        "HP2TOG  ","        ","        ";%141%BIT 47                    01911000
+    FOR I:=14,21 STEP 1 UNTIL 47 DO                                     01912000
+    BEGIN                                                               01913000
+        WRITE(LINE[*],TFXI,I,REAL(BITON(R,I)));                         01914000
+        MOVC(TB[3|I],0,LINE[2],4,3,0);                                  01915000
+        WRITE(P[DBL],6,LINE[*]);                                        01916000
+    END;                                                                01917000
+        END;                                                            01918000
+        NEXTITEM;                                                       01919000
+        DISPLAY(OPTION,FALSE);                                          01920000
+        IF OPERAND(OPTION,R) THEN                                       01921000
+        BEGIN                                                           01922000
+    FOR I:=1,3 STEP 1 UNTIL 8 DO                                        01923000
+            IF BITON(R,I) THEN                                          01924000
+            WRITE(P,TF,I,1,-1);                                         01925000
+            FILL TB[*] WITH                                             01926000
+                "USEDRA","      ",                                      01927000
+                "USEDRB","      ",                                      01928000
+                "BOJMES","S     ",                                      01929000
+                "EOJMES","S     ",                                      01930000
+                "OPNMES","S     ",                                      01931000
+                "TERMGO","      ",                                      01932000
+                "GIVEDA","TE    ",                                      01933000
+                "GIVETI","ME    ",                                      01934000
+                "SAMEBR","EAKTAP","E     ",                             01935000
+                "AUTOPR","INT   ","      ",                             01936000
+                "CLEARW","RS, ST","OPUNT ",                             01937000
+                "DISCON","DC, NO","TIFYOP",                             01938000
+                "COPNME","SS    ",                                      01939000
+                "CLOSEM","ESS   ",                                      01940000
+                "ERRORM","SG    ",                                      01941000
+                "RETMSG","      ",                                      01942000
+                "LIBMSG","      ",                                      01943000
+                "SCHEDM","SG    ",                                      01944000
+                "SECMSG","      ",                                      01945000
+                "DSKTOG","      ",                                      01946000
+                "RELTOG","      ",                                      01947000
+                "PBDREL","      ",                                      01948000
+                "CHECKL","INK   ",                                      01949000
+                "DISKMS","G     ",                                      01950000
+                "NOT US","ED    ",                                      01950100
+                "NOT US","ED    ",                                      01950200
+                "USEPBD","      ",                                      01951000
+                "SVPBT ","      ",                                      01952000
+                "RSTOG ","      ",                                      01953000
+                "AUTOUN","LD    ",                                      01954000
+                "RNALL ","      ",                                      01955000
+                "CODEOL","AY    ",                                      01955100
+                "COREST","      ",                                      01955200
+                "DATAOL","AY    ",                                      01955300
+                "NOT US","ED    ",                                      01955305
+                "NOT US","ED    ",                                      01955310
+                "NOT US","ED    ",                                      01955320
+                "NOT US","ED    ",                                      01955330
+                "NOT US","ED    ";                                      01955340
+            WRITE(P,TF,2,R.[2:1],2,"MOD3IO","S     ");                  01956000
+            FOR I:=9 STEP 1 UNTIL 35 DO                                 01960000
+        WRITE(P,TF,I,REAL(BITON(R,I)),2,                                01961000
+              TB[A:=28+2|(35-I)],TB[A+1]);                              01962000
+            FOR I:=36 STEP 1 UNTIL 39 DO                                01963000
+            WRITE(P,TF,I,REAL(BITON(R,I)),3,                            01964000
+                TB[A:=16+3|(39-I)],TB[A+1],TB[A+2]);                    01965000
+            FOR I:=40 STEP 1 UNTIL 47 DO                                01966000
+            WRITE(P,TF,I,REAL(BITON(R,I)),2,                            01967000
+                TB[A:=2|(47-I)],TB[A+1]);                               01968000
+        END;                                                            01969000
+        NEXTITEM;                                                       01970000
+        DISPLAY(MESSAGEHOLDER,FALSE);                                   01971000
+        I:=0;                                                           01972000
+        IF OPERAND(MESSAGEHOLDER,R) AND (R:=R.CF)!0 THEN                01973000
+        DO                                                              01974000
+        BEGIN                                                           01975000
+            WRITE(LINE[*],ITEM,OCTAL(R),                                01976000
+        OCTAL(HIHALF(R)),OCTAL(LOHALF(R)),"     ");                     01977000
+            MOVD(M[(R+1).ROW,(R+1).COL],LINE[4],MIN(9,MAXCOR-R));       01978000
+            WRITE(P,15,LINE[*]);                                        01979000
+        END                                                             01980000
+        UNTIL                                                           01981000
+        (I:=I+1) GEQ MAXMESSAGES OR                                     01982000
+            NOT OPERAND(R,R) OR                                         01983000
+    (R:=R.FF)=0                                                         01984000
+    ELSE WRITE(P,NULLMESSAGES);                                         01985000
+        NEXTITEM;                                                       01986000
+        DISPLAY(NSLATE,FALSE);                                          01987000
+        DISPLAY(LSLATE,FALSE);                                          01988000
+        IF VARIFY(SLATE,A,S,TRUE) AND                                   01989000
+            S.[47:1]=0 AND                                              01990000
+            OPERAND(NSLATE,N) AND                                       01991000
+            N.[1:8]=0 AND                                               01992000
+            N<S AND                                                     01993000
+            N.[47:1]=0 AND                                              01994000
+            OPERAND(LSLATE,L) AND                                       01995000
+            L.[1:8]=0 AND                                               01996000
+            L<S AND                                                     01997000
+            L.[47:1]=0 AND                                              01998000
+            L!N THEN                                                    01999000
+        DO                                                              02000000
+        BEGIN                                                           02001000
+        N:=REAL(BOOLEAN(N+2) AND BOOLEAN(S-1));                         02002000
+            WRITE(LINE[*],SE,OCTAL(N),                                  02003000
+               OCTAL(HIHALF(A+N)),OCTAL(LOHALF(A+N)),                   02004000
+               OCTAL(HIHALF(A+N+1)),OCTAL(R:=LOHALF (A+N+1)));          02005000
+            IF 129{(R:=R.CF) AND R{PRTMAX THEN                          02006000
+            MOVE(NAMS[NAME[R].CF],LINE[3],                              02007000
+                      NAME[R].FF);                                      02008000
+            WRITE(P,15,LINE[*]);                                        02009000
+         END UNTIL N=L                                                  02010000
+         ELSE WRITE(P,NULLSLATE);                                       02011000
+        NEXTITEM; NEXTPAGE;                                             02012000
+IF TINUOK:=VERIFY(TINU,TA,TS) AND                                       02013000
+           VERIFY(MULTITABLE,MA,MS) AND                                 02014000
+           VERIFY(LABELTABLE,LA,LS) AND                                 02015000
+           VERIFY(RDCTABLE,RA,RS) AND                                   02016000
+           VERIFY(PRNTABLE,PA,PS) THEN                                  02017000
+        BEGIN                                                           02018000
+            S:=MAX(TS,MS,LS,RS,PS)-1;                                   02019000
+            WRITE(P,IOATH);                                             02020000
+            FOR I:=0 STEP 1 UNTIL S DO                                  02021000
+            BEGIN                                                       02022000
+            WRITE(TB[*],LUN,OCTAL(I));                                  02023000
+            IF I<TS THEN                                                02024000
+            BEGIN                                                       02025000
+                WRITE(LINE[*],FT,                                       02026000
+                    (A:=HIHALF(TA+I)).[24:3],                           02027000
+                    OCTAL(A.[27:5]),                                    02028000
+                    A.[32:3],                                           02029000
+                    OCTAL(A.[35:7]),                                    02030000
+                    OCTAL(A.[42:6]),                                    02031000
+                    (A:=LOHALF(TA+I)).[24:1],                           02032000
+                    OCTAL(A.[25:5]),                                    02033000
+                    A.[30:18]);                                         02034000
+                MOVC(LINE[0],0,TB[1],1,2,6);                            02035000
+            END;                                                        02036000
+            IF I<MS THEN                                                02037000
+                MOVC(M[(MA+I).ROW,(MA+I).COL],0,TB[4],5,1,0);           02038000
+            IF I<LS THEN                                                02039000
+                MOVC(M[(LA+I).ROW,(LA+I).COL],0,TB[6],3,1,0);           02040000
+                IF I<RS THEN                                            02041000
+                BEGIN                                                   02042000
+                    WRITE(LINE[*],RT,                                   02043000
+                    OCTAL((A:=HIHALF(RA+I)).[24:8]),                    02044000
+                    OCTAL(A.[32:6]),                                    02045000
+                    OCTAL(A.[38:10]),                                   02046000
+                    OCTAL((A:=LOHALF(RA+I)).[24:17]),                   02047000
+                    OCTAL(A.[41:7]));                                   02048000
+                    MOVC(LINE[0],0,TB[8],1,2,6);                        02049000
+                END;                                                    02050000
+                IF I<PS THEN                                            02051000
+                BEGIN                                                   02052000
+                    WRITE(LINE[*],PT,                                   02053000
+                    (A:=HIHALF(PA+I)).[24:1],                           02054000
+                    A.[25:1],                                           02055000
+                    OCTAL(A.[26:13]),                                   02056000
+                    OCTAL((A:=LOHALF(PA+I)&A[15:39:9]).[15:15]),        02057000
+                    OCTAL(A.[30:18]));                                  02058000
+                    MOVC(LINE[0],0,TB[11],5,2,6);                       02059000
+                END;                                                    02060000
+                WRITE(P,15,TB[*]);                                      02061000
+            END;                                                        02062000
+        END;                                                            02063000
+        NEXTPAGE;                                                       02064000
+        DISPLAY(IOQUEAVAIL,FALSE);                                      02065000
+        IF  VERIFY(UNIT,UA,US) AND                                      02066000
+            VERIFY(IOQUE,IA,IS) AND                                     02067000
+            VERIFY(LOCATQUE,LA,LS) AND                                  02068000
+            VERIFY(FINALQUE,FA,FS) THEN                                 02069000
+        BEGIN                                                           02070000
+            S:=MAX(US,IS,LS,FS)-1;                                      02071000
+            WRITE(P,IOQSH);                                             02072000
+            FOR I:=0 STEP 1 UNTIL S DO                                  02073000
+            BEGIN                                                       02074000
+         WRITE(TB[*],IFO,OCTAL(I),IF TINUOK THEN                        02075000
+              LOHALF(TA+I).[30:18] ELSE "***");                         02076000
+                IF I<US THEN                                            02077000
+                BEGIN                                                   02078000
+                    WRITE(LINE[*],UFO,                                  02079000
+                    (A:=HIHALF(UA+I)).[24:1],                           02080000
+                    OCTAL(A.[25:4]),                                    02081000
+                    OCTAL(A.[29:8]),                                    02082000
+                    A.[37:1],                                           02083000
+                    A.[38:1],                                           02084000
+                    A.[39:1],                                           02085000
+                    A.[40:2],                                           02086000
+                    OCTAL((A:=LOHALF(UA+I)&A[18:42:6]).[18:15]),        02087000
+                    OCTAL(A.[33:15]));                                  02088000
+                    MOVC(LINE[0],0,TB[1],4,3,4);                        02089000
+                END;                                                    02090000
+                IF I<IS THEN                                            02091000
+                BEGIN                                                   02092000
+                    WRITE(LINE[*],WFO,                                  02093000
+                    OCTAL(HIHALF(IA+I)),                                02094000
+                    OCTAL(LOHALF(IA+I)));                               02095000
+                    MOVC(LINE[0],0,TB[5],7,2,1);                        02096000
+                END;                                                    02097000
+                IF I<LS THEN                                            02098000
+                BEGIN                                                   02099000
+                    WRITE(LINE[*],LFO,                                  02100000
+                    (A:=HIHALF(LA+I)).[24:3],                           02101000
+                    OCTAL(A.[27:5]),                                    02102000
+                    OCTAL(A.[32:4]),                                    02103000
+                    OCTAL(A.[36:6]),                                    02104000
+                    OCTAL((A:=LOHALF(LA+I)&A[18:42:6]).[18:15]),        02105000
+                    OCTAL(A.[33:15]));                                  02106000
+                    MOVC(LINE[0],0,TB[8],7,2,6);                        02107000
+                END;                                                    02108000
+                IF I<FS THEN                                            02109000
+                BEGIN                                                   02110000
+                    WRITE(LINE[*],WFO,                                  02111000
+                    OCTAL(HIHALF(FA+I)),                                02112000
+                    OCTAL(LOHALF(FA+I)));                               02113000
+                    MOVC(LINE[0],0,TB[12],4,2,1);                       02114000
+                END;                                                    02115000
+                WRITE(P,15,TB[*]);                                      02116000
+            END;                                                        02117000
+        END;                                                            02118000
+    END DUMPING MCP INFO;                                               02119000
+    INTEGER DUMPD;                                                      02120000
+    LOAD;                                                               02121000
+    DUMPMCPSPRT;                                                        02122000
+    IF NOT COMMON THEN                                                  02123000
+    BEGIN                                                               02124000
+        CHECKMEMORYLINKS;                                               02125000
+        GETSTACKSFROMTHEBED;                                            02126000
+        GETANDSORTMCPROG;                                               02126500
+    END;                                                                02127000
+        IF COMNT THEN BEGIN                                             02128000
+            WRITE(P[DBL],STARS);                                        02129000
+            IF BADCOMMENT THEN WRITE(P[DBL],COMNTPAR) ELSE              02130000
+            BEGIN                                                       02131000
+            WRITE(P,10,COMMT[*]);                                       02132000
+            MOVE(COMMT[10],COMMT[0],10);                                02133000
+            WRITE(P,10,COMMT[*]);                                       02134000
+            END;                                                        02135000
+            WRITE(P[PAGE],STARS);                                       02136000
+        END;                                                            02137000
+         IF NODUMP THEN ELSE                                            02138000
+         IF OPERAND(16,R) AND R GEQ 12 AND R LEQ 15                     02139000
+              THEN BEGIN                                                02140000
+         NEEDCHECKAVAILNKS:=NOT AVALNKOK;                               02141000
+          PRINT(0,R);  PRINT(R+1,16);                                   02142000
+           END ELSE PRINT(0,36);                                        02143000
+    IF NODUMP THEN ELSE                                                 02144000
+    IF MINLNK GTR DUMPD:=36 THEN                                        02145000
+    BEGIN                                                               02146000
+         DUMPD:=MINLNK;                                                 02147000
+         PRINT(36,64); % INTERRUPT CODE                                 02148000
+         PRINT(64,112); % INTERRUPT STACK                               02149000
+         PRINT(112,PRTMAX+1); % PRT                                     02149100
+         IF NOT DONTDUMPCODE THEN                                       02149200
+         IF (R:=OUTERBLOCK[0])=0 THEN PRINT(36,MINLNK) ELSE             02149300
+         BEGIN                                                          02149350
+              PRINT(R.CF+1,R.FF); % OUTER BLOCK                         02149400
+              DUMPMCPSAVECODE; % SAVE PROCEDURES/ARRAYS                 02149450
+         END;                                                           02150000
+    END;                                                                02150050
+    IF LNKSOK THEN                                                      02151000
+        DUMPMEMORYANDNOTESTACKS(MINLNK,DUMPD:=MAXLNK)                   02152000
+    ELSE                                                                02153000
+    BEGIN                                                               02154000
+        IF SOMOKF THEN                                                  02155000
+            DUMPMEMORYANDNOTESTACKS(DUMPD,DUMPD:=MINBAD);               02156000
+        IF SOMOKB THEN                                                  02157000
+        BEGIN                                                           02158000
+         IF NODUMP THEN ELSE                                            02159000
+            PRINT(DUMPD,MAXBAD);                                        02160000
+            DUMPMEMORYANDNOTESTACKS(MAXBAD,DUMPD~MAXLNK);               02161000
+        END;                                                            02162000
+    END;                                                                02163000
+    IF NODUMP THEN ELSE                                                 02164000
+    PRINT(DUMPD,MAXCOR+1);                                              02165000
+    IF NOT COMMON THEN                                                  02166000
+    BEGIN                                                               02167000
+        LISTMCPROG;                                                     02168000
+        DUMPMCPINFO;                                                    02169000
+        GETSORTANDLISTINTRINSICS;                                       02170000
+        DUMPROGRAMS;                                                    02171000
+        DUMPCONTROLSTACKS;                                              02172000
+        PRINTSELECTEDARRAYS;                                            02172100
+    END;                                                                02173000
+    END;% % % % % % % % % % % % END INNER BLOCK % % % % % % % % % % %   02174000
+WRITE(P[DBL]);WRITE(P[DBL]);                                            02175000
+WRITE(P,FINI);                                                          02176000
+EOPROG:%                                                                02177000
+END.                                                                    02178000
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999

@@ -1,0 +1,208 @@
+BEGIN                                                                   00010000
+%%% APPEND/CANDE SOURCE PROGRAM, 6-70. %%%                              00010100
+REAL COMMON;                                                            00010200
+SAVE ARRAY ERR[0:4],A,N[0:30],B,PARAMS[0:10];                           00010300
+FILE IN SRCEFIL   DISK SERIAL (2,0,0);                                  00010400
+FILE IN WRKFIL    DISK SERIAL (2,0,0);                                  00010500
+FILE OUT OUTFIL   DISK SERIAL [20:600] (2,10,300,SAVE 1);               00010600
+FILE OUT NEWTAB   DISK SERIAL [20:30 ] (2,30,300,SAVE 1);               00010700
+BOOLEAN BRAAK,  RESEQ,  SEQCHK,  SFLG,  MAKTAB,  SUPPRESS,  OK;         00010800
+LABEL  NEXTPARAM,  TESTREAD,  READSRCE,  HAVESRCE,  EOF,  EOFWRK;       00010900
+REAL  ADJ,  BASE,  EOFPTR,  ENDRESEQ,  EOFMARK,  HRANGE,                00011000
+INCR,  LINE,  LRANGE,  LREC,  NAP,  NCT,  NPARAMS,  NPTR,  OUTSEQ,      00011100
+PC,  PREVSEQ,  REC,  SRCESEQ,  STRTRESEQ,  USER,  WRKSEQ;               00011200
+%***********************************************************************00011300
+REAL STREAM PROCEDURE HDR(F,N); VALUE N;                                00011400
+%***********************************************************************00011500
+   BEGIN                                                                00011600
+   SI:=F;  3(SI:=SI-8); DI:=LOC F; DS:=WDS;                             00011700
+   SI:=F; 14(SI:=SI+8); DI:=LOC F; DS:=WDS;                             00011800
+   SI:=F;  N(SI:=SI+8); DI:=LOC HDR; DS:=WDS;                           00011900
+   END STREAM PROCEDURE HDR;                                            00012000
+%***********************************************************************00012100
+PROCEDURE DISKWAIT(I,A,S,D);                                            00012200
+VALUE I,S,D; REAL I,S,D; ARRAY A[*]; COMMUNICATE(-8);                   00012300
+%***********************************************************************00012400
+PROCEDURE TWXOUT(A,N,T);                                                00012500
+%***********************************************************************00012600
+VALUE N,T;                                                              00012700
+REAL A,N,T;                                                             00012800
+   BEGIN  COMMUNICATE(-11);                                             00012900
+   BRAAK := BOOLEAN(T); % MCP RETURNS 1 IF BREAK OCCURRED.              00013000
+   END;                                                                 00013100
+%***********************************************************************00013200
+REAL STREAM PROCEDURE INPCONV(X);                                       00013300
+   BEGIN SI:=X; DI:=LOC INPCONV; DS:=8 OCT; END;                        00013400
+%***********************************************************************00013500
+STREAM PROCEDURE OUTCONV(A,N); VALUE N;                                 00013600
+   BEGIN SI:=LOC N; DI:=A; DS:=8DEC; END;                               00013700
+%***********************************************************************00013800
+STREAM PROCEDURE MOVE(N,A,B); VALUE N;                                  00013900
+   BEGIN SI:=A; DI:=B; DS:=N WDS; END;                                  00014000
+%***********************************************************************00014100
+STREAM PROCEDURE INFORMUSER(A,NMBR,LAST); VALUE NMBR,LAST;              00014200
+%***********************************************************************00014300
+   BEGIN LOCAL SV;                                                      00014400
+   DI:=A; SV:=DI; SI:=LOC NMBR; DS:=8DEC; DI:=SV; DS:=7FILL;            00014500
+   SI:=SV; DI:=SV; 8(IF SC=" " THEN SI:=SI+1 ELSE DS:=CHR);             00014600
+   DS:=40LIT" RECORDS APPENDED (LAST RECORD APPENDED=";                 00014700
+   SV:=DI; SI:=LOC LAST; DS:=8DEC; DI:=SV; DS:=7FILL;                   00014800
+   SI:=SV; DI:=SV; 8(IF SC=" " THEN SI:=SI+1 ELSE DS:=CHR);             00014810
+   DS:=16LIT")               ";                                         00014820
+   END STREAM PROCEDURE INFORMUSER;                                     00014830
+%***********************************************************************00014900
+STREAM PROCEDURE MAKERR(ERR,N1,N2); VALUE N1,N2;                        00015000
+%***********************************************************************00015100
+   BEGIN LOCAL SV;                                                      00015200
+   DI:=ERR; DS:=15LIT"SEQUENCE ERROR:"; SV:=DI;                         00015300
+   SI:=LOC N1; DS:=8 DEC; DI:=SV; DS:=7FILL;                            00015400
+   DI:=SV; DI:=DI+8; DS:=2LIT" -";                                      00015500
+   SV:=DI; SI:=LOC N2; DS:=8DEC; DI:=SV; DS:=7FILL;                     00015600
+   END STREAM PROCEDURE MAKERR;                                         00015700
+%***********************************************************************00015800
+PROCEDURE ERROR(N1,N2); VALUE N1,N2; REAL N1,N2;                        00015900
+%***********************************************************************00016000
+   BEGIN                                                                00016100
+   MAKERR(ERR,N1,N2); TWXOUT(ERR[0],33,1);                              00016200
+   END PROCEDURE ERROR;                                                 00016300
+%***********************************************************************00016400
+A[0]:=0; DISKWAIT(1,A,30,COMMON); % GET ESP RECORD                      00016500
+USER := A[2];                                                           00016600
+OUTCONV(LINE,A[1].[40:8]); % DECIMAL LINE NUMBER                        00016700
+IF MAKTAB := A[1].[3:1] = 0 THEN % TAB FILE WILL BE REQUIRED            00016800
+FILL NEWTAB    WITH "  "&"1T"[6:36:12]&LINE[18:30:18],USER;             00016900
+FILL SRCEFIL   WITH A[3], A[4]; % FILE TO BE APPENDED                   00017000
+FILL WRKFIL    WITH A[10],USER; % EXISTING WORK FILE                    00017100
+FILL OUTFIL    WITH A[9], USER; % OUTPUT FILE NAME                      00017200
+SUPPRESS := A[1].[8:1] = 1;                                             00017250
+IF RESEQ := A[5] NEQ 0 THEN                                             00017300
+   BEGIN                                                                00017400
+   STRTRESEQ:=A[5]; % LOWER BOUND FOR RESEQUENCE                        00017500
+   ENDRESEQ :=A[6]; % UPPER BOUND FOR RESEQUENCE                        00017600
+   INCR     :=A[8]; % RESEQUENCE INCREMENT                              00017700
+   BASE     :=A[7] - INCR; % RESEQ BASE                                 00017800
+   END;                                                                 00017900
+NPARAMS := A[1].[27:6];  % PARAMETER COUNT                              00018000
+READ SEEK(SRCEFIL[0]); EOFPTR:=HDR(SRCEFIL,7); % EOF POINTER            00018100
+SFLG := HDR(SRCEFIL,4).[36:6] NEQ 8; % NOT TYPE DATA                    00018200
+NCT := -1;                                                              00018300
+   DO BEGIN % TRANSFER WRKFIL RECORDS TO OUTFIL                         00018400
+   READ(WRKFIL,10,B[*])[EOFWRK]; WRITE(OUTFIL,10,B[*]);                 00018500
+   IF MAKTAB THEN                                                       00018600
+      BEGIN                                                             00018700
+      IF NPTR := NPTR + 1 GTR 29 THEN                                   00018800
+         BEGIN                                                          00018900
+         WRITE(NEWTAB,30,N[*]);                                         00019000
+         NPTR := 0;                                                     00019100
+         END;                                                           00019200
+      N[NPTR] := (WRKSEQ:=INPCONV(B[9])) & (NCT:=NCT+1)[4:32:16];       00019300
+      END; % IF MAKTAB                                                  00019400
+   END UNTIL FALSE;                                                     00019500
+EOFWRK:                                                                 00019600
+CLOSE(WRKFIL);                                                          00019700
+PREVSEQ := -1;                                                          00019800
+LREC    := 0;                                                           00019900
+EOFMARK :=100000000;                                                    00020000
+IF SEQCHK := NPARAMS GTR 0 THEN % PARAMETERS SPECIFIED                  00020100
+   BEGIN                                                                00020200
+   MOVE(9,A[21],PARAMS);                                                00020300
+   REC:=0; NPARAMS:=NPARAMS-1; SRCESEQ:=PC:=-1; LREC:=1;                00020400
+NEXTPARAM:                                                              00020500
+   LREC := LREC -1;                                                     00020600
+   LRANGE:=HRANGE:=PARAMS[PC:=PC+1];                                    00020700
+   IF LRANGE=100000000 THEN % "END"                                     00020800
+      BEGIN                                                             00020900
+      READ(SRCEFIL[EOFPTR],14,B[*])[EOF]; READ(SRCEFIL);                00021000
+      GO TO HAVESRCE;                                                   00021100
+      END;                                                              00021200
+   IF PC LSS NPARAMS THEN % MORE PARAMETERS AVAILABLE                   00021300
+   IF PARAMS[PC+1].[1:1]=1 THEN % RANGE SPECIFIED                       00021400
+   HRANGE:=PARAMS[PC:=PC+1].[21:27];                                    00021500
+   IF NOT SFLG THEN % RECORD LOCATION SPECIFIED                         00021600
+      BEGIN                                                             00021700
+      READ SEEK(SRCEFIL[LREC:=(LRANGE-1)|REAL(LRANGE NEQ 0)]);          00021800
+      GO TO READSRCE; % SKIP BINARY SEARCH                              00021900
+      END;                                                              00022000
+   IF SRCESEQ = LRANGE THEN % ALREADY HAVE THIS RECORD                  00022100
+      BEGIN LREC:=LREC + 1; GO TO HAVESRCE; END;                        00022200
+   IF (EOFPTR-LREC) LSS 30 THEN GO TO READSRCE; % SKIP BINARY SEARCH    00022300
+   REC:=LREC+(EOFPTR-LREC) DIV 2; % START IN THE CENTER OF RANGE        00022400
+   GO TO TESTREAD;                                                      00022500
+      DO BEGIN                                                          00022600
+      IF LRANGE LSS SRCESEQ THEN % MOVE BACK, NOT LSS 0                 00022700
+      REC:=(REC:=REC-ADJ)|REAL(REC.[1:1]=0) ELSE % MOVE UP              00022800
+      IF REC:=(LREC:=REC)+ADJ GTR EOFPTR THEN REC:=EOFPTR;              00022900
+TESTREAD:                                                               00023000
+      READ(SRCEFIL[REC],14,B[*]);                                       00023100
+      SRCESEQ:=INPCONV(B[9]);                                           00023200
+      IF SRCESEQ=LRANGE THEN % MATCHING RECORD                          00023300
+         BEGIN LREC:=REC; READ(SRCEFIL); GO TO HAVESRCE; END;           00023400
+      ADJ:=(REC-LREC) DIV 2;                                            00023500
+      END UNTIL ADJ LEQ 1;                                              00023600
+   READ SEEK(SRCEFIL[LREC]); % NOT FOUND IN BINARY SEARCH, GO BACK      00023700
+   END; % IF PARAMETERS SPECIFIED                                       00023800
+%........                                                               00023900
+READSRCE:                                                               00024000
+%........                                                               00024100
+READ(SRCEFIL,10,B[*])[EOF];                                             00024200
+LREC := LREC + 1;                                                       00024300
+SRCESEQ := IF SFLG THEN INPCONV(B[9]) ELSE LREC;                        00024400
+IF SEQCHK THEN                                                          00024500
+   BEGIN                                                                00024600
+   IF SRCESEQ LSS LRANGE THEN GO TO READSRCE; % TOO LOW                 00024700
+   IF SRCESEQ GTR HRANGE THEN % TOO HIGH                                00024800
+   IF SEQCHK:=PC LSS NPARAMS THEN GO NEXTPARAM ELSE GO EOF;             00024900
+   END; % IF SEQCHK                                                     00025000
+%........                                                               00025100
+HAVESRCE:                                                               00025200
+%........                                                               00025300
+OUTSEQ:=IF MAKTAB AND NOT SFLG THEN INPCONV(B[9]) ELSE SRCESEQ;         00025400
+IF RESEQ  THEN % RESEQUENCE THE FILE                                    00025500
+IF OK OR SRCESEQ GEQ STRTRESEQ THEN                                     00025600
+IF RESEQ:=OK:=SRCESEQ LEQ ENDRESEQ THEN % RECORDS ARE IN RANGE          00025700
+   BEGIN                                                                00025800
+   OUTSEQ := BASE := BASE + INCR; % CALCULATE NEW SEQ. NUMBER           00025900
+   OUTCONV(B[9],OUTSEQ); % MOVE NUMBER TO RECORD                        00026000
+   END;                                                                 00026100
+IF MAKTAB THEN % CHECK SEQ. NUMBERS FIRST                               00026200
+   BEGIN                                                                00026300
+   IF OUTSEQ := OUTSEQ + 2|REAL(OUTSEQ=0) + WRKSEQ  LEQ PREVSEQ THEN    00026400
+      BEGIN                                                             00026500
+      IF NOT BRAAK THEN ERROR(PREVSEQ,OUTSEQ); % TELL THE USER          00026600
+      OUTSEQ := PREVSEQ + 2; % ADJUST SEQUENCE NUMBER                   00026700
+      END;                                                              00026800
+   OUTCONV(B[9],OUTSEQ);                                                00026900
+   PREVSEQ := OUTSEQ;                                                   00027000
+   IF NPTR := NPTR + 1 GTR 29 THEN % SEGMENT IS FILLED                  00027100
+      BEGIN                                                             00027200
+      WRITE(NEWTAB,30,N[*]);                                            00027300
+      NPTR:=0;                                                          00027400
+      END;                                                              00027500
+   N[NPTR] := 0 & (NCT:=NCT+1)[4:32:16] & OUTSEQ[21:21:27];             00027600
+   END; % IF MAKTAB                                                     00027700
+WRITE(OUTFIL,10,B[*]);                                                  00027800
+NAP := NAP + 1; % NUMBER OF RECORDS APPENDED                            00027900
+GO TO READSRCE;                                                         00028000
+%....                                                                   00028100
+EOF:                                                                    00028200
+%....                                                                   00028300
+IF MAKTAB THEN                                                          00028400
+   BEGIN                                                                00028500
+   IF NPTR:=NPTR+1 GTR 29 THEN                                          00028600
+      BEGIN                                                             00028700
+      WRITE(NEWTAB,30,N[*]);                                            00028800
+      NPTR:=0;                                                          00028900
+      END;                                                              00029000
+   N[NPTR]:=EOFMARK;                                                    00029100
+   WRITE(NEWTAB,30,N[*]);                                               00029200
+   READ(NEWTAB[0],30,N[*]);                                             00029300
+   N[0]:=NCT; % EOF POINTER                                             00029400
+   WRITE(NEWTAB[0],30,N[*]);                                            00029500
+   LOCK(NEWTAB,*);                                                      00029600
+   END;                                                                 00029700
+CLOSE(SRCEFIL); LOCK(OUTFIL,*);                                         00029800
+IF NOT SUPPRESS THEN                                                    00029900
+   BEGIN INFORMUSER(A,NAP,OUTSEQ); TWXOUT(A[0],56,1); END;              00030000
+COMMON := NAP;                                                          00031000
+END PROGRAM.                                                            00031100
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999

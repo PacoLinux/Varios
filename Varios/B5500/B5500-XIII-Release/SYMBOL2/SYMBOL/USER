@@ -1,0 +1,647 @@
+************************************************************************00010000
+%        USER/CANDE  SOURCE FILE  12-70.                                00010100
+%***********************************************************************00010200
+COMMENT                                                                 00010300
+THIS PROGRAM CREATES THE FILE "USERS/CANDE" WHICH IS USED BY            00010400
+CANDE/TSHARER TO OBTAIN THE SECURITY AND ACCOUNTING INFORMATION         00010500
+ASSOCIATED WITH EACH USER.                                              00010600
+THE FILE IS COMPRISED OF THREE SECTIONS:                                00010700
+    A) SEGMENT ZERO, WHICH CONTAINS THE RECORD COUNT AND DATE OF        00010800
+       LAST ALTERATION OF THE FILE.  THE NEXT AVAILABLE SEGMENT         00010900
+       POSITION IS KEPT IN WORD 1 OF SEGMENT ZERO, AND THE DATE OF      00011000
+       LAST ALTERATION IS KEPT IN WORD 2 OF SEGMENT ZERO.               00011100
+    B) THE INITIAL SCRAMBLE TABLE SECTION, LOCATED IN SEGMENTS          00011200
+       1 THROUGH 29 OF THE FILE.  EACH SCRAMBLE SEGMENT CONSISTS        00011300
+       OF 15 TWO WORD ENTRIES, THE FIRST WORD CONTAINING THE USERCODE   00011400
+       AND THE [33:15] FIELD OF THE SECOND WORD CONTAINING THE          00011500
+       RELATIVE DISK ADDRESS OF THE SECURITY SEGMENT ASSOCIATED         00011600
+       WITH THAT USERCODE. THE [18:15] FIELD OF WORD 1 OF EACH          00011700
+       SCRAMBLE SEGMENT IS A LINK TO THE NEXT SCRAMBLE SEGMENT.         00011800
+       WHEN AN ATTEMPT IS MADE TO ADD A NEW USERCODE TO THE SCRAMBLE    00011900
+       BLOCK SECTION, AND THAT BLOCK IS ALREADY FULL, THE USER CANDE    00012000
+       PROGRAM WILL CREATE A NEW SCRAMBLE BLOCK IN THE USERS/CANDE      00012100
+       FILE, AND WILL PLACE THE LOCATION OF THE LINKED BLOCK IN THE     00012200
+       [18:15] FIELD OF WORD 1 OF THE CURRENTLY ACCESSED BLOCK.         00012300
+       THE [18:15] FIELD OF WORD 29 OF EACH LINKED SCRAMBLE BLOCK IS    00012400
+       USED AS A BACK LINK TO THE PREVIOUS SCRAMBLE BLOCK FOR           00012500
+       PURPOSES OF FILE MAINTENANCE.                                    00012600
+    C) THE BODY OF THE USERS/CANDE FILE, LOCATED IN SEGMENTS 30 AND     00012700
+       BEYOND.  THIS SECTION OF THE FILE IS COMPRISED OF BOTH LINKED    00012800
+       SCRAMBLE BLOCKS AND INDIVIDUAL USERS SECURITY RECORDS.           00012900
+       WORD 29 OF EACH SECURITY RECORD CONTAINS A BACK LINK TO THE      00013000
+       SCRAMBLE BLOCK WHICH POINTS TO THAT RECORD. THE [33:15] FIELD    00013100
+       OF WORD 29 POINTS TO THE RELATIVE DISK ADDRESS OF THE SCRAMBLE   00013200
+       BLOCK, AND THE [18:15] FIELD POINTS TO THE WORD LOCATION OF      00013300
+       THE USERCODE WITHIN THE SCRAMBLE BLOCK.                          00013400
+       THE SIGN BIT OF WORD 29 OF EACH OF THESE SEGMENTS IS USED TO     00013500
+       INDICATE WHETHER THE SEGMENT IS A LINKED SCRAMBLE BLOCK, OR      00013600
+       A USERS SECURITY RECORD.  THE SIGN BIT IS ON WHEN THE SEGMENT    00013700
+       IS A SCRAMBLE BLOCK, AND IT IS OFF WHEN THE SEGMENT IS A         00013800
+       USERS SECURITY RECORD.                                           00013900
+THE PROCEDURES "READUSER" AND "REMOVEUSER" ARE RESPONSIBLE FOR          00014000
+CREATING AND / OR ALTERING THE LINKS ASSOCIATED WITH THE VARIOUS        00014100
+SECTIONS OF THE FILE.                                                   00014200
+END COMMENT;                                                            00014300
+BEGIN REAL COMMON;                                                      00014400
+FILE USERS DISK RANDOM "USERS""CANDE" (1,30);                           00014500
+FILE CARD   (2,10);                                                     00014600
+FILE LINE 04(2,15);                                                     00014700
+FILE DSK DISK SERIAL [20:30] (2,30,300); % SCRATCH FILE FOR SORT        00014800
+ARRAY TABLE,USER,OPTIONS[0:30];                                         00014900
+ARRAY CMPS[0:11],VRBS[0:60];                                            00015000
+SAVE ARRAY A[0:16],B[0:5];                                              00015100
+INTEGER TABLELOC,USRINDX,APTR,A0;                                       00015200
+REAL USERCODE,USERLOC,WORD;                                             00015300
+REAL I,K,NEXTOPEN,COUNT,TCOUNT;                                         00015400
+BOOLEAN FIRSTCARD,USERPRESENT,OPTIONSBUILT,DOLLARCARD,FOUND,ALTERED;    00015500
+LABEL NEXT,EOF,COMPILERS,VERBS;                                         00015600
+SWITCH FORMAT FM :=                                                     00015700
+   ("ERR:BAD $ CARD."),                                                 00015800
+   ("ERR:$ NEW MUST BE FIRST CARD."),                                   00015900
+   ("ERR:QUOTES REQD AROUND PARAMETERS."),                              00016000
+   ("ERR:UNKNOWN OPTION IN THIS CARD."),                                00016100
+   ("ERR: UNRECOGNIZABLE COMPILER NAME"),                               00016200
+   ("ERR: UNRECOGNIZABLE VERB NAME ");                                  00016300
+DEFINE        LEFTARROW      = "~"#;                                    00016400
+DEFINE        NUMOFCOMPILERS = 11#;                                     00016500
+DEFINE        NUMOFVERBS     = 49#;                                     00016600
+DEFINE        USERWORD       = USER[1]#;                                00016700
+DEFINE        PASSWORD       = USER[2]#;                                00016800
+DEFINE        CHARGEWORD     = USER[3]#;                                00016900
+DEFINE        USERNAME       = USER[4]#;  % AND 5.                      00017000
+DEFINE        PHONEWORD      = USER[6]#;                                00017100
+DEFINE        TIMEWORD       = USER[7]#;                                00017200
+DEFINE        COMPILERWORD   = USER[8]#;                                00017300
+DEFINE        VERBWORD       = USER[9]#; % AND USER[10]                 00017400
+DEFINE        OPTIONBITS     = USER[11]#; % SET/RESET OPTIONS           00017500
+DEFINE        MONITORNAME    = USER[12]#; % MONITOR FILE NAME           00017600
+DEFINE        LINKWORD       = USER[29]#;                               00017700
+DEFINE        MATCH(MATCH1,MATCH2)=                                     00017800
+   IF REAL(BOOLEAN(MATCH1) EQV BOOLEAN(MATCH2))=REAL(NOT FALSE) THEN#;  00017900
+%***********************************************************************00018000
+STREAM PROCEDURE MOVE(N,A,B); VALUE N;                                  00018100
+   BEGIN SI:=A; DI:=B; DS:= N WDS; END;                                 00018200
+%***********************************************************************00018300
+PROCEDURE PRINT;                                                        00018400
+%***********************************************************************00018500
+   BEGIN LABEL MAP,EXIT;                                                00018600
+   FORMAT NUMOFUSERS(I6," USERS IN USERS/CANDE FILE"//),                00018700
+   TABLEMAPP(X48,"***SCRAMBLE TABLE MAP***",X3,O/),                     00018800
+   USERSRECORDS(X53,"***USERS RECORDS***"/);                            00018900
+   %********************************************************************00019000
+   STREAM PROCEDURE TABLEMAP(TABLE,A);                                  00019100
+   %********************************************************************00019200
+      BEGIN                                                             00019300
+      SI:=TABLE; DI:=A;                                                 00019400
+      15(DS:=8LIT" "; SI:=SI+1; IF SC NEQ "0" THEN                      00019500
+         BEGIN DI:=DI-7; DS:=7CHR; END ELSE SI:=SI+7;                   00019600
+      SI:=SI+8);                                                        00019700
+      END STREAM PROCEDURE TABLEMAP;                                    00019800
+   %********************************************************************00019900
+   STREAM PROCEDURE REFORM1(USER,A,CMPS);                               00020000
+   %********************************************************************00020100
+      BEGIN LOCAL SV1,SV2,Z,Y,X;                                        00020200
+      DI:=A; DS:=8LIT" "; SI:=A; DS:=14WDS; % BLANK "A"                 00020300
+      SI:=USER; SI:=SI+9; DI:=A; DS:=7CHR; DS:=LIT" "; % USERCODE (1)   00020400
+      SI:=SI+1; DS:=7 CHR; DS:=LIT" "; % PASSWORD (2)                   00020500
+      SI:=SI+1; DS:=7 CHR; DS:=LIT" "; % CHARGEWORD (3)                 00020600
+      SI:=SI+1; DS:=15CHR; DS:=LIT" "; % USERNAME (4) (5)               00020700
+      SI:=SI+1; DS:=7 CHR; DS:=LIT" "; % PHONEWORD (6)                  00020800
+      SI:=SI+4; 24(IF SB THEN DS:=LIT"1" ELSE DS:=LIT"0"; SKIP SB);     00020900
+      DS:=LIT" "; % TIMEWORD (7)                                        00021000
+      SKIP SB; SV1:=DI; DI:=LOC X; % LANGUAGEWORD (8)                   00021100
+      NUMOFCOMPILERS(IF SB THEN DS:=LIT"1" ELSE DS:=LIT"0"; SKIP SB);   00021200
+      DI:=SV1; SI:=CMPS; SI:=SI+9; SV2:=SI; SI:=LOC X;                  00021300
+      NUMOFCOMPILERS(SV1:=SI;                                           00021400
+      IF SC="1" THEN % RESTRICTED COMPIILER                             00021500
+         BEGIN                                                          00021600
+         SI:=SV2;DS:=CHR;SI:=SI+4;DS:=2CHR;DS:=LIT" ";SI:=SI+1;SV2:=SI; 00021700
+         END                                                            00021800
+      ELSE                                                              00021900
+         BEGIN                                                          00022000
+         SI:=SV2; SI:=SI+8; SV2:=SI;                                    00022100
+         END;                                                           00022200
+      SI:=SV1; SI:=SI+1);                                               00022300
+      END STREAM PROCEDURE REFORM1;                                     00022400
+   %********************************************************************00022500
+   BOOLEAN STREAM PROCEDURE REFORM2(VERBWORD,A,VRBS,SKP); VALUE SKP;    00022600
+   %********************************************************************00022700
+      BEGIN LOCAL SV1,SV2,Z,Y,X;                                        00022800
+      DI:=A; DS:=8LIT" "; SI:=A; DS:=14WDS; % BLANK "A"                 00022900
+      SI:=VERBWORD; SKIP SB; SKIP SKP SB; DI:=LOC X;                    00023000
+      20(IF SB THEN DS:=LIT"1" ELSE DS:=LIT"0"; SKIP SB); % DECODE      00023100
+      SI:=VRBS; SI:=SI+9; SV2:=SI; SI:=LOC X; DI:=A;                    00023200
+      20(SV1:=SI;                                                       00023300
+      IF SC="1" THEN % RESTRICTED VERB                                  00023400
+         BEGIN                                                          00023500
+         SI:=SV2; DS:=5CHR; SI:=SI+3; DS:=LIT" "; SV2:=SI; TALLY:=1;    00023600
+         END                                                            00023700
+      ELSE                                                              00023800
+         BEGIN                                                          00023900
+         SI:=SV2; SI:=SI+8; SV2:=SI;                                    00024000
+         END;                                                           00024100
+      SI:=SV1; SI:=SI+1);                                               00024200
+      REFORM2:=TALLY;                                                   00024300
+      END STREAM PROCEDURE REFORM2;                                     00024400
+   %********************************************************************00024500
+   BOOLEAN PROCEDURE INPUT(A); ARRAY A[0]; % SORT INPUT ROUTINE         00024600
+   %********************************************************************00024700
+   IF NOT (INPUT:=(COUNT:=COUNT+1) GTR TCOUNT) THEN                     00024800
+      BEGIN                                                             00024900
+      IF (USRINDX:=USRINDX+2) GTR 28 THEN % GET ANOTHER SEGMENT         00025000
+         BEGIN                                                          00025100
+         READ(DSK,30,USER[*]);                                          00025200
+         USRINDX := 0;                                                  00025300
+         END;                                                           00025400
+      MOVE(2,USER[USRINDX],A[0]); % TRANSFER 2 WDS FROM SEGMENT         00025500
+      END                                                               00025600
+   ELSE                                                                 00025700
+      BEGIN                                                             00025800
+      REWIND(DSK); USRINDX:=-2;                                         00025900
+      END PROCEDURE;                                                    00026000
+   %********************************************************************00026100
+   PROCEDURE OUTPT(B,A); VALUE B; BOOLEAN B; ARRAY A[0]; % SORT OUTPUT  00026200
+   %********************************************************************00026300
+   IF B THEN % LAST RECORD                                              00026400
+      BEGIN                                                             00026500
+      WRITE(DSK,30,USER[*]); % WRITE REMAINDER OF SEGMENT               00026600
+      REWIND(DSK);                                                      00026700
+      END                                                               00026800
+   ELSE                                                                 00026900
+      BEGIN                                                             00027000
+      IF (USRINDX:=USRINDX+2) GTR 28 THEN % WRITE ANOTHER SEGMENT       00027100
+         BEGIN                                                          00027200
+         WRITE(DSK,30,USER[*]);                                         00027300
+         USRINDX := 0;                                                  00027400
+         END;                                                           00027500
+      MOVE(2,A[0],USER[USRINDX]); % TRANSFER 2 WDS TO SEGMENT           00027600
+      END PROCEDURE;                                                    00027700
+   %********************************************************************00027800
+   BOOLEAN STREAM PROCEDURE CMP(A,B); % SORT COMPARISON                 00027900
+   %********************************************************************00028000
+      BEGIN                                                             00028100
+      SI:=A; SI:=SI+1; DI:=B; DI:=DI+1;                                 00028200
+      IF 7SC LEQ DC THEN TALLY:=1;                                      00028300
+      CMP:=TALLY;                                                       00028400
+      END STREAM PROCEDURE CMP;                                         00028500
+   %********************************************************************00028600
+   BOOLEAN PROCEDURE COMP(A,B); ARRAY A,B[0]; COMP:=CMP(A,B);           00028700
+   %********************************************************************00028800
+   PROCEDURE HIVALUE(A); ARRAY A[0]; A[0]:=..141414141414;              00028900
+   %********************************************************************00029000
+   TCOUNT := 0; USRINDX := -2; I:=TIME(5);                              00029100
+   I := "0/00/00" & I[1:13:11] & I[18:24:12] & I[36:36:12];             00029110
+   WRITE(LINE,TABLEMAPP,I); WRITE(LINE[DBL]);                           00029200
+   FOR TABLELOC := 1 STEP 1 UNTIL 29 DO % GET SCRAMBLE SEGMENTS         00029300
+      BEGIN                                                             00029400
+      READ(USERS[TABLELOC],30,TABLE[*]);                                00029500
+MAP:  TABLEMAP(TABLE,A); % PRINT SCRAMBLE TABLE CONTENTS                00029600
+      WRITE(LINE,15,A[*]);                                              00029700
+      FOR I:=0 STEP 2 UNTIL 28 DO IF TABLE[I] NEQ 0 THEN % VALID USER   00029800
+         BEGIN                                                          00029900
+         TCOUNT := TCOUNT + 1; % COUNT THIS USERCODE                    00030000
+         IF (USRINDX:=USRINDX+2) GTR 28 THEN % WRITE OUT THIS SEGMENT   00030100
+            BEGIN                                                       00030200
+            WRITE(DSK,30,USER[*]);                                      00030300
+            USRINDX := 0;                                               00030400
+            END;                                                        00030500
+         MOVE(2,TABLE[I],USER[USRINDX]); % TRANSFER TO USER ARRAY       00030600
+         END I LOOP;                                                    00030700
+      IF (I:=TABLE[1].[18:15]) GTR 0 THEN % LINK TO NEXT SEGMENT        00030800
+         BEGIN                                                          00030900
+         READ(USERS[I],30,TABLE[*]); % READ LINKED SEGMENT              00031000
+         GO TO MAP;                                                     00031100
+         END; % IF LINKED SEGMENT                                       00031200
+      WRITE(LINE); % SPACE BETWEEN LINKED SEGMENTS                      00031300
+      END TABLELOC LOOP;                                                00031400
+   WRITE(DSK,30,USER[*]); % WRITE REMAINDER OF SEGMENT                  00031500
+   WRITE(LINE,NUMOFUSERS,TCOUNT);                                       00031600
+   REWIND(DSK); COUNT := 0; USRINDX := -2; % SET UP FOR SORT            00031700
+   IF TCOUNT=0 THEN GO TO EXIT; % EMPTY FILE                            00031800
+   SORT(OUTPT,INPUT,0,HIVALUE,COMP,2,4000);                             00031900
+   COUNT := 0;                                                          00032000
+   WRITE(LINE[PAGE]); WRITE(LINE[DBL]); WRITE(LINE,USERSRECORDS);       00032100
+   WHILE COUNT LSS TCOUNT DO                                            00032200
+      BEGIN                                                             00032300
+      READ(DSK,30,USER[*]); % READ NEXT SEGMENT                         00032400
+      FOR I:=0 STEP 2 WHILE I LSS 29 AND COUNT LSS TCOUNT DO            00032500
+         BEGIN                                                          00032600
+         READ(USERS[USER[I+1].[33:15]],30,TABLE[*]); % GET USERS SGMNT  00032700
+         REFORM1(TABLE,A,CMPS); WRITE(LINE,15,A[*]);                    00032800
+         IF REFORM2(TABLE[9],A,VRBS[00], 0) THEN WRITE(LINE,15,A[*]);   00032900
+         IF REFORM2(TABLE[9],A,VRBS[20],20) THEN WRITE(LINE,15,A[*]);   00033000
+         IF REFORM2(TABLE[9],A,VRBS[40],40) THEN WRITE(LINE,15,A[*]);   00033100
+         WRITE(LINE[DBL]);                                              00033200
+         COUNT := COUNT + 1;                                            00033300
+         END I LOOP;                                                    00033400
+      END COUNT LOOP;                                                   00033500
+EXIT:                                                                   00033600
+   CLOSE(DSK); WRITE(LINE[PAGE]);                                       00033700
+   END PROCEDURE PRINT;                                                 00033800
+%***********************************************************************00033900
+STREAM PROCEDURE BLANK(A,N);   VALUE N;                                 00034000
+%***********************************************************************00034100
+   BEGIN                                                                00034200
+   DI:=A;  DS:=8 LIT "    ";  SI:=A;  DS:=N WDS;                        00034300
+   DI:=A; DS:=LIT"0"; % AVOID FLAG BIT ERRORS                           00034400
+   END  STREAM BLANK;                                                   00034500
+%***********************************************************************00034600
+STREAM PROCEDURE   CLEAR(A,N);   VALUE N;                               00034700
+%***********************************************************************00034800
+   BEGIN                                                                00034900
+   DI:=A;  DS:=8 LIT "0000";  SI:=A;  DS:=N WDS;                        00035000
+   END  CLEAR;                                                          00035100
+%***********************************************************************00035200
+STREAM PROCEDURE BUILDTIMEWORD(W,CARD);                                 00035300
+%***********************************************************************00035400
+   BEGIN                                                                00035500
+   DI:=W;  DS:=4 LIT "0000";  SI:=CARD;                                 00035600
+   40(IF SC NEQ """ THEN ELSE JUMP OUT; SI:=SI+1);                      00035700
+   SI := SI+1; % SKIP " CHAR.                                           00035800
+   24(IF SC = "1" THEN DS:=SET ELSE DS:=RESET; SI:=SI+1);               00035900
+   END  BUILD TIME WORD;                                                00036000
+%***********************************************************************00036100
+BOOLEAN STREAM PROCEDURE DOLLAR(A);                                     00036200
+   BEGIN                                                                00036300
+   SI:=A;  IF SC = "$" THEN TALLY:=1; DOLLAR:=TALLY;                    00036400
+   END  DOLLAR;                                                         00036500
+%***********************************************************************00036600
+REAL STREAM PROCEDURE ADDRESS(A);                                       00036700
+   BEGIN SI:=A; ADDRESS:=SI; END;                                       00036800
+%***********************************************************************00036900
+BOOLEAN STREAM PROCEDURE GETWORD(APTR,WORD);                            00037000
+%***********************************************************************00037100
+% SCANS CARD IMAGE AT ADDRESS "APTR" FOR ALPHA STRING                   00037200
+% RETURNS A VALUE OF "TRUE" TO GETWORD AND END OF RECORD                00037300
+   BEGIN LOCAL SV; LABEL SCN,EXIT;                                      00037400
+   SI:=APTR; SI:=SI+5; SI:=SC; % STARTING ADDRESS                       00037500
+   2(40(                                                                00037600
+   IF SC=ALPHA THEN JUMP OUT 2 TO SCN;                                  00037700
+   IF SC=LEFTARROW THEN % END OF RECORD MARKER                          00037800
+      BEGIN                                                             00037900
+      TALLY:=1; GETWORD := TALLY; JUMP OUT 2 TO EXIT;                   00038000
+      END;                                                              00038100
+   SI:=SI+1));                                                          00038200
+SCN:                                                                    00038300
+   DI:=WORD; DS:=LIT"0"; DS:=CHR;                                       00038400
+   6(IF SC=ALPHA THEN DS:=CHR ELSE DS:=LIT" ");                         00038500
+   63(IF SC=ALPHA THEN SI:=SI+1 ELSE JUMP OUT);                         00038600
+EXIT:                                                                   00038700
+   SV:=SI; SI:=LOC SV; DI:=APTR; DS:=WDS;                               00038800
+   END STREAM PROCEDURE GETWORD;                                        00038900
+%***********************************************************************00039000
+BOOLEAN STREAM PROCEDURE UNQUOTE(N,APTR,B); VALUE N,APTR;               00039100
+%***********************************************************************00039200
+% SCANS CARD IMAGE AT ADDRESS "APTR" FOR QUOTATION MARK                 00039300
+% RETURNS A VALUE OF "TRUE" TO UNQUOTE IF QUOTE IS NOT PRESENT          00039400
+% TRANSFERS UP TO "N" CHARACTERS FOLLOWING QUOTE TO ARRAY "B"           00039500
+   BEGIN LABEL EXIT;                                                    00039600
+   SI:=APTR; DI:=B; DS:=LIT"0";                                         00039700
+   2(40(                                                                00039800
+   IF SC=LEFTARROW THEN                                                 00039900
+      BEGIN                                                             00040000
+      TALLY:=1; JUMP OUT 2 TO EXIT;                                     00040100
+      END;                                                              00040200
+   IF SC=""" THEN % PICK UP THE CHARACTERS AFTER THE QUOTE              00040300
+      BEGIN                                                             00040400
+      SI:=SI+1; % SKIP OVER THE FIRST QUOTE                             00040500
+      N(IF SC=""" THEN DS:=LIT" " ELSE DS:=CHR);                        00040600
+      JUMP OUT 2 TO EXIT;                                               00040700
+      END;                                                              00040800
+   SI:=SI+1));                                                          00040900
+EXIT:                                                                   00041000
+   UNQUOTE := TALLY;                                                    00041100
+   END STREAM PROCEDURE UNQUOTE;                                        00041200
+%***********************************************************************00041300
+PROCEDURE ERR(N);  VALUE N;  REAL N;                                    00041400
+%***********************************************************************00041500
+   BEGIN                                                                00041600
+   IF N=0 THEN % BAD DOLLAR CARD                                        00041700
+      BEGIN                                                             00041800
+      OPTIONSBUILT:=USERPRESENT:=FALSE;  CLEAR(USER,29);                00041900
+      END  BAD DOLLAR CARD;                                             00042000
+   WRITE(LINE,FM[N]);                                                   00042100
+   WRITE(LINE[DBL],10,A[*]);                                            00042200
+   END  ERROR PROCEDURE;                                                00042300
+%***********************************************************************00042400
+PROCEDURE WRITEUSER;                                                    00042500
+%***********************************************************************00042600
+   BEGIN                                                                00042700
+   USERWORD:=TABLE[USRINDX]:=USERCODE;                                  00042800
+   TABLE[USRINDX+1].[33:15]:=USERLOC;                                   00042900
+   WRITE(USERS[TABLELOC],30,TABLE[*]);                                  00043000
+   WRITE(USERS[USERLOC],30,USER [*]);                                   00043100
+   END  WRITE USER;                                                     00043200
+%***********************************************************************00043300
+PROCEDURE BUILDFILE;                                                    00043400
+%***********************************************************************00043500
+   BEGIN                                                                00043600
+   FILE NEW DISK SERIAL [20:600] (2,30,300,SAVE 999);                   00043700
+   USER[1]:=NEXTOPEN:=30;                                               00043800
+   FILL NEW WITH "USERS  ","CANDE  ";                                   00043900
+      DO BEGIN                                                          00044000
+      WRITE(NEW,30,USER[*]); CLEAR(USER,29);                            00044100
+      END  UNTIL USRINDX:=USRINDX+1 GTR 29;                             00044200
+   LOCK(NEW,SAVE);                                                      00044300
+   END  BUILDING NEW FILE;                                              00044400
+%***********************************************************************00044500
+PROCEDURE SETOPTIONS;                                                   00044600
+%***********************************************************************00044700
+   BEGIN                                                                00044800
+   FOR I:=2,3,6,7,8 DO % PASSWORD,CHARGE,PHONE,TIME,COMPILERS           00044900
+      BEGIN                                                             00045000
+      MATCH(OPTIONS[I],0) ELSE USER[I]:=OPTIONS[I];                     00045100
+      END  FOR;                                                         00045200
+   MATCH(OPTIONS[4], 0) ELSE MOVE(2,OPTIONS[4] ,USER[4] ); %NAME        00045300
+   MATCH(OPTIONS[9], 0) ELSE MOVE(1,OPTIONS[9], USER[9] ); %VRBWRD      00045400
+   MATCH(OPTIONS[10],0) ELSE MOVE(1,OPTIONS[10],USER[10]); %VRBWRD      00045500
+   END  SET OPTIONS;                                                    00045600
+%***********************************************************************00045700
+STREAM PROCEDURE SETBIT(BITNUM,WD); VALUE BITNUM;                       00045800
+%***********************************************************************00045900
+   BEGIN LOCAL N;                                                       00046000
+   SI:=LOC BITNUM; SI:=SI+6; DI:=LOC N; DI:=DI+7; DS:=CHR;              00046100
+   DI:=WD; N(2(SKIP 32 DB)); SKIP BITNUM DB; DS:=SET;                   00046200
+   END STREAM PROCEDURE SETBIT;                                         00046300
+%***********************************************************************00046400
+PROCEDURE READUSER;                                                     00046500
+%***********************************************************************00046600
+   BEGIN LABEL READIN,OK;                                               00046700
+   IF NEXTOPEN = 0 THEN % FILE NOT OPEN                                 00046710
+      BEGIN                                                             00046720
+      READ(USERS[0],5,B[*]);                                            00046730
+      NEXTOPEN := B[1];                                                 00046740
+      END;                                                              00046750
+   IF UNQUOTE(7,APTR,USERCODE) THEN                                     00046800
+      BEGIN                                                             00046900
+      ERR(0); ERR(2); % BAD DOLLAR CARD, QUOTES REQUIRED                00047000
+      END                                                               00047100
+   ELSE                                                                 00047200
+      BEGIN % GOT A USERCODE.                                           00047300
+      WORD := USERCODE;  USRINDX:=-2;                                   00047400
+      TABLELOC:=((WORD.[6:21]+WORD.[27:21])MOD 29)+1; % SCRAMBLE        00047500
+READIN:                                                                 00047600
+      READ(USERS[TABLELOC],30,TABLE[*]);                                00047700
+         DO BEGIN                                                       00047800
+         USRINDX:=USRINDX+2;                                            00047900
+         MATCH(TABLE[USRINDX],WORD) USERPRESENT:=TRUE; % ALREADY PRESENT00048000
+         END  UNTIL USERPRESENT OR USRINDX GTR 26;                      00048100
+      IF NOT USERPRESENT THEN % NOT IN THIS BLOCK                       00048200
+      IF TABLE[1].[18:15] NEQ 0 THEN % LINK TO NEXT SEGMENT             00048300
+         BEGIN                                                          00048400
+         TABLELOC := TABLE[1].[18:15]; % LOCATION OF LINKED SEGMENT     00048500
+         USRINDX := -2; GO TO READIN;                                   00048600
+         END;                                                           00048700
+      IF USERPRESENT THEN USERLOC:=TABLE[USRINDX+1].[33:15] ELSE        00048800
+         BEGIN % MUST BE NEW USER.                                      00048900
+         USRINDX := -1;  I:=0;  FOUND:=FALSE;                           00049500
+         DO IF FOUND:=TABLE[I]=0 THEN USRINDX:=I                        00049600
+         UNTIL FOUND OR I:=I+2 GTR 28;                                  00049700
+         IF FOUND THEN                                                  00049800
+            BEGIN                                                       00049900
+OK:         NEXTOPEN:=(USERLOC:=NEXTOPEN)+1;                            00050000
+            BLANK(USERNAME,1);  BLANK(PASSWORD,0);                      00050100
+            USER[29]:=TABLELOC & USRINDX[18:33:15]; % BACK LINK         00050200
+            END                                                         00050300
+         ELSE                                                           00050400
+            BEGIN % NO ROOM IN THIS BLOCK                               00050500
+            TABLE[1].[18:15]:=NEXTOPEN; % LINK TO NEXT AVAILABLE SLOT   00050600
+            WRITE(USERS[TABLELOC],30,TABLE[*]); % REPLACE SCRAMBLE BLOCK00050700
+            CLEAR(TABLE,29); TABLE[29]:=-0&TABLELOC[18:33:15]; % BK LNK 00050800
+            TABLELOC := NEXTOPEN; USRINDX := 0;                         00050900
+            NEXTOPEN := NEXTOPEN + 1; % INCREMENT FILE SIZE             00051000
+            WRITE(USERS[TABLELOC],30,TABLE[*]); %WRITE IN CASE OF ERROR 00051100
+            FOUND := TRUE; GO TO OK;                                    00051200
+            END;                                                        00051300
+         END  NEW USER;                                                 00051400
+      END  IF WE HAD A USER CODE;                                       00051500
+   IF USERPRESENT THEN READ(USERS[USERLOC],30,USER[*]);                 00051600
+   USERPRESENT:=(FOUND OR USERPRESENT);                                 00051700
+   IF USERLOC LSS 30 THEN ERR(4);                                       00051800
+   ALTERED := ALTERED OR USERPRESENT;                                   00051900
+   END  READ USER;                                                      00052000
+%***********************************************************************00052100
+PROCEDURE REMOVEUSER;                                                   00052200
+%***********************************************************************00052300
+   BEGIN                                                                00052400
+   % ROUTINE FOR REMOVING USERCODE FROM USERS/CANDE FILE                00052500
+   % EXPECTS CARD IMAGE OF THE FORM: $ REMOVE "USERCODE"                00052600
+   REAL USRCODE,LASTUSERINX,LASTABLELOC;                                00052700
+   LABEL FOUNDIT,EXIT,READIN;                                           00052800
+   FORMAT                                                               00052900
+   NOTINFILE("REMOVE IGNORED, USERCODE NOT IN FILE"),                   00053000
+   INVALIDLOC("REMOVE IGNORED, INVALID RECORD ADDRESS"),                00053100
+   INVALIDLINK("REMOVE IGNORED, FILE NOT PROPERLY LINKED");             00053200
+   IF UNQUOTE(7,APTR,USRCODE) THEN                                      00053300
+      BEGIN                                                             00053400
+      ERR(2); GO TO EXIT; % QUOTES REQUIRED AROUND PARAMETERS           00053500
+      END;                                                              00053600
+   TABLELOC:=((USRCODE.[6:21]+USRCODE.[27:21]) MOD 29) +1;              00053700
+READIN:                                                                 00053800
+   READ(USERS[TABLELOC],30,TABLE[*]); % GET INDEX SEGMENT               00053900
+   FOR USRINDX:=0 STEP 2 UNTIL 28 DO                                    00054000
+   MATCH(TABLE[USRINDX],USRCODE) GO TO FOUNDIT;                         00054100
+   IF (TABLELOC:=TABLE[1].[18:15]) NEQ 0 THEN GO READIN; % LINKED       00054200
+   WRITE(LINE,NOTINFILE); WRITE(LINE[DBL],10,A[*]); GO EXIT;            00054300
+FOUNDIT:                                                                00054400
+   USERLOC := TABLE[USRINDX+1].[33:15]; % USERS RECORD LOCATION         00054500
+   IF USERLOC LSS 30 THEN                                               00054600
+      BEGIN                                                             00054700
+      WRITE(LINE,INVALIDLOC); WRITE(LINE[DBL],10,A[*]); GO EXIT;        00054800
+      END;                                                              00054900
+   IF NEXTOPEN=0 THEN % FIRST CARD, GET FILE LENGTH                     00055000
+      BEGIN                                                             00055100
+      READ(USERS[0],5,B[*]); NEXTOPEN:=B[1];                            00055200
+      END;                                                              00055300
+   IF USERLOC = NEXTOPEN-1 THEN % THIS IS THE LAST RECORD               00055400
+      BEGIN                                                             00055500
+      TABLE[USRINDX] := TABLE[USRINDX+1] := 0;                          00055600
+      WRITE(USERS[TABLELOC],30,TABLE[*]);                               00055700
+      NEXTOPEN := NEXTOPEN -1; % DECREMENT RECORD COUNT                 00055800
+      GO TO EXIT;                                                       00055900
+      END;                                                              00056000
+   READ(USERS[NEXTOPEN-1],30,USER[*]); % GET LAST RECORD IN FILE        00056100
+   IF BOOLEAN(USER[29].[1:1]) THEN % LAST RECORD IS A SCRAMBLE BLOCK    00056200
+      BEGIN                                                             00056300
+      IF (I:=USER[29].[18:15]) = 0 THEN % INVALID LINK                  00056400
+         BEGIN                                                          00056500
+         WRITE(LINE,INVALIDLINK); WRITE(LINE[DBL],10,A[*]); GO EXIT;    00056600
+         END;                                                           00056700
+      TABLE[USRINDX]:=0; TABLE[USRINDX+1].[33:15]:=0; % REMOVE USERCODE 00056800
+      WRITE(USERS[TABLELOC],30,TABLE[*]); % REPLACE SCRAMBLE BLOCK      00056900
+      IF TABLELOC=NEXTOPEN-1 THEN % USER IS IN LAST BLOCK               00057000
+         BEGIN                                                          00057100
+         USER[USRINDX]:=0; USER[USRINDX+1].[33:15]:=0;                  00057200
+         END;                                                           00057300
+      K := -2;                                                          00057400
+      DO K:=K+2 UNTIL USER[K] NEQ 0 OR K GTR 28;                        00057500
+      IF K GTR 28 THEN % EMPTY BLOCK                                    00057600
+         BEGIN                                                          00057700
+         USERLOC := 0; NEXTOPEN := NEXTOPEN -1;                         00057800
+         END                                                            00057900
+      ELSE                                                              00058000
+      WRITE(USERS[USERLOC],30,USER[*]); % MOVE LAST RECORD UP           00058100
+      NEXTOPEN := NEXTOPEN - 1; % DECREMENT FILE SIZE                   00058200
+      READ(USERS[I],30,TABLE[*]); % GET PREVIOUS SCRAMBLE BLOCK         00058300
+      TABLE[1].[18:15]:=USERLOC; % NEW LOCATION FOR LINKED BLOCK        00058400
+      WRITE(USERS[I],30,TABLE[*]); % REPLACE SCRAMBLE BLOCK             00058500
+      END % IF LAST RECORD IS A SCRAMBLE BLOCK                          00058600
+   ELSE                                                                 00058700
+      BEGIN % NOT A SCRAMBLE BLOCK                                      00058800
+      LASTUSERINX := USER[29].[18:15]; % LOCATION IN SCRAMBLE BLOCK     00058900
+      LASTABLELOC := USER[29].[33:15]; % SCRAMBLE BLOCK LOCATION        00059000
+      IF LASTABLELOC = 0 OR LASTUSERINX GTR 28 THEN % INVALID LINK      00059100
+         BEGIN                                                          00059200
+         WRITE(LINE,INVALIDLINK); WRITE(LINE[DBL],30,A[*]); GO EXIT;    00059300
+         END;                                                           00059400
+      TABLE[USRINDX]:=0; TABLE[USRINDX+1].[33:15]:=0; % REMOVE USER     00059500
+      IF LASTABLELOC NEQ TABLELOC THEN % DIFFERENT SCRAMBLE BLOCK       00059600
+         BEGIN                                                          00059700
+         WRITE(USERS[TABLELOC],30,TABLE[*]); % WRITE CURRENT BLOCK      00059800
+         READ(USERS[LASTABLELOC],30,TABLE[*]); % BLOCK FOR LST RECRD    00059900
+         END;                                                           00060000
+      TABLE[LASTUSERINX+1].[33:15]:=USERLOC; % NEW LOC. FOR LST. REC.   00060100
+      WRITE(USERS[LASTABLELOC],30,TABLE[*]); % REPLACE SCRAMBLE BLOCK   00060200
+      WRITE(USERS[USERLOC],30,USER[*]); % MOVE UP LAST RECORD           00060300
+      NEXTOPEN := NEXTOPEN -1; % DECREMENT FILE SIZE                    00060400
+      END; % IF NOT SCRAMBLE BLOCK                                      00060500
+   ALTERED := TRUE;                                                     00060600
+EXIT:                                                                   00060700
+   END PROCEDURE REMOVEUSER;                                            00060800
+%***********************************************************************00060900
+PROCEDURE LINKUP;                                                       00061000
+%***********************************************************************00061100
+   BEGIN LABEL LINK;                                                    00061200
+   %ROUTINE TO ESTABLISH LINKS FROM USERS/CANDE RECORDS TO INDEX TABLE  00061300
+   %ROUTINE EXPECTS TO FIND CARD IMAGE OF THE FORM: $ LINK              00061400
+   TABLELOC := 0;                                                       00061500
+      DO BEGIN                                                          00061600
+      READ(USERS[TABLELOC:=TABLELOC+1],30,TABLE[*]);                    00061700
+LINK: USRINDX := -2;                                                    00061800
+         DO BEGIN                                                       00061900
+         IF TABLE[USRINDX:=USRINDX+2] NEQ 0 THEN                        00062000
+         IF USERLOC := TABLE[USRINDX+1].[33:15] GEQ 30 THEN             00062100
+            BEGIN                                                       00062200
+            READ(USERS[USERLOC],30,USER[*]);                            00062300
+            USER[29] := TABLELOC & USRINDX[18:33:15];                   00062400
+            WRITE(USERS[USERLOC],30,USER[*]);                           00062500
+            END;                                                        00062600
+         END UNTIL USRINDX = 28;                                        00062700
+      IF (I:=TABLE[1].[18:15]) NEQ 0 THEN % LINKED SCRAMBLE BLOCK       00062800
+         BEGIN                                                          00062900
+         READ(USERS[I],30,TABLE[*]);                                    00063000
+         GO LINK;                                                       00063100
+         END;                                                           00063200
+      END UNTIL TABLELOC = 29;                                          00063300
+   END PROCEDURE LINKUP;                                                00063400
+%***********************************************************************00063500
+FILL CMPS[*] WITH 0,                                                    00063600
+"BASIC  ","ALGOL  ","COBOL  ","FORTRAN","TSPOL  ","XALGOL ",            00063700
+"*******","*******","*******","*******","COBOL68";                      00063710
+FILL VRBS[*] WITH 0,                                                    00063800
+"LIST   ","RUN    ","SAVE   ","SEQ    ","EXECUTE","DO     ",            00063900
+"MAKE   ","LOAD   ","COMPILE","REMOVE ","CHANGE ","RENAME ",            00064000
+"FILES  ","WHATS  ","CREATE ","HELLO  ","TYPE   ","BYE    ",            00064100
+"COPY   ","MERGE  ","RESEQ  ","DELETE ","APPEND ","ADD    ",            00064200
+"TO     ","SS     ","GUARD  ","LOCK   ","UNLOCK ","TAPE   ",            00064300
+"PRINT  ","PUNCH  ","CHARGE ","SCHEDUL","STATUS ","STOP   ",            00064400
+"TIME   ","UPDATE ","REPLACE","FIND   ","CC     ","RMERGE ",            00064500
+"DISPLAY","SET    ","RESET  ","MONITOR","SSFILE ","EQUATE ",            00064600
+"PUBLIC ";                                                              00064610
+A[0]:=0; A0:=ADDRESS(A[0]); FIRSTCARD:=TRUE; CLEAR(USER,29);            00064700
+NEXT:                                                                   00064800
+READ(CARD,10,A[*])[EOF]; A[10]:=REAL(NOT FALSE); % END RECORD MARK      00064900
+APTR := A0;                                                             00065000
+IF GETWORD(APTR,WORD) THEN GO TO NEXT; % BLANK CARD                     00065100
+IF DOLLARCARD:=DOLLAR(A) THEN                                           00065200
+   BEGIN % DOLLAR CARD READ.                                            00065300
+   IF USERPRESENT THEN WRITEUSER                                        00065400
+   ELSE                                                                 00065500
+   IF OPTIONSBUILT THEN MOVE(30,USER,OPTIONS);                          00065600
+   OPTIONSBUILT:=USERPRESENT:=FALSE;  CLEAR(USER,29);                   00065700
+   USERCODE := "       ";                                               00065800
+   MATCH(WORD,"USER   ")                                                00065900
+      BEGIN                                                             00066000
+      READUSER; SETOPTIONS;                                             00066100
+      END                                                               00066200
+   ELSE                                                                 00066300
+   MATCH(WORD,"OPTIONS") OPTIONSBUILT := TRUE                           00066400
+   ELSE                                                                 00066500
+   MATCH(WORD,"NEW    ") IF FIRSTCARD THEN BUILDFILE ELSE ERR(1)        00066600
+   ELSE                                                                 00066700
+   MATCH(WORD,"PRINT  ") PRINT                                          00066800
+   ELSE                                                                 00066900
+   MATCH(WORD,"REMOVE ") REMOVEUSER                                     00067000
+   ELSE                                                                 00067100
+   MATCH(WORD,"LINK   ") LINKUP                                         00067200
+   ELSE                                                                 00067300
+   ERR(0); % BAD $ CARD.                                                00067400
+   FIRSTCARD := FALSE;                                                  00067500
+   END  DOLLAR CARD                                                     00067600
+ELSE                                                                    00067700
+   BEGIN % NOT A DOLLAR CARD.                                           00067800
+   MATCH(WORD,"USE    ") % OPTIONAL WORD                                00067900
+      BEGIN                                                             00068000
+      IF GETWORD(APTR,WORD) THEN GO TO NEXT;                            00068100
+      END;                                                              00068200
+   MATCH(WORD,"PASSWOR") IF UNQUOTE(7,APTR,PASSWORD) THEN ERR(2) % "    00068300
+   ELSE ELSE                                                            00068400
+   MATCH(WORD,"NAME   ") IF UNQUOTE(15,APTR,USERNAME) THEN ERR(2) % "   00068500
+   ELSE ELSE                                                            00068600
+   MATCH(WORD,"TIME   ") BUILDTIMEWORD(TIMEWORD,A)                      00068700
+   ELSE                                                                 00068800
+   MATCH(WORD,"CHARGE ") IF UNQUOTE(7,APTR,CHARGEWORD) THEN ERR(2) % "  00068900
+   ELSE ELSE                                                            00069000
+   MATCH(WORD,"REQUEST") CHARGEWORD := 0                                00069100
+   ELSE                                                                 00069200
+   MATCH(WORD,"NO     ") CHARGEWORD := "-1     "                        00069300
+   ELSE                                                                 00069400
+   MATCH(WORD,"LANGUAG")                                                00069500
+      BEGIN                                                             00069600
+COMPILERS:                                                              00069700
+      IF GETWORD(APTR,WORD) THEN GO TO NEXT; % END OF RECORD            00069800
+      MATCH(WORD,"NONE   ") COMPILERWORD := 0 ELSE                      00069900
+         BEGIN                                                          00070000
+         FOR I:=1 STEP 1 UNTIL NUMOFCOMPILERS DO                        00070100
+         MATCH(WORD,CMPS[I])                                            00070200
+            BEGIN                                                       00070300
+            SETBIT(I,COMPILERWORD);                                     00070400
+            GO TO COMPILERS;                                            00070500
+            END;                                                        00070600
+         ERR(4); GO TO NEXT; % NOT COMPILER NAME                        00070700
+         END; % IF A COMPILER NAME                                      00070800
+      END % IF "LANGUAGE"                                               00070900
+   ELSE                                                                 00071000
+   MATCH(WORD,"PHONE  ") IF UNQUOTE(7,APTR,PHONEWORD) THEN ERR(2) % "   00071100
+   ELSE ELSE                                                            00071200
+   MATCH(WORD,"VERBS  ")                                                00071300
+      BEGIN                                                             00071400
+VERBS:                                                                  00071500
+      IF GETWORD(APTR,WORD) THEN GO TO NEXT;                            00071600
+      MATCH(WORD,"NONE   ") CLEAR(VERBWORD,1) ELSE                      00071700
+         BEGIN                                                          00071800
+         FOR I:=1 STEP 1 UNTIL NUMOFVERBS DO                            00071900
+         MATCH(WORD,VRBS[I])                                            00072000
+            BEGIN                                                       00072100
+            SETBIT(I,VERBWORD);                                         00072200
+            GO TO VERBS;                                                00072300
+            END;                                                        00072400
+         ERR(5); % NOT VERB NAME GO TO NEXT;                            00072500
+         END; % IF A VERB NAME                                          00072600
+      END % IF VERBS                                                    00072700
+   ELSE                                                                 00072800
+   ERR(3); % UNKNOWN OPTION                                             00072900
+   END  NOT DOLLAR CARD;                                                00073000
+GO TO NEXT;                                                             00073100
+EOF:                                                                    00073200
+IF USERPRESENT THEN WRITEUSER; % WRITE REMAINING SEGMENTS               00073300
+IF ALTERED THEN % UPDATE RECORD COUNT AND ALTERATION DATE               00073400
+   BEGIN                                                                00073500
+   READ(USERS[0],29,USER[*]); % GET SEGMENT ZERO                        00073600
+   USER[1] := NEXTOPEN;                                                 00073700
+   USER[2]:=TIME(5);                                                    00073800
+   WRITE(USERS[0],30,USER[*]);                                          00073900
+   CLOSE(USERS,SAVE);                                                   00074000
+   END; % IF ALTERED                                                    00074100
+END  USER.                                                              00074200
+END;END.        LAST CARD ON 0CRDING TAPE                               99999999
