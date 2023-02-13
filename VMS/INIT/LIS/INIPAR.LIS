@@ -1,0 +1,2758 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE INIPAR (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'X0011'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  INIT Utility Structure Level 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This module contains the data base and utilities used to acquire the
+;	0033	!	INIT command line from the CLI parser.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  8-Nov-1977  22:29
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   D. H. Gillespie, 9-Dec-1977  15:51
+;	0048	!   X0002 - ADD /OVERRIDE:EXPIRATION 
+;	0049	!
+;	0050	!   D. H. Gillespie, 9-Dec-1977  16:04
+;	0051	!   X0003 - CHANGE DEFAULT DENSITY TO 1600 BPI
+;	0052	!
+;	0053	!   D. H. Gillespie, 20-Dec-1977  17:41
+;	0054	!   X0004 - FIX OVERRIDE EXPIRATION BUG
+;	0055	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   Andrew C. Goldstein, 16-Feb-1978  16:27
+;	0057	!   X0005 - Add /DIRECTORIES and /USERNAME switches
+;	0058	!
+;	0059	!   Andrew C. Goldstein, 26-APR-78  14:31
+;	0060	!   X0006 - Default manually entered bad block count to 1
+;	0061	!
+;	0062	!   Andrew C. Goldstein, 2-May-78  18:37
+;	0063	!   X0007 - Add explicit absolute flag to $CLIREQDESC calls
+;	0064	!
+;	0065	!   D. H. Gillespie, 23-May-78  10:41
+;	0066	!   X0008 - add OPT_OVR_ACC
+;	0067	!
+;	0068	!   Andrew C. Goldstein, 8-Jun-78  0:58
+;	0069	!   X0009 - Add structure level 1
+;	0070	!
+;	0071	!   Andrew C. Goldstein, 15-Jun-78  15:03
+;	0072	!   X0010 - Make : or = optional for no access protection
+;	0073	!
+;	0074	!   D. H. Gillespie, 19-Jul-78  14:57
+;	0075	!   X0011 - add detection of illegal MT options that are explicitly seen
+;	0076	!
+;	0077	!**
+;	0078	
+;	0079	
+;	0080	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0081	REQUIRE 'SRC$:INIDEF.B32';
+;	0343	REQUIRE 'LIBD$:[VMSLIB.OBJ]INITMSG.B32';
+;	0403	LIBRARY 'SYS$LIBRARY:CLIMAC.L32';
+;	0404	LIBRARY 'SYS$LIBRARY:TPAMAC.L32';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 2
+; Digital Equipment Corporation
+;
+;	0405	!+
+;	0406	!
+;	0407	! Impure data area. This area contains the INIT parameters extracted from
+;	0408	! the command line by the associated parsing routines.
+;	0409	!
+;	0410	!-
+;	0411	
+;	0412	LITERAL
+;	0413		BAD_TABLE_LEN	= 100;		! length of bad block table
+;	0414	
+;	0415	GLOBAL
+;	0416		INIT_OPTIONS	: BITVECTOR [64], ! option flags
+;	0417		PROTECTION,			! value of /PROTECTION switch
+;	0418		FILE_PROT,			! value of /FILE_PROTECTION switch
+;	0419		RECORD_PROT,			! value of /RECORD_PROTECTION switch
+;	0420		MAXIMUM,			! value of /MAXIMUM switch
+;	0421		INDEX,				! LBN of index file start
+;	0422		CLUSTER,			! value of /CLUSTER switch
+;	0423		HEADERS,			! value of /HEADERS switch
+;	0424		DIRECTORIES,			! number of MFD entries to preallocate
+;	0425		OWNER_UIC,			! value of /OWNER_UIC switch
+;	0426		EXTENSION,			! value of /EXTENSION switch
+;	0427		WINDOW,				! value of /WINDOW switch
+;	0428		ACCESSED,			! value of /ACCESSED switch
+;	0429		DEVICE_STRING	: VECTOR [2],	! decriptor of device name string
+;	0430		LABEL_STRING	: VECTOR [2],	! descriptor of volume label string
+;	0431		USER_NAME	: VECTOR [2],	! descriptor of user name string
+;	0432		BADBLOCK_COUNT,			! count of manually entered bad blocks
+;	0433		BADBLOCK_TABLE	: BBLOCKVECTOR [BAD_TABLE_LEN, BAD_LENGTH],
+;	0434						! manually entered bad blocks
+;	0435	
+;	0436		PARSE_IMP_END	: VECTOR [0];	! end of data area
+;	0437	
+;	0438	LITERAL
+;	0439		PARSE_IMP_LEN	= PARSE_IMP_END - INIT_OPTIONS;
+;	0440	
+;	0441	
+;	0442	!
+;	0443	! Assorted impure data.
+;	0444	!
+;	0445	
+;	0446	OWN
+;	0447		CLI_WORK_AREA	: BBLOCK [CLI$K_WORKAREA],
+;	0448		TPARSE_BLOCK	: BBLOCK [TPA$K_LENGTH0]
+;	0449				  INITIAL (TPA$K_COUNT0, TPA$M_BLANKS OR TPA$M_ABBREV),
+;	0450		PROT_VAL,
+;	0451		UIC;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 3
+; Digital Equipment Corporation
+;
+;	0452	!+
+;	0453	!
+;	0454	! Request descriptors to the CLI parser. Labels are deemed sufficiently
+;	0455	! obvious to make cluttering the code with comments unnecessary.
+;	0456	!
+;	0457	!-
+;	0458	
+;	0459	FORWARD ROUTINE
+;	0460		PARSE_ERROR	: NOVALUE,
+;	0461		DENSITY_ACT	: NOVALUE,
+;	0462		STRUCTURE_ACT	: NOVALUE,
+;	0463		OVERRIDE_ACT	: NOVALUE,
+;	0464		PROTECTION_ACT	: NOVALUE,
+;	0465		FILE_PROT_ACT	: NOVALUE,
+;	0466		RECORD_PROT_ACT	: NOVALUE,
+;	0467		OWNER_UIC_ACT	: NOVALUE,
+;	0468		MAXIMUM_ACT	: NOVALUE,
+;	0469		INDEX_ACT	: NOVALUE,
+;	0470		DATACHECK_ACT	: NOVALUE,
+;	0471		CLUSTER_ACT	: NOVALUE,
+;	0472		HEADERS_ACT	: NOVALUE,
+;	0473		DIRECTORIES_ACT	: NOVALUE,
+;	0474		USER_NAME_ACT	: NOVALUE,
+;	0475		BADBLOCKS_ACT	: NOVALUE,
+;	0476		EXTENSION_ACT	: NOVALUE,
+;	0477		WINDOW_ACT	: NOVALUE,
+;	0478		ACCESSED_ACT	: NOVALUE,
+;	0479		DEVICE_ACT	: NOVALUE,
+;	0480		LABEL_ACT	: NOVALUE;
+;	0481	
+;	0482	$CLIQUALCODES (INIT,
+;     P 0483		DENSITY,
+;     P 0484		STRUCTURE,
+;     P 0485		SHARE,
+;     P 0486		GROUP,
+;     P 0487		SYSTEM,
+;     P 0488		EBCDIC,
+;     P 0489		VERIFIED,
+;     P 0490		PROTECTION,
+;     P 0491		FILE_PROT,
+;     P 0492		RECORD_PROT,
+;     P 0493		OWNER_UIC,
+;     P 0494		MAXIMUM,
+;     P 0495		INDEX,
+;     P 0496		DATACHECK,
+;     P 0497		CLUSTER,
+;     P 0498		HEADERS,
+;     P 0499		BADBLOCKS,
+;     P 0500		DIRECTORIES,
+;     P 0501		USER_NAME,
+;     P 0502		EXTENSION,
+;     P 0503		WINDOW,
+;     P 0504		ACCESSED,
+;     P 0505		OVERRIDE
+;     P 0506		);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 3-1
+; Digital Equipment Corporation
+;
+;	0507	
+;	0508	! CLI request and qualifier descriptor blocks. Note that the ordering of
+;	0509	! the qualifier descriptors is critical because of interrelated bit list
+;	0510	! processing. Note also that correct operation of this parser is critically
+;	0511	! dependent on the advertised order of CLI processing: first establish the
+;	0512	! state of all qualifiers, using explicit and default data, then setting and
+;	0513	! clearing the bit set and clear lists, then testing the bit test lists, and
+;	0514	! finally calling all of the action routines. Within each step, the qualifiers
+;	0515	! are processed in the order listed.
+;	0516	!
+;	0517	
+;	0518	OWN
+;	0519		START_PARSE	: $CLIREQDESC (RQTYPE = INITPRS,
+;     P 0520					RQFLGS = ABSADR,
+;     P 0521					ERRACT = PARSE_ERROR
+;     P 0522				),
+;	0523		END_PARAM1	: $CLIREQDESC (RQTYPE = ENDPRM1,
+;     P 0524					RQFLGS = ABSADR,
+;     P 0525					ERRACT = PARSE_ERROR
+;     P 0526				),
+;	0527		END_PARAM2	: $CLIREQDESC (RQTYPE = ENDPRM2,
+;     P 0528					RQFLGS = ABSADR,
+;     P 0529					ERRACT = PARSE_ERROR
+;     P 0530				),
+;	0531	
+;	0532		DENSITY_Q	: $CLIQUALDESC (
+;     P 0533					QDCODE = DENSITY,
+;     P 0534					SETLST = OPT_DENSITY,
+;     P 0535					TRUACT = DENSITY_ACT
+;     P 0536				),
+;	0537		STRUCTURE_Q	: $CLIQUALDESC (
+;     P 0538					QDCODE = STRUCTURE,
+;     P 0539					TRUACT = STRUCTURE_ACT
+;     P 0540				),
+;	0541		SHARE_Q		: $CLIQUALDESC (
+;     P 0542					QDCODE = SHARE,
+;     P 0543					SETLST = OPT_SHARE
+;     P 0544				),
+;	0545		GROUP_Q		: $CLIQUALDESC (
+;     P 0546					QDCODE = GROUP,
+;     P 0547					SETLST = OPT_GROUP
+;     P 0548				),
+;	0549		SYSTEM_Q	: $CLIQUALDESC (
+;     P 0550					QDCODE = SYSTEM,
+;     P 0551					SETLST = OPT_SYSTEM,
+;     P 0552					TSTLST = OPT_GROUP
+;     P 0553				),
+;	0554		OVERRIDE_Q	: $CLIQUALDESC (
+;     P 0555					QDCODE = OVERRIDE,
+;     P 0556					TRUACT = OVERRIDE_ACT
+;     P 0557				),
+;	0558		EBCDIC_Q	: $CLIQUALDESC (
+;     P 0559					QDCODE = EBCDIC,
+;     P 0560					SETLST = OPT_EBCDIC
+;     P 0561				),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 3-2
+; Digital Equipment Corporation
+;
+;	0562		VERIFIED_Q	: $CLIQUALDESC (
+;     P 0563					QDCODE = VERIFIED,
+;     P 0564					SETLST = OPT_VERIFIED
+;     P 0565				),
+;	0566		PROTECTION_Q	: $CLIQUALDESC (
+;     P 0567					QDCODE = PROTECTION,
+;     P 0568					SETLST = OPT_PROTECTION,
+;     P 0569					TRUACT = PROTECTION_ACT
+;     P 0570				),
+;	0571		FILE_PROT_Q	: $CLIQUALDESC (
+;     P 0572					QDCODE = FILE_PROT,
+;     P 0573					SETLST = OPT_FILE_PROT,
+;     P 0574					TRUACT = FILE_PROT_ACT
+;     P 0575				),
+;	0576		RECORD_PROT_Q	: $CLIQUALDESC (
+;     P 0577					QDCODE = RECORD_PROT,
+;     P 0578					SETLST = OPT_RECORD_PROT,
+;     P 0579					TRUACT = RECORD_PROT_ACT
+;     P 0580				),
+;	0581		OWNER_UIC_Q	: $CLIQUALDESC (
+;     P 0582					QDCODE = OWNER_UIC,
+;     P 0583					SETLST = OPT_OWNER_UIC,
+;     P 0584					TRUACT = OWNER_UIC_ACT
+;     P 0585				),
+;	0586		USER_NAME_Q	: $CLIQUALDESC (
+;     P 0587					QDCODE = USER_NAME,
+;     P 0588					SETLST = OPT_USER_NAME,
+;     P 0589					TRUACT = USER_NAME_ACT
+;     P 0590				),
+;	0591		INDEX_Q		: $CLIQUALDESC (
+;     P 0592					QDCODE = INDEX,
+;     P 0593					TRUACT = INDEX_ACT
+;     P 0594				),
+;	0595		DATACHECK_Q	: $CLIQUALDESC (
+;     P 0596					QDCODE = DATACHECK,
+;     P 0597					TRUACT = DATACHECK_ACT
+;     P 0598				),
+;	0599		DIRECTORIES_Q	: $CLIQUALDESC (
+;     P 0600					QDCODE = DIRECTORIES,
+;     P 0601					SETLST = OPT_DIRECTORIES,
+;     P 0602					TRUACT = DIRECTORIES_ACT
+;     P 0603				),
+;	0604		MAXIMUM_Q	: $CLIQUALDESC (
+;     P 0605					QDCODE = MAXIMUM,
+;     P 0606					SETLST = OPT_MAXIMUM,
+;     P 0607					TRUACT = MAXIMUM_ACT
+;     P 0608				),
+;	0609		CLUSTER_Q	: $CLIQUALDESC (
+;     P 0610					QDCODE = CLUSTER,
+;     P 0611					SETLST = OPT_CLUSTER,
+;     P 0612					TRUACT = CLUSTER_ACT
+;     P 0613				),
+;	0614		HEADERS_Q	: $CLIQUALDESC (
+;     P 0615					QDCODE = HEADERS,
+;     P 0616					SETLST = OPT_HEADERS,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 3-3
+; Digital Equipment Corporation
+;
+;     P 0617					TRUACT = HEADERS_ACT
+;     P 0618				),
+;	0619		BADBLOCKS_Q	: $CLIQUALDESC (
+;     P 0620					QDCODE = BADBLOCKS,
+;     P 0621					SETLST = OPT_BADBLOCKS,
+;     P 0622					TRUACT = BADBLOCKS_ACT
+;     P 0623				),
+;	0624		EXTENSION_Q	: $CLIQUALDESC (
+;     P 0625					QDCODE = EXTENSION,
+;     P 0626					SETLST = OPT_EXTENSION,
+;     P 0627					TRUACT = EXTENSION_ACT
+;     P 0628				),
+;	0629		WINDOW_Q	: $CLIQUALDESC (
+;     P 0630					QDCODE = WINDOW,
+;     P 0631					SETLST = OPT_WINDOW,
+;     P 0632					TRUACT = WINDOW_ACT
+;     P 0633				),
+;	0634		ACCESSED_Q	: $CLIQUALDESC (
+;     P 0635					QDCODE = ACCESSED,
+;     P 0636					SETLST = OPT_ACCESSED,
+;     P 0637					TRUACT = ACCESSED_ACT
+;     P 0638				),
+;	0639		QUAL_END	: $CLIQUALEND,
+;	0640	
+;	0641	
+;	0642		GET_QUAL	: $CLIREQDESC (RQTYPE = GETQUAL,
+;     P 0643					RQFLGS = ABSADR,
+;     P 0644					QUALST = DENSITY_Q,
+;     P 0645					ERRACT = PARSE_ERROR
+;     P 0646				),
+;	0647		GET_DEVICE	: $CLIREQDESC (RQTYPE = INPUT1,
+;     P 0648					RQFLGS = (ABSADR, PARMREQ),
+;     P 0649					BITNUM = OPT_DEVICE,
+;     P 0650					PRSACT = DEVICE_ACT,
+;     P 0651					ERRACT = PARSE_ERROR
+;     P 0652				),
+;	0653		GET_LABEL	: $CLIREQDESC (RQTYPE = INPUT2,
+;     P 0654					RQFLGS = (ABSADR, PARMREQ),
+;     P 0655					BITNUM = OPT_LABEL,
+;     P 0656					PRSACT = LABEL_ACT,
+;     P 0657					ERRACT = PARSE_ERROR
+;     P 0658				),
+;	0659		CONVERT_NUMBER	: $CLIREQDESC (RQTYPE = NUMERVAL,
+;     P 0660					RQFLGS = (ABSADR, LASTVAL),
+;     P 0661					ERRACT = PARSE_ERROR
+;     P 0662				);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4
+; Digital Equipment Corporation
+;
+;	0663	GLOBAL ROUTINE INIT_PARSE (CLI_CALLBACK) : NOVALUE =
+;	0664	
+;	0665	!++
+;	0666	!
+;	0667	! FUNCTIONAL DESCRIPTION:
+;	0668	!
+;	0669	!	This routine parses the INIT command line by calling the CLI
+;	0670	!	result parse routines, and leaves the results in the global data
+;	0671	!	area.
+;	0672	!
+;	0673	!
+;	0674	! CALLING SEQUENCE:
+;	0675	!	INIT_PARSE (ARG1)
+;	0676	!
+;	0677	! INPUT PARAMETERS:
+;	0678	!	ARG1: address of CLI service routine
+;	0679	!
+;	0680	! IMPLICIT INPUTS:
+;	0681	!	NONE
+;	0682	!
+;	0683	! OUTPUT PARAMETERS:
+;	0684	!	NONE
+;	0685	!
+;	0686	! IMPLICIT OUTPUTS:
+;	0687	!	parser impure area on preceding pages
+;	0688	!
+;	0689	! ROUTINE VALUE:
+;	0690	!	NONE
+;	0691	!
+;	0692	! SIDE EFFECTS:
+;	0693	!	NONE
+;	0694	!
+;	0695	!--
+;	0696	
+;	0697	BEGIN
+;	0698	
+;	0699	
+;	0700	! Initialize result parsing.
+;	0701	!
+;	0702	
+;	0703	INIT_OPTIONS = INIT_OPTIONS+4 = 0;
+;	0704	
+;	0705	(.CLI_CALLBACK) (START_PARSE, CLI_WORK_AREA);
+;	0706	
+;	0707	! Parse command qualifiers. (Most of the action routines are called during
+;	0708	! this call.)
+;	0709	!
+;	0710	
+;	0711	(.CLI_CALLBACK) (GET_QUAL, CLI_WORK_AREA, INIT_OPTIONS);
+;	0712	
+;	0713	! Now acquire device name.
+;	0714	!
+;	0715	
+;	0716	(.CLI_CALLBACK) (GET_DEVICE, CLI_WORK_AREA, INIT_OPTIONS);
+;	0717	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-1
+; Digital Equipment Corporation
+;
+;	0718	(.CLI_CALLBACK) (END_PARAM1, CLI_WORK_AREA);
+;	0719	
+;	0720	! Now acquire volume name.
+;	0721	!
+;	0722	
+;	0723	(.CLI_CALLBACK) (GET_LABEL, CLI_WORK_AREA, INIT_OPTIONS);
+;	0724	
+;	0725	(.CLI_CALLBACK) (END_PARAM2, CLI_WORK_AREA);
+;	0726	
+;	0727	! Do post parsing fixups.
+;	0728	!
+;	0729	
+;	0730	!
+;	0731	! Note when options that are defaulted true but are illegal for MT are 
+;	0732	! explicit seen.
+;	0733	!
+;	0734	IF .VERIFIED_Q[CLI$V_QUALEXP]
+;	0735	OR (.INIT_OPTIONS[OPT_SHARE] AND .SHARE_Q[CLI$V_QUALEXP] )
+;	0736	THEN INIT_OPTIONS[OPT_EXPNOTMT] = 1;
+;	0737	
+;	0738	
+;	0739	END;					! end of routine INIT_PARSE
+
+
+							    .TITLE  INIPAR
+							    .IDENT  \X0011\
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00000 CLI_WORK_AREA:
+							    .BLKB   128
+					      00080 TPARSE_BLOCK:
+							    .LONG   8, 3						      ;
+					      00088	    .BLKB   28
+					      000A4 PROT_VAL:
+							    .BLKB   4
+					      000A8 UIC:    .BLKB   4
+					      000AC START_PARSE:
+							    .BYTE   0							      ;
+					      000AD 	    .BYTE   0							      ;
+					      000AE 	    .BYTE   2							      ;
+					      000AF 	    .BYTE   0							      ;
+					      000B0 	    .ADDRESS  PARSE_ERROR					      ;
+					      000B4 	    .LONG   0, 0						      ;
+					      000BC 	    .LONG   0							      ;
+					      000C0 	    .LONG   0							      ;
+					      000C4 	    .LONG   0							      ;
+					      000C8 END_PARAM1:
+							    .BYTE   48							      ;
+					      000C9 	    .BYTE   0							      ;
+					      000CA 	    .BYTE   2							      ;
+					      000CB 	    .BYTE   0							      ;
+					      000CC 	    .ADDRESS  PARSE_ERROR					      ;
+					      000D0 	    .LONG   0, 0						      ;
+					      000D8 	    .LONG   0							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-2
+; Digital Equipment Corporation
+;
+					      000DC 	    .LONG   0							      ;
+					      000E0 	    .LONG   0							      ;
+					      000E4 END_PARAM2:
+							    .BYTE   49							      ;
+					      000E5 	    .BYTE   0							      ;
+					      000E6 	    .BYTE   2							      ;
+					      000E7 	    .BYTE   0							      ;
+					      000E8 	    .ADDRESS  PARSE_ERROR					      ;
+					      000EC 	    .LONG   0, 0						      ;
+					      000F4 	    .LONG   0							      ;
+					      000F8 	    .LONG   0							      ;
+					      000FC 	    .LONG   0							      ;
+					      00100 DENSITY_Q:
+							    .BYTE   24							      ;
+					      00101 	    .BYTE    CLI$K_INIT_DENS					      ;
+					      00102 	    .BYTE   0							      ;
+					      00103 	    .BYTE   0							      ;
+					      00104 	    .LONG   0, 0						      ;
+					      0010C 	    .ADDRESS  DENSITY_ACT					      ;
+					      00110 	    .LONG   0							      ;
+					      00114 	    .BYTE   0							      ;
+					      00115 	    .BYTE   1, 0						      ;
+					      00117 	    .BYTE   0							      ;
+					      00118 STRUCTURE_Q:
+							    .BYTE   23							      ;
+					      00119 	    .BYTE    CLI$K_INIT_STRU					      ;
+					      0011A 	    .BYTE   0							      ;
+					      0011B 	    .BYTE   0							      ;
+					      0011C 	    .LONG   0, 0						      ;
+					      00124 	    .ADDRESS  STRUCTURE_ACT					      ;
+					      00128 	    .LONG   0							      ;
+					      0012C 	    .BYTE   0							      ;
+					      0012D 	    .BYTE   0							      ;
+					      0012E 	    .BYTE   0							      ;
+					      0012F SHARE_Q:.BYTE   24							      ;
+					      00130 	    .BYTE    CLI$K_INIT_SHAR					      ;
+					      00131 	    .BYTE   0							      ;
+					      00132 	    .BYTE   0							      ;
+					      00133 	    .LONG   0, 0						      ;
+					      0013B 	    .LONG   0							      ;
+					      0013F 	    .LONG   0							      ;
+					      00143 	    .BYTE   0							      ;
+					      00144 	    .BYTE   1, 2						      ;
+					      00146 	    .BYTE   0							      ;
+					      00147 GROUP_Q:.BYTE   24							      ;
+					      00148 	    .BYTE    CLI$K_INIT_GROU					      ;
+					      00149 	    .BYTE   0							      ;
+					      0014A 	    .BYTE   0							      ;
+					      0014B 	    .LONG   0, 0						      ;
+					      00153 	    .LONG   0							      ;
+					      00157 	    .LONG   0							      ;
+					      0015B 	    .BYTE   0							      ;
+					      0015C 	    .BYTE   1, 3						      ;
+					      0015E 	    .BYTE   0							      ;
+					      0015F SYSTEM_Q:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-3
+; Digital Equipment Corporation
+;
+							    .BYTE   25							      ;
+					      00160 	    .BYTE    CLI$K_INIT_SYST					      ;
+					      00161 	    .BYTE   0							      ;
+					      00162 	    .BYTE   0							      ;
+					      00163 	    .LONG   0, 0						      ;
+					      0016B 	    .LONG   0							      ;
+					      0016F 	    .LONG   0							      ;
+					      00173 	    .BYTE   1, 3						      ;
+					      00175 	    .BYTE   1, 4						      ;
+					      00177 	    .BYTE   0							      ;
+					      00178 OVERRIDE_Q:
+							    .BYTE   23							      ;
+					      00179 	    .BYTE    CLI$K_INIT_OVER					      ;
+					      0017A 	    .BYTE   0							      ;
+					      0017B 	    .BYTE   0							      ;
+					      0017C 	    .LONG   0, 0						      ;
+					      00184 	    .ADDRESS  OVERRIDE_ACT					      ;
+					      00188 	    .LONG   0							      ;
+					      0018C 	    .BYTE   0							      ;
+					      0018D 	    .BYTE   0							      ;
+					      0018E 	    .BYTE   0							      ;
+					      0018F EBCDIC_Q:
+							    .BYTE   24							      ;
+					      00190 	    .BYTE    CLI$K_INIT_EBCD					      ;
+					      00191 	    .BYTE   0							      ;
+					      00192 	    .BYTE   0							      ;
+					      00193 	    .LONG   0, 0						      ;
+					      0019B 	    .LONG   0							      ;
+					      0019F 	    .LONG   0							      ;
+					      001A3 	    .BYTE   0							      ;
+					      001A4 	    .BYTE   1, 5						      ;
+					      001A6 	    .BYTE   0							      ;
+					      001A7 VERIFIED_Q:
+							    .BYTE   24							      ;
+					      001A8 	    .BYTE    CLI$K_INIT_VERI					      ;
+					      001A9 	    .BYTE   0							      ;
+					      001AA 	    .BYTE   0							      ;
+					      001AB 	    .LONG   0, 0						      ;
+					      001B3 	    .LONG   0							      ;
+					      001B7 	    .LONG   0							      ;
+					      001BB 	    .BYTE   0							      ;
+					      001BC 	    .BYTE   1, 6						      ;
+					      001BE 	    .BYTE   0							      ;
+					      001BF PROTECTION_Q:
+							    .BYTE   24							      ;
+					      001C0 	    .BYTE    CLI$K_INIT_PROT					      ;
+					      001C1 	    .BYTE   0							      ;
+					      001C2 	    .BYTE   0							      ;
+					      001C3 	    .LONG   0, 0						      ;
+					      001CB 	    .ADDRESS  PROTECTION_ACT					      ;
+					      001CF 	    .LONG   0							      ;
+					      001D3 	    .BYTE   0							      ;
+					      001D4 	    .BYTE   1, 10						      ;
+					      001D6 	    .BYTE   0							      ;
+					      001D7 FILE_PROT_Q:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-4
+; Digital Equipment Corporation
+;
+							    .BYTE   24							      ;
+					      001D8 	    .BYTE    CLI$K_INIT_FILE					      ;
+					      001D9 	    .BYTE   0							      ;
+					      001DA 	    .BYTE   0							      ;
+					      001DB 	    .LONG   0, 0						      ;
+					      001E3 	    .ADDRESS  FILE_PROT_ACT					      ;
+					      001E7 	    .LONG   0							      ;
+					      001EB 	    .BYTE   0							      ;
+					      001EC 	    .BYTE   1, 11						      ;
+					      001EE 	    .BYTE   0							      ;
+					      001EF RECORD_PROT_Q:
+							    .BYTE   24							      ;
+					      001F0 	    .BYTE    CLI$K_INIT_RECO					      ;
+					      001F1 	    .BYTE   0							      ;
+					      001F2 	    .BYTE   0							      ;
+					      001F3 	    .LONG   0, 0						      ;
+					      001FB 	    .ADDRESS  RECORD_PROT_ACT					      ;
+					      001FF 	    .LONG   0							      ;
+					      00203 	    .BYTE   0							      ;
+					      00204 	    .BYTE   1, 12						      ;
+					      00206 	    .BYTE   0							      ;
+					      00207 OWNER_UIC_Q:
+							    .BYTE   24							      ;
+					      00208 	    .BYTE    CLI$K_INIT_OWNE					      ;
+					      00209 	    .BYTE   0							      ;
+					      0020A 	    .BYTE   0							      ;
+					      0020B 	    .LONG   0, 0						      ;
+					      00213 	    .ADDRESS  OWNER_UIC_ACT					      ;
+					      00217 	    .LONG   0							      ;
+					      0021B 	    .BYTE   0							      ;
+					      0021C 	    .BYTE   1, 13						      ;
+					      0021E 	    .BYTE   0							      ;
+					      0021F USER_NAME_Q:
+							    .BYTE   24							      ;
+					      00220 	    .BYTE    CLI$K_INIT_USER					      ;
+					      00221 	    .BYTE   0							      ;
+					      00222 	    .BYTE   0							      ;
+					      00223 	    .LONG   0, 0						      ;
+					      0022B 	    .ADDRESS  USER_NAME_ACT					      ;
+					      0022F 	    .LONG   0							      ;
+					      00233 	    .BYTE   0							      ;
+					      00234 	    .BYTE   1, 28						      ;
+					      00236 	    .BYTE   0							      ;
+					      00237 INDEX_Q:.BYTE   23							      ;
+					      00238 	    .BYTE    CLI$K_INIT_INDE					      ;
+					      00239 	    .BYTE   0							      ;
+					      0023A 	    .BYTE   0							      ;
+					      0023B 	    .LONG   0, 0						      ;
+					      00243 	    .ADDRESS  INDEX_ACT						      ;
+					      00247 	    .LONG   0							      ;
+					      0024B 	    .BYTE   0							      ;
+					      0024C 	    .BYTE   0							      ;
+					      0024D 	    .BYTE   0							      ;
+					      0024E DATACHECK_Q:
+							    .BYTE   23							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-5
+; Digital Equipment Corporation
+;
+					      0024F 	    .BYTE    CLI$K_INIT_DATA					      ;
+					      00250 	    .BYTE   0							      ;
+					      00251 	    .BYTE   0							      ;
+					      00252 	    .LONG   0, 0						      ;
+					      0025A 	    .ADDRESS  DATACHECK_ACT					      ;
+					      0025E 	    .LONG   0							      ;
+					      00262 	    .BYTE   0							      ;
+					      00263 	    .BYTE   0							      ;
+					      00264 	    .BYTE   0							      ;
+					      00265 DIRECTORIES_Q:
+							    .BYTE   24							      ;
+					      00266 	    .BYTE    CLI$K_INIT_DIRE					      ;
+					      00267 	    .BYTE   0							      ;
+					      00268 	    .BYTE   0							      ;
+					      00269 	    .LONG   0, 0						      ;
+					      00271 	    .ADDRESS  DIRECTORIES_ACT					      ;
+					      00275 	    .LONG   0							      ;
+					      00279 	    .BYTE   0							      ;
+					      0027A 	    .BYTE   1, 29						      ;
+					      0027C 	    .BYTE   0							      ;
+					      0027D MAXIMUM_Q:
+							    .BYTE   24							      ;
+					      0027E 	    .BYTE    CLI$K_INIT_MAXI					      ;
+					      0027F 	    .BYTE   0							      ;
+					      00280 	    .BYTE   0							      ;
+					      00281 	    .LONG   0, 0						      ;
+					      00289 	    .ADDRESS  MAXIMUM_ACT					      ;
+					      0028D 	    .LONG   0							      ;
+					      00291 	    .BYTE   0							      ;
+					      00292 	    .BYTE   1, 14						      ;
+					      00294 	    .BYTE   0							      ;
+					      00295 CLUSTER_Q:
+							    .BYTE   24							      ;
+					      00296 	    .BYTE    CLI$K_INIT_CLUS					      ;
+					      00297 	    .BYTE   0							      ;
+					      00298 	    .BYTE   0							      ;
+					      00299 	    .LONG   0, 0						      ;
+					      002A1 	    .ADDRESS  CLUSTER_ACT					      ;
+					      002A5 	    .LONG   0							      ;
+					      002A9 	    .BYTE   0							      ;
+					      002AA 	    .BYTE   1, 15						      ;
+					      002AC 	    .BYTE   0							      ;
+					      002AD HEADERS_Q:
+							    .BYTE   24							      ;
+					      002AE 	    .BYTE    CLI$K_INIT_HEAD					      ;
+					      002AF 	    .BYTE   0							      ;
+					      002B0 	    .BYTE   0							      ;
+					      002B1 	    .LONG   0, 0						      ;
+					      002B9 	    .ADDRESS  HEADERS_ACT					      ;
+					      002BD 	    .LONG   0							      ;
+					      002C1 	    .BYTE   0							      ;
+					      002C2 	    .BYTE   1, 16						      ;
+					      002C4 	    .BYTE   0							      ;
+					      002C5 BADBLOCKS_Q:
+							    .BYTE   24							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-6
+; Digital Equipment Corporation
+;
+					      002C6 	    .BYTE    CLI$K_INIT_BADB					      ;
+					      002C7 	    .BYTE   0							      ;
+					      002C8 	    .BYTE   0							      ;
+					      002C9 	    .LONG   0, 0						      ;
+					      002D1 	    .ADDRESS  BADBLOCKS_ACT					      ;
+					      002D5 	    .LONG   0							      ;
+					      002D9 	    .BYTE   0							      ;
+					      002DA 	    .BYTE   1, 9						      ;
+					      002DC 	    .BYTE   0							      ;
+					      002DD EXTENSION_Q:
+							    .BYTE   24							      ;
+					      002DE 	    .BYTE    CLI$K_INIT_EXTE					      ;
+					      002DF 	    .BYTE   0							      ;
+					      002E0 	    .BYTE   0							      ;
+					      002E1 	    .LONG   0, 0						      ;
+					      002E9 	    .ADDRESS  EXTENSION_ACT					      ;
+					      002ED 	    .LONG   0							      ;
+					      002F1 	    .BYTE   0							      ;
+					      002F2 	    .BYTE   1, 17						      ;
+					      002F4 	    .BYTE   0							      ;
+					      002F5 WINDOW_Q:
+							    .BYTE   24							      ;
+					      002F6 	    .BYTE    CLI$K_INIT_WIND					      ;
+					      002F7 	    .BYTE   0							      ;
+					      002F8 	    .BYTE   0							      ;
+					      002F9 	    .LONG   0, 0						      ;
+					      00301 	    .ADDRESS  WINDOW_ACT					      ;
+					      00305 	    .LONG   0							      ;
+					      00309 	    .BYTE   0							      ;
+					      0030A 	    .BYTE   1, 18						      ;
+					      0030C 	    .BYTE   0							      ;
+					      0030D ACCESSED_Q:
+							    .BYTE   24							      ;
+					      0030E 	    .BYTE    CLI$K_INIT_ACCE					      ;
+					      0030F 	    .BYTE   0							      ;
+					      00310 	    .BYTE   0							      ;
+					      00311 	    .LONG   0, 0						      ;
+					      00319 	    .ADDRESS  ACCESSED_ACT					      ;
+					      0031D 	    .LONG   0							      ;
+					      00321 	    .BYTE   0							      ;
+					      00322 	    .BYTE   1, 19						      ;
+					      00324 	    .BYTE   0							      ;
+					      00325 QUAL_END:
+							    .BYTE   0							      ;
+					      00326	    .BLKB   2
+					      00328 GET_QUAL:
+							    .BYTE   2							      ;
+					      00329 	    .BYTE   0							      ;
+					      0032A 	    .BYTE   2							      ;
+					      0032B 	    .BYTE   0							      ;
+					      0032C 	    .ADDRESS  PARSE_ERROR					      ;
+					      00330 	    .LONG   0, 0						      ;
+					      00338 	    .LONG   0							      ;
+					      0033C 	    .LONG   0							      ;
+					      00340 	    .ADDRESS  DENSITY_Q						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-7
+; Digital Equipment Corporation
+;
+					      00344 GET_DEVICE:
+							    .BYTE   16							      ;
+					      00345 	    .BYTE   24							      ;
+					      00346 	    .BYTE   3							      ;
+					      00347 	    .BYTE   0							      ;
+					      00348 	    .ADDRESS  PARSE_ERROR					      ;
+					      0034C 	    .LONG   0, 0						      ;
+					      00354 	    .ADDRESS  DEVICE_ACT					      ;
+					      00358 	    .LONG   0							      ;
+					      0035C 	    .LONG   0							      ;
+					      00360 GET_LABEL:
+							    .BYTE   17							      ;
+					      00361 	    .BYTE   25							      ;
+					      00362 	    .BYTE   3							      ;
+					      00363 	    .BYTE   0							      ;
+					      00364 	    .ADDRESS  PARSE_ERROR					      ;
+					      00368 	    .LONG   0, 0						      ;
+					      00370 	    .ADDRESS  LABEL_ACT						      ;
+					      00374 	    .LONG   0							      ;
+					      00378 	    .LONG   0							      ;
+					      0037C CONVERT_NUMBER:
+							    .BYTE   64							      ;
+					      0037D 	    .BYTE   0							      ;
+					      0037E 	    .BYTE   3							      ;
+					      0037F 	    .BYTE   0							      ;
+					      00380 	    .ADDRESS  PARSE_ERROR					      ;
+					      00384 	    .LONG   0, 0						      ;
+					      0038C 	    .LONG   0							      ;
+					      00390 	    .LONG   0							      ;
+					      00394 	    .LONG   0							      ;
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 INIT_OPTIONS::
+							    .BLKB   8
+					      00008 PROTECTION::
+							    .BLKB   4
+					      0000C FILE_PROT::
+							    .BLKB   4
+					      00010 RECORD_PROT::
+							    .BLKB   4
+					      00014 MAXIMUM::
+							    .BLKB   4
+					      00018 INDEX:: .BLKB   4
+					      0001C CLUSTER::
+							    .BLKB   4
+					      00020 HEADERS::
+							    .BLKB   4
+					      00024 DIRECTORIES::
+							    .BLKB   4
+					      00028 OWNER_UIC::
+							    .BLKB   4
+					      0002C EXTENSION::
+							    .BLKB   4
+					      00030 WINDOW::.BLKB   4
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-8
+; Digital Equipment Corporation
+;
+					      00034 ACCESSED::
+							    .BLKB   4
+					      00038 DEVICE_STRING::
+							    .BLKB   8
+					      00040 LABEL_STRING::
+							    .BLKB   8
+					      00048 USER_NAME::
+							    .BLKB   8
+					      00050 BADBLOCK_COUNT::
+							    .BLKB   4
+					      00054 BADBLOCK_TABLE::
+							    .BLKB   800
+					      00374 PARSE_IMP_END::
+							    .BLKB   0
+
+							    .GLOBL  CLI$K_INIT_DENS, CLI$K_INIT_STRU, CLI$K_INIT_SHAR
+							    .GLOBL  CLI$K_INIT_GROU, CLI$K_INIT_SYST, CLI$K_INIT_EBCD
+							    .GLOBL  CLI$K_INIT_VERI, CLI$K_INIT_PROT, CLI$K_INIT_FILE
+							    .GLOBL  CLI$K_INIT_RECO, CLI$K_INIT_OWNE, CLI$K_INIT_MAXI
+							    .GLOBL  CLI$K_INIT_INDE, CLI$K_INIT_DATA, CLI$K_INIT_CLUS
+							    .GLOBL  CLI$K_INIT_HEAD, CLI$K_INIT_BADB, CLI$K_INIT_DIRE
+							    .GLOBL  CLI$K_INIT_USER, CLI$K_INIT_EXTE, CLI$K_INIT_WIND
+							    .GLOBL  CLI$K_INIT_ACCE, CLI$K_INIT_OVER
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0C04 00000 	    .ENTRY  INIT_PARSE, Save R2,R10,R11				      ; 0663
+		         5A	0000'  CF  9E 00002 	    MOVAB   INIT_OPTIONS, R10					      ;
+		         5B	0000'  CF  9E 00007 	    MOVAB   CLI_WORK_AREA, R11					      ;
+				       6A  7C 0000C 	    CLRQ    INIT_OPTIONS					      ; 0703
+		         52	  04   AC  D0 0000E 	    MOVL    CLI_CALLBACK, R2					      ; 0705
+				       5B  DD 00012 	    PUSHL   R11							      ;
+				00AC   CB  9F 00014 	    PUSHAB  START_PARSE						      ;
+		         62	       02  FB 00018 	    CALLS   #2, (R2)						      ;
+				       5A  DD 0001B 	    PUSHL   R10							      ; 0711
+				       5B  DD 0001D 	    PUSHL   R11							      ;
+				0328   CB  9F 0001F 	    PUSHAB  GET_QUAL						      ;
+		         62	       03  FB 00023 	    CALLS   #3, (R2)						      ;
+				       5A  DD 00026 	    PUSHL   R10							      ; 0716
+				       5B  DD 00028 	    PUSHL   R11							      ;
+				0344   CB  9F 0002A 	    PUSHAB  GET_DEVICE						      ;
+		         62	       03  FB 0002E 	    CALLS   #3, (R2)						      ;
+				       5B  DD 00031 	    PUSHL   R11							      ; 0718
+				00C8   CB  9F 00033 	    PUSHAB  END_PARAM1						      ;
+		         62	       02  FB 00037 	    CALLS   #2, (R2)						      ;
+				       5A  DD 0003A 	    PUSHL   R10							      ; 0723
+				       5B  DD 0003C 	    PUSHL   R11							      ;
+				0360   CB  9F 0003E 	    PUSHAB  GET_LABEL						      ;
+		         62	       03  FB 00042 	    CALLS   #3, (R2)						      ;
+				       5B  DD 00045 	    PUSHL   R11							      ; 0725
+				00E4   CB  9F 00047 	    PUSHAB  END_PARAM2						      ;
+		         62	       02  FB 0004B 	    CALLS   #2, (R2)						      ;
+	   0A	  01AA   CB	       01  E0 0004E 	    BBS     #1, VERIFIED_Q+3, 1$				      ; 0734
+	   0A	         6A	       02  E1 00054 	    BBC     #2, INIT_OPTIONS, 2$				      ; 0735
+	   04	  0132   CB	       01  E1 00058 	    BBC     #1, SHARE_Q+3, 2$					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 4-9
+; Digital Equipment Corporation
+;
+	   00	         6A	       20  E2 0005E 1$:     BBSS    #32, INIT_OPTIONS, 2$				      ; 0736
+					   04 00062 2$:     RET     							      ; 0663
+
+; Routine Size:  99 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 5
+; Digital Equipment Corporation
+;
+;	0740	!+
+;	0741	!
+;	0742	! Parameter and qualifier action routines. Each routine is named corresponding
+;	0743	! to its associated parameter of qualifier. Each routine does whatever
+;	0744	! conversion is necessary and stores the parameter or qualifier value in
+;	0745	! the appropriate location in the output area.
+;	0746	!
+;	0747	!-
+;	0748	
+;	0749	
+;	0750	!
+;	0751	! CLI error action routine. This routine is called on all CLI errors.
+;	0752	! It simply signalls the error back to main level.
+;	0753	!
+;	0754	ROUTINE PARSE_ERROR (REQ_DESC, ERROR_CODE) : NOVALUE =
+;	0755	BEGIN
+;	0756	
+;	0757	MAP
+;	0758		REQ_DESC	: REF BBLOCK;
+;	0759	
+;	0760	SIGNAL_STOP (.ERROR_CODE);
+;	0761	
+;	0762	END;					! end of routine PARSE_ERROR
+
+
+
+
+
+					 0000 00063 PARSE_ERROR:
+							    .WORD   Save nothing					      ; 0754
+				  08   AC  DD 00065 	    PUSHL   ERROR_CODE						      ; 0760
+	      00000000G  00	       01  FB 00068 	    CALLS   #1, LIB$STOP					      ;
+					   04 0006F 	    RET     							      ; 0754
+
+; Routine Size:  13 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 6
+; Digital Equipment Corporation
+;
+;	0763	!
+;	0764	! Get device name
+;	0765	!
+;	0766	ROUTINE DEVICE_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0767	BEGIN
+;	0768	
+;	0769	MAP
+;	0770		REQ_DESC	: REF BBLOCK;
+;	0771	
+;	0772	! Store the device name descriptor.
+;	0773	!
+;	0774	
+;	0775	DEVICE_STRING[0] = .REQ_DESC[CLI$W_RQSIZE];
+;	0776	DEVICE_STRING[1] = .REQ_DESC[CLI$A_RQADDR];
+;	0777	
+;	0778	END;					! end of routine DEVICE_ACT
+
+
+
+
+
+					 0000 00070 DEVICE_ACT:
+							    .WORD   Save nothing					      ; 0766
+		         50	  04   AC  D0 00072 	    MOVL    REQ_DESC, R0					      ; 0775
+		  0000'  CF	  08   A0  3C 00076 	    MOVZWL  8(R0), DEVICE_STRING				      ;
+		  0000'  CF	  0C   A0  D0 0007C 	    MOVL    12(R0), DEVICE_STRING+4				      ; 0776
+					   04 00082 	    RET     							      ; 0766
+
+; Routine Size:  19 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 7
+; Digital Equipment Corporation
+;
+;	0779	!
+;	0780	! Get volume label
+;	0781	!
+;	0782	ROUTINE LABEL_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0783	BEGIN
+;	0784	
+;	0785	MAP
+;	0786		REQ_DESC	: REF BBLOCK;
+;	0787	
+;	0788	! Store the descriptor for the volume label.
+;	0789	!
+;	0790	
+;	0791	LABEL_STRING[0] = .REQ_DESC[CLI$W_RQSIZE];
+;	0792	LABEL_STRING[1] = .REQ_DESC[CLI$A_RQADDR];
+;	0793	
+;	0794	END;					! end of routine LABEL_ACT
+
+
+
+
+
+					 0000 00083 LABEL_ACT:
+							    .WORD   Save nothing					      ; 0782
+		         50	  04   AC  D0 00085 	    MOVL    REQ_DESC, R0					      ; 0791
+		  0000'  CF	  08   A0  3C 00089 	    MOVZWL  8(R0), LABEL_STRING					      ;
+		  0000'  CF	  0C   A0  D0 0008F 	    MOVL    12(R0), LABEL_STRING+4				      ; 0792
+					   04 00095 	    RET     							      ; 0782
+
+; Routine Size:  19 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 8
+; Digital Equipment Corporation
+;
+;	0795	!
+;	0796	! Get volume user name
+;	0797	!
+;	0798	ROUTINE USER_NAME_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0799	BEGIN
+;	0800	
+;	0801	MAP
+;	0802		REQ_DESC	: REF BBLOCK;
+;	0803	
+;	0804	! Store the descriptor for the volume USER_NAME.
+;	0805	!
+;	0806	
+;	0807	USER_NAME[0] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	0808	USER_NAME[1] = .REQ_DESC[CLI$A_QDVALADR];
+;	0809	
+;	0810	END;					! end of routine USER_NAME_ACT
+
+
+
+
+
+					 0000 00096 USER_NAME_ACT:
+							    .WORD   Save nothing					      ; 0798
+		         50	  04   AC  D0 00098 	    MOVL    REQ_DESC, R0					      ; 0807
+		  0000'  CF	  04   A0  3C 0009C 	    MOVZWL  4(R0), USER_NAME					      ;
+		  0000'  CF	  08   A0  D0 000A2 	    MOVL    8(R0), USER_NAME+4					      ; 0808
+					   04 000A8 	    RET     							      ; 0798
+
+; Routine Size:  19 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 9
+; Digital Equipment Corporation
+;
+;	0811	!
+;	0812	! Set magtape density
+;	0813	!
+;	0814	ROUTINE DENSITY_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0815	BEGIN
+;	0816	
+;	0817	MAP
+;	0818		REQ_DESC	: REF BBLOCK;
+;	0819	
+;	0820	EXTERNAL
+;	0821		DENSITY_STB	: VECTOR [0],	! state table address
+;	0822		DENSITY_KTB	: VECTOR [0];	! keyword table address
+;	0823	
+;	0824	EXTERNAL ROUTINE
+;	0825		LIB$TPARSE;
+;	0826	
+;	0827	! Parse the density string (setting the DENS_1600 bit if so).
+;	0828	!
+;	0829	
+;	0830	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	0831	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	0832	IF NOT LIB$TPARSE (TPARSE_BLOCK, DENSITY_STB, DENSITY_KTB)
+;	0833	THEN ERR_EXIT (INIT$_BADDENS);
+;	0834	
+;	0835	END;					! end of routine DENSITY_ACT
+
+
+
+							    .GLOBL  DENSITY_STB, DENSITY_KTB, LIB$TPARSE
+
+					 0000 000A9 DENSITY_ACT:
+							    .WORD   Save nothing					      ; 0814
+		         50	  04   AC  D0 000AB 	    MOVL    REQ_DESC, R0					      ; 0830
+		  0000'  CF	  04   A0  3C 000AF 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 000B5 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 0831
+				0000G  CF  9F 000BB 	    PUSHAB  DENSITY_KTB						      ; 0832
+				0000G  CF  9F 000BF 	    PUSHAB  DENSITY_STB						      ;
+				0000'  CF  9F 000C3 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 000C7 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 000CC 	    BLBS    R0, 1$						      ;
+			    00758014   8F  DD 000CF 	    PUSHL   #7700500						      ; 0833
+	      00000000G  00	       01  FB 000D5 	    CALLS   #1, LIB$STOP					      ;
+					   04 000DC 1$:     RET     							      ; 0814
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 10
+; Digital Equipment Corporation
+;
+;	0836	!
+;	0837	! Specify disk structure level
+;	0838	!
+;	0839	ROUTINE STRUCTURE_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0840	BEGIN
+;	0841	
+;	0842	MAP
+;	0843		REQ_DESC	: REF BBLOCK;
+;	0844	
+;	0845	EXTERNAL
+;	0846		STRUCTURE_STB	: VECTOR [0],	! state table address
+;	0847		STRUCTURE_KTB	: VECTOR [0];	! keyword table address
+;	0848	
+;	0849	EXTERNAL ROUTINE
+;	0850		LIB$TPARSE;
+;	0851	
+;	0852	! Parse the STRUCTURE string (setting the level 1 bit if so).
+;	0853	!
+;	0854	
+;	0855	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	0856	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	0857	IF NOT LIB$TPARSE (TPARSE_BLOCK, STRUCTURE_STB, STRUCTURE_KTB)
+;	0858	THEN ERR_EXIT (INIT$_BADSTRUCT);
+;	0859	
+;	0860	END;					! end of routine STRUCTURE_ACT
+
+
+
+							    .GLOBL  STRUCTURE_STB, STRUCTURE_KTB
+
+					 0000 000DD STRUCTURE_ACT:
+							    .WORD   Save nothing					      ; 0839
+		         50	  04   AC  D0 000DF 	    MOVL    REQ_DESC, R0					      ; 0855
+		  0000'  CF	  04   A0  3C 000E3 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 000E9 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 0856
+				0000G  CF  9F 000EF 	    PUSHAB  STRUCTURE_KTB					      ; 0857
+				0000G  CF  9F 000F3 	    PUSHAB  STRUCTURE_STB					      ;
+				0000'  CF  9F 000F7 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 000FB 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 00100 	    BLBS    R0, 1$						      ;
+			    007580E4   8F  DD 00103 	    PUSHL   #7700708						      ; 0858
+	      00000000G  00	       01  FB 00109 	    CALLS   #1, LIB$STOP					      ;
+					   04 00110 1$:     RET     							      ; 0839
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 11
+; Digital Equipment Corporation
+;
+;	0861	ROUTINE MAXIMUM_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0862	BEGIN
+;	0863	
+;	0864	MAP
+;	0865		REQ_DESC	: REF BBLOCK;
+;	0866	
+;	0867	LOCAL
+;	0868		STATUS;
+;	0869	
+;	0870	! Convert the value string to its numerical value.
+;	0871	!
+;	0872	
+;	0873	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0874	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0875	MAXIMUM = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0876	
+;	0877	END;					! end of routine MAXIMUM_ACT
+
+
+
+
+
+					 0000 00111 MAXIMUM_ACT:
+							    .WORD   Save nothing					      ; 0861
+				  04   AC  DD 00113 	    PUSHL   REQ_DESC						      ; 0873
+				0000'  CF  9F 00116 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 0011A 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 0011E 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 00122 	    BLBS    STATUS, 1$						      ; 0874
+				       50  DD 00125 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 00127 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 0012E 1$:     MOVL    CONVERT_NUMBER+12, MAXIMUM				      ; 0875
+					   04 00135 	    RET     							      ; 0861
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 12
+; Digital Equipment Corporation
+;
+;	0878	ROUTINE CLUSTER_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0879	BEGIN
+;	0880	
+;	0881	MAP
+;	0882		REQ_DESC	: REF BBLOCK;
+;	0883	
+;	0884	LOCAL
+;	0885		STATUS;
+;	0886	
+;	0887	! Convert the value string to its numerical value.
+;	0888	!
+;	0889	
+;	0890	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0891	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0892	CLUSTER = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0893	
+;	0894	END;					! end of routine CLUSTER_ACT
+
+
+
+
+
+					 0000 00136 CLUSTER_ACT:
+							    .WORD   Save nothing					      ; 0878
+				  04   AC  DD 00138 	    PUSHL   REQ_DESC						      ; 0890
+				0000'  CF  9F 0013B 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 0013F 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 00143 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 00147 	    BLBS    STATUS, 1$						      ; 0891
+				       50  DD 0014A 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 0014C 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 00153 1$:     MOVL    CONVERT_NUMBER+12, CLUSTER				      ; 0892
+					   04 0015A 	    RET     							      ; 0878
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 13
+; Digital Equipment Corporation
+;
+;	0895	ROUTINE HEADERS_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0896	BEGIN
+;	0897	
+;	0898	MAP
+;	0899		REQ_DESC	: REF BBLOCK;
+;	0900	
+;	0901	LOCAL
+;	0902		STATUS;
+;	0903	
+;	0904	! Convert the value string to its numerical value.
+;	0905	!
+;	0906	
+;	0907	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0908	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0909	HEADERS = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0910	
+;	0911	END;					! end of routine HEADERS_ACT
+
+
+
+
+
+					 0000 0015B HEADERS_ACT:
+							    .WORD   Save nothing					      ; 0895
+				  04   AC  DD 0015D 	    PUSHL   REQ_DESC						      ; 0907
+				0000'  CF  9F 00160 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 00164 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 00168 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 0016C 	    BLBS    STATUS, 1$						      ; 0908
+				       50  DD 0016F 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 00171 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 00178 1$:     MOVL    CONVERT_NUMBER+12, HEADERS				      ; 0909
+					   04 0017F 	    RET     							      ; 0895
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 14
+; Digital Equipment Corporation
+;
+;	0912	ROUTINE EXTENSION_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0913	BEGIN
+;	0914	
+;	0915	MAP
+;	0916		REQ_DESC	: REF BBLOCK;
+;	0917	
+;	0918	LOCAL
+;	0919		STATUS;
+;	0920	
+;	0921	! Convert the value string to its numerical value.
+;	0922	!
+;	0923	
+;	0924	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0925	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0926	EXTENSION = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0927	
+;	0928	END;					! end of routine EXTENSION_ACT
+
+
+
+
+
+					 0000 00180 EXTENSION_ACT:
+							    .WORD   Save nothing					      ; 0912
+				  04   AC  DD 00182 	    PUSHL   REQ_DESC						      ; 0924
+				0000'  CF  9F 00185 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 00189 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 0018D 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 00191 	    BLBS    STATUS, 1$						      ; 0925
+				       50  DD 00194 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 00196 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 0019D 1$:     MOVL    CONVERT_NUMBER+12, EXTENSION			      ; 0926
+					   04 001A4 	    RET     							      ; 0912
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 15
+; Digital Equipment Corporation
+;
+;	0929	ROUTINE WINDOW_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0930	BEGIN
+;	0931	
+;	0932	MAP
+;	0933		REQ_DESC	: REF BBLOCK;
+;	0934	
+;	0935	LOCAL
+;	0936		STATUS;
+;	0937	
+;	0938	! Convert the value string to its numerical value.
+;	0939	!
+;	0940	
+;	0941	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0942	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0943	WINDOW = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0944	
+;	0945	END;					! end of routine WINDOW_ACT
+
+
+
+
+
+					 0000 001A5 WINDOW_ACT:
+							    .WORD   Save nothing					      ; 0929
+				  04   AC  DD 001A7 	    PUSHL   REQ_DESC						      ; 0941
+				0000'  CF  9F 001AA 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 001AE 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 001B2 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 001B6 	    BLBS    STATUS, 1$						      ; 0942
+				       50  DD 001B9 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 001BB 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 001C2 1$:     MOVL    CONVERT_NUMBER+12, WINDOW				      ; 0943
+					   04 001C9 	    RET     							      ; 0929
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 16
+; Digital Equipment Corporation
+;
+;	0946	ROUTINE ACCESSED_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0947	BEGIN
+;	0948	
+;	0949	MAP
+;	0950		REQ_DESC	: REF BBLOCK;
+;	0951	
+;	0952	LOCAL
+;	0953		STATUS;
+;	0954	
+;	0955	! Convert the value string to its numerical value.
+;	0956	!
+;	0957	
+;	0958	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0959	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0960	ACCESSED = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0961	
+;	0962	END;					! end of routine ACCESSED_ACT
+
+
+
+
+
+					 0000 001CA ACCESSED_ACT:
+							    .WORD   Save nothing					      ; 0946
+				  04   AC  DD 001CC 	    PUSHL   REQ_DESC						      ; 0958
+				0000'  CF  9F 001CF 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 001D3 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 001D7 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 001DB 	    BLBS    STATUS, 1$						      ; 0959
+				       50  DD 001DE 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 001E0 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 001E7 1$:     MOVL    CONVERT_NUMBER+12, ACCESSED				      ; 0960
+					   04 001EE 	    RET     							      ; 0946
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 17
+; Digital Equipment Corporation
+;
+;	0963	ROUTINE DIRECTORIES_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0964	BEGIN
+;	0965	
+;	0966	MAP
+;	0967		REQ_DESC	: REF BBLOCK;
+;	0968	
+;	0969	LOCAL
+;	0970		STATUS;
+;	0971	
+;	0972	! Convert the value string to its numerical value.
+;	0973	!
+;	0974	
+;	0975	STATUS = (.CLI_CALLBACK) (CONVERT_NUMBER, CLI_WORK_AREA, .REQ_DESC);
+;	0976	IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0977	DIRECTORIES = .CONVERT_NUMBER[CLI$L_RQVALU];
+;	0978	
+;	0979	END;					! end of routine DIRECTORIES_ACT
+
+
+
+
+
+					 0000 001EF DIRECTORIES_ACT:
+							    .WORD   Save nothing					      ; 0963
+				  04   AC  DD 001F1 	    PUSHL   REQ_DESC						      ; 0975
+				0000'  CF  9F 001F4 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 001F8 	    PUSHAB  CONVERT_NUMBER					      ;
+		    08   BC	       03  FB 001FC 	    CALLS   #3, @CLI_CALLBACK					      ;
+		         09	       50  E8 00200 	    BLBS    STATUS, 1$						      ; 0976
+				       50  DD 00203 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 00205 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 0020C 1$:     MOVL    CONVERT_NUMBER+12, DIRECTORIES			      ; 0977
+					   04 00213 	    RET     							      ; 0963
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 18
+; Digital Equipment Corporation
+;
+;	0980	ROUTINE OVERRIDE_ACT ( REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	0981	BEGIN
+;	0982	
+;	0983	MAP
+;	0984		REQ_DESC	: REF BBLOCK;
+;	0985	
+;	0986	EXTERNAL
+;	0987		OVERRIDE_STB	: VECTOR [0],	! STATE TABLE ADDRESS
+;	0988		OVERRIDE_KTB	: VECTOR [0];	! KEYWORD TABLE ADDRESS
+;	0989	
+;	0990	EXTERNAL ROUTINE
+;	0991		LIB$TPARSE;			
+;	0992	
+;	0993	! PARSE THE OVERRIDE STRING AND SET FLAGS
+;	0994	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	0995	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	0996	IF NOT LIB$TPARSE(TPARSE_BLOCK,OVERRIDE_STB,OVERRIDE_KTB)
+;	0997	THEN ERR_EXIT(INIT$_BADOVR);
+;	0998	
+;	0999	END;					!END OF ROUTINE OVERRIDE_ACT
+
+
+
+							    .GLOBL  OVERRIDE_STB, OVERRIDE_KTB
+
+					 0000 00214 OVERRIDE_ACT:
+							    .WORD   Save nothing					      ; 0980
+		         50	  04   AC  D0 00216 	    MOVL    REQ_DESC, R0					      ; 0994
+		  0000'  CF	  04   A0  3C 0021A 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 00220 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 0995
+				0000G  CF  9F 00226 	    PUSHAB  OVERRIDE_KTB					      ; 0996
+				0000G  CF  9F 0022A 	    PUSHAB  OVERRIDE_STB					      ;
+				0000'  CF  9F 0022E 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 00232 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 00237 	    BLBS    R0, 1$						      ;
+			    007580CC   8F  DD 0023A 	    PUSHL   #7700684						      ; 0997
+	      00000000G  00	       01  FB 00240 	    CALLS   #1, LIB$STOP					      ;
+					   04 00247 1$:     RET     							      ; 0980
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 19
+; Digital Equipment Corporation
+;
+;	1000	ROUTINE PROTECTION_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1001	BEGIN
+;	1002	
+;	1003	MAP
+;	1004		REQ_DESC	: REF BBLOCK;
+;	1005	
+;	1006	EXTERNAL
+;	1007		PROTECTION_STB	: VECTOR [0],	! state table address
+;	1008		PROTECTION_KTB	: VECTOR [0];	! keyword table address
+;	1009	
+;	1010	EXTERNAL ROUTINE
+;	1011		LIB$TPARSE;
+;	1012	
+;	1013	! Parse the switch value string (storing the binary protection).
+;	1014	! Complement thereafter, since the parser produces the complement.
+;	1015	!
+;	1016	
+;	1017	PROT_VAL = 0;
+;	1018	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1019	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1020	IF NOT LIB$TPARSE (TPARSE_BLOCK, PROTECTION_STB, PROTECTION_KTB)
+;	1021	THEN ERR_EXIT (INIT$_BADPRO);
+;	1022	
+;	1023	PROTECTION = NOT .PROT_VAL;
+;	1024	
+;	1025	END;					! end of routine PROTECTION_ACT
+
+
+
+							    .GLOBL  PROTECTION_STB, PROTECTION_KTB
+
+					 0800 00248 PROTECTION_ACT:
+							    .WORD   Save R11						      ; 1000
+		         5B	0000'  CF  9E 0024A 	    MOVAB   PROT_VAL, R11					      ;
+				       6B  D4 0024F 	    CLRL    PROT_VAL						      ; 1017
+		         50	  04   AC  D0 00251 	    MOVL    REQ_DESC, R0					      ; 1018
+		    E4   AB	  04   A0  3C 00255 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		    E8   AB	  08   A0  D0 0025A 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1019
+				0000G  CF  9F 0025F 	    PUSHAB  PROTECTION_KTB					      ; 1020
+				0000G  CF  9F 00263 	    PUSHAB  PROTECTION_STB					      ;
+				  DC   AB  9F 00267 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 0026A 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 0026F 	    BLBS    R0, 1$						      ;
+			    0075801C   8F  DD 00272 	    PUSHL   #7700508						      ; 1021
+	      00000000G  00	       01  FB 00278 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	       6B  D2 0027F 1$:     MCOML   PROT_VAL, PROTECTION				      ; 1023
+					   04 00284 	    RET     							      ; 1000
+
+; Routine Size:  61 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 20
+; Digital Equipment Corporation
+;
+;	1026	ROUTINE FILE_PROT_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1027	BEGIN
+;	1028	
+;	1029	MAP
+;	1030		REQ_DESC	: REF BBLOCK;
+;	1031	
+;	1032	EXTERNAL
+;	1033		PROTECTION_STB	: VECTOR [0],	! state table address
+;	1034		PROTECTION_KTB	: VECTOR [0];	! keyword table address
+;	1035	
+;	1036	EXTERNAL ROUTINE
+;	1037		LIB$TPARSE;
+;	1038	
+;	1039	! Parse the switch value string (storing the binary protection).
+;	1040	! Complement thereafter, since the parser produces the complement.
+;	1041	!
+;	1042	
+;	1043	PROT_VAL = 0;
+;	1044	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1045	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1046	IF NOT LIB$TPARSE (TPARSE_BLOCK, PROTECTION_STB, PROTECTION_KTB)
+;	1047	THEN ERR_EXIT (INIT$_BADPRO);
+;	1048	
+;	1049	FILE_PROT = NOT .PROT_VAL;
+;	1050	
+;	1051	END;					! end of routine FILE_PROT_ACT
+
+
+
+
+
+					 0800 00285 FILE_PROT_ACT:
+							    .WORD   Save R11						      ; 1026
+		         5B	0000'  CF  9E 00287 	    MOVAB   PROT_VAL, R11					      ;
+				       6B  D4 0028C 	    CLRL    PROT_VAL						      ; 1043
+		         50	  04   AC  D0 0028E 	    MOVL    REQ_DESC, R0					      ; 1044
+		    E4   AB	  04   A0  3C 00292 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		    E8   AB	  08   A0  D0 00297 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1045
+				0000G  CF  9F 0029C 	    PUSHAB  PROTECTION_KTB					      ; 1046
+				0000G  CF  9F 002A0 	    PUSHAB  PROTECTION_STB					      ;
+				  DC   AB  9F 002A4 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 002A7 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 002AC 	    BLBS    R0, 1$						      ;
+			    0075801C   8F  DD 002AF 	    PUSHL   #7700508						      ; 1047
+	      00000000G  00	       01  FB 002B5 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	       6B  D2 002BC 1$:     MCOML   PROT_VAL, FILE_PROT					      ; 1049
+					   04 002C1 	    RET     							      ; 1026
+
+; Routine Size:  61 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 21
+; Digital Equipment Corporation
+;
+;	1052	ROUTINE RECORD_PROT_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1053	BEGIN
+;	1054	
+;	1055	MAP
+;	1056		REQ_DESC	: REF BBLOCK;
+;	1057	
+;	1058	EXTERNAL
+;	1059		PROTECTION_STB	: VECTOR [0],	! state table address
+;	1060		PROTECTION_KTB	: VECTOR [0];	! keyword table address
+;	1061	
+;	1062	EXTERNAL ROUTINE
+;	1063		LIB$TPARSE;
+;	1064	
+;	1065	! Parse the switch value string (storing the binary protection).
+;	1066	! Complement thereafter, since the parser produces the complement.
+;	1067	!
+;	1068	
+;	1069	PROT_VAL = 0;
+;	1070	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1071	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1072	IF NOT LIB$TPARSE (TPARSE_BLOCK, PROTECTION_STB, PROTECTION_KTB)
+;	1073	THEN ERR_EXIT (INIT$_BADPRO);
+;	1074	
+;	1075	RECORD_PROT = NOT .PROT_VAL;
+;	1076	
+;	1077	END;					! end of routine RECORD_PROT_ACT
+
+
+
+
+
+					 0800 002C2 RECORD_PROT_ACT:
+							    .WORD   Save R11						      ; 1052
+		         5B	0000'  CF  9E 002C4 	    MOVAB   PROT_VAL, R11					      ;
+				       6B  D4 002C9 	    CLRL    PROT_VAL						      ; 1069
+		         50	  04   AC  D0 002CB 	    MOVL    REQ_DESC, R0					      ; 1070
+		    E4   AB	  04   A0  3C 002CF 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		    E8   AB	  08   A0  D0 002D4 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1071
+				0000G  CF  9F 002D9 	    PUSHAB  PROTECTION_KTB					      ; 1072
+				0000G  CF  9F 002DD 	    PUSHAB  PROTECTION_STB					      ;
+				  DC   AB  9F 002E1 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 002E4 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 002E9 	    BLBS    R0, 1$						      ;
+			    0075801C   8F  DD 002EC 	    PUSHL   #7700508						      ; 1073
+	      00000000G  00	       01  FB 002F2 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	       6B  D2 002F9 1$:     MCOML   PROT_VAL, RECORD_PROT				      ; 1075
+					   04 002FE 	    RET     							      ; 1052
+
+; Routine Size:  61 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 22
+; Digital Equipment Corporation
+;
+;	1078	ROUTINE OWNER_UIC_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1079	BEGIN
+;	1080	
+;	1081	MAP
+;	1082		REQ_DESC	: REF BBLOCK;
+;	1083	
+;	1084	EXTERNAL
+;	1085		UIC_STB		: VECTOR [0],	! state table address
+;	1086		UIC_KTB		: VECTOR [0];	! keyword table address
+;	1087	
+;	1088	EXTERNAL ROUTINE
+;	1089		LIB$TPARSE;
+;	1090	
+;	1091	! Parse the UIC string and store it in the owner UIC longword.
+;	1092	!
+;	1093	
+;	1094	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1095	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1096	IF NOT LIB$TPARSE (TPARSE_BLOCK, UIC_STB, UIC_KTB)
+;	1097	THEN ERR_EXIT (INIT$_BADUIC);
+;	1098	OWNER_UIC = .UIC;
+;	1099	
+;	1100	END;					! end of routine OWNER_UIC_ACT
+
+
+
+							    .GLOBL  UIC_STB, UIC_KTB
+
+					 0000 002FF OWNER_UIC_ACT:
+							    .WORD   Save nothing					      ; 1078
+		         50	  04   AC  D0 00301 	    MOVL    REQ_DESC, R0					      ; 1094
+		  0000'  CF	  04   A0  3C 00305 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 0030B 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1095
+				0000G  CF  9F 00311 	    PUSHAB  UIC_KTB						      ; 1096
+				0000G  CF  9F 00315 	    PUSHAB  UIC_STB						      ;
+				0000'  CF  9F 00319 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 0031D 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 00322 	    BLBS    R0, 1$						      ;
+			    00758024   8F  DD 00325 	    PUSHL   #7700516						      ; 1097
+	      00000000G  00	       01  FB 0032B 	    CALLS   #1, LIB$STOP					      ;
+		  0000'  CF	0000'  CF  D0 00332 1$:     MOVL    UIC, OWNER_UIC					      ; 1098
+					   04 00339 	    RET     							      ; 1078
+
+; Routine Size:  59 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 23
+; Digital Equipment Corporation
+;
+;	1101	ROUTINE INDEX_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1102	BEGIN
+;	1103	
+;	1104	MAP
+;	1105		REQ_DESC	: REF BBLOCK;
+;	1106	
+;	1107	EXTERNAL
+;	1108		INDEX_STB	: VECTOR [0],	! state table address
+;	1109		INDEX_KTB	: VECTOR [0];	! keyword table address
+;	1110	
+;	1111	EXTERNAL ROUTINE
+;	1112		LIB$TPARSE;
+;	1113	
+;	1114	! Parse the INDEX options string.
+;	1115	!
+;	1116	
+;	1117	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1118	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1119	IF NOT LIB$TPARSE (TPARSE_BLOCK, INDEX_STB, INDEX_KTB)
+;	1120	THEN ERR_EXIT (INIT$_BADINDEX);
+;	1121	
+;	1122	END;					! end of routine INDEX_ACT
+
+
+
+							    .GLOBL  INDEX_STB, INDEX_KTB
+
+					 0000 0033A INDEX_ACT:
+							    .WORD   Save nothing					      ; 1101
+		         50	  04   AC  D0 0033C 	    MOVL    REQ_DESC, R0					      ; 1117
+		  0000'  CF	  04   A0  3C 00340 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 00346 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1118
+				0000G  CF  9F 0034C 	    PUSHAB  INDEX_KTB						      ; 1119
+				0000G  CF  9F 00350 	    PUSHAB  INDEX_STB						      ;
+				0000'  CF  9F 00354 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 00358 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 0035D 	    BLBS    R0, 1$						      ;
+			    0075808C   8F  DD 00360 	    PUSHL   #7700620						      ; 1120
+	      00000000G  00	       01  FB 00366 	    CALLS   #1, LIB$STOP					      ;
+					   04 0036D 1$:     RET     							      ; 1101
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 24
+; Digital Equipment Corporation
+;
+;	1123	ROUTINE DATACHECK_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1124	BEGIN
+;	1125	
+;	1126	MAP
+;	1127		REQ_DESC	: REF BBLOCK;
+;	1128	
+;	1129	EXTERNAL
+;	1130		DATACHECK_STB	: VECTOR [0],	! state table address
+;	1131		DATACHECK_KTB	: VECTOR [0];	! keyword table address
+;	1132	
+;	1133	EXTERNAL ROUTINE
+;	1134		LIB$TPARSE;
+;	1135	
+;	1136	! Parse the DATACHECK options string.
+;	1137	!
+;	1138	
+;	1139	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1140	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1141	IF NOT LIB$TPARSE (TPARSE_BLOCK, DATACHECK_STB, DATACHECK_KTB)
+;	1142	THEN ERR_EXIT (INIT$_BADDATCHK);
+;	1143	
+;	1144	END;					! end of routine DATACHECK_ACT
+
+
+
+							    .GLOBL  DATACHECK_STB, DATACHECK_KTB
+
+					 0000 0036E DATACHECK_ACT:
+							    .WORD   Save nothing					      ; 1123
+		         50	  04   AC  D0 00370 	    MOVL    REQ_DESC, R0					      ; 1139
+		  0000'  CF	  04   A0  3C 00374 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 0037A 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1140
+				0000G  CF  9F 00380 	    PUSHAB  DATACHECK_KTB					      ; 1141
+				0000G  CF  9F 00384 	    PUSHAB  DATACHECK_STB					      ;
+				0000'  CF  9F 00388 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 0038C 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 00391 	    BLBS    R0, 1$						      ;
+			    0075800C   8F  DD 00394 	    PUSHL   #7700492						      ; 1142
+	      00000000G  00	       01  FB 0039A 	    CALLS   #1, LIB$STOP					      ;
+					   04 003A1 1$:     RET     							      ; 1123
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 25
+; Digital Equipment Corporation
+;
+;	1145	ROUTINE BADBLOCKS_ACT (REQ_DESC, CLI_CALLBACK) : NOVALUE =
+;	1146	BEGIN
+;	1147	
+;	1148	MAP
+;	1149		REQ_DESC	: REF BBLOCK;
+;	1150	
+;	1151	EXTERNAL
+;	1152		BADBLOCKS_STB	: VECTOR [0],	! state table address
+;	1153		BADBLOCKS_KTB	: VECTOR [0];	! keyword table address
+;	1154	
+;	1155	EXTERNAL ROUTINE
+;	1156		LIB$TPARSE;
+;	1157	
+;	1158	! Parse the BADBLOCKS options string.
+;	1159	!
+;	1160	
+;	1161	TPARSE_BLOCK[TPA$L_STRINGCNT] = .REQ_DESC[CLI$W_QDVALSIZ];
+;	1162	TPARSE_BLOCK[TPA$L_STRINGPTR] = .REQ_DESC[CLI$A_QDVALADR];
+;	1163	IF NOT LIB$TPARSE (TPARSE_BLOCK, BADBLOCKS_STB, BADBLOCKS_KTB)
+;	1164	THEN ERR_EXIT (INIT$_BADBLOCKS);
+;	1165	
+;	1166	END;					! end of routine BADBLOCKS_ACT
+
+
+
+							    .GLOBL  BADBLOCKS_STB, BADBLOCKS_KTB
+
+					 0000 003A2 BADBLOCKS_ACT:
+							    .WORD   Save nothing					      ; 1145
+		         50	  04   AC  D0 003A4 	    MOVL    REQ_DESC, R0					      ; 1161
+		  0000'  CF	  04   A0  3C 003A8 	    MOVZWL  4(R0), TPARSE_BLOCK+8				      ;
+		  0000'  CF	  08   A0  D0 003AE 	    MOVL    8(R0), TPARSE_BLOCK+12				      ; 1162
+				0000G  CF  9F 003B4 	    PUSHAB  BADBLOCKS_KTB					      ; 1163
+				0000G  CF  9F 003B8 	    PUSHAB  BADBLOCKS_STB					      ;
+				0000'  CF  9F 003BC 	    PUSHAB  TPARSE_BLOCK					      ;
+		  0000G  CF	       03  FB 003C0 	    CALLS   #3, LIB$TPARSE					      ;
+		         0D	       50  E8 003C5 	    BLBS    R0, 1$						      ;
+			    00758084   8F  DD 003C8 	    PUSHL   #7700612						      ; 1164
+	      00000000G  00	       01  FB 003CE 	    CALLS   #1, LIB$STOP					      ;
+					   04 003D5 1$:     RET     							      ; 1145
+
+; Routine Size:  52 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 26
+; Digital Equipment Corporation
+;
+;	1167	!+
+;	1168	!
+;	1169	! TPARSE action routines for the following TPARSE tables.
+;	1170	!
+;	1171	!-
+;	1172	
+;	1173	!
+;	1174	! Store UIC group number
+;	1175	!
+;	1176	ROUTINE GET_UIC_GROUP =
+;	1177	BEGIN
+;	1178	
+;	1179	TPARSE_ARGS (CONTEXT);
+;	1180	
+;	1181	UIC<16,16> = .CONTEXT[TPA$L_NUMBER];
+;	1182	RETURN 1;
+;	1183	
+;	1184	END;					! end of routine GET_UIC_GROUP
+
+
+
+
+
+					 0000 003D6 GET_UIC_GROUP:
+							    .WORD   Save nothing					      ; 1176
+		  0000'  CF	  1C   AC  B0 003D8 	    MOVW    28(CONTEXT), UIC+2					      ; 1181
+		         50	       01  D0 003DE 	    MOVL    #1, R0						      ; 1182
+					   04 003E1 	    RET     							      ; 1176
+
+; Routine Size:  12 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 27
+; Digital Equipment Corporation
+;
+;	1185	!
+;	1186	! Store UIC member number
+;	1187	!
+;	1188	ROUTINE GET_UIC_MEMBER =
+;	1189	BEGIN
+;	1190	
+;	1191	TPARSE_ARGS (CONTEXT);
+;	1192	
+;	1193	UIC<0,16> = .CONTEXT[TPA$L_NUMBER];
+;	1194	RETURN 1;
+;	1195	
+;	1196	END;					! end of routine GET_UIC_MEMBER
+
+
+
+
+
+					 0000 003E2 GET_UIC_MEMBER:
+							    .WORD   Save nothing					      ; 1188
+		  0000'  CF	  1C   AC  B0 003E4 	    MOVW    28(CONTEXT), UIC					      ; 1193
+		         50	       01  D0 003EA 	    MOVL    #1, R0						      ; 1194
+					   04 003ED 	    RET     							      ; 1188
+
+; Routine Size:  12 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 28
+; Digital Equipment Corporation
+;
+;	1197	!
+;	1198	! Store index file LBN
+;	1199	!
+;	1200	ROUTINE GET_INDEX_LBN =
+;	1201	BEGIN
+;	1202	
+;	1203	TPARSE_ARGS (CONTEXT);
+;	1204	
+;	1205	INDEX<0,16> = .CONTEXT[TPA$L_NUMBER];
+;	1206	RETURN 1;
+;	1207	
+;	1208	END;					! end of routine GET_INDEX_LBN
+
+
+
+
+
+					 0000 003EE GET_INDEX_LBN:
+							    .WORD   Save nothing					      ; 1200
+		  0000'  CF	  1C   AC  B0 003F0 	    MOVW    28(CONTEXT), INDEX					      ; 1205
+		         50	       01  D0 003F6 	    MOVL    #1, R0						      ; 1206
+					   04 003F9 	    RET     							      ; 1200
+
+; Routine Size:  12 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 29
+; Digital Equipment Corporation
+;
+;	1209	!
+;	1210	! Store bad block LBN or sector number.
+;	1211	!
+;	1212	ROUTINE GET_BAD_LBN =
+;	1213	BEGIN
+;	1214	
+;	1215	TPARSE_ARGS (CONTEXT);
+;	1216	
+;	1217	IF .BADBLOCK_COUNT GEQ BAD_TABLE_LEN
+;	1218	THEN ERR_EXIT (INIT$_MAXBAD);
+;	1219	BADBLOCK_TABLE[.BADBLOCK_COUNT, BAD_LBN] = .CONTEXT[TPA$L_NUMBER];
+;	1220	BADBLOCK_TABLE[.BADBLOCK_COUNT, BAD_COUNT] = 1;
+;	1221	BADBLOCK_COUNT = .BADBLOCK_COUNT + 1;
+;	1222	RETURN 1;
+;	1223	
+;	1224	END;					! end of routine GET_BAD_LBN
+
+
+
+
+
+					 0800 003FA GET_BAD_LBN:
+							    .WORD   Save R11						      ; 1212
+		         5B	0000'  CF  9E 003FC 	    MOVAB   BADBLOCK_COUNT, R11					      ;
+	      00000064   8F	       6B  D1 00401 	    CMPL    BADBLOCK_COUNT, #100				      ; 1217
+				       0D  19 00408 	    BLSS    1$							      ;
+			    007580BC   8F  DD 0040A 	    PUSHL   #7700668						      ; 1218
+	      00000000G  00	       01  FB 00410 	    CALLS   #1, LIB$STOP					      ;
+		         50	       6B  D0 00417 1$:     MOVL    BADBLOCK_COUNT, R0					      ; 1219
+				  04 AB40  7F 0041A 	    PUSHAQ  BADBLOCK_TABLE[R0]					      ;
+		         9E	  1C   AC  D0 0041E 	    MOVL    28(CONTEXT), @(SP)+					      ;
+				  08 AB40  7F 00422 	    PUSHAQ  BADBLOCK_TABLE+4[R0]				      ; 1220
+		         9E	       01  B0 00426 	    MOVW    #1, @(SP)+						      ;
+				       6B  D6 00429 	    INCL    BADBLOCK_COUNT					      ; 1221
+		         50	       01  D0 0042B 	    MOVL    #1, R0						      ; 1222
+					   04 0042E 	    RET     							      ; 1212
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 30
+; Digital Equipment Corporation
+;
+;	1225	!
+;	1226	! Store bad block track number.
+;	1227	!
+;	1228	ROUTINE GET_BAD_TRACK =
+;	1229	BEGIN
+;	1230	
+;	1231	TPARSE_ARGS (CONTEXT);
+;	1232	
+;	1233	BADBLOCK_TABLE[.BADBLOCK_COUNT-1, BAD_TRACK] = .CONTEXT[TPA$L_NUMBER];
+;	1234	BADBLOCK_TABLE[.BADBLOCK_COUNT-1, BAD_STC_FORM] = 1;
+;	1235	RETURN 1;
+;	1236	
+;	1237	END;					! end of routine GET_BAD_TRACK
+
+
+
+
+
+					 0000 0042F GET_BAD_TRACK:
+							    .WORD   Save nothing					      ; 1228
+		         50	0000'  CF  D0 00431 	    MOVL    BADBLOCK_COUNT, R0					      ; 1233
+				0000'CF40  7F 00436 	    PUSHAQ  BADBLOCK_TABLE-7[R0]				      ;
+		         9E	  1C   AC  90 0043B 	    MOVB    28(CONTEXT), @(SP)+					      ;
+				0000'CF40  7F 0043F 	    PUSHAQ  BADBLOCK_TABLE-2[R0]				      ; 1234
+		         9E	       01  88 00444 	    BISB2   #1, @(SP)+						      ;
+		         50	       01  D0 00447 	    MOVL    #1, R0						      ; 1235
+					   04 0044A 	    RET     							      ; 1228
+
+; Routine Size:  28 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 31
+; Digital Equipment Corporation
+;
+;	1238	!
+;	1239	! Store bad block cylinder number.
+;	1240	!
+;	1241	ROUTINE GET_BAD_CYL =
+;	1242	BEGIN
+;	1243	
+;	1244	TPARSE_ARGS (CONTEXT);
+;	1245	
+;	1246	BADBLOCK_TABLE[.BADBLOCK_COUNT-1, BAD_CYLINDER] = .CONTEXT[TPA$L_NUMBER];
+;	1247	RETURN 1;
+;	1248	
+;	1249	END;					! end of routine GET_BAD_CYL
+
+
+
+
+
+					 0000 0044B GET_BAD_CYL:
+							    .WORD   Save nothing					      ; 1241
+		         50	0000'  CF  D0 0044D 	    MOVL    BADBLOCK_COUNT, R0					      ; 1246
+				0000'CF40  7F 00452 	    PUSHAQ  BADBLOCK_TABLE-6[R0]				      ;
+		         9E	  1C   AC  B0 00457 	    MOVW    28(CONTEXT), @(SP)+					      ;
+		         50	       01  D0 0045B 	    MOVL    #1, R0						      ; 1247
+					   04 0045E 	    RET     							      ; 1241
+
+; Routine Size:  20 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 32
+; Digital Equipment Corporation
+;
+;	1250	!
+;	1251	! Store bad block count.
+;	1252	!
+;	1253	ROUTINE GET_BAD_COUNT =
+;	1254	BEGIN
+;	1255	
+;	1256	TPARSE_ARGS (CONTEXT);
+;	1257	
+;	1258	BADBLOCK_TABLE[.BADBLOCK_COUNT-1, BAD_COUNT] = .CONTEXT[TPA$L_NUMBER];
+;	1259	IF .CONTEXT[TPA$L_NUMBER] EQL 0
+;	1260	THEN ERR_EXIT (INIT$_BADBLOCKS);
+;	1261	RETURN 1;
+;	1262	
+;	1263	END;					! end of routine GET_BAD_COUNT
+
+
+
+
+
+					 0000 0045F GET_BAD_COUNT:
+							    .WORD   Save nothing					      ; 1253
+		         50	0000'  CF  D0 00461 	    MOVL    BADBLOCK_COUNT, R0					      ; 1258
+				0000'CF40  7F 00466 	    PUSHAQ  BADBLOCK_TABLE-4[R0]				      ;
+		         9E	  1C   AC  B0 0046B 	    MOVW    28(CONTEXT), @(SP)+					      ;
+				  1C   AC  D5 0046F 	    TSTL    28(CONTEXT)						      ; 1259
+				       0D  12 00472 	    BNEQ    1$							      ;
+			    00758084   8F  DD 00474 	    PUSHL   #7700612						      ; 1260
+	      00000000G  00	       01  FB 0047A 	    CALLS   #1, LIB$STOP					      ;
+		         50	       01  D0 00481 1$:     MOVL    #1, R0						      ; 1261
+					   04 00484 	    RET     							      ; 1253
+
+; Routine Size:  38 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33
+; Digital Equipment Corporation
+;
+;	1264	!+
+;	1265	!
+;	1266	! TPARSE state tables to parse the various qualifier value strings.
+;	1267	!
+;	1268	!-
+;	1269	
+;	1270	!
+;	1271	! Parse magtape density (either "800" or "1600").
+;	1272	!
+;	1273	$INIT_STATE (DENSITY_STB, DENSITY_KTB);
+;	1274	
+;	1275	$STATE	(,
+;     P 1276		('1600'),
+;     P 1277		('800',,, 1^OPT_DENS_800, INIT_OPTIONS)
+;     P 1278		);
+;	1279	
+;	1280	$STATE	(,
+;     P 1281		(TPA$_EOS, TPA$_EXIT)
+;     P 1282		);
+;	1283	!
+;	1284	! Parse disk structure level (either "1" or "2").
+;	1285	!
+;	1286	$INIT_STATE (STRUCTURE_STB, STRUCTURE_KTB);
+;	1287	
+;	1288	$STATE	(,
+;     P 1289		('1',,, 1^OPT_STRUCTURE1, INIT_OPTIONS),
+;     P 1290		('2')
+;     P 1291		);
+;	1292	
+;	1293	$STATE	(,
+;     P 1294		(TPA$_EOS, TPA$_EXIT)
+;     P 1295		);
+;	1296	!
+;	1297	! PARSE OVERRIDE QUALIFIERS (EXPIRATION)
+;	1298	!
+;	1299	$INIT_STATE(OVERRIDE_STB, OVERRIDE_KTB);
+;	1300	
+;	1301	$STATE	(NEXTOVR,
+;     P 1302		('EXPIRATION',,,1^OPT_OVR_EXP,INIT_OPTIONS),
+;     P 1303		('ACCESSIBILITY',,,1^OPT_OVR_ACC,INIT_OPTIONS)
+;     P 1304		);
+;	1305	
+;	1306	
+;	1307	$STATE	(,
+;     P 1308		(',',NEXTOVR),
+;     P 1309		(TPA$_EOS,TPA$_EXIT)
+;     P 1310		);
+;	1311	!
+;	1312	! Parse protection string "(SYSTEM:RWED,OWNER:RWED,GROUP:RWED,WORLD:RWED)"
+;	1313	!
+;	1314	$INIT_STATE (PROTECTION_STB, PROTECTION_KTB);
+;	1315	
+;	1316	$STATE	(NEXTPRO,
+;     P 1317		('SYSTEM', SYPR,, %X'000F0000', PROT_VAL),
+;     P 1318		('OWNER',  OWPR,, %X'00F00000', PROT_VAL),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-1
+; Digital Equipment Corporation
+;
+;     P 1319		('GROUP',  GRPR,, %X'0F000000', PROT_VAL),
+;     P 1320		('WORLD',  WOPR,, %X'F0000000', PROT_VAL)
+;     P 1321		);
+;	1322	
+;	1323	$STATE	(SYPR,
+;     P 1324		(':'),
+;     P 1325		('='),
+;     P 1326		(TPA$_LAMBDA, ENDPRO)
+;     P 1327		);
+;	1328	
+;	1329	$STATE	(SYPR0,
+;     P 1330		('R', SYPR0,, %X'0001', PROT_VAL),
+;     P 1331		('W', SYPR0,, %X'0002', PROT_VAL),
+;     P 1332		('E', SYPR0,, %X'0004', PROT_VAL),
+;     P 1333		('D', SYPR0,, %X'0008', PROT_VAL),
+;     P 1334		(TPA$_LAMBDA, ENDPRO)
+;     P 1335		);
+;	1336	
+;	1337	$STATE	(OWPR,
+;     P 1338		(':'),
+;     P 1339		('='),
+;     P 1340		(TPA$_LAMBDA, ENDPRO)
+;     P 1341		);
+;	1342	
+;	1343	$STATE	(OWPR0,
+;     P 1344		('R', OWPR0,, %X'0010', PROT_VAL),
+;     P 1345		('W', OWPR0,, %X'0020', PROT_VAL),
+;     P 1346		('E', OWPR0,, %X'0040', PROT_VAL),
+;     P 1347		('D', OWPR0,, %X'0080', PROT_VAL),
+;     P 1348		(TPA$_LAMBDA, ENDPRO)
+;     P 1349		);
+;	1350	
+;	1351	$STATE	(GRPR,
+;     P 1352		(':'),
+;     P 1353		('='),
+;     P 1354		(TPA$_LAMBDA, ENDPRO)
+;     P 1355		);
+;	1356	
+;	1357	$STATE	(GRPR0,
+;     P 1358		('R', GRPR0,, %X'0100', PROT_VAL),
+;     P 1359		('W', GRPR0,, %X'0200', PROT_VAL),
+;     P 1360		('E', GRPR0,, %X'0400', PROT_VAL),
+;     P 1361		('D', GRPR0,, %X'0800', PROT_VAL),
+;     P 1362		(TPA$_LAMBDA, ENDPRO)
+;     P 1363		);
+;	1364	
+;	1365	$STATE	(WOPR,
+;     P 1366		(':'),
+;     P 1367		('='),
+;     P 1368		(TPA$_LAMBDA, ENDPRO)
+;     P 1369		);
+;	1370	
+;	1371	$STATE	(WOPR0,
+;     P 1372		('R', WOPR0,, %X'1000', PROT_VAL),
+;     P 1373		('W', WOPR0,, %X'2000', PROT_VAL),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-2
+; Digital Equipment Corporation
+;
+;     P 1374		('E', WOPR0,, %X'4000', PROT_VAL),
+;     P 1375		('D', WOPR0,, %X'8000', PROT_VAL),
+;     P 1376		(TPA$_LAMBDA, ENDPRO)
+;     P 1377		);
+;	1378	
+;	1379	$STATE	(ENDPRO,
+;     P 1380		(',', NEXTPRO),
+;     P 1381		(TPA$_EOS, TPA$_EXIT)
+;     P 1382		);
+;	1383	
+;	1384	!
+;	1385	! Parse UIC string and store binary value.
+;	1386	!
+;	1387	$INIT_STATE (UIC_STB, UIC_KTB);
+;	1388	
+;	1389	$STATE	(,
+;     P 1390		('['),
+;     P 1391		('<')
+;     P 1392		);
+;	1393	
+;	1394	$STATE	(,
+;     P 1395		(TPA$_OCTAL,, GET_UIC_GROUP)
+;     P 1396		);
+;	1397	
+;	1398	$STATE	(,
+;     P 1399		(',')
+;     P 1400		);
+;	1401	
+;	1402	$STATE	(,
+;     P 1403		(TPA$_OCTAL,, GET_UIC_MEMBER)
+;     P 1404		);
+;	1405	
+;	1406	$STATE	(,
+;     P 1407		(']'),
+;     P 1408		('>')
+;     P 1409		);
+;	1410	
+;	1411	$STATE	(,
+;     P 1412		(TPA$_EOS, TPA$_EXIT)
+;     P 1413		);
+;	1414	
+;	1415	!
+;	1416	! Parse INDEX options (BEGINNING, MIDDLE, END, OR n)
+;	1417	!
+;	1418	$INIT_STATE (INDEX_STB, INDEX_KTB);
+;	1419	
+;	1420	$STATE	(,
+;     P 1421		('BEGINNING',,, 1^OPT_INDEX_BEG, INIT_OPTIONS),
+;     P 1422		('MIDDLE',,, 1^OPT_INDEX_MID, INIT_OPTIONS),
+;     P 1423		('END',,, 1^OPT_INDEX_END, INIT_OPTIONS),
+;     P 1424		(TPA$_DECIMAL,, GET_INDEX_LBN, 1^OPT_INDEX_LBN, INIT_OPTIONS)
+;     P 1425		);
+;	1426	
+;	1427	$STATE	(,
+;     P 1428		(TPA$_EOS, TPA$_EXIT)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-3
+; Digital Equipment Corporation
+;
+;     P 1429		);
+;	1430	!
+;	1431	! Parse data check options, of the form [READ][,WRITE]. Default is write.
+;	1432	!
+;	1433	$INIT_STATE (DATACHECK_STB, DATACHECK_KTB);
+;	1434	
+;	1435	$STATE	(,
+;     P 1436		(TPA$_EOS, TPA$_EXIT,, 1^OPT_WRITECHECK, INIT_OPTIONS),
+;     P 1437		(TPA$_LAMBDA)
+;     P 1438		);
+;	1439	
+;	1440	$STATE	(CHECKOPT,
+;     P 1441		('READ',,, 1^OPT_READCHECK, INIT_OPTIONS),
+;     P 1442		('WRITE',,, 1^OPT_WRITECHECK, INIT_OPTIONS)
+;     P 1443		);
+;	1444	
+;	1445	$STATE	(,
+;     P 1446		(',', CHECKOPT),
+;     P 1447		(TPA$_EOS, TPA$_EXIT)
+;     P 1448		);
+;	1449	
+;	1450	!
+;	1451	! Parse bad block data, consisting of entries of the form LBN:count or
+;	1452	! sector.track.cylinder:count, separated by commas.
+;	1453	!
+;	1454	$INIT_STATE (BADBLOCKS_STB, BADBLOCKS_KTB);
+;	1455	
+;	1456	$STATE	(NEXTBLK,
+;     P 1457		(TPA$_DECIMAL,, GET_BAD_LBN)
+;     P 1458		);
+;	1459	
+;	1460	$STATE	(,
+;     P 1461		('.', TRACK),
+;     P 1462		(TPA$_LAMBDA)
+;     P 1463		);
+;	1464	
+;	1465	$STATE	(COLON,
+;     P 1466		(':', BLKCNT),
+;     P 1467		(TPA$_LAMBDA)
+;     P 1468		);
+;	1469	
+;	1470	$STATE	(BLKEND,
+;     P 1471		(',', NEXTBLK),
+;     P 1472		(TPA$_EOS, TPA$_EXIT)
+;     P 1473		);
+;	1474	
+;	1475	$STATE	(BLKCNT,
+;     P 1476		(TPA$_DECIMAL, BLKEND, GET_BAD_COUNT)
+;     P 1477		);
+;	1478	
+;	1479	$STATE	(TRACK,
+;     P 1480		(TPA$_DECIMAL,, GET_BAD_TRACK)
+;     P 1481		);
+;	1482	
+;	1483	$STATE	(,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-4
+; Digital Equipment Corporation
+;
+;     P 1484		('.')
+;     P 1485		);
+;	1486	
+;	1487	$STATE	(,
+;     P 1488		(TPA$_DECIMAL, COLON, GET_BAD_CYL)
+;     P 1489		);
+;	1490	
+;	1491	END
+;	1492	ELUDOM
+
+
+
+							    .PSECT  LIB$KEY1$,NOWRT,NOEXE,  SHR,0
+
+					      00000 ;TPA$KEYST0
+						    U.2:    .BLKB   0
+					      00000 U.4:    .ASCII  \1600\						      ;
+					      00004 	    .BYTE   -1							      ;
+					      00005 ;TPA$KEYST0
+						    U.6:    .BLKB   0
+					      00005 U.8:    .ASCII  \800\						      ;
+					      00008 	    .BYTE   -1							      ;
+					      00009 U.12:   .BYTE   -1							      ;
+					      0000A ;TPA$KEYST0
+						    U.23:   .BLKB   0
+					      0000A U.25:   .ASCII  \EXPIRATION\					      ;
+					      00014 	    .BYTE   -1							      ;
+					      00015 ;TPA$KEYST0
+						    U.29:   .BLKB   0
+					      00015 U.31:   .ASCII  \ACCESSIBILITY\					      ;
+					      00022 	    .BYTE   -1							      ;
+					      00023 U.35:   .BYTE   -1							      ;
+					      00024 ;TPA$KEYST0
+						    U.41:   .BLKB   0
+					      00024 U.43:   .ASCII  \SYSTEM\						      ;
+					      0002A 	    .BYTE   -1							      ;
+					      0002B ;TPA$KEYST0
+						    U.49:   .BLKB   0
+					      0002B U.51:   .ASCII  \OWNER\						      ;
+					      00030 	    .BYTE   -1							      ;
+					      00031 ;TPA$KEYST0
+						    U.57:   .BLKB   0
+					      00031 U.59:   .ASCII  \GROUP\						      ;
+					      00036 	    .BYTE   -1							      ;
+					      00037 ;TPA$KEYST0
+						    U.65:   .BLKB   0
+					      00037 U.67:   .ASCII  \WORLD\						      ;
+					      0003C 	    .BYTE   -1							      ;
+					      0003D U.73:   .BYTE   -1							      ;
+					      0003E ;TPA$KEYST0
+						    U.180:  .BLKB   0
+					      0003E U.182:  .ASCII  \BEGINNING\						      ;
+					      00047 	    .BYTE   -1							      ;
+					      00048 ;TPA$KEYST0
+						    U.186:  .BLKB   0
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-5
+; Digital Equipment Corporation
+;
+					      00048 U.188:  .ASCII  \MIDDLE\						      ;
+					      0004E 	    .BYTE   -1							      ;
+					      0004F ;TPA$KEYST0
+						    U.192:  .BLKB   0
+					      0004F U.194:  .ASCII  \END\						      ;
+					      00052 	    .BYTE   -1							      ;
+					      00053 U.202:  .BYTE   -1							      ;
+					      00054 ;TPA$KEYST0
+						    U.211:  .BLKB   0
+					      00054 U.213:  .ASCII  \READ\						      ;
+					      00058 	    .BYTE   -1							      ;
+					      00059 ;TPA$KEYST0
+						    U.217:  .BLKB   0
+					      00059 U.219:  .ASCII  \WRITE\						      ;
+					      0005E 	    .BYTE   -1							      ;
+					      0005F U.223:  .BYTE   -1							      ;
+
+							    .PSECT  LIB$STATE$,NOWRT,NOEXE,  SHR,0
+
+					      00000 DENSITY_STB::
+							    .BLKB   0
+					      00000 U.5:    .WORD   256							      ;
+					      00002 U.9:    .WORD   25857						      ;
+					      00004 U.10:   .LONG    <<INIT_OPTIONS-U.10>-4>				      ;
+					      00008 U.11:   .LONG   2							      ;
+					      0000C U.13:   .WORD   5623						      ;
+					      0000E U.14:   .WORD   -1							      ;
+					      00010 STRUCTURE_STB::
+							    .BLKB   0
+					      00010 U.16:   .WORD   24625						      ;
+					      00012 U.17:   .LONG    <<INIT_OPTIONS-U.17>-4>				      ;
+					      00016 U.18:   .LONG   -2147483648						      ;
+					      0001A U.19:   .WORD   1074						      ;
+					      0001C U.20:   .WORD   5623						      ;
+					      0001E U.21:   .WORD   -1							      ;
+					      00020 OVERRIDE_STB::
+							    .BLKB   0
+					      00020 NEXTOVR:.BLKB   0
+					      00020 U.26:   .WORD   24832						      ;
+					      00022 U.27:   .LONG    <<INIT_OPTIONS-U.27>-4>				      ;
+					      00026 U.28:   .LONG   134217728						      ;
+					      0002A U.32:   .WORD   25857						      ;
+					      0002C U.33:   .LONG    <<INIT_OPTIONS-U.33>-4>				      ;
+					      00030 U.34:   .LONG   1073741824						      ;
+					      00034 U.36:   .WORD   4140						      ;
+					      00036 U.37:   .WORD    <<NEXTOVR-U.37>-2>					      ;
+					      00038 U.38:   .WORD   5623						      ;
+					      0003A U.39:   .WORD   -1							      ;
+					      0003C PROTECTION_STB::
+							    .BLKB   0
+					      0003C NEXTPRO:.BLKB   0
+					      0003C U.44:   .WORD   28928						      ;
+					      0003E U.45:   .LONG    <<PROT_VAL-U.45>-4>				      ;
+					      00042 U.46:   .LONG   983040						      ;
+					      00046 U.48:   .WORD    <<U.47-U.48>-2>					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-6
+; Digital Equipment Corporation
+;
+					      00048 U.52:   .WORD   28929						      ;
+					      0004A U.53:   .LONG    <<PROT_VAL-U.53>-4>				      ;
+					      0004E U.54:   .LONG   15728640						      ;
+					      00052 U.56:   .WORD    <<U.55-U.56>-2>					      ;
+					      00054 U.60:   .WORD   28930						      ;
+					      00056 U.61:   .LONG    <<PROT_VAL-U.61>-4>				      ;
+					      0005A U.62:   .LONG   251658240						      ;
+					      0005E U.64:   .WORD    <<U.63-U.64>-2>					      ;
+					      00060 U.68:   .WORD   29955						      ;
+					      00062 U.69:   .LONG    <<PROT_VAL-U.69>-4>				      ;
+					      00066 U.70:   .LONG   -268435456						      ;
+					      0006A U.72:   .WORD    <<U.71-U.72>-2>					      ;
+					      0006C ;SYPR
+						    U.47:   .BLKB   0
+					      0006C U.74:   .WORD   58							      ;
+					      0006E U.75:   .WORD   61							      ;
+					      00070 U.76:   .WORD   5622						      ;
+					      00072 U.78:   .WORD    <<U.77-U.78>-2>					      ;
+					      00074 SYPR0:  .BLKB   0
+					      00074 U.79:   .WORD   28754						      ;
+					      00076 U.80:   .LONG    <<PROT_VAL-U.80>-4>				      ;
+					      0007A U.81:   .LONG   1							      ;
+					      0007E U.82:   .WORD    <<SYPR0-U.82>-2>					      ;
+					      00080 U.83:   .WORD   28759						      ;
+					      00082 U.84:   .LONG    <<PROT_VAL-U.84>-4>				      ;
+					      00086 U.85:   .LONG   2							      ;
+					      0008A U.86:   .WORD    <<SYPR0-U.86>-2>					      ;
+					      0008C U.87:   .WORD   28741						      ;
+					      0008E U.88:   .LONG    <<PROT_VAL-U.88>-4>				      ;
+					      00092 U.89:   .LONG   4							      ;
+					      00096 U.90:   .WORD    <<SYPR0-U.90>-2>					      ;
+					      00098 U.91:   .WORD   28740						      ;
+					      0009A U.92:   .LONG    <<PROT_VAL-U.92>-4>				      ;
+					      0009E U.93:   .LONG   8							      ;
+					      000A2 U.94:   .WORD    <<SYPR0-U.94>-2>					      ;
+					      000A4 U.95:   .WORD   5622						      ;
+					      000A6 U.96:   .WORD    <<U.77-U.96>-2>					      ;
+					      000A8 ;OWPR
+						    U.55:   .BLKB   0
+					      000A8 U.97:   .WORD   58							      ;
+					      000AA U.98:   .WORD   61							      ;
+					      000AC U.99:   .WORD   5622						      ;
+					      000AE U.100:  .WORD    <<U.77-U.100>-2>					      ;
+					      000B0 OWPR0:  .BLKB   0
+					      000B0 U.101:  .WORD   28754						      ;
+					      000B2 U.102:  .LONG    <<PROT_VAL-U.102>-4>				      ;
+					      000B6 U.103:  .LONG   16							      ;
+					      000BA U.104:  .WORD    <<OWPR0-U.104>-2>					      ;
+					      000BC U.105:  .WORD   28759						      ;
+					      000BE U.106:  .LONG    <<PROT_VAL-U.106>-4>				      ;
+					      000C2 U.107:  .LONG   32							      ;
+					      000C6 U.108:  .WORD    <<OWPR0-U.108>-2>					      ;
+					      000C8 U.109:  .WORD   28741						      ;
+					      000CA U.110:  .LONG    <<PROT_VAL-U.110>-4>				      ;
+					      000CE U.111:  .LONG   64							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-7
+; Digital Equipment Corporation
+;
+					      000D2 U.112:  .WORD    <<OWPR0-U.112>-2>					      ;
+					      000D4 U.113:  .WORD   28740						      ;
+					      000D6 U.114:  .LONG    <<PROT_VAL-U.114>-4>				      ;
+					      000DA U.115:  .LONG   128							      ;
+					      000DE U.116:  .WORD    <<OWPR0-U.116>-2>					      ;
+					      000E0 U.117:  .WORD   5622						      ;
+					      000E2 U.118:  .WORD    <<U.77-U.118>-2>					      ;
+					      000E4 ;GRPR
+						    U.63:   .BLKB   0
+					      000E4 U.119:  .WORD   58							      ;
+					      000E6 U.120:  .WORD   61							      ;
+					      000E8 U.121:  .WORD   5622						      ;
+					      000EA U.122:  .WORD    <<U.77-U.122>-2>					      ;
+					      000EC GRPR0:  .BLKB   0
+					      000EC U.123:  .WORD   28754						      ;
+					      000EE U.124:  .LONG    <<PROT_VAL-U.124>-4>				      ;
+					      000F2 U.125:  .LONG   256							      ;
+					      000F6 U.126:  .WORD    <<GRPR0-U.126>-2>					      ;
+					      000F8 U.127:  .WORD   28759						      ;
+					      000FA U.128:  .LONG    <<PROT_VAL-U.128>-4>				      ;
+					      000FE U.129:  .LONG   512							      ;
+					      00102 U.130:  .WORD    <<GRPR0-U.130>-2>					      ;
+					      00104 U.131:  .WORD   28741						      ;
+					      00106 U.132:  .LONG    <<PROT_VAL-U.132>-4>				      ;
+					      0010A U.133:  .LONG   1024						      ;
+					      0010E U.134:  .WORD    <<GRPR0-U.134>-2>					      ;
+					      00110 U.135:  .WORD   28740						      ;
+					      00112 U.136:  .LONG    <<PROT_VAL-U.136>-4>				      ;
+					      00116 U.137:  .LONG   2048						      ;
+					      0011A U.138:  .WORD    <<GRPR0-U.138>-2>					      ;
+					      0011C U.139:  .WORD   5622						      ;
+					      0011E U.140:  .WORD    <<U.77-U.140>-2>					      ;
+					      00120 ;WOPR
+						    U.71:   .BLKB   0
+					      00120 U.141:  .WORD   58							      ;
+					      00122 U.142:  .WORD   61							      ;
+					      00124 U.143:  .WORD   5622						      ;
+					      00126 U.144:  .WORD    <<U.77-U.144>-2>					      ;
+					      00128 WOPR0:  .BLKB   0
+					      00128 U.145:  .WORD   28754						      ;
+					      0012A U.146:  .LONG    <<PROT_VAL-U.146>-4>				      ;
+					      0012E U.147:  .LONG   4096						      ;
+					      00132 U.148:  .WORD    <<WOPR0-U.148>-2>					      ;
+					      00134 U.149:  .WORD   28759						      ;
+					      00136 U.150:  .LONG    <<PROT_VAL-U.150>-4>				      ;
+					      0013A U.151:  .LONG   8192						      ;
+					      0013E U.152:  .WORD    <<WOPR0-U.152>-2>					      ;
+					      00140 U.153:  .WORD   28741						      ;
+					      00142 U.154:  .LONG    <<PROT_VAL-U.154>-4>				      ;
+					      00146 U.155:  .LONG   16384						      ;
+					      0014A U.156:  .WORD    <<WOPR0-U.156>-2>					      ;
+					      0014C U.157:  .WORD   28740						      ;
+					      0014E U.158:  .LONG    <<PROT_VAL-U.158>-4>				      ;
+					      00152 U.159:  .LONG   32768						      ;
+					      00156 U.160:  .WORD    <<WOPR0-U.160>-2>					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-8
+; Digital Equipment Corporation
+;
+					      00158 U.161:  .WORD   5622						      ;
+					      0015A U.162:  .WORD    <<U.77-U.162>-2>					      ;
+					      0015C ;ENDPRO
+						    U.77:   .BLKB   0
+					      0015C U.163:  .WORD   4140						      ;
+					      0015E U.164:  .WORD    <<NEXTPRO-U.164>-2>				      ;
+					      00160 U.165:  .WORD   5623						      ;
+					      00162 U.166:  .WORD   -1							      ;
+					      00164 UIC_STB::
+							    .BLKB   0
+					      00164 U.168:  .WORD   91							      ;
+					      00166 U.169:  .WORD   1084						      ;
+					      00168 U.170:  .WORD   -31244						      ;
+					      0016A U.171:  .LONG    <<GET_UIC_GROUP-U.171>-4>				      ;
+					      0016E U.172:  .WORD   1068						      ;
+					      00170 U.173:  .WORD   -31244						      ;
+					      00172 U.174:  .LONG    <<GET_UIC_MEMBER-U.174>-4>				      ;
+					      00176 U.175:  .WORD   93							      ;
+					      00178 U.176:  .WORD   1086						      ;
+					      0017A U.177:  .WORD   5623						      ;
+					      0017C U.178:  .WORD   -1							      ;
+					      0017E	    .BLKB   2
+					      00180 INDEX_STB::
+							    .BLKB   0
+					      00180 U.183:  .WORD   24832						      ;
+					      00182 U.184:  .LONG    <<INIT_OPTIONS-U.184>-4>				      ;
+					      00186 U.185:  .LONG   1048576						      ;
+					      0018A U.189:  .WORD   24833						      ;
+					      0018C U.190:  .LONG    <<INIT_OPTIONS-U.190>-4>				      ;
+					      00190 U.191:  .LONG   2097152						      ;
+					      00194 U.195:  .WORD   24834						      ;
+					      00196 U.196:  .LONG    <<INIT_OPTIONS-U.196>-4>				      ;
+					      0019A U.197:  .LONG   4194304						      ;
+					      0019E U.198:  .WORD   -6669						      ;
+					      001A0 U.199:  .LONG    <<GET_INDEX_LBN-U.199>-4>				      ;
+					      001A4 U.200:  .LONG    <<INIT_OPTIONS-U.200>-4>				      ;
+					      001A8 U.201:  .LONG   8388608						      ;
+					      001AC U.203:  .WORD   5623						      ;
+					      001AE U.204:  .WORD   -1							      ;
+					      001B0 DATACHECK_STB::
+							    .BLKB   0
+					      001B0 U.206:  .WORD   29175						      ;
+					      001B2 U.207:  .LONG    <<INIT_OPTIONS-U.207>-4>				      ;
+					      001B6 U.208:  .LONG   256							      ;
+					      001BA U.209:  .WORD   -1							      ;
+					      001BC U.210:  .WORD   1526						      ;
+					      001BE CHECKOPT:
+							    .BLKB   0
+					      001BE U.214:  .WORD   24832						      ;
+					      001C0 U.215:  .LONG    <<INIT_OPTIONS-U.215>-4>				      ;
+					      001C4 U.216:  .LONG   128							      ;
+					      001C8 U.220:  .WORD   25857						      ;
+					      001CA U.221:  .LONG    <<INIT_OPTIONS-U.221>-4>				      ;
+					      001CE U.222:  .LONG   256							      ;
+					      001D2 U.224:  .WORD   4140						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-9
+; Digital Equipment Corporation
+;
+					      001D4 U.225:  .WORD    <<CHECKOPT-U.225>-2>				      ;
+					      001D6 U.226:  .WORD   5623						      ;
+					      001D8 U.227:  .WORD   -1							      ;
+					      001DA	    .BLKB   2
+					      001DC BADBLOCKS_STB::
+							    .BLKB   0
+					      001DC NEXTBLK:.BLKB   0
+					      001DC U.229:  .WORD   -31245						      ;
+					      001DE U.230:  .LONG    <<GET_BAD_LBN-U.230>-4>				      ;
+					      001E2 U.231:  .WORD   4142						      ;
+					      001E4 U.233:  .WORD    <<U.232-U.233>-2>					      ;
+					      001E6 U.234:  .WORD   1526						      ;
+					      001E8 COLON:  .BLKB   0
+					      001E8 U.235:  .WORD   4154						      ;
+					      001EA U.237:  .WORD    <<U.236-U.237>-2>					      ;
+					      001EC U.238:  .WORD   1526						      ;
+					      001EE BLKEND: .BLKB   0
+					      001EE U.239:  .WORD   4140						      ;
+					      001F0 U.240:  .WORD    <<NEXTBLK-U.240>-2>				      ;
+					      001F2 U.241:  .WORD   5623						      ;
+					      001F4 U.242:  .WORD   -1							      ;
+					      001F6 ;BLKCNT
+						    U.236:  .BLKB   0
+					      001F6 U.243:  .WORD   -27149						      ;
+					      001F8 U.244:  .LONG    <<GET_BAD_COUNT-U.244>-4>				      ;
+					      001FC U.245:  .WORD    <<BLKEND-U.245>-2>					      ;
+					      001FE ;TRACK
+						    U.232:  .BLKB   0
+					      001FE U.246:  .WORD   -31245						      ;
+					      00200 U.247:  .LONG    <<GET_BAD_TRACK-U.247>-4>				      ;
+					      00204 U.248:  .WORD   1070						      ;
+					      00206 U.249:  .WORD   -27149						      ;
+					      00208 U.250:  .LONG    <<GET_BAD_CYL-U.250>-4>				      ;
+					      0020C U.251:  .WORD    <<COLON-U.251>-2>					      ;
+
+							    .PSECT  LIB$KEY0$,NOWRT,NOEXE,  SHR,1
+
+					      00000 DENSITY_KTB::
+							    .BLKB   0
+					      00000 ;TPA$KEY0
+						    U.1:    .BLKB   0
+					      00000 U.3:    .WORD    <U.2-U.1>						      ;
+					      00002 U.7:    .WORD    <U.6-U.1>						      ;
+					      00004 STRUCTURE_KTB::
+							    .BLKB   0
+					      00004 ;TPA$KEY0
+						    U.15:   .BLKB   0
+					      00004 OVERRIDE_KTB::
+							    .BLKB   0
+					      00004 ;TPA$KEY0
+						    U.22:   .BLKB   0
+					      00004 U.24:   .WORD    <U.23-U.22>					      ;
+					      00006 U.30:   .WORD    <U.29-U.22>					      ;
+					      00008 PROTECTION_KTB::
+							    .BLKB   0
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-10
+; Digital Equipment Corporation
+;
+					      00008 ;TPA$KEY0
+						    U.40:   .BLKB   0
+					      00008 U.42:   .WORD    <U.41-U.40>					      ;
+					      0000A U.50:   .WORD    <U.49-U.40>					      ;
+					      0000C U.58:   .WORD    <U.57-U.40>					      ;
+					      0000E U.66:   .WORD    <U.65-U.40>					      ;
+					      00010 UIC_KTB::
+							    .BLKB   0
+					      00010 ;TPA$KEY0
+						    U.167:  .BLKB   0
+					      00010 INDEX_KTB::
+							    .BLKB   0
+					      00010 ;TPA$KEY0
+						    U.179:  .BLKB   0
+					      00010 U.181:  .WORD    <U.180-U.179>					      ;
+					      00012 U.187:  .WORD    <U.186-U.179>					      ;
+					      00014 U.193:  .WORD    <U.192-U.179>					      ;
+					      00016	    .BLKB   2
+					      00018 DATACHECK_KTB::
+							    .BLKB   0
+					      00018 ;TPA$KEY0
+						    U.205:  .BLKB   0
+					      00018 U.212:  .WORD    <U.211-U.205>					      ;
+					      0001A U.218:  .WORD    <U.217-U.205>					      ;
+					      0001C BADBLOCKS_KTB::
+							    .BLKB   0
+					      0001C ;TPA$KEY0
+						    U.228:  .BLKB   0
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	   884    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $OWN$          	   920    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	  1157  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  LIB$KEY0$      	    28  NOWRT,  RD ,NOEXE,  SHR,  LCL,  REL,  CON,NOPIC,ALIGN(1)
+;  LIB$STATE$     	   526  NOWRT,  RD ,NOEXE,  SHR,  LCL,  REL,  CON,NOPIC,ALIGN(0)
+;  LIB$KEY1$      	    96  NOWRT,  RD ,NOEXE,  SHR,  LCL,  REL,  CON,NOPIC,ALIGN(0)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        28         0       238
+;  DBA4:[SYSLIB]CLIMAC.L32;1		        14        14       100        14
+;  DBA4:[SYSLIB]TPAMAC.L32;1		        39        26        66        20
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:27:53	DBB3:[INIT.SRC]INIPAR.B32;18					Page 33-11
+; Digital Equipment Corporation
+;
+
+
+
+
+; Size:		1157 code + 2454 data bytes
+; Run Time:	02:19.4
+; Elapsed Time:	04:16.5
+; Memory Used:	411 pages
+; Compilation Complete

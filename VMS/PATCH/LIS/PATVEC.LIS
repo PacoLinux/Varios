@@ -1,0 +1,536 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE PATVEC (	!
+;	0002			%IF %VARIANT EQL 1
+;     L 0003			%THEN
+;	0004				ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE, NONEXTERNAL = LONG_RELATIVE),
+;	0005			%FI
+;	0006			IDENT = 'X01.03'
+;	0007			) =
+;	0008	BEGIN
+;	0009	
+;	0010	! COPYRIGHT (c) 1977
+;	0011	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0012	!
+;	0013	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0014	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0015	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0016	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0017	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0018	! TRANSFERRED.
+;	0019	!
+;	0020	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0021	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0022	! CORPORATION.
+;	0023	!
+;	0024	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0025	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0026	!
+;	0027	
+;	0028	!++
+;	0029	! FACILITY:	PATCH
+;	0030	!
+;	0031	! ABSTRACT:	Handle so-called 'vector storage' in conjunction
+;	0032	!		with the RST build and rebuild modules.
+;	0033	!
+;	0034	! ENVIRONMENT:	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0035	!
+;	0036	! Author:	Kevin Pammett, August 12, 1977.
+;	0037	!
+;	0038	! Version:	X01.03
+;	0039	!
+;	0040	! MODIFCATIONS:
+;	0041	!
+;	0042	!  NO	DATE		PROGRAMMER		PURPOSE
+;	0043	!  --	----		----------		-------
+;	0044	!
+;	0045	!  00	21-DEC-77	K.D. MORSE		ADAPT VERSION 35 FOR PATCH.
+;	0046	!  01	25-APR-78	K.D. MORSE		CONVERT TO NATIVE COMPILER.
+;	0047	!  02	18-MAY-78	K.D. MORSE		NO CHANGES FOR VERS 36.
+;	0048	!  03	13-JUN-78	K.D. MORSE		ADD FAO COUNTS TO SIGNALS.
+;	0049	!
+;	0050	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 2
+; Digital Equipment Corporation
+;
+;	0051	!
+;	0052	! TABLE OF CONTENTS:
+;	0053	!
+;	0054	
+;	0055	FORWARD ROUTINE
+;	0056		PAT$VS_INIT : NOVALUE,					! Initialize a vector storage area.
+;	0057		PAT$VS_GET,						! Allocate records from a so-called
+;	0058									!  "vector storage" vector.
+;	0059		PAT$VS_FREE : NOVALUE,					! Release vector storage.
+;	0060		PAT$VS_SHRINK : NOVALUE;				! Free up unused vector storage.
+;	0061	
+;	0062	!
+;	0063	! INCLUDE FILES:
+;	0064	!
+;	0065	
+;	0066	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0067	REQUIRE 'SRC$:PATPCT.REQ';
+;	0083	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0123	REQUIRE 'SRC$:PATRST.REQ';
+;	1181	REQUIRE 'SRC$:SYSSER.REQ';
+;      R1189	SWITCHES LIST (SOURCE);
+;      R1190	
+;      R1191	EXTERNAL ROUTINE
+;      R1192		PAT$fao_out;		! formats a line and outputs to the terminal
+;      R1193	
+;      R1194	SWITCHES LIST (NOSOURCE);
+;	1239	
+;	1240	!
+;	1241	! MACROS:
+;	1242	!
+;	1243	
+;	1244	!
+;	1245	! EQUATED SYMBOLS:
+;	1246	!
+;	1247	
+;	1248	
+;	1249	!
+;	1250	! EXTERNAL REFERENCES:
+;	1251	!
+;	1252	
+;	1253	EXTERNAL ROUTINE
+;	1254		PAT$RST_FREEZ,						! Allocate and zero RST-pointer storage.
+;	1255		PAT$RST_RELEASE;					! Free up RST-pointer storage.
+;	1256	
+;	1257	EXTERNAL
+;	1258		PAT$GL_RST_BEGN;					! STARTING ADDRESS OF RST
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 3
+; Digital Equipment Corporation
+;
+;	1259	GLOBAL ROUTINE PAT$VS_INIT( STORE_DESC_ADDR, NUM_ELEMENTS, ELEMENT_SIZE ) : NOVALUE =
+;	1260	
+;	1261	!++
+;	1262	! Functional Description:
+;	1263	!
+;	1264	!	Initialize storage for a so-called "storage vector".
+;	1265	!	See DBGRST.REQ for a description of these structures.
+;	1266	!
+;	1267	! Formal Parameters:
+;	1268	!
+;	1269	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1270	!			 which this routine is to initialize.
+;	1271	!	NUM_ELEMENTS	-The maximum number of elements which will
+;	1272	!			 ever be allocated from this vector.
+;	1273	!	ELEMENT_SIZE	-The maximum size, in bytes, of each element.
+;	1274	!
+;	1275	! Implicit Inputs:
+;	1276	!
+;	1277	!	Since we assume that records are fixed-length,
+;	1278	!	we actually allocate more storage than
+;	1279	!	we will really need.  This will be fixed up when we 
+;	1280	!	can 'shrink' RST storage.
+;	1281	!
+;	1282	! Routine Value:
+;	1283	!
+;	1284	!	NOVALUE - because if we run out of storage (the only
+;	1285	!		  thing which can go wrong), we don't get
+;	1286	!		  control back anyways.
+;	1287	!
+;	1288	! Side Effects:
+;	1289	!
+;	1290	!	The storage descriptor is initialized in such
+;	1291	!	a way that GET_VEC_STORAGE can do its thing.
+;	1292	!
+;	1293	!	RST storage is allocated.
+;	1294	!--
+;	1295	
+;	1296	BEGIN
+;	1297	
+;	1298	MAP
+;	1299		STORE_DESC_ADDR : REF VECT_STORE_DESC;			! We get passed a pointer to the storage
+;	1300									! descriptor for the module we are
+;	1301									! initializing vector storage for.
+;	1302	
+;	1303	LOCAL
+;	1304		STORAGE : REF MC_RECORD;				! Pointer to the actual storage
+;	1305									! we allocate.
+;	1306	
+;	1307	!++
+;	1308	! Ask for the necessary RST storage.   Note that we don't get control back
+;	1309	! if the requisition is denied.
+;	1310	!--
+;	1311	STORAGE = PAT$RST_FREEZ( RST_UNITS(.ELEMENT_SIZE * .NUM_ELEMENTS));
+;	1312	
+;	1313	!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 3-1
+; Digital Equipment Corporation
+;
+;	1314	! Initialize the vector storage descriptor. The 'marker' starts out being
+;	1315	! the same as the beginning address since initially the entire vector is
+;	1316	! available for re-allocation.
+;	1317	!--
+;	1318	STORE_DESC_ADDR[ STOR_BEGIN_RST ] = .STORAGE;
+;	1319	STORE_DESC_ADDR[ STOR_MARKER ] = .STORAGE;
+;	1320	
+;	1321	!++
+;	1322	! The end RST address is calculated by taking into account that the standard
+;	1323	! PATCH storage manager works in LONGWORDs and rounds up.
+;	1324	!--
+;	1325	STORE_DESC_ADDR[ STOR_END_RST ] = .STORAGE
+;	1326			+ (RST_UNITS(.ELEMENT_SIZE*.NUM_ELEMENTS) * %UPVAL);
+;	1327	END;
+
+
+							    .TITLE  PATVEC
+							    .IDENT  \X01.03\
+
+							    .GLOBL  PAT$GL_RST_BEGN, PAT$FAO_OUT, PAT$RST_FREEZ, PAT$RST_RELEASE
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 000C 00000 	    .ENTRY  PAT$VS_INIT, Save R2,R3				      ; 1259
+	   52	    0C   AC	  08   AC  C5 00002 	    MULL3   NUM_ELEMENTS, ELEMENT_SIZE, R2			      ; 1311
+		         52	       03  C0 00008 	    ADDL2   #3, R2						      ;
+		         52	       04  C6 0000B 	    DIVL2   #4, R2						      ;
+				       52  DD 0000E 	    PUSHL   R2							      ;
+	      00000000G  EF	       01  FB 00010 	    CALLS   #1, PAT$RST_FREEZ					      ;
+		         51	       50  D0 00017 	    MOVL    R0, STORAGE						      ;
+		         50	  04   AC  D0 0001A 	    MOVL    STORE_DESC_ADDR, R0					      ; 1318
+		    01   A0	       51  B0 0001E 	    MOVW    STORAGE, 1(R0)					      ;
+		    05   A0	       51  B0 00022 	    MOVW    STORAGE, 5(R0)					      ; 1319
+		         53	     6142  DE 00026 	    MOVAL   (STORAGE)[R2], R3					      ; 1326
+		    03   A0	       53  B0 0002A 	    MOVW    R3, 3(R0)						      ;
+					   04 0002E 	    RET     							      ; 1259
+
+; Routine Size:  47 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 4
+; Digital Equipment Corporation
+;
+;	1328	GLOBAL ROUTINE PAT$VS_FREE( STORE_DESC_ADDR ) : NOVALUE =
+;	1329	
+;	1330	!++
+;	1331	! Functional Description:
+;	1332	!
+;	1333	!	Release storage for a so-called "storage vector".
+;	1334	!	See PATRST.REQ for a description of these structures.
+;	1335	!
+;	1336	! Formal Parameters:
+;	1337	!
+;	1338	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1339	!			 which completely describes this storage.
+;	1340	!
+;	1341	! Implicit Inputs:
+;	1342	!
+;	1343	!	We assume that subtracting two RST pointers
+;	1344	!	("end-begin") gives the number of bytes between them.
+;	1345	!
+;	1346	! Routine Value:
+;	1347	!
+;	1348	!	NOVALUE - because if there is a free storage error (the only
+;	1349	!		  thing which can go wrong), we don't get
+;	1350	!		  control back anyways.
+;	1351	!
+;	1352	! Side Effects:
+;	1353	!
+;	1354	!	RST storage is released and the 'begin' pointer field of
+;	1355	!	the corresponding storage descriptor is zeroed out.
+;	1356	!--
+;	1357	
+;	1358	BEGIN
+;	1359	
+;	1360	MAP
+;	1361		STORE_DESC_ADDR : REF VECT_STORE_DESC;			! We get passed a pointer to the storage
+;	1362									! descriptor for the module we are
+;	1363									! releasing vector storage for.
+;	1364	
+;	1365	LOCAL
+;	1366		VECT_SIZE;						! Pointer to the actual storage
+;	1367									! we allocate.
+;	1368	
+;	1369	!++
+;	1370	! Don't try to free storage which is not allocated.
+;	1371	!--
+;	1372	IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL 0 )
+;	1373	THEN
+;	1374		RETURN;
+;	1375	
+;	1376	!++
+;	1377	! Pick up the size of the vector, in bytes.
+;	1378	!--
+;	1379	VECT_SIZE = .STORE_DESC_ADDR[ STOR_END_RST ] - .STORE_DESC_ADDR[ STOR_BEGIN_RST ];
+;	1380	
+;	1381	!++
+;	1382	! Release the storage.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 4-1
+; Digital Equipment Corporation
+;
+;	1383	!--
+;	1384	PAT$RST_RELEASE( .STORE_DESC_ADDR[ STOR_BEGIN_RST ], RST_UNITS(.VECT_SIZE));
+;	1385	
+;	1386	!++
+;	1387	! Zero out the vector storage descriptor's 'begin' field.
+;	1388	! Routines OK_TO_ADD (etc.) check this field and assume that
+;	1389	! if it is non-zero then storage is still allocated for this module.
+;	1390	!--
+;	1391	STORE_DESC_ADDR[ STOR_BEGIN_RST ] = 0;
+;	1392	END;
+
+
+
+
+
+					 0004 0002F 	    .ENTRY  PAT$VS_FREE, Save R2				      ; 1328
+		         52	  04   AC  D0 00031 	    MOVL    STORE_DESC_ADDR, R2					      ; 1372
+				  01   A2  B5 00035 	    TSTW    1(R2)						      ;
+				       20  13 00038 	    BEQL    1$							      ;
+		         50	  03   A2  3C 0003A 	    MOVZWL  3(R2), VECT_SIZE					      ; 1379
+		         51	  01   A2  3C 0003E 	    MOVZWL  1(R2), R1						      ;
+		         50	       51  C2 00042 	    SUBL2   R1, VECT_SIZE					      ;
+		         50	       03  C0 00045 	    ADDL2   #3, R0						      ; 1384
+	   7E	         50	       04  C7 00048 	    DIVL3   #4, R0, -(SP)					      ;
+		         7E	  01   A2  3C 0004C 	    MOVZWL  1(R2), -(SP)					      ;
+	      00000000G  EF	       02  FB 00050 	    CALLS   #2, PAT$RST_RELEASE					      ;
+				  01   A2  B4 00057 	    CLRW    1(R2)						      ; 1391
+					   04 0005A 1$:     RET     							      ; 1328
+
+; Routine Size:  44 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 5
+; Digital Equipment Corporation
+;
+;	1393	GLOBAL ROUTINE PAT$VS_SHRINK( STORE_DESC_ADDR ) : NOVALUE =
+;	1394	
+;	1395	!++
+;	1396	! Functional Description:
+;	1397	!
+;	1398	!	Free up the unused portion of the indicated vector storage.
+;	1399	!
+;	1400	! Formal Parameters:
+;	1401	!
+;	1402	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1403	!			 which completely describes this storage.
+;	1404	!
+;	1405	! Implicit Inputs:
+;	1406	!
+;	1407	!	If the STOR_BEGIN_RST is the same as STOR_MARKER then
+;	1408	!	no vector storage was actually allocated.  So far this
+;	1409	!	is the only case we handle - we free up the entire
+;	1410	!	vector.
+;	1411	!
+;	1412	! Routine Value:
+;	1413	!
+;	1414	!	NOVALUE - because if there is a free storage error (the only
+;	1415	!		  thing which can go wrong), we don't get
+;	1416	!		  control back anyways.
+;	1417	!
+;	1418	! Side Effects:
+;	1419	!
+;	1420	!	RST storage may be released and the 'begin' pointer field of
+;	1421	!	the corresponding storage descriptor is zeroed out.
+;	1422	!--
+;	1423	
+;	1424	BEGIN
+;	1425	
+;	1426	MAP
+;	1427		STORE_DESC_ADDR : REF VECT_STORE_DESC;			! We get passed a pointer to the storage
+;	1428									! descriptor for the module we are
+;	1429									! releasing vector storage for.
+;	1430	
+;	1431	LOCAL
+;	1432		VECT_SIZE;						! Pointer to the actual storage
+;	1433									! we allocate.
+;	1434	
+;	1435	!++
+;	1436	! Don't try to free storage which is not allocated.
+;	1437	!--
+;	1438	IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL 0 )
+;	1439	THEN
+;	1440		RETURN;
+;	1441	
+;	1442	!++
+;	1443	! If storage has been allocated but no records therein, we can free up the
+;	1444	! whole thing.
+;	1445	!--
+;	1446	IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL .STORE_DESC_ADDR[ STOR_MARKER ] )
+;	1447	THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 5-1
+; Digital Equipment Corporation
+;
+;	1448		PAT$VS_FREE(.STORE_DESC_ADDR);
+;	1449	END;
+
+
+
+
+
+					 0000 0005B 	    .ENTRY  PAT$VS_SHRINK, Save nothing				      ; 1393
+		         50	  04   AC  D0 0005D 	    MOVL    STORE_DESC_ADDR, R0					      ; 1438
+				  01   A0  B5 00061 	    TSTW    1(R0)						      ;
+				       0D  13 00064 	    BEQL    1$							      ;
+		    05   A0	  01   A0  B1 00066 	    CMPW    1(R0), 5(R0)					      ; 1446
+				       06  12 0006B 	    BNEQ    1$							      ;
+				       50  DD 0006D 	    PUSHL   R0							      ; 1448
+		    BC   AF	       01  FB 0006F 	    CALLS   #1, PAT$VS_FREE					      ;
+					   04 00073 1$:     RET     							      ; 1393
+
+; Routine Size:  25 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 6
+; Digital Equipment Corporation
+;
+;	1450	GLOBAL ROUTINE PAT$VS_GET( STORE_DESC_ADDR, RECORD_SIZE ) =
+;	1451	
+;	1452	!++
+;	1453	! Functional Description:
+;	1454	!
+;	1455	!	Allocate a given-length record from so-called "vector storage"
+;	1456	!	given a pointer to the associated vector storage descriptor.
+;	1457	!
+;	1458	! Formal Parameters:
+;	1459	!
+;	1460	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1461	!			 which this routine works from.
+;	1462	!	RECORD_SIZE	-The number of bytes required for
+;	1463	!			 the new record.
+;	1464	!
+;	1465	! Implicit Inputs:
+;	1466	!
+;	1467	!	This routine builds in how to translate RST-pointers
+;	1468	!	to longword pointers.
+;	1469	!
+;	1470	!	We also build in how one deals with storage vector descriptors.
+;	1471	!	This includes the fact that we look at the pointer-type
+;	1472	!	field in the storage descriptor to determine whether we 
+;	1473	!	should return an RST-pointer or a 'longword' pointer.
+;	1474	!	(See PATRST.REQ)
+;	1475	!
+;	1476	! Routine Value:
+;	1477	!
+;	1478	!	A pointer to the allocated storage, 0 when there is none left.
+;	1479	!
+;	1480	!	The pointer type (RST or 'longword') is determined
+;	1481	!	by looking at the STOR_LONG_PTRS field of the given
+;	1482	!	storage descriptor.
+;	1483	!
+;	1484	! Side Effects:
+;	1485	!
+;	1486	!	The storage vector descriptor fields
+;	1487	! are altered to reflect the allocation
+;	1488	! of another record.
+;	1489	!--
+;	1490	
+;	1491	BEGIN
+;	1492	
+;	1493	MAP
+;	1494		STORE_DESC_ADDR : REF VECT_STORE_DESC;			! We get passed a pointer to the descriptor
+;	1495									! for the storage we are allocating from.
+;	1496	
+;	1497	LOCAL
+;	1498		STORAGE : REF RST_POINTER,				! An RST-pointer to the actual storage
+;	1499									! we will allocate.
+;	1500		NEW_MARKER : REF RST_POINTER;				! How far along this allocation will
+;	1501									! move the current marker.
+;	1502	
+;	1503	!++
+;	1504	! If we get to allocate the requested storage, it will be from where the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 6-1
+; Digital Equipment Corporation
+;
+;	1505	! current marker says we should get it.
+;	1506	!--
+;	1507	STORAGE = .STORE_DESC_ADDR[ STOR_MARKER ];
+;	1508	
+;	1509	!++
+;	1510	! See if taking the necessary storage from the indicated vector would overflow it.
+;	1511	!--
+;	1512	NEW_MARKER = .STORAGE + .RECORD_SIZE;
+;	1513	IF( .NEW_MARKER GTRA .STORE_DESC_ADDR[ STOR_END_RST ] )
+;	1514	THEN
+;	1515		RETURN(FALSE);						! No more storage left.
+;	1516	
+;	1517	!++
+;	1518	! Update the storage descriptor to reflect the allocation of this new record.
+;	1519	!--
+;	1520	STORE_DESC_ADDR[ STOR_MARKER ] = .NEW_MARKER;
+;	1521	
+;	1522	!++
+;	1523	! We return an RST-pointer or a longword pointer, depending on a field in the
+;	1524	! storage descriptor.  This field is initialized in build_module().
+;	1525	!--
+;	1526	IF( .STORE_DESC_ADDR[ STOR_LONG_PTRS ] )
+;	1527	THEN
+;	1528		STORAGE = .STORAGE + .PAT$GL_RST_BEGN;			! Make an RST-pointer into a longword pointer.
+;	1529	
+;	1530	RETURN( .STORAGE );
+;	1531	END;
+
+
+
+
+
+					 0004 00074 	    .ENTRY  PAT$VS_GET, Save R2					      ; 1450
+		         50	  04   AC  D0 00076 	    MOVL    STORE_DESC_ADDR, R0					      ; 1507
+		         52	  05   A0  3C 0007A 	    MOVZWL  5(R0), STORAGE					      ;
+	   51	         52	  08   AC  C1 0007E 	    ADDL3   RECORD_SIZE, STORAGE, NEW_MARKER			      ; 1512
+      03   A0	         10	       00  ED 00083 	    CMPZV   #0, #16, 3(R0), NEW_MARKER				      ; 1513
+				       51     00088									      ;
+				       12  1F 00089 	    BLSSU   2$							      ;
+		    05   A0	       51  B0 0008B 	    MOVW    NEW_MARKER, 5(R0)					      ; 1520
+		         07	       60  E9 0008F 	    BLBC    (R0), 1$						      ; 1526
+		         52 00000000G  EF  C0 00092 	    ADDL2   PAT$GL_RST_BEGN, STORAGE				      ; 1528
+		         50	       52  D0 00099 1$:     MOVL    STORAGE, R0						      ; 1530
+					   04 0009C 	    RET     							      ;
+				       50  D4 0009D 2$:     CLRL    R0							      ; 1450
+					   04 0009F 	    RET     							      ;
+
+; Routine Size:  44 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:37:20	DBB3:[PATCH.SRC]PATVEC.B32;2					Page 7
+; Digital Equipment Corporation
+;
+;	1532	END				!End of module
+;	1533	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  _PAT$CODE      	   160  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         0         0       107
+
+
+
+
+
+; Size:		160 code + 0 data bytes
+; Run Time:	00:09.5
+; Elapsed Time:	00:22.0
+; Memory Used:	152 pages
+; Compilation Complete

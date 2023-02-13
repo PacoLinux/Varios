@@ -1,0 +1,441 @@
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DEACCS (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0004'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! COPYRIGHT (C) 1977
+;	0009	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0010	!
+;	0011	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0012	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0013	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0014	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0015	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0016	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0017	! REMAIN IN DEC.
+;	0018	!
+;	0019	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0020	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0021	! CORPORATION.
+;	0022	!
+;	0023	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0024	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MTAACP
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!	THIS MODULES EXECUTES THE DEACCESS FUNCTION
+;	0032	!
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET OPERATING SYSTEM, INCLUDING PRIVILEGED SYSTEM SERVICES
+;	0037	!	AND INTERNAL EXEC ROUTINES.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  D. H. GILLESPIE,	 CREATION DATE:  18-JUL-1977  
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   D. H. Gillespie, 25-Jan-1978  14:02
+;	0047	!   X0002 - CHANGE INTERFACE TO ZERO_CHANNEL
+;	0048	!
+;	0049	!   D. H. Gillespie, 12-May-78  10:06
+;	0050	!   A0001 - change CURRENT_VCB to a register
+;	0051	!
+;	0052	!   D. H. Gillespie, 8-Jun-78  8:15
+;	0053	!   A0002 - change SCH$AL_PCB to @SCH$GL_PCBVEC
+;	0054	!
+;	0055	!   D. H. Gillespie, 13-Jun-78  12:13
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   A0003 - add reporting of block count error on read access
+;	0057	!
+;	0058	!   D. H. Gillespie, 07-Aug-78  15:30
+;	0059	!   A0004 - Reset block count differences
+;	0060	!
+;	0061	!**
+;	0062	
+;	0063	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0064	REQUIRE 'SRC$:MTADEF.B32';
+;	0360	
+;	0361	FORWARD ROUTINE
+;	0362		DO_DEACCESS	:COMMON_CALL NOVALUE,	!KERNEL MODE DEACCESS
+;	0363		MTA_DEACCESS	: NOPRES NOVALUE,		!MAIN DEACCESS FUNCTION
+;	0364		ZERO_CHANNEL	:COMMON_CALL NOVALUE;		!ZEROS USER'S WINDOW PTER
+;	0365	
+;	0366	EXTERNAL ROUTINE
+;	0367	
+;	0368		CLOSE_FILE	: L$CLOSE_FILE,		!CLOSE FILE ACCESSED FOR WRITE
+;	0369		DEALLOCATE,				!RETURN SPACE TO SYSTEM POOL
+;	0370		GET_FIB,				!GET FILE INFORMATION BLOCK
+;	0371		REWIND_VOL_SET;				!REWIND VOLUME SET
+;	0372	
+;	0373	EXTERNAL
+;	0374		CURRENT_WCB	: REF BBLOCK,		!ADDRESS OF CURRENT WINDOW CONTROL BLOCK
+;	0375		IO_PACKET	: REF BBLOCK,		!ADDRESS OF CURRENT IO REQUEST PACKET
+;	0376		SCH$GL_PCBVEC	: REF VECTOR ADDRESSING_MODE(ABSOLUTE),	!SYSTEM PCB VECTOR
+;	0377		USER_STATUS	: VECTOR[2];
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 2
+; Digital Equipment Corporation
+;
+;	0378	GLOBAL ROUTINE MTA_DEACCESS : NOPRES NOVALUE  =
+;	0379	
+;	0380	!++
+;	0381	!
+;	0382	! FUNCTIONAL DESCRIPTION:
+;	0383	!	THIS ROUTINE EXECUTES THE DEACCESS FUNCTION
+;	0384	!
+;	0385	! CALLING SEQUENCE:
+;	0386	!	MTA_DEACCESS()
+;	0387	!
+;	0388	! INPUT PARAMETERS:
+;	0389	!	NONE
+;	0390	!
+;	0391	! IMPLICIT INPUTS:
+;	0392	!	IO_PACKET - ADDRESS OF USER'S IO REQUEST PACKET
+;	0393	!	CURRENT_VCB - ADDRESS OF CURRENT VOLUME CONTROL BLOCK
+;	0394	!	CURRENT_WCB - ADDRESS OF CURRENT WINDOW
+;	0395	!
+;	0396	! OUTPUT PARAMETERS:
+;	0397	!	NONE
+;	0398	!
+;	0399	! IMPLICIT OUTPUTS:
+;	0400	!	USER'S WINDOW PTER ZEROED
+;	0401	!	WINDOW RETURNED TO SYSTEM SPACE AND DISCONNECTED FROM VOLUME CONTROL BLOCK
+;	0402	!
+;	0403	! ROUTINE VALUE:
+;	0404	!	NONE
+;	0405	!
+;	0406	! SIDE EFFECTS:
+;	0407	!	NONE
+;	0408	!
+;	0409	! USER ERRORS:
+;	0410	!	SS$_BADPARAM - IRRELEVANT FIB DATA
+;	0411	!
+;	0412	!--
+;	0413	
+;	0414	BEGIN
+;	0415	
+;	0416	EXTERNAL REGISTER
+;	0417		COMMON_REG;
+;	0418	
+;	0419	
+;	0420	LOCAL
+;	0421		ABD		: REF BBLOCKVECTOR[,ABD$K_LENGTH],	!BUFFER DESCRIPTORS
+;	0422		FIB		: REF BBLOCK,	!USER'S FIB
+;	0423		WRITE_IND	: BITVECTOR[8];		!WRITE INDICATOR TAKEN FROM WINDOW CONTROL BLOCK
+;	0424	ABD = .BBLOCK[.IO_PACKET[IRP$L_SVAPTE],AIB$L_DESCRIPT];
+;	0425	FIB = GET_FIB(.ABD);
+;	0426	
+;	0427	WRITE_IND = NOT .CURRENT_WCB[WCB$V_READ] 
+;	0428		AND NOT .CURRENT_VCB[VCB$V_NOWRITE];
+;	0429	
+;	0430	! DEACCESS FILE BY RETURNING WINDOW TO NON_PAGED SYSTEM SPACE AND DISCONNECTING
+;	0431	! IT FROM THE VOLUME CONTROL BLOCK
+;	0432	KERNEL_CALL(DO_DEACCESS);
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 2-1
+; Digital Equipment Corporation
+;
+;	0433	
+;	0434	! NOW CHECK IF TRAILERS SHOULD BE WRITTEN
+;	0435	IF .WRITE_IND THEN CLOSE_FILE();
+;	0436	
+;	0437	! NOW IF REWIND SPECIFIED ON DEACCESS, REWIND VOLUME SET
+;	0438	IF .FIB[FIB$V_REWIND] THEN REWIND_VOL_SET();
+;	0439	
+;	0440	
+;	0441	! REPORT ANY BLOCK COUNT DIFFERENCE, USER_STATUS[1] = DIFFERENCE
+;	0442	! WHERE NEG NUMBER MEANS READ MORE THAN SHOULD HAVE.
+;	0443	IF NOT .WRITE_IND AND .BBLOCK[.CURRENT_VCB[VCB$L_VPFL],VVP$L_BLOCKDIF] NEQ 0
+;	0444	THEN 
+;	0445	    BEGIN
+;	0446	    USER_STATUS[1] = .BBLOCK[.CURRENT_VCB[VCB$L_VPFL],VVP$L_BLOCKDIF];
+;	0447	    BBLOCK[.CURRENT_VCB[VCB$L_VPFL],VVP$L_BLOCKDIF] = 0;
+;	0448	    ERR_EXIT(SS$_BLOCKCNTERR);
+;	0449	    END;
+;	0450	END;					!END OF ROUTINE
+
+
+							    .TITLE  DEACCS
+							    .IDENT  \A0004\
+
+							    .GLOBL  CLOSE_FILE, DEALLOCATE, GET_FIB, REWIND_VOL_SET
+							    .GLOBL  CURRENT_WCB, IO_PACKET, SCH$GL_PCBVEC, USER_STATUS
+							    .GLOBL  SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0000 00000 	    .ENTRY  MTA_DEACCESS, Save nothing				      ; 0378
+		         50	0000G  CF  D0 00002 	    MOVL    IO_PACKET, R0					      ; 0424
+		         50	  2C   B0  D0 00007 	    MOVL    @44(R0), ABD					      ;
+				       50  DD 0000B 	    PUSHL   ABD							      ; 0425
+		  0000G  CF	       01  FB 0000D 	    CALLS   #1, GET_FIB						      ;
+		         53	       50  D0 00012 	    MOVL    R0, FIB						      ;
+		         50	0000G  CF  D0 00015 	    MOVL    CURRENT_WCB, R0					      ; 0427
+      0B   A0	         01	       00  EF 0001A 	    EXTZV   #0, #1, 11(R0), R0					      ; 0428
+				       50     0001F									      ;
+      0B   AB	         01	       07  EF 00020 	    EXTZV   #7, #1, 11(CURRENT_VCB), R1				      ;
+				       51     00025									      ;
+		         50	       51  C8 00026 	    BISL2   R1, R0						      ;
+		         52	       50  D2 00029 	    MCOML   R0, WRITE_IND					      ;
+				       7E  D4 0002C 	    CLRL    -(SP)						      ; 0432
+				       5E  DD 0002E 	    PUSHL   SP							      ;
+				0000V  CF  9F 00030 	    PUSHAB  DO_DEACCESS						      ;
+	      00000000G  9F	       03  FB 00034 	    CALLS   #3, @#SYS$CMKRNL					      ;
+		         03	       52  E9 0003B 	    BLBC    WRITE_IND, 1$					      ; 0435
+				     0000  30 0003E 	    BSBW    CLOSE_FILE						      ;
+	   05	         63	       03  E1 00041 1$:     BBC     #3, (FIB), 2$					      ; 0438
+		  0000G  CF	       00  FB 00045 	    CALLS   #0, REWIND_VOL_SET					      ;
+		         1D	       52  E8 0004A 2$:     BLBS    WRITE_IND, 3$					      ; 0443
+		         50	  3C   AB  D0 0004D 	    MOVL    60(CURRENT_VCB), R0					      ;
+				010C   C0  D5 00051 	    TSTL    268(R0)						      ;
+				       13  13 00055 	    BEQL    3$							      ;
+		         50	  3C   AB  D0 00057 	    MOVL    60(CURRENT_VCB), R0					      ; 0446
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 2-2
+; Digital Equipment Corporation
+;
+		  0000G  CF	010C   C0  D0 0005B 	    MOVL    268(R0), USER_STATUS+4				      ;
+				010C   C0  D4 00062 	    CLRL    268(R0)						      ; 0447
+				0940   8F  BF 00066 	    CHMU    #2368						      ; 0448
+					   04 0006A 3$:     RET     							      ; 0378
+
+; Routine Size:  107 bytes
+
+
+;	0451	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 3
+; Digital Equipment Corporation
+;
+;	0452	ROUTINE DO_DEACCESS : COMMON_CALL NOVALUE  =
+;	0453	
+;	0454	!++
+;	0455	!
+;	0456	! FUNCTIONAL DESCRIPTION:
+;	0457	!	THIS ROUTINE DOES THE DEACCESS CLEANUP TO THE SYSTEM DATA BASE
+;	0458	!
+;	0459	! CALLING SEQUENCE:
+;	0460	!	DO_DEACCESS(), CALLED IN KERNEL MODE
+;	0461	!
+;	0462	! INPUT PARAMETERS:
+;	0463	!	NONE
+;	0464	!
+;	0465	! IMPLICIT INPUTS:
+;	0466	!	CURRENT_VCB - ADDRESS OF CURRENT VOLUME CONTROL BLOCK
+;	0467	!	CURRENT_WCB - ADDRESS OF CURRENT WINDOW CONTROL BLOCK
+;	0468	!
+;	0469	! OUTPUT PARAMETERS:
+;	0470	!	NONE
+;	0471	!
+;	0472	! IMPLICIT OUTPUTS:
+;	0473	!	NONE
+;	0474	!
+;	0475	! ROUTINE VALUE:
+;	0476	!	NONE
+;	0477	!
+;	0478	! SIDE EFFECTS:
+;	0479	!	NONE
+;	0480	!
+;	0481	!--
+;	0482	
+;	0483	BEGIN
+;	0484	
+;	0485	EXTERNAL REGISTER
+;	0486		COMMON_REG;
+;	0487	
+;	0488	LOCAL
+;	0489		AST_BLOCK,				!ADDRESS OF AST CONTROL BLOCK SUPPLIED BY USER
+;	0490		PCB		: REF BBLOCK;		!ADDRESS OF USER'S PROCESS CONTROL BLOCK
+;	0491	
+;	0492	
+;	0493	! IF USER AST CONTROL BLOCK WAS SUPPLIED FOR USER LABEL PROCESSING BUT NOT USED
+;	0494	! THEN RETURN IT TO THE SYSTEM POOL AND CREDIT THE USER'S AST QUOTA.
+;	0495	AST_BLOCK = .CURRENT_VCB[VCB$L_USRLBLAST];	!GET SAVED ADDRESS OF AST BLOCK
+;	0496	IF .AST_BLOCK NEQ 0 THEN
+;	0497	    BEGIN
+;	0498	    DEALLOCATE(.AST_BLOCK);			!RETURN TO SYSTEM POOL
+;	0499	    CURRENT_VCB[VCB$L_USRLBLAST] = 0;		!NOTE THIS FACT IN VCB
+;	0500	    PCB = .SCH$GL_PCBVEC[.(IO_PACKET[IRP$L_PID])<0,16>];	!GET USER'S PCB ADDRESS
+;	0501	    PCB[PCB$W_ASTCNT] = .PCB[PCB$W_ASTCNT] + 1;	!CREDIT USER'S AST QUOTA
+;	0502	    END;
+;	0503	ZERO_CHANNEL(.IO_PACKET);			!RETURN ZEROED WINDOW PTER TO USER
+;	0504	DEALLOCATE(.CURRENT_WCB);			!RETURN WINDOW SPACE
+;	0505	CURRENT_WCB = 0;				!NO LONGER AN OUTSTANDING ACCESS
+;	0506	CURRENT_VCB[VCB$L_WCB] = 0;			!UPDATE VCB TO REFLECT DEACCESS
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 3-1
+; Digital Equipment Corporation
+;
+;	0507	CURRENT_VCB[VCB$V_CANCELIO] = 0;		!CANCEL NO LONGER APPLIES
+;	0508	CURRENT_VCB[VCB$V_NOWRITE] = 0;			!TURN OF NO WRITE INDICATOR
+;	0509	END;						!END OF ROUTINE
+
+
+
+
+
+					 0000 0006B DO_DEACCESS:
+							    .WORD   Save nothing					      ; 0452
+		         50	  44   AB  D0 0006D 	    MOVL    68(CURRENT_VCB), AST_BLOCK				      ; 0495
+				       21  13 00071 	    BEQL    1$							      ; 0496
+				       50  DD 00073 	    PUSHL   AST_BLOCK						      ; 0498
+		  0000G  CF	       01  FB 00075 	    CALLS   #1, DEALLOCATE					      ;
+				  44   AB  D4 0007A 	    CLRL    68(CURRENT_VCB)					      ; 0499
+		         51 00000000G  9F  D0 0007D 	    MOVL    @#SCH$GL_PCBVEC, R1					      ; 0500
+		         50	0000G  CF  D0 00084 	    MOVL    IO_PACKET, R0					      ;
+		         50	  0C   A0  3C 00089 	    MOVZWL  12(R0), R0						      ;
+		         50	     6140  D0 0008D 	    MOVL    (R1)[R0], PCB					      ;
+				  3C   A0  B6 00091 	    INCW    60(PCB)						      ; 0501
+				0000G  CF  DD 00094 1$:     PUSHL   IO_PACKET						      ; 0503
+		  0000V  CF	       01  FB 00098 	    CALLS   #1, ZERO_CHANNEL					      ;
+				0000G  CF  DD 0009D 	    PUSHL   CURRENT_WCB						      ; 0504
+		  0000G  CF	       01  FB 000A1 	    CALLS   #1, DEALLOCATE					      ;
+				0000G  CF  D4 000A6 	    CLRL    CURRENT_WCB						      ; 0505
+				  38   AB  D4 000AA 	    CLRL    56(CURRENT_VCB)					      ; 0506
+		    0B   AB	  A0   8F  8A 000AD 	    BICB2   #160, 11(CURRENT_VCB)				      ; 0508
+					   04 000B2 	    RET     							      ; 0452
+
+; Routine Size:  72 bytes
+
+
+;	0510	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 4
+; Digital Equipment Corporation
+;
+;	0511	GLOBAL ROUTINE ZERO_CHANNEL(PACKET) : COMMON_CALL NOVALUE =
+;	0512	
+;	0513	!++
+;	0514	!
+;	0515	! FUNCTIONAL DESCRIPTION:
+;	0516	!
+;	0517	!	This routine zeroes out the window pointer being returned to
+;	0518	!	the user for his channel control block. It also credits one to the
+;	0519	!	user's open file quota.
+;	0520	!	This routine must be executed in kernel mode.
+;	0521	!
+;	0522	! CALLING SEQUENCE:
+;	0523	!	ZERO_CHANNEL ()
+;	0524	!
+;	0525	! INPUT PARAMETERS:
+;	0526	!	NONE
+;	0527	!
+;	0528	! IMPLICIT INPUTS:
+;	0529	!	IO_PACKET: I/O packet of request
+;	0530	!
+;	0531	! OUTPUT PARAMETERS:
+;	0532	!	NONE
+;	0533	!
+;	0534	! IMPLICIT OUTPUTS:
+;	0535	!	NONE
+;	0536	!
+;	0537	! ROUTINE VALUE:
+;	0538	!	NONE
+;	0539	!
+;	0540	! SIDE EFFECTS:
+;	0541	!	channel window pointer cleared, file quota bumped
+;	0542	!
+;	0543	!--
+;	0544	
+;	0545	BEGIN
+;	0546	
+;	0547	EXTERNAL REGISTER
+;	0548		COMMON_REG;
+;	0549	
+;	0550	
+;	0551	MAP
+;	0552		PACKET		: REF BBLOCK;
+;	0553	
+;	0554	LOCAL
+;	0555		ABD		: REF BBLOCKVECTOR [,ABD$C_LENGTH],
+;	0556						! buffer descriptors
+;	0557		PCB		: REF BBLOCK;	! address of user process control block
+;	0558	
+;	0559	
+;	0560	ABD = .BBLOCK[.PACKET[IRP$L_SVAPTE],AIB$L_DESCRIPT];
+;	0561	ABD[ABD$C_WINDOW, ABD$W_COUNT] = 4;
+;	0562	.ABD[ABD$C_WINDOW, ABD$W_TEXT] + ABD[ABD$C_WINDOW, ABD$W_TEXT] + 1 = 0;
+;	0563	
+;	0564	PCB = .SCH$GL_PCBVEC[.(PACKET[IRP$L_PID])<0,16>];
+;	0565	PCB[PCB$W_FILCNT] = .PCB[PCB$W_FILCNT] + 1;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34	DBB3:[MTAACP.SRC]DEACCS.B32;13					Page 4-1
+; Digital Equipment Corporation
+;
+;	0566	
+;	0567	END;					! end of routine ZERO_CHANNEL
+
+
+
+
+
+					 0004 000B3 	    .ENTRY  ZERO_CHANNEL, Save R2				      ; 0511
+		         51	  04   AC  D0 000B5 	    MOVL    PACKET, R1						      ; 0560
+		         50	  2C   B1  D0 000B9 	    MOVL    @44(R1), ABD					      ;
+		    02   A0	       04  B0 000BD 	    MOVW    #4, 2(ABD)						      ; 0561
+		         52	       60  3C 000C1 	    MOVZWL  (ABD), R2						      ; 0562
+		         50	       52  C0 000C4 	    ADDL2   R2, R0						      ;
+				  01   A0  D4 000C7 	    CLRL    1(R0)						      ;
+		         50 00000000G  9F  D0 000CA 	    MOVL    @#SCH$GL_PCBVEC, R0					      ; 0564
+		         51	  0C   A1  3C 000D1 	    MOVZWL  12(R1), R1						      ;
+		         50	     6041  D0 000D5 	    MOVL    (R0)[R1], PCB					      ;
+				  48   A0  B6 000D9 	    INCW    72(PCB)						      ; 0565
+					   04 000DC 	    RET     							      ; 0511
+
+; Routine Size:  42 bytes
+
+
+;	0568	
+;	0569	END
+;	0570	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   221  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        24         0       240
+
+
+
+
+
+; Size:		221 code + 0 data bytes
+; Run Time:	00:08.7
+; Elapsed Time:	00:17.3
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:30:34									Page 4-2
+; Digital Equipment Corporation
+;
+; Memory Used:	267 pages
+; Compilation Complete

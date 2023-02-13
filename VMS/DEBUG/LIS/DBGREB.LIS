@@ -1,0 +1,2566 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGREB (	ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000045') =
+;	0003	BEGIN
+;	0004	
+;	0005	!			  COPYRIGHT (c) 1977 BY
+;	0006	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0007	!
+;	0008	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0009	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0010	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0011	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0012	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0013	! TRANSFERRED.
+;	0014	!
+;	0015	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0016	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0017	! CORPORATION.
+;	0018	!
+;	0019	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0020	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0021	!
+;	0022	
+;	0023	!++
+;	0024	! FACILITY:
+;	0025	!	DEBUG
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	RST routines used primarily to rebuild RST data structures.
+;	0029	!
+;	0030	!
+;	0031	! ENVIRONMENT:
+;	0032	!	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0033	!
+;	0034	! Author:
+;	0035	!	Kevin Pammett, August 12, 1977.
+;	0036	!
+;	0037	! Version:	45
+;	0038	!
+;	0039	! MODIFIED BY:
+;	0040	!		Dale Roedger,	27 April 1978:	45
+;	0041	!
+;	0042	!  35	9-DEC-77	KGP	-BROKE THIS MODULE INTO DBGVEC.B32, DBGREB.B32,
+;	0043	!				 AND DBGBLD.B32
+;	0044	!  36	19-dec-77	KGP	-Made all timing stuff conditionally
+;	0045	!				 compiled, via DBG_REB14, instead of
+;	0046	!				 using the 'dynamic' facility, because it
+;	0047	!				 requires that we link with SYS.STB
+;	0048	!				 for a release and that is not allowed.
+;	0049	!  37	30-dec-77	KGP	-Error messages are now parameterized.
+;	0050	!  38	2-feb-78	KGP	-SET_MODULE is now more general so that
+;	0051	!				 it can work from the command argument
+;	0052	!				 list OR from a given MC pointer.
+;	0053	!  39	3-FEB-78	KGP	-SET_MODULE now knows about /ALL;
+;	0054	!				 likewise for CANC_MODULE /ALL.
+;	0055	!  40	17-feb-78	KGP	-The SAT/LVT accessing logic has now moved
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!				 directly into the sort.
+;	0057	!  41	24-MAR-78	DAR	Added parameter count to parameterized SIGNALS.
+;	0058	!  42	27-MAR-78	DAR	Changed DBG$NXT_SAT_LVT to non-global
+;	0059	!				GET_NXT_SAT_LVT and made access to it include
+;	0060	!				the record size.
+;	0061	!  43	04-apr-78	KGP	-SET_MODULE and CAN_MODULE now don't bother with
+;	0062	!				 the ALL flag and instead implement /ALL
+;	0063	!				 based on GL_HEAD_LST being 0.
+;	0064	!  44	19-apr-78	KGP	-Fixed bug which was that you could cancel a module
+;	0065	!				 and end up with SCOPE pointing into that module.
+;	0066	!  45	27-APR-78	DAR	Modified the require and library directives
+;	0067	!				for the native build.
+;	0068	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0069	! TABLE OF CONTENTS:
+;	0070	!
+;	0071	
+;	0072	FORWARD ROUTINE
+;	0073		DBG$GET_NXT_SAT,		! Provide access to the SAT
+;	0074		DBG$GET_NXT_LVT,		! Provide access to the LVT
+;	0075		GET_NXT_SAT_LVT,		! Parameterized access to SAT / LVT.
+;	0076		DBG$SET_MODULE : NOVALUE,	! Add a <module list> to the RST.
+;	0077		DBG$CANC_MODULE : NOVALUE,	! Delete a <module list> from the RST.
+;	0078		DBG$SORT_SA_LVT : NOVALUE,	! Sort the LVT or SAT vector.
+;	0079		DELE_SAT_LVT,			! Mark SAT or LVT records for deletion.
+;	0080		EMPTY_SAT_LVT : NOVALUE,	! Remove the SAT/LVT portion of a
+;	0081						!  module from the RST.
+;	0082		UNLINK_NT_RECS : NOVALUE;	! Remove NTs from hash chains.
+;	0083	
+;	0084	!+
+;	0085	! literals required by DBGDBG.REQ
+;	0086	!-
+;	0087	LITERAL
+;	0088		DBG_DYNAMIC	= 0,	! Allow for us turning diagnostics on and
+;	0089					! off at DEBUG time.
+;	0090		DBG_ALL		= 0;	! Turns on all DBG_RST? diagnostics.
+;	0091	
+;	0092	
+;	0093	!
+;	0094	! INCLUDE FILES:
+;	0095	!
+;	0096	%IF %VARIANT		! True for TEN.
+;     L 0097	%THEN
+;     U 0098	LIBRARY 'NEW:LIB';
+;     U 0099	
+;     U 0100	REQUIRE	'DBGPCT.REQ';
+;     U 0101	REQUIRE 'DBGGEN.REQ';
+;     U 0102	REQUIRE	'DBGDBG.REQ';
+;     U 0103	REQUIRE 'DBGMSG.REQ';
+;     U 0104	REQUIRE 'VXSMAC.REQ';
+;     U 0105	REQUIRE 'BSTRUC.REQ';
+;     U 0106	REQUIRE 'LISTEL.REQ';
+;     U 0107	REQUIRE 'DBGRST.REQ';
+;     U 0108	REQUIRE 'SYSSER.REQ';
+;     U 0109	%ELSE
+;	0110	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0111	
+;	0112	REQUIRE	'SRC$:DBGPCT.REQ';
+;	0124	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0374	REQUIRE	'SRC$:DBGDBG.REQ';
+;	0721	REQUIRE 'LIB$:DBGMSG.REQ';
+;	1000	REQUIRE 'SRC$:VXSMAC.REQ';
+;	1040	REQUIRE 'SRC$:BSTRUC.REQ';
+;	1091	REQUIRE 'SRC$:LISTEL.REQ';
+;	1125	REQUIRE 'SRC$:DBGRST.REQ';
+;	2272	REQUIRE 'SRC$:SYSSER.REQ';
+;      R2275	SWITCHES LIST (SOURCE);
+;      R2276	
+;      R2277	EXTERNAL ROUTINE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]SYSSER.REQ;5					Page 2-1
+; Digital Equipment Corporation
+;
+;      R2278		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2279	
+;      R2280	SWITCHES LIST (NOSOURCE);
+;	2325	%FI
+;	2326	
+;	2327	!
+;	2328	! MACROS:
+;	2329	!
+;	2330	
+;	2331	!
+;	2332	! EQUATED SYMBOLS:
+;	2333	!
+;	2334	
+;	2335		DBG_DIAG( REB6,		0,	'during sort of the SAT/LVT'	);
+;	2336		DBG_DIAG( REB7,		0,	'before sorting the SAT/LVT'	);
+;	2337		DBG_DIAG( REB8,		0,	'after sorting the SAT/LVT'	);
+;	2338		DBG_DIAG( REB9,		0,	'SET/CANcel MODUle'		);
+;	2339		DBG_DIAG( REB10,	0,	'details in empty/dele_sat_lvt'	);
+;	2340		DBG_DIAG( REB13,	0,	'hash chain (un)linking'	);
+;	2341	
+;	2342	LITERAL
+;	2343		DBG_REB14	= 0;		! sort timer
+;	2344	
+;	2345	!
+;	2346	! FORWARD ROUTINEs which are used for diagnostics only
+;	2347	! must be declared as routines, even if we don't want
+;	2348	! them and won't ever call them.
+;	2349	!
+;	2350	
+;	2351	%IF DBG_ANY
+;     L 2352	%THEN
+;     U 2353		FORWARD ROUTINE
+;     U 2354			PR_CS : NOVALUE;		! Print a counted string.
+;     U 2355	%ELSE
+;	2356		BIND ROUTINE
+;	2357			PR_CS = 0;
+;	2358	%FI
+;	2359	
+;	2360	
+;	2361	!
+;	2362	! EXTERNAL REFERENCES:
+;	2363	!
+;	2364	
+;	2365	EXTERNAL
+;	2366						! The current SCOPE.
+;	2367		dbg$gl_csp_ptr : ref PATHNAME_VECTOR,
+;	2368	
+;	2369		DBG$GL_MC_PTR : REF MC_RECORD,	! Pointer to the Module Chain (MC).
+;	2370	
+;	2371		DBG$GL_HEAD_LST;		! pointer to expression arg list.
+;	2372	
+;	2373	EXTERNAL ROUTINE
+;	2374		dbg$save_scope,			! CANC MODU may = > CAN SCope.
+;	2375		DBG$ADD_MODULE,			! Add a module's symbols to the RST.
+;	2376		DBG$VS_FREE : NOVALUE;		! Release vector storage.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 2-2
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	2377	GLOBAL ROUTINE DBG$GET_NXT_SAT ( access_flag ) =
+;	2378	
+;	2379		BEGIN
+;	2380		RETURN (get_nxt_sat_lvt (.access_flag, rst_sat_size));
+;	2381		END;
+
+
+							    .TITLE  DBGREB
+							    .IDENT  \000045\
+
+						    PR_CS=		0
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$GL_CSP_PTR, DBG$GL_MC_PTR
+							    .GLOBL  DBG$GL_HEAD_LST, DBG$SAVE_SCOPE, DBG$ADD_MODULE
+							    .GLOBL  DBG$VS_FREE
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0000 00000 	    .ENTRY  DBG$GET_NXT_SAT, Save nothing			      ; 2377
+				       0A  DD 00002 	    PUSHL   #10							      ; 2380
+				  04   AC  DD 00004 	    PUSHL   ACCESS_FLAG						      ;
+		  0000V  CF	       02  FB 00007 	    CALLS   #2, GET_NXT_SAT_LVT					      ;
+					   04 0000C 	    RET     							      ; 2377
+
+; Routine Size:  13 bytes
+
+
+;	2382	
+;	2383	
+;	2384	
+;	2385	
+;	2386	
+;	2387	GLOBAL ROUTINE DBG$GET_NXT_LVT ( access_flag ) =
+;	2388	
+;	2389		BEGIN
+;	2390		RETURN (get_nxt_sat_lvt (.access_flag, rst_lvt_size));
+;	2391		END;
+
+
+
+
+
+					 0000 0000D 	    .ENTRY  DBG$GET_NXT_LVT, Save nothing			      ; 2387
+				       06  DD 0000F 	    PUSHL   #6							      ; 2390
+				  04   AC  DD 00011 	    PUSHL   ACCESS_FLAG						      ;
+		  0000V  CF	       02  FB 00014 	    CALLS   #2, GET_NXT_SAT_LVT					      ;
+					   04 00019 	    RET     							      ; 2387
+
+; Routine Size:  13 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	2392	ROUTINE GET_NXT_SAT_LVT( access_flag, record_size ) =
+;	2393	
+;	2394	!++
+;	2395	! Functional Description:
+;	2396	!
+;	2397	!	Provide access to the RST SAT or LVT structures.
+;	2398	!	i.e. Allow sequential access to the SAT/LVT via 
+;	2399	!	successive calls to this 'mapping' routine
+;	2400	!	so that the accessor has no built-in notion of
+;	2401	!	just how this sequential access is achieved.
+;	2402	!
+;	2403	! Formal Parameters:
+;	2404	!
+;	2405	!	access_flag -	One of three (3) possible values which indicate
+;	2406	!			what type of access this is.
+;	2407	!			SA_ACCE_INIT	- Initialize the OWN pointers for further
+;	2408	!					  access.
+;	2409	!			SA_ACCE_RECS	- Return the next record in the structure.
+;	2410	!			SA_ACCE_FREE	- Return the next record marked for deletion
+;	2411	!					  that is not in a module about to be deleted.
+;	2412	!	record_size -	The number of bytes in the record structure being accessed.
+;	2413	!
+;	2414	! Implicit Inputs:
+;	2415	!
+;	2416	!	This routine defines how the SAT and LVT are accessed
+;	2417	! sequentially.  This definition must correspond to the one
+;	2418	! that is also 'built-in' in the routine DBG$SORT_SA_LVT.
+;	2419	! The latter does not use this routine's defintion because
+;	2420	! of the performance penality we pay to do it.  (all the CALLSes)
+;	2421	!
+;	2422	!	Some other routines also access the SAT/LVT 'on their own',
+;	2423	! but they restrict themselves to only looking at one storage vector's
+;	2424	! contribution to the SAT/LVT.
+;	2425	!
+;	2426	!	The MC storage descriptors for all MCs marked MC_IN_RST
+;	2427	! (this includes the one for globals) must be consistent.
+;	2428	!
+;	2429	! Implicit Outputs:
+;	2430	!
+;	2431	!	none.
+;	2432	!
+;	2433	! Routine Value:
+;	2434	!
+;	2435	!	0, when there are no more SAT or LVT records given the
+;	2436	!	   indicated ending criteria,
+;	2437	!	a pointer to the appropriate record, otherwise.
+;	2438	!
+;	2439	!	On the _INIT call, this routine returns the number of
+;	2440	!	bytes in the SAT/LVT record which the _INIT
+;	2441	!	was done for.
+;	2442	!
+;	2443	! Side Effects:
+;	2444	!
+;	2445	!	The SAT or LVT is accessed sequentially.
+;	2446	!	OWN storage is initialized and used.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+;	2447	!--
+;	2448	
+;	2449	BEGIN
+;	2450		LABEL
+;	2451			NEXT_MC_LOOP;
+;	2452	
+;	2453		EXTERNAL LITERAL
+;	2454					! This routine knows about converting
+;	2455					! between RST-pointers and longword pointers.
+;	2456			DBG$_RST_BEGIN;
+;	2457	
+;	2458		OWN
+;	2459				! Pointer to the record we returned on
+;	2460				!  the previous call to this routine.
+;	2461			LAST_PTR : REF SAT_RECORD,
+;	2462	
+;	2463				! Module that LAST_PTR was in.
+;	2464			MC_PTR : REF MC_RECORD;
+;	2465	
+;	2466		LOCAL
+;	2467				! Pointer to the storage descriptor for the
+;	2468				!  type of storage we are currently looking at.
+;	2469			STORE_DESC : REF VECT_STORE_DESC,
+;	2470	
+;	2471				! We keep two pointers to the SAT or LVT
+;	2472				! record currently under consideration.
+;	2473				! One, 'current', is NOT a SAT_POINTER because
+;	2474				! such longword pointers aren't easily comparable
+;	2475				! to the NT-pointers we get from storage descriptors.
+;	2476				! The other, 'current_sat_ptr' is a real SAT
+;	2477				! pointer which always corresponds to 'current'.
+;	2478			CURRENT,
+;	2479			CURRENT_SAT_PTR : REF SAT_RECORD;
+;	2480		! Initialization mode processing is simple
+;	2481		! and contained.  We simply set up a new context.
+;	2482	
+;	2483		IF( .access_flag EQL SL_ACCE_INIT )
+;	2484		THEN
+;	2485			BEGIN
+;	2486	
+;	2487			! Set up so that the next call will find the
+;	2488			! first LVT or SAT record given the access criterion.
+;	2489	
+;	2490			MC_PTR = .DBG$GL_MC_PTR;
+;	2491			LAST_PTR = 0;
+;	2492	
+;	2493			! Return the record size so that we can
+;	2494			! localize this knowledge to this routine.
+;	2495			RETURN(.RECORD_SIZE);
+;	2496			END;
+;	2497	
+;	2498	
+;	2499		! Iterate to set 'current' and 'current_sat_ptr' to point to 
+;	2500		! the next record we want to consider.
+;	2501	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-2
+; Digital Equipment Corporation
+;
+;	2502		REPEAT
+;	2503	
+;	2504		    NEXT_MC_LOOP:
+;	2505	
+;	2506			BEGIN
+;	2507	
+;	2508			! Once we run off the end of the module chain
+;	2509			! there is no more of any kind of storage.
+;	2510			
+;	2511			IF ( .MC_PTR EQL 0 ) AND ( .LAST_PTR EQL 0 )
+;	2512			THEN
+;	2513				RETURN(0);
+;	2514	
+;	2515			! See if this module is a possible candidate.
+;	2516	
+;	2517			IF( .MC_PTR[ MC_IN_RST ] )
+;	2518			THEN
+;	2519				BEGIN
+;	2520	
+;	2521				! The _FREE access type asks that we look only at
+;	2522				! MCs which are both _IN_RST and NOT _DYING.
+;	2523	
+;	2524				IF( .access_flag EQL SL_ACCE_FREE )
+;	2525				THEN
+;	2526					IF( .MC_PTR[ MC_IS_DYING ] )
+;	2527					THEN
+;	2528						BEGIN
+;	2529	
+;	2530						! This module is soon to be deleted
+;	2531						! so there is no _FREE storage therein.
+;	2532						! Skip over this module completely.
+;	2533	
+;	2534						MC_PTR = .MC_PTR[ MC_NEXT ];
+;	2535						LEAVE NEXT_MC_LOOP;
+;	2536						END;
+;	2537	
+;	2538				! See if this module has any of the kind
+;	2539				! of storage we are looking for.
+;	2540	
+;	2541				STORE_DESC = (IF (.RECORD_SIZE EQL RST_SAT_SIZE)
+;	2542					      THEN
+;	2543							MC_PTR[ MC_SAT_STORAGE ]
+;	2544					      ELSE
+;	2545							MC_PTR[ MC_LVT_STORAGE ] );
+;	2546	
+;	2547				! No storage is allocated if the 'begin' field
+;	2548				! is null.
+;	2549	
+;	2550				IF( .STORE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	2551				THEN
+;	2552					BEGIN
+;	2553	
+;	2554					! Found the right place to look.  Point
+;	2555					! to the next record within this module.
+;	2556	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-3
+; Digital Equipment Corporation
+;
+;	2557					IF( .LAST_PTR EQL 0 )
+;	2558					THEN
+;	2559						! First time thru we start at the beginning
+;	2560	
+;	2561						CURRENT = .STORE_DESC[ STOR_BEGIN_RST ]
+;	2562					ELSE
+;	2563						! Subsequent times thru we assume that
+;	2564						! the records are contiguous and fixed-size.
+;	2565	
+;	2566						CURRENT = .LAST_PTR + .RECORD_SIZE;
+;	2567	
+;	2568					! The 'current' pointer must be within range
+;	2569					! and it must point to a record we are
+;	2570					! interested in, given the access criteria.
+;	2571					! Loop thru the storage for this module as long
+;	2572					! as there are still some to look at.
+;	2573	
+;	2574					IF (
+;	2575					(WHILE( .CURRENT LSSA .STORE_DESC[ STOR_MARKER ] )
+;	2576						DO
+;	2577						BEGIN
+;	2578	
+;	2579						! Initialize the SAT_POINTER which
+;	2580						! corresponds to 'current'.
+;	2581	
+;	2582						CURRENT_SAT_PTR = .CURRENT OR DBG$_RST_BEGIN;
+;	2583	
+;	2584						! As long as we are in range, we can
+;	2585						! imply skip along successive records
+;	2586						! until we get one which satisfies
+;	2587						! the given access criteria.
+;	2588	
+;	2589						IF ( .access_flag EQL SL_ACCE_RECS )
+;	2590						THEN
+;	2591							BEGIN
+;	2592	
+;	2593							! Skip records which are marked
+;	2594							! for deletion.  Anything else is OK.
+;	2595	
+;	2596							IF( .CURRENT_SAT_PTR[ SAT_NT_PTR ] NEQ 1 )
+;	2597							THEN
+;	2598								EXITLOOP(TRUE);
+;	2599							END
+;	2600						ELSE
+;	2601							BEGIN
+;	2602	
+;	2603							! The _FREE mode asks only for deleted
+;	2604							! records in NOT _DYING modules.
+;	2605	
+;	2606							IF( .CURRENT_SAT_PTR[ SAT_NT_PTR ] EQL 1 )
+;	2607							THEN
+;	2608								EXITLOOP(TRUE);
+;	2609							END;
+;	2610	
+;	2611						! Skip along to the next record.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-4
+; Digital Equipment Corporation
+;
+;	2612	
+;	2613						CURRENT = .CURRENT + .RECORD_SIZE;
+;	2614	
+;	2615						END
+;	2616	
+;	2617					) EQL TRUE
+;	2618					   )
+;	2619					THEN
+;	2620						! We have found a valid record in
+;	2621						! the current module.
+;	2622	
+;	2623						EXITLOOP;
+;	2624	
+;	2625					! If we fall out of the above loop, there
+;	2626					! were no records in the current module
+;	2627					! which satsified the access criteria.
+;	2628					! Set up so that when we look at
+;	2629					! the next module we will begin at the
+;	2630					! first record.
+;	2631	
+;	2632					LAST_PTR = 0;
+;	2633					END;
+;	2634	
+;	2635				! There is none of the kind of storage we are
+;	2636				! looking for so loop back to consider
+;	2637				! the next module.
+;	2638				END;
+;	2639	
+;	2640			! The current module is not in the RST so
+;	2641			! loop back to consider the next one.
+;	2642	
+;	2643			MC_PTR = .MC_PTR[ MC_NEXT ];
+;	2644			END;
+;	2645	
+;	2646		! Pass back the desired pointer having first stored
+;	2647		! it away in our OWN storage so that we can pick it
+;	2648		! up on the next call.
+;	2649	
+;	2650		LAST_PTR = .CURRENT;
+;	2651	
+;	2652		RETURN(.CURRENT_SAT_PTR);
+;	2653	END;
+
+
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 LAST_PTR:
+							    .BLKB   4
+					      00004 MC_PTR: .BLKB   4
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-5
+; Digital Equipment Corporation
+;
+					 0C3C 0001A GET_NXT_SAT_LVT:
+							    .WORD   Save R2,R3,R4,R5,R10,R11				      ; 2392
+		         5A 00000000G  8F  D0 0001C 	    MOVL    #DBG$_RST_BEGIN, R10				      ;
+		         5B 00000000'  EF  9E 00023 	    MOVAB   LAST_PTR, R11					      ;
+		         55	  04   AC  D0 0002A 	    MOVL    ACCESS_FLAG, R5					      ; 2483
+				       0F  12 0002E 	    BNEQ    1$							      ;
+		    04   AB 00000000G  EF  D0 00030 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 2490
+				       6B  D4 00038 	    CLRL    LAST_PTR						      ; 2491
+		         50	  08   AC  D0 0003A 	    MOVL    RECORD_SIZE, R0					      ; 2495
+					   04 0003E 	    RET     							      ;
+		         51	  04   AB  D0 0003F 1$:     MOVL    MC_PTR, R1						      ; 2511
+				       04  12 00043 	    BNEQ    2$							      ;
+				       6B  D5 00045 	    TSTL    LAST_PTR						      ;
+				       7B  13 00047 	    BEQL    15$							      ;
+		         51	       5A  C0 00049 2$:     ADDL2   R10, R1						      ; 2517
+	   66	    03   A1	       01  E1 0004C 	    BBC     #1, 3(R1), 13$					      ;
+		         03	       55  D1 00051 	    CMPL    R5, #3						      ; 2524
+				       05  12 00054 	    BNEQ    3$							      ;
+	   5C	    03   A1	       06  E0 00056 	    BBS     #6, 3(R1), 13$					      ; 2526
+	   51	    04   AB	       5A  C1 0005B 3$:     ADDL3   R10, MC_PTR, R1					      ; 2543
+		         0A	  08   AC  D1 00060 	    CMPL    RECORD_SIZE, #10					      ; 2541
+				       06  12 00064 	    BNEQ    4$							      ;
+	   52	         51	       23  C1 00066 	    ADDL3   #35, R1, STORE_DESC					      ; 2543
+				       04  11 0006A 	    BRB     5$							      ; 2541
+	   52	         51	       2A  C1 0006C 4$:     ADDL3   #42, R1, STORE_DESC					      ; 2545
+				  01   A2  B5 00070 5$:     TSTW    1(STORE_DESC)					      ; 2550
+				       42  13 00073 	    BEQL    13$							      ;
+		         50	       6B  D0 00075 	    MOVL    LAST_PTR, R0					      ; 2557
+				       06  12 00078 	    BNEQ    6$							      ;
+		         53	  01   A2  3C 0007A 	    MOVZWL  1(STORE_DESC), CURRENT				      ; 2561
+				       05  11 0007E 	    BRB     7$							      ; 2557
+	   53	         50	  08   AC  C1 00080 6$:     ADDL3   RECORD_SIZE, R0, CURRENT				      ; 2566
+      05   A2	         10	       00  ED 00085 7$:     CMPZV   #0, #16, 5(STORE_DESC), CURRENT			      ; 2575
+				       53     0008A									      ;
+				       20  1B 0008B 	    BLEQU   11$							      ;
+	   54	         53	       5A  C9 0008D 	    BISL3   R10, CURRENT, CURRENT_SAT_PTR			      ; 2582
+		         01	       55  D1 00091 	    CMPL    R5, #1						      ; 2589
+				       07  12 00094 	    BNEQ    8$							      ;
+		         01	       64  B1 00096 	    CMPW    (CURRENT_SAT_PTR), #1				      ; 2596
+				       0C  13 00099 	    BEQL    10$							      ;
+				       05  11 0009B 	    BRB     9$							      ; 2598
+		         01	       64  B1 0009D 8$:     CMPW    (CURRENT_SAT_PTR), #1				      ; 2606
+				       05  12 000A0 	    BNEQ    10$							      ;
+		         50	       01  D0 000A2 9$:     MOVL    #1, R0						      ; 2608
+				       09  11 000A5 	    BRB     12$							      ;
+		         53	  08   AC  C0 000A7 10$:    ADDL2   RECORD_SIZE, CURRENT				      ; 2613
+				       D8  11 000AB 	    BRB     7$							      ; 2575
+		         50	       01  CE 000AD 11$:    MNEGL   #1, R0						      ;
+		         01	       50  D1 000B0 12$:    CMPL    R0, #1						      ; 2574
+				       08  13 000B3 	    BEQL    14$							      ;
+				       6B  D4 000B5 	    CLRL    LAST_PTR						      ; 2632
+		    04   AB	       61  3C 000B7 13$:    MOVZWL  (R1), MC_PTR					      ; 2643
+				       82  11 000BB 	    BRB     1$							      ; 2496
+		         6B	       53  D0 000BD 14$:    MOVL    CURRENT, LAST_PTR					      ; 2650
+		         50	       54  D0 000C0 	    MOVL    CURRENT_SAT_PTR, R0					      ; 2652
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 4-6
+; Digital Equipment Corporation
+;
+					   04 000C3 	    RET     							      ;
+				       50  D4 000C4 15$:    CLRL    R0							      ; 2392
+					   04 000C6 	    RET     							      ;
+
+; Routine Size:  173 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	2654	GLOBAL ROUTINE DBG$SET_MODULE( module_to_set ) : NOVALUE =
+;	2655	
+;	2656	!++
+;	2657	! Functional Description:
+;	2658	!
+;	2659	!	Add a module, a list of modules, or /ALL modules
+;	2660	!	to the RST.
+;	2661	!
+;	2662	! Formal Parameters:
+;	2663	!
+;	2664	!	MODULE_TO_SET	-an MC pointer to the module we are
+;	2665	!			 to add, or 0 => use the command
+;	2666	!			 argument list or do SET /ALL.
+;	2667	!
+;	2668	! Implicit Inputs:
+;	2669	!
+;	2670	!	The expression list contains MC_PTRs to the
+;	2671	! indicated modules.  If SET /ALL was given, then
+;	2672	! the MC chain points to all modules we will attempt
+;	2673	! to SET.
+;	2674	!
+;	2675	! Implicit Outputs:
+;	2676	!
+;	2677	!	The modules are added.
+;	2678	!
+;	2679	! Return Value:
+;	2680	!
+;	2681	!	NOVALUE - we SIGNAL our way out if something goes wrong.
+;	2682	!
+;	2683	! Side Effects:
+;	2684	!
+;	2685	!	The symbols for the indicated modules
+;	2686	! get added to the RST.  If they are already there,  
+;	2687	! we do nothing (not even produce a warning 
+;	2688	! message).
+;	2689	!--
+;	2690	
+;	2691	BEGIN
+;	2692		LOCAL
+;	2693			DO_SAT_SORT,		! Flags to control sorting.
+;	2694			DO_LVT_SORT,
+;	2695			POINTER,		! Used to scan the arg list.
+;	2696	
+;	2697						! For /ALL we scan along the MC chain.
+;	2698			MC_CHAIN : REF MC_RECORD,
+;	2699	
+;	2700						! Each arg is an MC pointer.
+;	2701			MC_PTR : REF MC_RECORD,
+;	2702	
+;	2703						! We look at the storage descriptor
+;	2704						! associated with a module after we
+;	2705						! try to add it to see if SAT or LVT
+;	2706						! storage was allocated.
+;	2707			STORE_DESC : REF VECT_STORE_DESC;
+;	2708	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5-1
+; Digital Equipment Corporation
+;
+;	2709		! Assume that we won't have to (re)sort the
+;	2710		! LVT and SAT - an added module doesn't
+;	2711		! necessarily add anything to the LVT or SAT.
+;	2712	
+;	2713		DO_SAT_SORT = FALSE;
+;	2714		DO_LVT_SORT = FALSE;
+;	2715		MC_CHAIN = 0;
+;	2716	
+;	2717	IF_DIAG( REB9 )
+;	2718		IF( .MODULE_TO_SET EQL 0 )
+;	2719		THEN
+;	2720			$FAO_TT_OUT('set_module: arg list is at !XL',.DBG$GL_HEAD_LST)
+;	2721		ELSE
+;	2722			$FAO_TT_OUT('set_module: mc_ptr = !XL',.module_to_set);
+;	2723	END_DIAG;
+;	2724	
+;	2725		! If we were given a specific module_to_set, then
+;	2726		! we just assume that that is the MC_PTR we want.
+;	2727		! Otherwise either DBG$GL_HEAD_LST points to an arg
+;	2728		! list of MC_PTRs, or it is 0, which means that
+;	2729		! we are to try to set ALL modules.
+;	2730	
+;	2731		IF( .MODULE_TO_SET EQL 0 )
+;	2732		THEN
+;	2733			IF( (POINTER = .DBG$GL_HEAD_LST) EQL 0 )
+;	2734			THEN
+;	2735				! Look at the whole MC chain.
+;	2736	
+;	2737				MC_PTR = MC_CHAIN = .DBG$GL_MC_PTR
+;	2738			ELSE
+;	2739				BEGIN
+;	2740	IF_DIAG( REB9 )
+;	2741				! Simply print out the arg list.
+;	2742		
+;	2743				DO
+;	2744					BEGIN
+;	2745		
+;	2746					MC_PTR = .LIST_ELEM_EXP1(.POINTER);
+;	2747			
+;	2748					$FAO_TT_OUT('!/will add MC_PTR = !XL, which has ',
+;     P 2749						.mc_ptr);
+;	2750					pr_cs(mc_ptr[mc_name_cs]);
+;	2751					END
+;	2752				WHILE( (pointer = .list_elem_flink(.pointer)) NEQ 0 );
+;	2753			
+;	2754				POINTER = .DBG$GL_HEAD_LST;
+;	2755	END_DIAG;
+;	2756				END;
+;	2757	
+;	2758		! Loop thru the arg list or MC chain trying to add the
+;	2759		! indicated modules to the RST.  Note that we skip over
+;	2760		! the MC reserved for globals if the MC chain is being used.
+;	2761	
+;	2762		REPEAT
+;	2763			BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5-2
+; Digital Equipment Corporation
+;
+;	2764	
+;	2765			! Pick up a pointer to the module
+;	2766			! we should work with.
+;	2767	
+;	2768			IF( .MC_CHAIN NEQ 0 )
+;	2769			THEN
+;	2770				BEGIN
+;	2771	
+;	2772				! The next module comes from the MC chain.
+;	2773				! This is where we skip the MC for globals.
+;	2774				! Check for end-of-chain.
+;	2775	
+;	2776				IF( (MC_PTR = .MC_PTR[ MC_NEXT ]) EQL 0 )
+;	2777				THEN
+;	2778					EXITLOOP;
+;	2779				END
+;	2780			ELSE
+;	2781				! The next one is either a specific one
+;	2782				! we were given, or it comes from the
+;	2783				! command argument list.
+;	2784	
+;	2785				IF( (MC_PTR = .MODULE_TO_SET) EQL 0 )
+;	2786				THEN
+;	2787					! Each arg is a pointer to the MC record for
+;	2788					! the module we are to add.
+;	2789		
+;	2790					MC_PTR = .LIST_ELEM_EXP1(.POINTER);
+;	2791	
+;	2792			! Don't try to add one which is already there.
+;	2793	
+;	2794			IF( NOT .MC_PTR[ MC_IN_RST ] )
+;	2795			THEN
+;	2796				BEGIN
+;	2797	%IF DBG_REB14 OR LIT_REB9
+;     L 2798	%THEN
+;     U 2799				$FAO_TT_OUT('!/set_module for !AC',
+;     U 2800					MC_PTR[ MC_NAME_CS ]);
+;     U 2801	%FI
+;	2802				! Simply add the module the same way that
+;	2803				! the RST init procedure would.
+;	2804	
+;	2805				IF( DBG$ADD_MODULE( .MC_PTR ) )
+;	2806				THEN
+;	2807					BEGIN
+;	2808	
+;	2809					! Note that the module has been added, and see
+;	2810					! if any LVT and/or SAT storage was allocated
+;	2811					! for it to avoid an unnecessary SORT later on.
+;	2812	
+;	2813					MC_PTR[ MC_IN_RST ] = TRUE;
+;	2814					MC_PTR[ MC_IS_DYING ] = FALSE;
+;	2815	
+;	2816					STORE_DESC = MC_PTR[ MC_SAT_STORAGE ];
+;	2817					IF( .STORE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	2818					THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5-3
+; Digital Equipment Corporation
+;
+;	2819						DO_SAT_SORT = TRUE;
+;	2820	
+;	2821					STORE_DESC = MC_PTR[ MC_LVT_STORAGE ];
+;	2822					IF( .STORE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	2823					THEN
+;	2824						DO_LVT_SORT = TRUE;
+;	2825					END
+;	2826				ELSE
+;	2827					BEGIN
+;	2828					LOCAL
+;	2829						MESSAGE;
+;	2830	IF_DIAG( REB9 )
+;	2831					$FAO_TT_OUT('!/failure to add module !AC',
+;     P 2832						MC_PTR[ MC_NAME_CS ]);
+;	2833	END_DIAG;
+;	2834					! If we are SETting a whole list of modules,
+;	2835					! this message MUST be informational because
+;	2836					! we must get a RETURN to here so that we
+;	2837					! do the post-module SET cleanup.  Otherwise
+;	2838					! we can SIGNAL our way out of here and out
+;	2839					! of SET SCOPE at the same time.
+;	2840	
+;	2841					MESSAGE = DBG$_MODNOTADD;
+;	2842					IF( .MODULE_TO_SET NEQ 0 )
+;	2843					THEN
+;	2844						! This is how you make an informational
+;	2845						! message into a warning.
+;	2846	
+;	2847						MESSAGE = .MESSAGE - 1;
+;	2848	
+;	2849					SIGNAL (.message, 1, MC_PTR[MC_NAME_CS]);
+;	2850					END;
+;	2851				END;
+;	2852	
+;	2853			! Go back and look at the next arg if there is one.
+;	2854	
+;	2855			IF( .MODULE_TO_SET NEQ 0 )
+;	2856			THEN
+;	2857				! There is never a next one when we were given
+;	2858				! only one in the first place.
+;	2859	
+;	2860				EXITLOOP;
+;	2861	
+;	2862			! A next one must come from the MC chain
+;	2863			! or the arg list.
+;	2864	
+;	2865			IF( .MC_CHAIN EQL 0 )
+;	2866			THEN
+;	2867				IF( (POINTER = .LIST_ELEM_FLINK(.POINTER)) EQL 0 )
+;	2868				THEN
+;	2869					EXITLOOP;
+;	2870			END;
+;	2871	
+;	2872		! If any SAT/LVT storage was allocated,
+;	2873		! then corresponding records have been
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5-4
+; Digital Equipment Corporation
+;
+;	2874		! added so we have to re-sort the structure.
+;	2875	
+;	2876		IF( .DO_SAT_SORT )
+;	2877		THEN
+;	2878			BEGIN
+;	2879	IF_DIAG( REB9 )
+;	2880			$FAO_TT_OUT('!/re sort SAT');
+;	2881	END_DIAG;
+;	2882			DBG$SORT_SA_LVT( DBG$GET_NXT_SAT );
+;	2883			END;
+;	2884	
+;	2885		IF( .DO_LVT_SORT )
+;	2886		THEN
+;	2887			BEGIN
+;	2888	IF_DIAG( REB9 )
+;	2889			$FAO_TT_OUT('!/re sort LVT');
+;	2890	END_DIAG;
+;	2891			DBG$SORT_SA_LVT( DBG$GET_NXT_LVT );
+;	2892			END;
+;	2893	
+;	2894		! All's well that ends well.
+;	2895	END;
+
+
+
+
+
+					 03FC 000C7 	    .ENTRY  DBG$SET_MODULE, Save R2,R3,R4,R5,R6,R7,R8,R9	      ; 2654
+				       58  7C 000C9 	    CLRQ    DO_SAT_SORT						      ; 2713
+				       56  D4 000CB 	    CLRL    MC_CHAIN						      ; 2715
+		         57	  04   AC  D0 000CD 	    MOVL    MODULE_TO_SET, R7					      ; 2731
+				       13  12 000D1 	    BNEQ    1$							      ;
+		         55 00000000G  EF  D0 000D3 	    MOVL    DBG$GL_HEAD_LST, POINTER				      ; 2733
+				       0A  12 000DA 	    BNEQ    1$							      ;
+		         56 00000000G  EF  D0 000DC 	    MOVL    DBG$GL_MC_PTR, MC_CHAIN				      ; 2737
+		         53	       56  D0 000E3 	    MOVL    MC_CHAIN, MC_PTR					      ;
+				       56  D5 000E6 1$:     TSTL    MC_CHAIN						      ; 2768
+				       0B  13 000E8 	    BEQL    2$							      ;
+		         53 00000000G  E3  3C 000EA 	    MOVZWL  DBG$_RST_BEGIN(MC_PTR), MC_PTR			      ; 2776
+				       0B  12 000F1 	    BNEQ    3$							      ;
+				       6C  11 000F3 	    BRB     8$							      ; 2778
+		         53	       57  D0 000F5 2$:     MOVL    R7, MC_PTR						      ; 2785
+				       04  12 000F8 	    BNEQ    3$							      ;
+		         53	  04   A5  D0 000FA 	    MOVL    4(POINTER), MC_PTR					      ; 2790
+		         52 00000000G  E3  9E 000FE 3$:     MOVAB   DBG$_RST_BEGIN(MC_PTR), R2				      ; 2794
+	   4A	    03   A2	       01  E0 00105 	    BBS     #1, 3(R2), 7$					      ;
+				       53  DD 0010A 	    PUSHL   MC_PTR						      ; 2805
+	      00000000G  EF	       01  FB 0010C 	    CALLS   #1, DBG$ADD_MODULE					      ;
+		         23	       50  E9 00113 	    BLBC    R0, 5$						      ;
+		    03   A2	       02  88 00116 	    BISB2   #2, 3(R2)						      ; 2813
+		    03   A2	  40   8F  8A 0011A 	    BICB2   #64, 3(R2)						      ; 2814
+	   54	         52	       23  C1 0011F 	    ADDL3   #35, R2, STORE_DESC					      ; 2816
+				  01   A4  B5 00123 	    TSTW    1(STORE_DESC)					      ; 2817
+				       03  13 00126 	    BEQL    4$							      ;
+		         58	       01  D0 00128 	    MOVL    #1, DO_SAT_SORT					      ; 2819
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 5-5
+; Digital Equipment Corporation
+;
+	   54	         52	       2A  C1 0012B 4$:     ADDL3   #42, R2, STORE_DESC					      ; 2821
+				  01   A4  B5 0012F 	    TSTW    1(STORE_DESC)					      ; 2822
+				       20  13 00132 	    BEQL    7$							      ;
+		         59	       01  D0 00134 	    MOVL    #1, DO_LVT_SORT					      ; 2824
+				       1B  11 00137 	    BRB     7$							      ; 2805
+		         50 00028023   8F  D0 00139 5$:     MOVL    #163875, MESSAGE					      ; 2841
+				       57  D5 00140 	    TSTL    R7							      ; 2842
+				       02  13 00142 	    BEQL    6$							      ;
+				       50  D7 00144 	    DECL    MESSAGE						      ; 2847
+				  0C   A2  9F 00146 6$:     PUSHAB  12(R2)						      ; 2849
+				       01  DD 00149 	    PUSHL   #1							      ;
+				       50  DD 0014B 	    PUSHL   MESSAGE						      ;
+	      00000000G  00	       03  FB 0014D 	    CALLS   #3, LIB$SIGNAL					      ;
+				       57  D5 00154 7$:     TSTL    R7							      ; 2855
+				       09  12 00156 	    BNEQ    8$							      ;
+				       56  D5 00158 	    TSTL    MC_CHAIN						      ; 2865
+				       8A  12 0015A 	    BNEQ    1$							      ;
+		         55	       65  D0 0015C 	    MOVL    (POINTER), POINTER					      ; 2867
+				       85  12 0015F 	    BNEQ    1$							      ;
+		         09	       58  E9 00161 8$:     BLBC    DO_SAT_SORT, 9$					      ; 2876
+				FE98   CF  9F 00164 	    PUSHAB  DBG$GET_NXT_SAT					      ; 2882
+		  0000V  CF	       01  FB 00168 	    CALLS   #1, DBG$SORT_SA_LVT					      ;
+		         09	       59  E9 0016D 9$:     BLBC    DO_LVT_SORT, 10$					      ; 2885
+				FE99   CF  9F 00170 	    PUSHAB  DBG$GET_NXT_LVT					      ; 2891
+		  0000V  CF	       01  FB 00174 	    CALLS   #1, DBG$SORT_SA_LVT					      ;
+					   04 00179 10$:    RET     							      ; 2654
+
+; Routine Size:  179 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6
+; Digital Equipment Corporation
+;
+;	2896	GLOBAL ROUTINE DBG$CANC_MODULE : NOVALUE =
+;	2897	
+;	2898	!++
+;	2899	! Functional Description:
+;	2900	!
+;	2901	!	Delete the symbols for a given list of module
+;	2902	! names from the RST, or delete /ALL modules.
+;	2903	!
+;	2904	! Implicit Inputs:
+;	2905	!
+;	2906	!	If the command arg list pointer is 0, then
+;	2907	!	we assume that it is the /ALL function which 
+;	2908	!	was called for.
+;	2909	!
+;	2910	!	Otherwise the expression list contains MC_PTRs to the
+;	2911	!	indicated modules.
+;	2912	!
+;	2913	! Implicit Outputs:
+;	2914	!
+;	2915	!	none.
+;	2916	!
+;	2917	! Return Value:
+;	2918	!
+;	2919	!	NOVALUE - we SIGNAL our way out if something goes wrong.
+;	2920	!
+;	2921	! Side Effects:
+;	2922	!
+;	2923	!	The symbols for the indicated modules
+;	2924	! get deleted from the RST.  If they are not there,  
+;	2925	! we do nothing (not even produce a warning 
+;	2926	! message).
+;	2927	!--
+;	2928	
+;	2929	BEGIN
+;	2930		LOCAL
+;	2931	
+;	2932						! For /ALL we scan along the MC chain.
+;	2933			MC_CHAIN : REF MC_RECORD,
+;	2934	
+;	2935			POINTER,		! Used to scan the arg list.
+;	2936			SHRINK_LVT,		! Number of LVT records freed up.
+;	2937			SHRINK_SAT,		! Number of SAT records freed up.
+;	2938			MC_PTR : REF MC_RECORD;
+;	2939	
+;	2940	IF_DIAG( REB9 )
+;	2941		$FAO_TT_OUT('canc_module: arg list is at !XL',.DBG$GL_HEAD_LST);
+;	2942	END_DIAG;
+;	2943		MC_CHAIN = 0;
+;	2944	
+;	2945		! Either DBG$GL_HEAD_LST points to an arg
+;	2946		! list of MC_PTRs, or it is 0, which means that
+;	2947		! we are to try to cancel ALL modules.
+;	2948	
+;	2949		IF( (POINTER = .DBG$GL_HEAD_LST) EQL 0 )
+;	2950		THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6-1
+; Digital Equipment Corporation
+;
+;	2951			! Look at the whole MC chain.
+;	2952	
+;	2953			MC_PTR = MC_CHAIN = .DBG$GL_MC_PTR;
+;	2954	
+;	2955	IF_DIAG( REB9 )
+;	2956		
+;	2957		IF( .MC_CHAIN EQL 0 )
+;	2958		THEN
+;	2959			BEGIN
+;	2960	
+;	2961			! Simply print out the arg list.
+;	2962		
+;	2963			DO
+;	2964				BEGIN
+;	2965		
+;	2966				MC_PTR = .LIST_ELEM_EXP1(.POINTER);
+;	2967		
+;	2968				$FAO_TT_OUT('will cancel MC_PTR = !XL, which has ',
+;     P 2969					.mc_ptr);
+;	2970				pr_cs(mc_ptr[mc_name_cs]);
+;	2971				END
+;	2972			WHILE( (pointer = .list_elem_flink(.pointer)) NEQ 0 );
+;	2973		
+;	2974			POINTER = .DBG$GL_HEAD_LST;
+;	2975			END;
+;	2976	END_DIAG;
+;	2977	
+;	2978		! To avoid having to shrink the SAT or LVT
+;	2979		! when unnecessary, initialize the flags
+;	2980		! (actually, counts) which indicate whether or
+;	2981		! not any records have been removed from the
+;	2982		! corresponding data structures.
+;	2983	
+;	2984		SHRINK_LVT = 0;
+;	2985		SHRINK_SAT = 0;
+;	2986	
+;	2987		! Loop thru the arg list or MC chain trying to delete the
+;	2988		! indicated modules from the RST.  Note that we skip over
+;	2989		! the MC reserved for globals if the MC chain is being used.
+;	2990	
+;	2991		REPEAT
+;	2992			BEGIN
+;	2993	
+;	2994			IF( .MC_CHAIN NEQ 0 )
+;	2995			THEN
+;	2996				BEGIN
+;	2997	
+;	2998				! The next module comes from the MC chain.
+;	2999				! This is where we skip the MC for globals.
+;	3000				! Check for end-of-chain.
+;	3001	
+;	3002				IF( (MC_PTR = .MC_PTR[ MC_NEXT ]) EQL 0 )
+;	3003				THEN
+;	3004					EXITLOOP;
+;	3005				END
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6-2
+; Digital Equipment Corporation
+;
+;	3006			ELSE
+;	3007				! The next one comes from the
+;	3008				! command argument list.
+;	3009				! Each arg is a pointer to the MC record for
+;	3010				! the module we are to delete.
+;	3011	
+;	3012				MC_PTR = .LIST_ELEM_EXP1(.POINTER);
+;	3013	
+;	3014			! Don't try to delete one which is not already there,
+;	3015			! and don't complain if we are asked to.
+;	3016	
+;	3017			IF( .MC_PTR[ MC_IN_RST ] )
+;	3018			THEN
+;	3019				BEGIN
+;	3020	%IF DBG_REB14 OR LIT_REB9
+;     L 3021	%THEN
+;     U 3022				$FAO_TT_OUT('canceling module "!AC".',
+;     U 3023					MC_PTR[ MC_NAME_CS ]);
+;     U 3024	%FI
+;	3025	
+;	3026				! Zero out all LVT or SAT records which correspond
+;	3027				! to NT records which we are about to release.
+;	3028	
+;	3029				SHRINK_SAT = .SHRINK_SAT +
+;	3030					DELE_SAT_LVT( MC_PTR[ MC_NT_STORAGE ], DBG$GET_NXT_SAT );
+;	3031	
+;	3032				SHRINK_LVT = .SHRINK_LVT +
+;	3033					DELE_SAT_LVT( MC_PTR[ MC_NT_STORAGE ], DBG$GET_NXT_LVT );
+;	3034	
+;	3035				! If we have just cancelled a module into which
+;	3036				! the current SCOPE is pointing, we cancel that
+;	3037				! scope so as to let the user know it is useless.
+;	3038	
+;	3039				IF( .DBG$GL_CSP_PTR NEQ 0 )
+;	3040				THEN
+;	3041					BEGIN
+;	3042					LOCAL
+;	3043						CS_PTR : CS_POINTER;
+;	3044	
+;	3045					! Pick up the first entry in the CSP
+;	3046					! pathname vector since that is the module
+;	3047					! name and is all we have to look at to see if
+;	3048					! the CSP 'points into' the module we have just
+;	3049					! cancelled.
+;	3050	
+;	3051					CS_PTR = .DBG$GL_CSP_PTR[0];
+;	3052	
+;	3053					! If the names are the same, cancel the scope.
+;	3054	
+;	3055					IF( CH$EQL(	.cs_ptr[0], cs_ptr[1],
+;	3056							.mc_ptr[ MC_NAME_CS ],
+;	3057							mc_ptr[ MC_NAME_ADDR ]
+;	3058					  )       )
+;	3059					THEN
+;	3060						DBG$SAVE_SCOPE(FALSE);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6-3
+; Digital Equipment Corporation
+;
+;	3061					END;
+;	3062	
+;	3063				! Note that the module is about to be cancelled.
+;	3064				! We can't turn off MC_IN_RST yet because
+;	3065				! the access functions still use that flag
+;	3066				! and there are still valid records in the storage
+;	3067				! associated with this module.
+;	3068	
+;	3069				MC_PTR[ MC_IS_DYING ] = TRUE;
+;	3070	
+;	3071				! Unlink all NT records for this module from
+;	3072				! the hash chains they are currently in,
+;	3073				! and release the vector storage taken by them.
+;	3074	
+;	3075				UNLINK_NT_RECS( .MC_PTR );
+;	3076				DBG$VS_FREE( MC_PTR[ MC_NT_STORAGE ] );
+;	3077				END;
+;	3078	
+;	3079			! Loop back to consider the next arg.
+;	3080	
+;	3081			IF( .MC_CHAIN EQL 0 )
+;	3082			THEN
+;	3083				! Next arg comes from command arg list.
+;	3084				! Make sure there is one.
+;	3085	
+;	3086				IF( (POINTER = .LIST_ELEM_FLINK(.POINTER)) eql 0 )
+;	3087				THEN
+;	3088					EXITLOOP;
+;	3089			END;
+;	3090	
+;	3091		! For each module to be cancelled, we still have associated
+;	3092		! SAT/LVT storage which probably contains records that
+;	3093		! correspond to other modules.  We must move these
+;	3094		! to safer ground and then actually free up the storage.
+;	3095	
+;	3096	IF_DIAG( REB9 )
+;	3097		$FAO_TT_OUT('cancelled !XL LVTs, !XL SATs.',
+;     P 3098			.SHRINK_LVT,.SHRINK_SAT);
+;	3099	END_DIAG;
+;	3100	
+;	3101		IF( .SHRINK_SAT NEQ 0 )
+;	3102		THEN
+;	3103			EMPTY_SAT_LVT( DBG$GET_NXT_SAT );
+;	3104	
+;	3105		IF( .SHRINK_LVT NEQ 0 )
+;	3106		THEN
+;	3107			EMPTY_SAT_LVT( DBG$GET_NXT_LVT );
+;	3108	
+;	3109		! All modules previously _DYING are now dead.
+;	3110	
+;	3111		MC_PTR = .DBG$GL_MC_PTR;
+;	3112	
+;	3113		WHILE( (MC_PTR = .MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	3114			DO
+;	3115			BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6-4
+; Digital Equipment Corporation
+;
+;	3116	
+;	3117			IF( .MC_PTR[ MC_IS_DYING ] )
+;	3118			THEN
+;	3119				! Once _IN_RST is FALSE almost no other
+;	3120				! flags are believed.
+;	3121	
+;	3122				MC_PTR[ MC_IN_RST ] = FALSE;
+;	3123			END;
+;	3124	
+;	3125		! Normal completion.
+;	3126	END;
+
+
+
+
+
+					 0FFC 0017A 	    .ENTRY  DBG$CANC_MODULE, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 2896
+		         5A	FE80   CF  9E 0017C 	    MOVAB   DBG$GET_NXT_SAT, R10				      ;
+		         5B 00000000G  EF  9E 00181 	    MOVAB   DBG$GL_MC_PTR, R11					      ;
+				       57  D4 00188 	    CLRL    MC_CHAIN						      ; 2943
+		         56 00000000G  EF  D0 0018A 	    MOVL    DBG$GL_HEAD_LST, POINTER				      ; 2949
+				       06  12 00191 	    BNEQ    1$							      ;
+		         57	       6B  D0 00193 	    MOVL    DBG$GL_MC_PTR, MC_CHAIN				      ; 2953
+		         55	       57  D0 00196 	    MOVL    MC_CHAIN, MC_PTR					      ;
+				       58  7C 00199 1$:     CLRQ    SHRINK_SAT						      ; 2985
+				       57  D5 0019B 2$:     TSTL    MC_CHAIN						      ; 2994
+				       0B  13 0019D 	    BEQL    3$							      ;
+		         55 00000000G  E5  3C 0019F 	    MOVZWL  DBG$_RST_BEGIN(MC_PTR), MC_PTR			      ; 3002
+				       06  12 001A6 	    BNEQ    4$							      ;
+				       70  11 001A8 	    BRB     7$							      ; 3004
+		         55	  04   A6  D0 001AA 3$:     MOVL    4(POINTER), MC_PTR					      ; 3012
+		         54 00000000G  E5  9E 001AE 4$:     MOVAB   DBG$_RST_BEGIN(MC_PTR), R4				      ; 3017
+	   57	    03   A4	       01  E1 001B5 	    BBC     #1, 3(R4), 6$					      ;
+				       5A  DD 001BA 	    PUSHL   R10							      ; 3030
+				  1C   A4  9F 001BC 	    PUSHAB  28(R4)						      ;
+		  0000V  CF	       02  FB 001BF 	    CALLS   #2, DELE_SAT_LVT					      ;
+		         58	       50  C0 001C4 	    ADDL2   R0, SHRINK_SAT					      ; 3029
+				  0D   AA  9F 001C7 	    PUSHAB  DBG$GET_NXT_LVT					      ; 3033
+				  1C   A4  9F 001CA 	    PUSHAB  28(R4)						      ;
+		  0000V  CF	       02  FB 001CD 	    CALLS   #2, DELE_SAT_LVT					      ;
+		         59	       50  C0 001D2 	    ADDL2   R0, SHRINK_LVT					      ; 3032
+		         50 00000000G  EF  D0 001D5 	    MOVL    DBG$GL_CSP_PTR, R0					      ; 3039
+				       1D  13 001DC 	    BEQL    5$							      ;
+		         50	       60  D0 001DE 	    MOVL    (R0), CS_PTR					      ; 3051
+		         52	       60  9A 001E1 	    MOVZBL  (CS_PTR), R2					      ; 3055
+		         51	  0C   A4  9A 001E4 	    MOVZBL  12(R4), R1						      ; 3056
+	   00	    01   A0	       52  2D 001E8 	    CMPC5   R2, 1(CS_PTR), #0, R1, 13(R4)			      ; 3055
+		    0D   A4	       51     001ED									      ;
+				       09  12 001F0 	    BNEQ    5$							      ;
+				       7E  D4 001F2 	    CLRL    -(SP)						      ; 3060
+	      00000000G  EF	       01  FB 001F4 	    CALLS   #1, DBG$SAVE_SCOPE					      ;
+		    03   A4	  40   8F  88 001FB 5$:     BISB2   #64, 3(R4)						      ; 3069
+				       55  DD 00200 	    PUSHL   MC_PTR						      ; 3075
+		  0000V  CF	       01  FB 00202 	    CALLS   #1, UNLINK_NT_RECS					      ;
+				  1C   A4  9F 00207 	    PUSHAB  28(R4)						      ; 3076
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 6-5
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       01  FB 0020A 	    CALLS   #1, DBG$VS_FREE					      ;
+				       57  D5 00211 6$:     TSTL    MC_CHAIN						      ; 3081
+				       86  12 00213 	    BNEQ    2$							      ;
+		         56	       66  D0 00215 	    MOVL    (POINTER), POINTER					      ; 3086
+				       81  12 00218 	    BNEQ    2$							      ;
+				       58  D5 0021A 7$:     TSTL    SHRINK_SAT						      ; 3101
+				       07  13 0021C 	    BEQL    8$							      ;
+				       5A  DD 0021E 	    PUSHL   R10							      ; 3103
+		  0000V  CF	       01  FB 00220 	    CALLS   #1, EMPTY_SAT_LVT					      ;
+				       59  D5 00225 8$:     TSTL    SHRINK_LVT						      ; 3105
+				       08  13 00227 	    BEQL    9$							      ;
+				  0D   AA  9F 00229 	    PUSHAB  DBG$GET_NXT_LVT					      ; 3107
+		  0000V  CF	       01  FB 0022C 	    CALLS   #1, EMPTY_SAT_LVT					      ;
+		         55	       6B  D0 00231 9$:     MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3111
+	   50	         55 00000000G  8F  C1 00234 	    ADDL3   #DBG$_RST_BEGIN, MC_PTR, R0				      ; 3113
+		         55	       60  3C 0023C 10$:    MOVZWL  (R0), MC_PTR					      ;
+				       13  13 0023F 	    BEQL    11$							      ;
+	   50	         55 00000000G  8F  C1 00241 	    ADDL3   #DBG$_RST_BEGIN, MC_PTR, R0				      ; 3117
+	   EE	    03   A0	       06  E1 00249 	    BBC     #6, 3(R0), 10$					      ;
+		    03   A0	       02  8A 0024E 	    BICB2   #2, 3(R0)						      ; 3122
+				       E8  11 00252 	    BRB     10$							      ; 3113
+					   04 00254 11$:    RET     							      ; 2896
+
+; Routine Size:  219 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 7
+; Digital Equipment Corporation
+;
+;	3127	ROUTINE UNLINK_NT_RECS( MC_PTR ) : NOVALUE =
+;	3128	
+;	3129	!++
+;	3130	! Functional Description:
+;	3131	!
+;	3132	!	Remove all NT records for the module indicated 
+;	3133	! by MC_PTR from the hash chains they are in.  This
+;	3134	! is done in preparation for removing the indicated
+;	3135	! module from the RST completely.
+;	3136	!
+;	3137	! Formal Parameters:
+;	3138	!
+;	3139	!	MC_PTR	-An RST pointer to the MC entry for
+;	3140	!		 the module we are to unlink NTs for.
+;	3141	!
+;	3142	! Implicit Inputs:
+;	3143	!
+;	3144	!	The NT records for the indicated module are all
+;	3145	! in contiguous storage (the so-called "vector storage"
+;	3146	! for that module), and one can 'go thru' this vector
+;	3147	! and pick out the NT records given the data therein.
+;	3148	! (Now we use RST_NT_OVERHEAD and the count byte for
+;	3149	!  the associated symbol name - but any 'contained' 
+;	3150	!  method will do).
+;	3151	!
+;	3152	! Implicit Outputs:
+;	3153	!
+;	3154	!	All existing hash chains are correctly re-linked,
+;	3155	! bypassing all NTs for the indicated module.
+;	3156	!
+;	3157	! Return Value:
+;	3158	!
+;	3159	!	NOVALUE - we make no checks on the given data.
+;	3160	!--
+;	3161	
+;	3162	BEGIN
+;	3163		MAP
+;	3164			MC_PTR : REF MC_RECORD;
+;	3165		LOCAL
+;	3166					! Pointer we use to go thru the storage
+;	3167					! vector of NT records.
+;	3168			NT_PTR : REF NT_RECORD,
+;	3169			
+;	3170					! We use the MC-contained descriptor of
+;	3171					! the vector storage for the indicated NTs.
+;	3172			NT_VEC_DESC : REF VECT_STORE_DESC;
+;	3173	
+;	3174		! Pick up the vector storage descriptor for the 
+;	3175		! indicated NT records.
+;	3176	
+;	3177		NT_VEC_DESC = MC_PTR[ MC_NT_STORAGE ];
+;	3178	
+;	3179		! The first NT record begins in the first byte of
+;	3180		! the storage vector, and the storage 'marker' 
+;	3181		! field has been set to the first byte of unallocated
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 7-1
+; Digital Equipment Corporation
+;
+;	3182		! storage.
+;	3183	
+;	3184		NT_PTR = .NT_VEC_DESC[ STOR_BEGIN_RST ];
+;	3185	
+;	3186		! Go thru the storage vector sequentially.
+;	3187	
+;	3188		WHILE( .NT_PTR LSSA .NT_VEC_DESC[ STOR_MARKER ] )
+;	3189			DO
+;	3190			BEGIN
+;	3191			LOCAL
+;	3192				BACKWARD_NT : REF NT_RECORD,
+;	3193				FORWARD_NT  : REF NT_RECORD;
+;	3194	
+;	3195	IF_DIAG( REB13 )
+;	3196			$FAO_TT_OUT('!/unlink: NT_PTR=!XL ',.nt_ptr);
+;	3197	END_DIAG;
+;	3198			! Pick up the two links (forward and backward)
+;	3199			! which indicate where in the hash chain
+;	3200			! this NT record is.
+;	3201	
+;	3202			BACKWARD_NT = .NT_PTR[ NT_BACKWARD ];
+;	3203			FORWARD_NT = .NT_PTR[ NT_FORWARD ];
+;	3204	IF_DIAG( REB13 )
+;	3205			$FAO_TT_OUT('back=!XL, forw=!XL',.backward_nt,.forward_nt);
+;	3206	END_DIAG;
+;	3207			! Unlink the NT record from its hash chain.
+;	3208			! i.e. Make the forward pointer of our back NT record
+;	3209			! point to the one after us.  Note that if our back
+;	3210			! pointer points back to the hash chain, then we are
+;	3211			! actually overwriting the RST pointer in that hash
+;	3212			! chain entry (as we want to).  This is why NT_FORWARD
+;	3213			! must be the first 2 bytes of an NT record.
+;	3214	
+;	3215			BACKWARD_NT[ NT_FORWARD ] = .FORWARD_NT;
+;	3216	
+;	3217			! If we are not at the end of the hash chain,
+;	3218			! we must connect up the hole we are making by
+;	3219			! unlinking this NT record.
+;	3220	
+;	3221			IF( .FORWARD_NT NEQ 0 )
+;	3222			THEN
+;	3223				FORWARD_NT[ NT_BACKWARD ] = .BACKWARD_NT;
+;	3224	
+;	3225			! Find the next NT record in the vector by adding
+;	3226			! the overhead bytes (fixed) for each record to the
+;	3227			! count bytes for the name.
+;	3228	
+;	3229			NT_PTR = .NT_PTR + RST_NT_OVERHEAD + .NT_PTR[ NT_NAME_CS ];
+;	3230			END;
+;	3231	
+;	3232		! All NT records are successfully unlinked.
+;	3233	
+;	3234	IF_DIAG( REB13 )
+;	3235		$FAO_TT_OUT('!/all NTs unlinked OK.');
+;	3236	END_DIAG;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 7-2
+; Digital Equipment Corporation
+;
+;	3237	END;
+
+
+
+
+
+					 001C 00255 UNLINK_NT_RECS:
+							    .WORD   Save R2,R3,R4					      ; 3127
+	   50	    04   AC 00000000G  8F  C1 00257 	    ADDL3   #DBG$_RST_BEGIN, MC_PTR, R0				      ; 3177
+	   53	         50	       1C  C1 00260 	    ADDL3   #28, R0, NT_VEC_DESC				      ;
+		         54	  01   A3  3C 00264 	    MOVZWL  1(NT_VEC_DESC), NT_PTR				      ; 3184
+      05   A3	         10	       00  ED 00268 1$:     CMPZV   #0, #16, 5(NT_VEC_DESC), NT_PTR			      ; 3188
+				       54     0026D									      ;
+				       2D  1B 0026E 	    BLEQU   3$							      ;
+		         52 00000000G  E4  9E 00270 	    MOVAB   DBG$_RST_BEGIN(NT_PTR), R2				      ; 3202
+		         51	  0A   A2  3C 00277 	    MOVZWL  10(R2), BACKWARD_NT					      ;
+		         50	       62  3C 0027B 	    MOVZWL  (R2), FORWARD_NT					      ; 3203
+	      00000000G  E1	       50  B0 0027E 	    MOVW    FORWARD_NT, DBG$_RST_BEGIN(BACKWARD_NT)		      ; 3215
+				       50  D5 00285 	    TSTL    FORWARD_NT						      ; 3221
+				       07  13 00287 	    BEQL    2$							      ;
+	      00000000G  E0	       51  B0 00289 	    MOVW    BACKWARD_NT, DBG$_RST_BEGIN+10(FORWARD_NT)		      ; 3223
+		         50	  0C   A2  9A 00290 2$:     MOVZBL  12(R2), R0						      ; 3229
+		         50	       54  C0 00294 	    ADDL2   NT_PTR, R0						      ;
+	   54	         50	       0D  C1 00297 	    ADDL3   #13, R0, NT_PTR					      ;
+				       CB  11 0029B 	    BRB     1$							      ; 3188
+					   04 0029D 3$:     RET     							      ; 3127
+
+; Routine Size:  73 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8
+; Digital Equipment Corporation
+;
+;	3238	ROUTINE EMPTY_SAT_LVT( access_function ) : NOVALUE =
+;	3239	
+;	3240	!++
+;	3241	! Functional Description:
+;	3242	!
+;	3243	!	Empty out the storage associated with SAT/LVT records
+;	3244	!	for all modules in the MC marked MC_IS_DYING,
+;	3245	!	(there may be some records therein which belong to another module)
+;	3246	!	by moving any valid records therein to storage
+;	3247	!	associated with a module that is not being deleted.
+;	3248	!	Then release the _DYING storage since the associated modules
+;	3249	!	are to be deleted from the RST.
+;	3250	!
+;	3251	! Formal Parameters:
+;	3252	!
+;	3253	!	access_function	-The address of the function we should call
+;	3254	!			 to access the indicated SAT/LVT structure.
+;	3255	!
+;	3256	! Implicit Inputs: (assumptions)
+;	3257	!
+;	3258	!	The SAT_RECORD structure is appropriate for moving SAT/LVT
+;	3259	!	records around - i.e. SATs are larger than LVTs - as
+;	3260	!	long as we use the record_size value returned by the
+;	3261	!	SL_ACCE_INIT call instead of the one associated with
+;	3262	!	the SAT record itself.
+;	3263	!
+;	3264	! Implicit Outputs:
+;	3265	!	The indicated structure is left in the state that LOOKUP_SAT
+;	3266	!	and LOOKUP_LVT assume they are in.
+;	3267	!
+;	3268	! Routine Value:
+;	3269	!
+;	3270	!	NOVALUE
+;	3271	!
+;	3272	! Side Effects:
+;	3273	!
+;	3274	!	The SAT/LVT records marked for deletion are overwritten
+;	3275	!	by valid records; all SAT/LVT storage associated with
+;	3276	!	MC_IS_DYING modules is released.
+;	3277	!--
+;	3278	
+;	3279	BEGIN
+;	3280		EXTERNAL LITERAL
+;	3281					! This routine knows about converting between
+;	3282					! RST-pointers and SAT-pointers.
+;	3283			DBG$_RST_BEGIN;
+;	3284	
+;	3285		LOCAL
+;	3286				! The number of bytes in each record.
+;	3287			RECORD_SIZE,	
+;	3288	
+;	3289				! Declare a pointer which is suitable for use as
+;	3290				! a REF SAT_RECORD as well as a REF LVT_RECORD.
+;	3291				! This pointer is used to sequentially go thru
+;	3292				! vector storage to pick up non-deleted records.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8-1
+; Digital Equipment Corporation
+;
+;	3293				! We keep two pointers to the SAT or LVT record
+;	3294				! currently under consideration.  One, 'current',
+;	3295				! is NOT a SAT_POINTER because longword pointers
+;	3296				! are not easily comparable to the NT-pointers we
+;	3297				! get from storage descriptors.  The other is a  
+;	3298				! 'real' SAT_POINTER which always corresponds to 'current'.
+;	3299			CURRENT,
+;	3300			CURRENT_SAT_PTR : REF SAT_RECORD,
+;	3301	
+;	3302				! Corresponding to 'current' is a pointer which indicated
+;	3303				! where the next free SAT/LVT record is.
+;	3304			NEXT_FREE : REF SAT_RECORD,
+;	3305	
+;	3306				! We look at the vector storage which is allocated
+;	3307				! for SAT/LVTs for each _DYING module.
+;	3308			STORE_DESC : REF VECT_STORE_DESC,
+;	3309	
+;	3310				! Maintain a pointer into the vector storage which
+;	3311				! says where the last+1 record associated
+;	3312				! with a given module starts.
+;	3313			END_MARKER,
+;	3314	
+;	3315				! We scan the MC to pick out all _DYING modules.
+;	3316			MC_PTR : REF MC_RECORD,
+;	3317			MOVED_COUNT;		! Tally up how many records we move.
+;	3318	
+;	3319		! Set up to access the structure in the mode which
+;	3320		! we get told of FREE records only, so that we can deduce
+;	3321		! where to store the still-used ones we have to remove
+;	3322		! from the _DYING storage.  While we're at it
+;	3323		! pick up the size of the indicated fixed-size records.
+;	3324	
+;	3325		RECORD_SIZE = (.access_function)(SL_ACCE_INIT);
+;	3326	
+;	3327	IF_DIAG( REB9 ) 
+;	3328		$FAO_TT_OUT('!/empty_sat_lvt: access=!XL, record size=!XL',
+;     P 3329			.access_function,.record_size);
+;	3330	END_DIAG;
+;	3331	%IF DBG_REB14
+;     L 3332	%THEN
+;     U 3333		$FAO_TT_OUT('!/empty ');
+;     U 3334		if( .record_size eql RST_SAT_SIZE )
+;     U 3335		then
+;     U 3336			$fao_tt_out('sat')
+;     U 3337		else
+;     U 3338			$fao_tt_out('lvt');
+;     U 3339		MOVED_COUNT = 0;
+;     U 3340	%FI
+;	3341	
+;	3342		! Scan the module chain to pick up all modules
+;	3343		! marked as _DYING.  They are the ones that
+;	3344		! we have to clean-up and release storage for.
+;	3345		! We purposely don't ever look at the MC record
+;	3346		! allocated to globals since it never _IS_DYING.
+;	3347	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8-2
+; Digital Equipment Corporation
+;
+;	3348	MC_PTR = .DBG$GL_MC_PTR;
+;	3349	
+;	3350	WHILE( (MC_PTR = .MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	3351		DO
+;	3352		BEGIN
+;	3353	
+;	3354		! We only consider _DYING modules.  The _DYING
+;	3355		! flag is meaningless if the module is not _IN_RST.
+;	3356	
+;	3357		IF( .MC_PTR[ MC_IN_RST ] AND .MC_PTR[ MC_IS_DYING ] )
+;	3358		THEN
+;	3359			BEGIN
+;	3360	
+;	3361			! For each module we have to look at the vector storage
+;	3362			! which corresponds to the records we are to clean up.
+;	3363	
+;	3364			STORE_DESC = (IF( .access_function EQL DBG$GET_NXT_SAT )
+;	3365				      THEN
+;	3366						MC_PTR[ MC_SAT_STORAGE ]
+;	3367				      ELSE
+;	3368						MC_PTR[ MC_LVT_STORAGE ]
+;	3369				     );
+;	3370	
+;	3371			! The records that we want to move are those within the
+;	3372			! bounds defined by the _DYING module that are not
+;	3373			! already marked for deletion.  We go thru this storage
+;	3374			! using and comparing RST-pointers, and build a corresponding
+;	3375			! SAT-pointer when we want to use it.
+;	3376	
+;	3377			END_MARKER = .STORE_DESC[ STOR_MARKER ];
+;	3378	
+;	3379			IF( (CURRENT = .STORE_DESC[ STOR_BEGIN_RST ]) EQL 0 )
+;	3380			THEN
+;	3381				! No vector storage is allocated for this module
+;	3382				! for this kind of storage.  Simply fake having
+;	3383				! come to the end of the storage.
+;	3384	
+;	3385				CURRENT = .END_MARKER;
+;	3386	
+;	3387			WHILE( .CURRENT LSSA .END_MARKER )
+;	3388				DO
+;	3389				BEGIN
+;	3390	
+;	3391				! Construct a SAT pointer to correspond to the
+;	3392				! current place in the storage vector.
+;	3393	
+;	3394				CURRENT_SAT_PTR = .CURRENT OR DBG$_RST_BEGIN;
+;	3395	
+;	3396				! We only want to deal with records not marked for
+;	3397				! deletion.
+;	3398	
+;	3399				IF( .CURRENT_SAT_PTR[ SAT_NT_PTR ] NEQ 1 )
+;	3400				THEN
+;	3401					BEGIN
+;	3402	IF_DIAG( REB10 )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8-3
+; Digital Equipment Corporation
+;
+;	3403					$FAO_TT_OUT('!/moving rec at !XL',.current_sat_ptr);
+;	3404	END_DIAG;
+;	3405					! See if there is some place to put this record.
+;	3406	
+;	3407					IF( (NEXT_FREE = (.access_function)(SL_ACCE_FREE)) EQL 0 )
+;	3408					THEN
+;	3409						BEGIN
+;	3410	
+;	3411						! This should never happen because the
+;	3412						! storage for a given module should be 
+;	3413						! big enough to contain all SATs/LVTs for
+;	3414						! that module.  If this is the number of
+;	3415						! records marked for deletion, any real
+;	3416						! records left herein should correspond to
+;	3417						! outside records now marked for deletion.
+;	3418	
+;	3419						$FAO_TT_OUT('!/empty free storage error');
+;	3420						RETURN;
+;	3421						END;
+;	3422	
+;	3423					! Move the valid record to a safe place.
+;	3424	IF_DIAG( REB10 )
+;	3425					$FAO_TT_OUT(' back to !XL',.next_free);
+;	3426	END_DIAG;
+;	3427					CH$MOVE( .record_size, .CURRENT_SAT_PTR, .NEXT_FREE );
+;	3428	%IF DBG_REB14
+;     L 3429	%THEN
+;     U 3430					MOVED_COUNT = .MOVED_COUNT +1;
+;     U 3431	%FI
+;	3432					END;
+;	3433	
+;	3434				! Go back to look at the next record in the
+;	3435				! current vector storage.
+;	3436	
+;	3437				CURRENT = .CURRENT + .RECORD_SIZE;
+;	3438				END;
+;	3439	
+;	3440			! All records are now moved to a safe place so we 
+;	3441			! can free up the associated vector storage.
+;	3442	
+;	3443			DBG$VS_FREE( .STORE_DESC );
+;	3444	
+;	3445			! Go back to consider the next _DYING module.
+;	3446			END;
+;	3447	
+;	3448		! Go back and consider the next module in the chain.
+;	3449		END;
+;	3450	
+;	3451	%IF DBG_REB14
+;     L 3452	%THEN
+;     U 3453		$FAO_TT_OUT(' moved !XL (!UL.) records.',
+;     U 3454			.moved_count,.moved_count);
+;     U 3455	%FI
+;	3456		! All SAT/LVT storage has been freed up - we still
+;	3457		! have to leave what's left in order so that the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8-4
+; Digital Equipment Corporation
+;
+;	3458		! accessing functions can use them.  (LOOKUP_SAT/LVT)
+;	3459		! DBG$SORT_SA_LVT believes MC_IN_RST which is at this point
+;	3460		! untrue, but since the associated storage descriptor
+;	3461		! has been zeroed out, the accessing function will work OK.
+;	3462	
+;	3463		DBG$SORT_SA_LVT( .access_function );
+;	3464	
+;	3465		! There is nothing more to do.
+;	3466	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   26							      ;
+					      00001 	    .ASCII  \!/empty free storage error\			      ;
+					      0001B	    .BLKB   1
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 0029E EMPTY_SAT_LVT:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 3238
+		         5E	       08  C2 002A0 	    SUBL2   #8, SP						      ;
+				       7E  D4 002A3 	    CLRL    -(SP)						      ; 3325
+		    04   BC	       01  FB 002A5 	    CALLS   #1, @ACCESS_FUNCTION				      ;
+		         5A	       50  D0 002A9 	    MOVL    R0, RECORD_SIZE					      ;
+		         59 00000000G  EF  D0 002AC 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3348
+	   56	         59 00000000G  8F  C1 002B3 	    ADDL3   #DBG$_RST_BEGIN, MC_PTR, R6				      ; 3350
+		         59	       66  3C 002BB 1$:     MOVZWL  (R6), MC_PTR					      ;
+				       79  13 002BE 	    BEQL    8$							      ;
+	   56	         59 00000000G  8F  C1 002C0 	    ADDL3   #DBG$_RST_BEGIN, MC_PTR, R6				      ; 3357
+	   EE	    03   A6	       01  E1 002C8 	    BBC     #1, 3(R6), 1$					      ;
+	   E9	    03   A6	       06  E1 002CD 	    BBC     #6, 3(R6), 1$					      ;
+		         50	FD2A   CF  9E 002D2 	    MOVAB   DBG$GET_NXT_SAT, R0					      ; 3364
+		         50	  04   AC  D1 002D7 	    CMPL    ACCESS_FUNCTION, R0					      ;
+				       06  12 002DB 	    BNEQ    2$							      ;
+	   57	         56	       23  C1 002DD 	    ADDL3   #35, R6, STORE_DESC					      ; 3366
+				       04  11 002E1 	    BRB     3$							      ; 3364
+	   57	         56	       2A  C1 002E3 2$:     ADDL3   #42, R6, STORE_DESC					      ; 3368
+		    04   AE	  05   A7  3C 002E7 3$:     MOVZWL  5(STORE_DESC), END_MARKER				      ; 3377
+		         58	  01   A7  3C 002EC 	    MOVZWL  1(STORE_DESC), CURRENT				      ; 3379
+				       04  12 002F0 	    BNEQ    4$							      ;
+		         58	  04   AE  D0 002F2 	    MOVL    END_MARKER, CURRENT					      ; 3385
+		    04   AE	       58  D1 002F6 4$:     CMPL    CURRENT, END_MARKER					      ; 3387
+				       32  1E 002FA 	    BGEQU   7$							      ;
+	   5B	         58 00000000G  8F  C9 002FC 	    BISL3   #DBG$_RST_BEGIN, CURRENT, CURRENT_SAT_PTR		      ; 3394
+		         01	       6B  B1 00304 	    CMPW    (CURRENT_SAT_PTR), #1				      ; 3399
+				       20  13 00307 	    BEQL    6$							      ;
+				       03  DD 00309 	    PUSHL   #3							      ; 3407
+		    04   BC	       01  FB 0030B 	    CALLS   #1, @ACCESS_FUNCTION				      ;
+		         6E	       50  D0 0030F 	    MOVL    R0, NEXT_FREE					      ;
+				       10  12 00312 	    BNEQ    5$							      ;
+				       7E  D4 00314 	    CLRL    -(SP)						      ; 3419
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 8-5
+; Digital Equipment Corporation
+;
+			    00000000'  EF  9F 00316 	    PUSHAB  P.AAA						      ;
+	      00000000G  EF	       02  FB 0031C 	    CALLS   #2, DBG$FAO_OUT					      ;
+					   04 00323 	    RET     							      ; 3420
+      00   BE	         6B	       5A  28 00324 5$:     MOVC3   RECORD_SIZE, (CURRENT_SAT_PTR), @NEXT_FREE		      ; 3427
+		         58	       5A  C0 00329 6$:     ADDL2   RECORD_SIZE, CURRENT				      ; 3437
+				       C8  11 0032C 	    BRB     4$							      ; 3387
+				       57  DD 0032E 7$:     PUSHL   STORE_DESC						      ; 3443
+	      00000000G  EF	       01  FB 00330 	    CALLS   #1, DBG$VS_FREE					      ;
+				       82  11 00337 	    BRB     1$							      ; 3350
+				  04   AC  DD 00339 8$:     PUSHL   ACCESS_FUNCTION					      ; 3463
+		  0000V  CF	       01  FB 0033C 	    CALLS   #1, DBG$SORT_SA_LVT					      ;
+					   04 00341 	    RET     							      ; 3238
+
+; Routine Size:  164 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9
+; Digital Equipment Corporation
+;
+;	3467	GLOBAL ROUTINE DBG$SORT_SA_LVT( access_function ) : NOVALUE =
+;	3468	
+;	3469	!++
+;	3470	! Functional Description:
+;	3471	!
+;	3472	!	This routine is an unspeakably inefficient, (shell) sort
+;	3473	!	suitable to sort either the LVT or the SAT into ascending order.
+;	3474	!	It is necessary because access to the LVT or SAT assumes that
+;	3475	!	it has been done.
+;	3476	!
+;	3477	! Formal Parameters:
+;	3478	!	access_function -The function which must be called to
+;	3479	!			 gain sequential access to the SAT or LVT.
+;	3480	!
+;	3481	! Implicit Inputs: (assumptions)
+;	3482	!
+;	3483	!	SATs/LVTs are accessed via longword pointers, vector
+;	3484	!	storage descriptors contain RST-pointers, and CH$MOVE
+;	3485	!	works with the same kind of pointer as SAT_POINTER does.
+;	3486	!
+;	3487	!	The SAT_RECORD structure is appropriate for either type of
+;	3488	!	vector providing that we only use the _NT_PTR and _LB fields.
+;	3489	!
+;	3490	!	A temporary SAT record is large enough to contain an LVT record.
+;	3491	!
+;	3492	!	The sort is on the _LB field, which corresponds to the _VALUE
+;	3493	!	field in LVT records.  The comparison is UNSIGNED.
+;	3494	!
+;	3495	! Implicit Outputs:
+;	3496	!	None.
+;	3497	!
+;	3498	! Routine Value:
+;	3499	!	NOVALUE
+;	3500	!
+;	3501	! Side Effects:
+;	3502	!
+;	3503	!	The SAT/LVT vector is sorted into ascending order.
+;	3504	!--
+;	3505	
+;	3506	BEGIN
+;	3507		EXTERNAL LITERAL
+;	3508			! This routine knows about the difference between
+;	3509			! RST pointers and 'real' pointers.  (Because the
+;	3510			! former are stored in VECT_STORE_DESCs and the
+;	3511			! latter are used to reference SAT/LVT structures).
+;	3512	
+;	3513			DBG$_RST_BEGIN;
+;	3514		LABEL
+;	3515			INIT_LOOP,
+;	3516			SORT_LOOP;
+;	3517		LOCAL
+;	3518					! The module we are currently looking at.
+;	3519			mc_ptr : ref mc_record,
+;	3520					! Storage within the current module.
+;	3521			store_desc : ref vect_store_desc,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-1
+; Digital Equipment Corporation
+;
+;	3522					! The module we are looking at next.
+;	3523			nxt_mc_ptr : ref mc_record,
+;	3524					! Storage within the next module.
+;	3525			nxt_store_desc : ref vect_store_desc,
+;	3526	
+;	3527					! 1 => SAT sort, 0 => LVT sort.
+;	3528			SAT_FLAG,
+;	3529	
+;	3530					! The number of bytes in a SAT/LVT record.
+;	3531			ELEMENT_SIZE,
+;	3532	
+;	3533				! Declare a pointer which is suitable for use as
+;	3534				! a REF SAT_RECORD as well as a REF LVT_RECORD.
+;	3535				! This pointer is used to sequentially go thru
+;	3536				! the indicated vector to do the sort.
+;	3537			REC_PTR : REF SAT_RECORD;
+;	3538	
+;	3539	%IF DBG_REB14
+;     L 3540	%THEN
+;     U 3541		! Declarations needed to do CPU-time and
+;     U 3542		! page-fault measurements of the SORT phase.
+;     U 3543	
+;     U 3544		EXTERNAL
+;     U 3545			CTL$GL_PHD : REF BLOCK[,BYTE]
+;     U 3546				     ADDRESSING_MODE(GENERAL),
+;     U 3547			CTL$GL_PAGEFLTS : ADDRESSING_MODE(GENERAL);
+;     U 3548	
+;     U 3549		LOCAL
+;     U 3550			CPU_BEFORE,
+;     U 3551			FAULTS_BEFORE;
+;     U 3552	%FI
+;	3553	IF_DIAG( REB7 )
+;	3554	
+;	3555		! Set up to begin accessing the LVT of SAT.
+;	3556	
+;	3557		ELEMENT_SIZE = (.access_function)( SL_ACCE_INIT );
+;	3558	
+;	3559		! Simply print out the indicated vector.
+;	3560	
+;	3561		$FAO_TT_OUT('!/!/sort_sa_lvt: access func is at !XL',
+;     P 3562			.access_function);
+;	3563	
+;	3564		WHILE( (REC_PTR = (.access_function)( SL_ACCE_RECS)) NEQ 0 )
+;	3565			DO
+;	3566			BEGIN
+;	3567			LOCAL
+;	3568				NT_PTR : REF NT_RECORD;
+;	3569	
+;	3570			$FAO_TT_OUT('!/sat/lvt: !XL',.rec_ptr);
+;	3571			NT_PTR = .REC_PTR[ SAT_NT_PTR ];
+;	3572			$FAO_TT_OUT(' -> nt: !XL has type=!XB, ',
+;     P 3573				.NT_PTR, .NT_PTR[NT_TYPE]);
+;	3574	
+;	3575			IF( .ELEMENT_SIZE EQL RST_SAT_SIZE )
+;	3576			THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-2
+; Digital Equipment Corporation
+;
+;	3577				$FAO_TT_OUT('LB=!XL, UB=!XL, and ',
+;     P 3578					.REC_PTR[SAT_LB],.REC_PTR[SAT_UB])
+;	3579			ELSE
+;	3580				$FAO_TT_OUT('value=!XL, and ',.REC_PTR[SAT_LB]);
+;	3581			PR_CS(NT_PTR[ NT_NAME_CS ] );
+;	3582	
+;	3583			END;
+;	3584	END_DIAG;
+;	3585		!+
+;	3586		! The (shell) sort works by going thru the vector
+;	3587		! sequentially, considering each element, finding
+;	3588		! the minimum of those which are left, and swapping
+;	3589		! this minimum with the current one if such a minimum
+;	3590		! can be found.
+;	3591		!
+;	3592		! REC_PTR points to the record currently under consideration,
+;	3593		! MIN_PTR points to the smallest one of those left, and
+;	3594		! TMP_PTR is used to deduce what MIN_PTR should be.
+;	3595		!-
+;	3596	
+;	3597		! Set up to begin accessing the LVT or SAT.
+;	3598	
+;	3599		ELEMENT_SIZE = (.access_function)( SL_ACCE_INIT );
+;	3600	
+;	3601	%IF DBG_REB14
+;     L 3602	%THEN
+;     U 3603		$FAO_TT_OUT('!/begin sort of ');
+;     U 3604		if( .element_size eql rst_sat_size )
+;     U 3605		then
+;     U 3606			$fao_tt_out('sat')
+;     U 3607		else
+;     U 3608			$fao_tt_out('lvt');
+;     U 3609	
+;     U 3610		! Save CPU and page-faults accumulated so far.
+;     U 3611	
+;     U 3612		CPU_BEFORE = .CTL$GL_PHD[ PHD$L_CPUTIM ];
+;     U 3613		FAULTS_BEFORE = .CTL$GL_PAGEFLTS;
+;     U 3614	%FI
+;	3615		SAT_FLAG = .access_function EQL DBG$GET_NXT_SAT;
+;	3616	
+;	3617		! Locate the first SAT/LVT record.
+;	3618	
+;	3619		MC_PTR = .DBG$GL_MC_PTR;
+;	3620	
+;	3621		REPEAT
+;	3622		    INIT_LOOP:
+;	3623			BEGIN
+;	3624	
+;	3625			! See if we have run off the end of the MC chain yet.
+;	3626	
+;	3627			IF( .MC_PTR EQL 0 )
+;	3628			THEN
+;	3629				! The SAT/LVT structure is completely empty.
+;	3630				! This is not a sort error.
+;	3631				RETURN(TRUE);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-3
+; Digital Equipment Corporation
+;
+;	3632	
+;	3633			! The current module is to be ignored if the
+;	3634			! user has not brought it into the RST.
+;	3635	
+;	3636			IF( NOT .MC_PTR[ MC_IN_RST ] )
+;	3637			THEN
+;	3638				BEGIN
+;	3639				MC_PTR = .MC_PTR[ MC_NEXT ];
+;	3640				LEAVE INIT_LOOP;
+;	3641				END;
+;	3642	
+;	3643			! See if this module has any of the kind
+;	3644			! of storage we are looking for.  No storage
+;	3645			! is allocated if the 'begin' field is null.
+;	3646	
+;	3647			STORE_DESC = (IF( .SAT_FLAG )
+;	3648				      THEN
+;	3649						MC_PTR[ MC_SAT_STORAGE ]
+;	3650				      ELSE
+;	3651						MC_PTR[ MC_LVT_STORAGE ]
+;	3652				     );
+;	3653			IF( .STORE_DESC[ STOR_BEGIN_RST ] EQL 0 )
+;	3654			THEN
+;	3655				BEGIN
+;	3656				MC_PTR = .MC_PTR[ MC_NEXT ];
+;	3657				LEAVE INIT_LOOP;
+;	3658				END;
+;	3659	
+;	3660			! We have found the first SAT/LVT record
+;	3661			! so there is no need to loop any further.
+;	3662	
+;	3663			REC_PTR = .STORE_DESC[ STOR_BEGIN_RST ] OR DBG$_RST_BEGIN;
+;	3664			EXITLOOP;
+;	3665			END;
+;	3666	
+;	3667		! If we get this far we have atleast one record in the
+;	3668		! logical SAT/LVT structure.  Now loop to actually do
+;	3669		! the sort.
+;	3670	
+;	3671		REPEAT
+;	3672			BEGIN
+;	3673			LABEL
+;	3674				MIN_LOOP;
+;	3675			LOCAL
+;	3676				nxt_store : ref vect_store_desc,
+;	3677				tmp_store : ref vect_store_desc,
+;	3678				FIRST_FLAG,
+;	3679				NXT_MC_PTR : REF MC_RECORD,
+;	3680				TMP_MC_PTR : REF MC_RECORD,
+;	3681				MIN_PTR	: REF SAT_RECORD,
+;	3682				NXT_PTR,
+;	3683				TMP_PTR;
+;	3684	
+;	3685			TMP_PTR = .REC_PTR AND NOT DBG$_RST_BEGIN;
+;	3686			MIN_PTR = .REC_PTR;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-4
+; Digital Equipment Corporation
+;
+;	3687	
+;	3688			! Find the minimum of those left.
+;	3689	
+;	3690			FIRST_FLAG = TRUE;
+;	3691			TMP_MC_PTR = .MC_PTR;
+;	3692			TMP_STORE = .STORE_DESC;
+;	3693	
+;	3694			REPEAT
+;	3695			    MIN_LOOP:
+;	3696				BEGIN
+;	3697				LOCAL
+;	3698					TMP_SAT_PTR : REF SAT_RECORD;
+;	3699	
+;	3700				IF( .TMP_PTR EQL 0 )
+;	3701				THEN
+;	3702					BEGIN
+;	3703	
+;	3704					! The next record must come from the next
+;	3705					! module in the chain.
+;	3706	
+;	3707					IF( (TMP_MC_PTR = .TMP_MC_PTR[ MC_NEXT ]) EQL 0 )
+;	3708					THEN
+;	3709						! No more for min search.
+;	3710	
+;	3711						EXITLOOP;
+;	3712					IF( NOT .TMP_MC_PTR[ MC_IN_RST ] )
+;	3713					THEN
+;	3714						LEAVE MIN_LOOP;
+;	3715	
+;	3716					! See if this module has any of the kind
+;	3717					! of storage we are looking for.  No storage
+;	3718					! is allocated if the 'begin' field is null.
+;	3719			
+;	3720					TMP_STORE = (IF( .SAT_FLAG )
+;	3721						      THEN
+;	3722								TMP_MC_PTR[ MC_SAT_STORAGE ]
+;	3723						      ELSE
+;	3724								TMP_MC_PTR[ MC_LVT_STORAGE ]
+;	3725						     );
+;	3726					IF( .TMP_STORE[ STOR_BEGIN_RST ] EQL 0 )
+;	3727					THEN
+;	3728						LEAVE MIN_LOOP;
+;	3729					TMP_PTR = .TMP_STORE[ STOR_BEGIN_RST ];
+;	3730	
+;	3731					IF( .FIRST_FLAG )
+;	3732					THEN
+;	3733						BEGIN
+;	3734						NXT_PTR = 0;
+;	3735						NXT_STORE = .TMP_STORE;
+;	3736						NXT_MC_PTR = .TMP_MC_PTR;
+;	3737						END
+;	3738					END
+;	3739				ELSE
+;	3740					IF( NOT (TMP_PTR = .TMP_PTR + .ELEMENT_SIZE)
+;	3741					    LSSA .TMP_STORE[ STOR_MARKER ] )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-5
+; Digital Equipment Corporation
+;
+;	3742					THEN
+;	3743						BEGIN
+;	3744						TMP_PTR = 0;
+;	3745						LEAVE MIN_LOOP;
+;	3746						END
+;	3747					ELSE
+;	3748						IF( .FIRST_FLAG )
+;	3749						THEN
+;	3750							NXT_PTR = .TMP_PTR;
+;	3751	
+;	3752				! See if a new minimum has been found.
+;	3753	
+;	3754				TMP_SAT_PTR = .TMP_PTR OR DBG$_RST_BEGIN;
+;	3755	
+;	3756				IF( .TMP_SAT_PTR[ SAT_LB ] LSSA .MIN_PTR[ SAT_LB ] )
+;	3757				THEN
+;	3758					! A new minimum has been found.
+;	3759	
+;	3760					MIN_PTR = .TMP_SAT_PTR;
+;	3761	
+;	3762				FIRST_FLAG = FALSE;
+;	3763				END; ! of MIN_LOOP
+;	3764	
+;	3765			! If we didn't find a 'next' pointer, above,
+;	3766			! there are no more records to look at.
+;	3767	
+;	3768			IF( .FIRST_FLAG )
+;	3769			THEN
+;	3770				EXITLOOP;
+;	3771	
+;	3772	IF_DIAG( REB6 )
+;	3773			$FAO_TT_OUT('!/minimum is !XL',.min_ptr[sat_lb]);
+;	3774	END_DIAG;
+;	3775			! If the minimum has not changed, having started
+;	3776			! out as the current one, then we do nothing except
+;	3777			! go on to the next element in the vector.
+;	3778			! Otherwise we swap the minimum with the current
+;	3779			! so that we can then go on to the next anyways.
+;	3780	
+;	3781			IF( .MIN_PTR NEQ .REC_PTR )
+;	3782			THEN
+;	3783				BEGIN
+;	3784				LOCAL
+;	3785					TMP_RECORD : SAT_RECORD;
+;	3786	
+;	3787				! Swap the old current one with the new minimum.
+;	3788	
+;	3789				CH$MOVE( .ELEMENT_SIZE, .REC_PTR, TMP_RECORD );
+;	3790				CH$MOVE( .ELEMENT_SIZE, .MIN_PTR, .REC_PTR );
+;	3791				CH$MOVE( .ELEMENT_SIZE, TMP_RECORD, .MIN_PTR );
+;	3792				END;
+;	3793	
+;	3794			! Update our idea of 'current' record by effectively
+;	3795			! going back to the first 'next' one we found above.
+;	3796	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-6
+; Digital Equipment Corporation
+;
+;	3797			IF( (REC_PTR = .NXT_PTR) EQL 0 )
+;	3798			THEN
+;	3799				BEGIN
+;	3800				MC_PTR = .NXT_MC_PTR;
+;	3801				STORE_DESC = .NXT_STORE;
+;	3802				REC_PTR = .STORE_DESC[ STOR_BEGIN_RST ];
+;	3803				END;
+;	3804			REC_PTR = .REC_PTR OR DBG$_RST_BEGIN;
+;	3805			END; ! of outer loop.
+;	3806	
+;	3807		! At this point the vector is sorted
+;	3808		! into ascending order.
+;	3809	
+;	3810	%IF DBG_REB14
+;     L 3811	%THEN
+;     U 3812		! CPU and faluts statistics on behalf of the sort
+;     U 3813		! are "current_value - before_value".
+;     U 3814	
+;     U 3815		FAULTS_BEFORE = .CTL$GL_PAGEFLTS - .FAULTS_BEFORE;
+;     U 3816		CPU_BEFORE = .CTL$GL_PHD[ PHD$L_CPUTIM ] - .CPU_BEFORE;
+;     U 3817	
+;     U 3818		! Convert CPU time to mili seconds.
+;     U 3819	
+;     U 3820		CPU_BEFORE = .CPU_BEFORE * 10;
+;     U 3821		$FAO_TT_OUT('!/end sort of ');
+;     U 3822		if( .element_size eql rst_sat_size )
+;     U 3823		then
+;     U 3824			$fao_tt_out('sat')
+;     U 3825		else
+;     U 3826			$fao_tt_out('lvt');
+;     U 3827		$FAO_TT_OUT(' took !XL (!UL.) m.sec and caused !XL (!UL.) faults',
+;     U 3828			.cpu_before,.cpu_before,.faults_before,.faults_before);
+;     U 3829	%FI
+;	3830	
+;	3831	IF_DIAG( REB8 )
+;	3832	
+;	3833		! Print out the sorted vector.
+;	3834	
+;	3835		ELEMENT_SIZE = (.access_function)( SL_ACCE_INIT );
+;	3836	
+;	3837		$FAO_TT_OUT('!/!/sort_sa_lvt: the sorted vector is:!/');
+;	3838	
+;	3839		WHILE( (REC_PTR = (.access_function)( SL_ACCE_RECS)) NEQ 0 )
+;	3840			DO
+;	3841			BEGIN
+;	3842			LOCAL
+;	3843				NT_PTR : REF NT_RECORD;
+;	3844	
+;	3845			NT_PTR = .REC_PTR[ SAT_NT_PTR ];
+;	3846			$FAO_TT_OUT('!/sat/lvt: !XL -> nt: !XL has type=!XB, ',
+;     P 3847				.REC_PTR, .NT_PTR, .NT_PTR[NT_TYPE]);
+;	3848			IF( .ELEMENT_SIZE EQL RST_SAT_SIZE )
+;	3849			THEN
+;	3850				$FAO_TT_OUT('LB=!XL, UB=!XL, and ',
+;     P 3851					.REC_PTR[SAT_LB],.REC_PTR[SAT_UB])
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-7
+; Digital Equipment Corporation
+;
+;	3852			ELSE
+;	3853				$FAO_TT_OUT('value=!XL, and ',.REC_PTR[SAT_LB]);
+;	3854			PR_CS(NT_PTR[ NT_NAME_CS ] );
+;	3855	
+;	3856			END;
+;	3857	END_DIAG;
+;	3858	
+;	3859		! This is the only place where we return
+;	3860		! an OK status.
+;	3861	
+;	3862		RETURN(TRUE);
+;	3863	END;
+
+
+
+
+
+					 0FFC 00342 	    .ENTRY  DBG$SORT_SA_LVT, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 3467
+		         5E	       18  C2 00344 	    SUBL2   #24, SP						      ;
+				       7E  D4 00347 	    CLRL    -(SP)						      ; 3599
+		    04   BC	       01  FB 00349 	    CALLS   #1, @ACCESS_FUNCTION				      ;
+		         5B	       50  D0 0034D 	    MOVL    R0, ELEMENT_SIZE					      ;
+		         51	FCAC   CF  9E 00350 	    MOVAB   DBG$GET_NXT_SAT, R1					      ; 3615
+				       50  D4 00355 	    CLRL    R0							      ;
+		         51	  04   AC  D1 00357 	    CMPL    ACCESS_FUNCTION, R1					      ;
+				       02  12 0035B 	    BNEQ    1$							      ;
+				       50  D6 0035D 	    INCL    R0							      ;
+		    08   AE	       50  D0 0035F 1$:     MOVL    R0, SAT_FLAG					      ;
+		         56 00000000G  EF  D0 00363 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3619
+				       56  D5 0036A 2$:     TSTL    MC_PTR						      ; 3627
+				       01  12 0036C 	    BNEQ    3$							      ;
+					   04 0036E 	    RET     							      ;
+	   09 00000000G  E6	       01  E0 0036F 3$:     BBS     #1, DBG$_RST_BEGIN+3(MC_PTR), 4$			      ; 3636
+		         56 00000000G  E6  3C 00377 	    MOVZWL  DBG$_RST_BEGIN(MC_PTR), MC_PTR			      ; 3639
+				       EA  11 0037E 	    BRB     2$							      ; 3640
+		         50 00000000G  E6  9E 00380 4$:     MOVAB   DBG$_RST_BEGIN(MC_PTR), R0				      ; 3649
+		         06	  08   AE  E9 00387 	    BLBC    SAT_FLAG, 5$					      ; 3647
+	   58	         50	       23  C1 0038B 	    ADDL3   #35, R0, STORE_DESC					      ; 3649
+				       04  11 0038F 	    BRB     6$							      ; 3647
+	   58	         50	       2A  C1 00391 5$:     ADDL3   #42, R0, STORE_DESC					      ; 3651
+				  01   A8  B5 00395 6$:     TSTW    1(STORE_DESC)					      ; 3653
+				       03  13 00398 	    BEQL    7$							      ;
+				     00A3  31 0039A 	    BRW     18$							      ;
+		         56	       60  3C 0039D 7$:     MOVZWL  (R0), MC_PTR					      ; 3656
+				       C8  11 003A0 	    BRB     2$							      ; 3657
+		         53 00000000*  8F  D2 003A2 8$:     MCOML   #<^CDBG$_RST_BEGIN>, TMP_PTR			      ; 3685
+	   53	         59	       53  CB 003A9 	    BICL3   TMP_PTR, REC_PTR, TMP_PTR				      ;
+		         57	       59  D0 003AD 	    MOVL    REC_PTR, MIN_PTR					      ; 3686
+		         54	       01  D0 003B0 	    MOVL    #1, FIRST_FLAG					      ; 3690
+		         52	       56  D0 003B3 	    MOVL    MC_PTR, TMP_MC_PTR					      ; 3691
+		         51	       58  D0 003B6 	    MOVL    STORE_DESC, TMP_STORE				      ; 3692
+				       53  D5 003B9 9$:     TSTL    TMP_PTR						      ; 3700
+				       36  12 003BB 	    BNEQ    12$							      ;
+		         52 00000000G  E2  3C 003BD 	    MOVZWL  DBG$_RST_BEGIN(TMP_MC_PTR), TMP_MC_PTR		      ; 3707
+				       58  13 003C4 	    BEQL    16$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 9-8
+; Digital Equipment Corporation
+;
+		         50 00000000G  E2  9E 003C6 	    MOVAB   DBG$_RST_BEGIN(TMP_MC_PTR), R0			      ; 3712
+	   E7	    03   A0	       01  E1 003CD 	    BBC     #1, 3(R0), 9$					      ;
+		         06	  08   AE  E9 003D2 	    BLBC    SAT_FLAG, 10$					      ; 3720
+	   51	         50	       23  C1 003D6 	    ADDL3   #35, R0, TMP_STORE					      ; 3722
+				       04  11 003DA 	    BRB     11$							      ; 3720
+	   51	         50	       2A  C1 003DC 10$:    ADDL3   #42, R0, TMP_STORE					      ; 3724
+				  01   A1  B5 003E0 11$:    TSTW    1(TMP_STORE)					      ; 3726
+				       D4  13 003E3 	    BEQL    9$							      ;
+		         53	  01   A1  3C 003E5 	    MOVZWL  1(TMP_STORE), TMP_PTR				      ; 3729
+		         1C	       54  E9 003E9 	    BLBC    FIRST_FLAG, 14$					      ; 3731
+				       5A  D4 003EC 	    CLRL    NXT_PTR						      ; 3734
+		         6E	       51  7D 003EE 	    MOVQ    TMP_STORE, NXT_STORE				      ; 3735
+				       15  11 003F1 	    BRB     14$							      ; 3700
+		         53	       5B  C0 003F3 12$:    ADDL2   ELEMENT_SIZE, TMP_PTR				      ; 3740
+      05   A1	         10	       00  ED 003F6 	    CMPZV   #0, #16, 5(TMP_STORE), TMP_PTR			      ; 3741
+				       53     003FB									      ;
+				       04  1A 003FC 	    BGTRU   13$							      ;
+				       53  D4 003FE 	    CLRL    TMP_PTR						      ; 3744
+				       B7  11 00400 	    BRB     9$							      ; 3745
+		         03	       54  E9 00402 13$:    BLBC    FIRST_FLAG, 14$					      ; 3748
+		         5A	       53  D0 00405 	    MOVL    TMP_PTR, NXT_PTR					      ; 3750
+	   50	         53 00000000G  8F  C9 00408 14$:    BISL3   #DBG$_RST_BEGIN, TMP_PTR, TMP_SAT_PTR		      ; 3754
+		    02   A7	  02   A0  D1 00410 	    CMPL    2(TMP_SAT_PTR), 2(MIN_PTR)				      ; 3756
+				       03  1E 00415 	    BGEQU   15$							      ;
+		         57	       50  D0 00417 	    MOVL    TMP_SAT_PTR, MIN_PTR				      ; 3760
+				       54  D4 0041A 15$:    CLRL    FIRST_FLAG						      ; 3762
+				       9B  11 0041C 	    BRB     9$							      ; 3692
+		         2D	       54  E8 0041E 16$:    BLBS    FIRST_FLAG, 20$					      ; 3768
+		         59	       57  D1 00421 	    CMPL    MIN_PTR, REC_PTR					      ; 3781
+				       0E  13 00424 	    BEQL    17$							      ;
+      0C   AE	         69	       5B  28 00426 	    MOVC3   ELEMENT_SIZE, (REC_PTR), TMP_RECORD			      ; 3789
+	   69	         67	       5B  28 0042B 	    MOVC3   ELEMENT_SIZE, (MIN_PTR), (REC_PTR)			      ; 3790
+	   67	    0C   AE	       5B  28 0042F 	    MOVC3   ELEMENT_SIZE, TMP_RECORD, (MIN_PTR)			      ; 3791
+		         59	       5A  D0 00434 17$:    MOVL    NXT_PTR, REC_PTR					      ; 3797
+				       0B  12 00437 	    BNEQ    19$							      ;
+		         56	  04   AE  D0 00439 	    MOVL    NXT_MC_PTR, MC_PTR					      ; 3800
+		         58	       6E  D0 0043D 	    MOVL    NXT_STORE, STORE_DESC				      ; 3801
+		         59	  01   A8  3C 00440 18$:    MOVZWL  1(STORE_DESC), REC_PTR				      ; 3802
+		         59 00000000G  8F  C8 00444 19$:    BISL2   #DBG$_RST_BEGIN, REC_PTR				      ; 3804
+				     FF54  31 0044B 	    BRW     8$							      ; 3665
+					   04 0044E 20$:    RET     							      ; 3467
+
+; Routine Size:  269 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 10
+; Digital Equipment Corporation
+;
+;	3864	ROUTINE DELE_SAT_LVT( STORE_DESC_ADDR, access_function ) =
+;	3865	
+;	3866	!++
+;	3867	! Functional Description:
+;	3868	!
+;	3869	!	This routine deletes records from the LVT or SAT
+;	3870	!	vector it is given a pointer to (VEC_PTR).  The
+;	3871	!	records that are deleted are those that correspond
+;	3872	!	(point) to an indicated module (STORE_DESC_ADDR).
+;	3873	!	The correspondence is discovered by seeing if the
+;	3874	!	NT_PTR in a given LVT/SAT record lies within the
+;	3875	!	RST storage for the NTs for the indicated module.
+;	3876	!	This is faster than actually following the scope
+;	3877	!	chains of the pointed-to NT records to see if 
+;	3878	!	they belong to the indicated module.
+;	3879	!
+;	3880	! Formal Parameters:
+;	3881	!
+;	3882	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	3883	!			 which completely describes the NT storage
+;	3884	!			 for the indicated module.
+;	3885	!	access_function	-The name of the function to call to 
+;	3886	!			 access the indicated structure.
+;	3887	!
+;	3888	! Implicit Inputs: (assumptions)
+;	3889	!
+;	3890	!	We assume that direct comparisons of RST pointers
+;	3891	!	is valid.  (i.e. that "begin < ptr < end" is a valid
+;	3892	!	test of whether 'ptr' RST-points to somewhere inbetween
+;	3893	!	where 'begin' and 'end' RST-point.
+;	3894	!
+;	3895	! Implicit Outputs:
+;	3896	!	None.
+;	3897	!
+;	3898	! Routine Value:
+;	3899	!	The number of records which are marked for deletion
+;	3900	!	in the indicated structure.
+;	3901	!
+;	3902	! Side Effects:
+;	3903	!
+;	3904	!	Records are 'deleted' from the SAT/LVT vector.
+;	3905	!	Really, this only means that the indicated records
+;	3906	!	are marked with their NT_PTR = 1.  More processing
+;	3907	!	of this structure is necessary before it is usable,
+;	3908	!	but it is better to do this processing only once
+;	3909	!	if several modules are to be deleted from the RST.
+;	3910	!--
+;	3911	
+;	3912	BEGIN
+;	3913		MAP
+;	3914					! Storage descriptor for the NTs.
+;	3915			STORE_DESC_ADDR : REF VECT_STORE_DESC;
+;	3916	
+;	3917		LOCAL
+;	3918					! We pick up a storage descriptor for GLOBALS.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 10-1
+; Digital Equipment Corporation
+;
+;	3919			GLOBALS : REF VECT_STORE_DESC,
+;	3920	
+;	3921					! Tally up how many records we delete.
+;	3922			DELETE_COUNT,	
+;	3923	
+;	3924					! Declare a pointer which is suitable for use as
+;	3925					! a REF SAT_RECORD as well as a REF LVT_RECORD.
+;	3926					! This pointer is used to sequentially go thru
+;	3927					! the indicated vector.
+;	3928			REC_PTR : REF SAT_RECORD,
+;	3929	
+;	3930					! NT storage RST limits.
+;	3931			NT_BEGINS : REF NT_RECORD,
+;	3932			NT_ENDS   : REF NT_RECORD,
+;	3933			GL_NTS_BEGIN : REF NT_RECORD,
+;	3934			GL_NTS_END   : REF NT_RECORD;
+;	3935	
+;	3936		! We tally up the number of records which we mark
+;	3937		! for deletion so that we can return this value.
+;	3938	
+;	3939		DELETE_COUNT = 0;
+;	3940	
+;	3941	IF_DIAG( REB9 )
+;	3942		$FAO_TT_OUT('!/dele_sat_lvt: desc at !XL ',.store_desc_addr);
+;	3943	END_DIAG;
+;	3944	
+;	3945		! Pick up the RST limit pointers of where the
+;	3946		! associated NT records exist, and where the 
+;	3947		! global NT records exist.
+;	3948	
+;	3949		GLOBALS = DBG$GL_MC_PTR[ MC_NT_STORAGE ];
+;	3950		NT_BEGINS = .STORE_DESC_ADDR[ STOR_BEGIN_RST ];
+;	3951		NT_ENDS = .STORE_DESC_ADDR[ STOR_END_RST ];
+;	3952		GL_NTS_BEGIN = .GLOBALS[ STOR_BEGIN_RST ];
+;	3953		GL_NTS_END = .GLOBALS[ STOR_END_RST ];
+;	3954	
+;	3955	IF_DIAG( REB9 )
+;	3956		$FAO_TT_OUT('NTs begin at !XL and end at !XL',
+;     P 3957			.STORE_DESC_ADDR[ STOR_BEGIN_RST ], 
+;     P 3958			.STORE_DESC_ADDR[ STOR_END_RST ]); 
+;	3959		$FAO_TT_OUT('!/globals begin at !XL and end at !XL',
+;     P 3960			.GLOBALS[ STOR_BEGIN_RST ], 
+;     P 3961			.GLOBALS[ STOR_END_RST ]); 
+;	3962	END_DIAG;
+;	3963	
+;	3964		! Go thru the structure sequentially
+;	3965		! checking for records to mark as deleted.
+;	3966	
+;	3967		(.access_function)( SL_ACCE_INIT );
+;	3968	
+;	3969		WHILE( (REC_PTR = (.access_function)( SL_ACCE_RECS )) NEQ 0 )
+;	3970			DO
+;	3971			BEGIN
+;	3972	
+;	3973	IF_DIAG( REB10 )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 10-2
+; Digital Equipment Corporation
+;
+;	3974			$FAO_TT_OUT('!/dele_sat: rec at !XL',.rec_ptr);
+;	3975			$FAO_TT_OUT(' has nt=!XL',
+;     P 3976				.rec_ptr[sat_nt_ptr]);
+;	3977	END_DIAG;
+;	3978			! Delete the record if it points to an NT record
+;	3979			! in the storage for the indicated module.
+;	3980	
+;	3981			IF( .REC_PTR[ SAT_NT_PTR ] GEQA .NT_BEGINS 
+;	3982			   AND
+;	3983			    .REC_PTR[ SAT_NT_PTR ] LSSA .NT_ENDS
+;	3984			  )
+;	3985			THEN
+;	3986				BEGIN
+;	3987	IF_DIAG( REB10 )
+;	3988				$FAO_TT_OUT(' was deleted.');
+;	3989	END_DIAG;
+;	3990				! Actually, we can only mark it for deletion
+;	3991				! because it is much more efficient to compress
+;	3992				! the entire structure only once.
+;	3993	
+;	3994				DELETE_COUNT = .DELETE_COUNT +1;
+;	3995				REC_PTR[ SAT_NT_PTR ] = 1;
+;	3996				END
+;	3997			ELSE
+;	3998		
+;	3999			! If that didn't detect something to delete,
+;	4000			! we must also see if we are deleting global
+;	4001			! literals since they must go away too.
+;	4002	
+;	4003			IF( .access_function EQL DBG$GET_NXT_LVT )
+;	4004			THEN
+;	4005				IF( .REC_PTR[ SAT_NT_PTR ] GEQA .GL_NTS_BEGIN
+;	4006				   AND
+;	4007				    .REC_PTR[ SAT_NT_PTR ] LSSA .GL_NTS_END
+;	4008				  )
+;	4009				THEN
+;	4010					BEGIN
+;	4011	IF_DIAG( REB10 )
+;	4012					$FAO_TT_OUT(' was deleted.');
+;	4013	END_DIAG;
+;	4014					DELETE_COUNT = .DELETE_COUNT +1;
+;	4015					REC_PTR[ SAT_NT_PTR ] = 1;
+;	4016					END;
+;	4017	
+;	4018			! Loop back to consider the next record.
+;	4019			END;
+;	4020	
+;	4021		! Return the number of records which we 
+;	4022		! have marked for deletion.
+;	4023	
+;	4024		RETURN(.DELETE_COUNT);
+;	4025	END;
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 10-3
+; Digital Equipment Corporation
+;
+
+
+					 00FC 0044F DELE_SAT_LVT:
+							    .WORD   Save R2,R3,R4,R5,R6,R7				      ; 3864
+				       53  D4 00451 	    CLRL    DELETE_COUNT					      ; 3939
+	   50 00000000G  EF 00000000G  8F  C1 00453 	    ADDL3   #DBG$_RST_BEGIN, DBG$GL_MC_PTR, R0			      ; 3949
+	   51	         50	       1C  C1 0045F 	    ADDL3   #28, R0, GLOBALS					      ;
+		         50	  04   AC  D0 00463 	    MOVL    STORE_DESC_ADDR, R0					      ; 3950
+		         57	  01   A0  3C 00467 	    MOVZWL  1(R0), NT_BEGINS					      ;
+		         54	  03   A0  3C 0046B 	    MOVZWL  3(R0), NT_ENDS					      ; 3951
+		         55	  01   A1  3C 0046F 	    MOVZWL  1(GLOBALS), GL_NTS_BEGIN				      ; 3952
+		         56	  03   A1  3C 00473 	    MOVZWL  3(GLOBALS), GL_NTS_END				      ; 3953
+				       7E  D4 00477 	    CLRL    -(SP)						      ; 3967
+		    08   BC	       01  FB 00479 	    CALLS   #1, @ACCESS_FUNCTION				      ;
+				       01  DD 0047D 1$:     PUSHL   #1							      ; 3969
+		    08   BC	       01  FB 0047F 	    CALLS   #1, @ACCESS_FUNCTION				      ;
+		         52	       50  D0 00483 	    MOVL    R0, REC_PTR						      ;
+				       2E  13 00486 	    BEQL    4$							      ;
+	   62	         10	       00  ED 00488 	    CMPZV   #0, #16, (REC_PTR), NT_BEGINS			      ; 3981
+				       57     0048C									      ;
+				       07  1F 0048D 	    BLSSU   2$							      ;
+	   62	         10	       00  ED 0048F 	    CMPZV   #0, #16, (REC_PTR), NT_ENDS				      ; 3983
+				       54     00493									      ;
+				       19  1F 00494 	    BLSSU   3$							      ;
+		         50	FB73   CF  9E 00496 2$:     MOVAB   DBG$GET_NXT_LVT, R0					      ; 4003
+		         50	  08   AC  D1 0049B 	    CMPL    ACCESS_FUNCTION, R0					      ;
+				       DC  12 0049F 	    BNEQ    1$							      ;
+	   62	         10	       00  ED 004A1 	    CMPZV   #0, #16, (REC_PTR), GL_NTS_BEGIN			      ; 4005
+				       55     004A5									      ;
+				       D5  1F 004A6 	    BLSSU   1$							      ;
+	   62	         10	       00  ED 004A8 	    CMPZV   #0, #16, (REC_PTR), GL_NTS_END			      ; 4007
+				       56     004AC									      ;
+				       CE  1E 004AD 	    BGEQU   1$							      ;
+				       53  D6 004AF 3$:     INCL    DELETE_COUNT					      ; 4014
+		         62	       01  B0 004B1 	    MOVW    #1, (REC_PTR)					      ; 4015
+				       C7  11 004B4 	    BRB     1$							      ; 3969
+		         50	       53  D0 004B6 4$:     MOVL    DELETE_COUNT, R0					      ; 4024
+					   04 004B9 	    RET     							      ; 3864
+
+; Routine Size:  107 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 11
+; Digital Equipment Corporation
+;
+;	4026	%IF DBG_ANY
+;     L 4027	%THEN
+;     U 4028		! This routine is only used by DEBUGging output routines.
+;     U 4029	
+;     U 4030	ROUTINE PR_CS( ADDR )  : NOVALUE =
+;     U 4031	
+;     U 4032	
+;     U 4033	!++
+;     U 4034	! Functional Description:
+;     U 4035	!	Print out a counted string in an
+;     U 4036	!	unambiguous way for debugging purposes.
+;     U 4037	!--
+;     U 4038	
+;     U 4039	BEGIN
+;     U 4040		MAP
+;     U 4041			ADDR : REF VECTOR[,BYTE];
+;     U 4042	
+;     U 4043		! Don't get fooled!
+;     U 4044	
+;     U 4045		IF( .ADDR EQL 0 )
+;     U 4046		THEN
+;     U 4047			$FAO_TT_OUT( '**** PR_CS AT 0 **** ' )
+;     U 4048		ELSE
+;     U 4049			$FAO_TT_OUT( 'Name(!UB.): "!AC".  ' , .ADDR[0], ADDR[0] );
+;     U 4050	END;
+;     U 4051	
+;     U 4052	%FI
+;	4053	END				!End of module
+;	4054	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	  1210  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$OWN        	     8    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$PLIT       	    28  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         3         0       222
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:30:48	DBB3:[DEBUG.SRC]DBGREB.B32;5					Page 11-1
+; Digital Equipment Corporation
+;
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      812	00:33.0		00:36.9
+;	FLOWAN	       32	00:03.7		00:03.7
+;	DELAY	       24	00:01.9		00:01.9
+;	TNBIND	       36	00:02.5		00:02.5
+;	CODE	       50	00:04.1		00:04.1
+;	FINAL	      112	00:07.0		00:07.3
+;	Total	     1066	00:52.2		00:56.5
+
+; Size:		1210 code + 36 data bytes
+; Run Time:	00:52.7
+; Elapsed Time:	00:57.2
+; Memory Used:	404 pages
+; Compilation Complete

@@ -1,0 +1,4312 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGRST (	ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = 'A00044') =
+;	0003	BEGIN
+;	0004	
+;	0005	!			  COPYRIGHT (c) 1977 BY
+;	0006	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0007	!
+;	0008	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0009	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0010	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0011	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0012	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0013	! TRANSFERRED.
+;	0014	!
+;	0015	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0016	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0017	! CORPORATION.
+;	0018	!
+;	0019	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0020	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0021	!
+;	0022	
+;	0023	!++
+;	0024	! FACILITY:
+;	0025	!	DEBUG
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	Use the Runtime Symbol Table (RST) data structures.
+;	0029	!
+;	0030	!
+;	0031	! ENVIRONMENT:
+;	0032	!	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0033	!
+;	0034	! Author:
+;	0035	!	Kevin Pammett, August 18, 1977.
+;	0036	!
+;	0037	! Version:  44
+;	0038	!
+;	0039	! MODIFIED BY:
+;	0040	!		Dale Roedger, 24 July 1978:	44
+;	0041	!
+;	0042	!  01	12-aug-77	KGP	-Initial version of this module as
+;	0043	!				 part of DEBUG.
+;	0044	!  02	15-AUG-77	KGP	-Added the action routine, DBG$SHOW_SCOPE.
+;	0045	!
+;	0046	!  03	18-aug-77	KGP	-Added code for DSC$K_DTYPE_Z in routine
+;	0047	!				 BUILD_MC so that we can accomodate BLISS
+;	0048	!				 records in building the MC.  Then I further
+;	0049	!				 changed BUILD_MC and ADD_MODULE for this too.
+;	0050	!  04	02-09-77	CP	When an invalid DST record is encountered,
+;	0051	!				output an optional diagnostic message and
+;	0052	!				proceed. In std_sym_eval, correct coding
+;	0053	!				of algorithm to correspond to specification.
+;	0054	!				In sym_to_val, return FALSE if no path
+;	0055	!				vector has accumulated.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	! 05	08-09-77	CP	Add the REQUIRE file DBGPCT.BEG
+;	0057	!				that sets up the DEBUG PSECTs.
+;	0058	! 06	12-sept-77	KGP	-The old (single) RST module is now
+;	0059	!				 broken up into DBGRST and DBGBLD.
+;	0060	!				 They both begin as version 06.
+;	0061	!				 This version now expects that the global
+;	0062	!				 RST variables are in DBGSTO.
+;	0063	!				 The application of search rules has also been
+;	0064	!				 changed.  You have to apply each rule in
+;	0065	!				 order to ALL duplicates before you can go
+;	0066	!				 on to the next rule.  GLOBALs which happen
+;	0067	!				 to be in an initialized module can now also be
+;	0068	!				 referenced simply by "glo_name" - you don't
+;	0069	!				 have to use the whole pathname "mod\glo_name".
+;	0070	!
+;	0071	! 07	19-sept-77	KGP	-SRM type (for FORTRAN) variables are now 
+;	0072	!				  handled properly in SYMBOL_VALUE.
+;	0073	! 08	22-sep-77	KGP	-Added PRINT_NT_PATH, which used to be in
+;	0074	!				 the RST test program RSTST.B32, to this
+;	0075	!				 module so that it is compiled only if
+;	0076	!				 DBG_RST6 is on.  This is so that we can have
+;	0077	!				 _RST6 on without linking with RSTST.
+;	0078	!  09	27-09-77	CP	Add handling for dsc$k_dtype_slb symbols,
+;	0079	!				labels in non-assembly language.
+;	0080	!  10	28-sep-77	KGP	-Added DBG$VAL_TO_SYM, LOOKUP_LVT, and LOOKUP_SAT.
+;	0081	!  11	18-oct-77	KGP	-Changed to use the new dynamic diagnostic
+;	0082	!				 facility described in DBGDBG.BEG
+;	0083	!  12	26-oct-77	KGP	-Moved the require of DBGPCT to be before the
+;	0084	!				 diagnostic require file because the latter
+;	0085	!				 declares storage and hence fouls up the
+;	0086	!				 (mapped) DEBUG p-sect strategy.
+;	0087	!  13	27-oct-77	KGP	-Took out DBG$SHOW_MODULE, rewrote it,
+;	0088	!				 and put it into DBGSSV.B32 because
+;	0089	!				 it is now all tied in with DEBUG's
+;	0090	!				 standard I/O scheme.
+;	0091	!				-Changed PATH_MATCH slightly so that
+;	0092	!				 it now knows about the special MC_IS_GLOBAL
+;	0093	!				 MC record.
+;	0094	!  14	28-oct-77	KGP	-Changed RST9 diagnostic in SYMBOL_VALUE
+;	0095	!				 to get around a current compiler bug.
+;	0096	!  15	01-nov-77	KGP	-Added routine 'get_next_dup' for scanning
+;	0097	!				 along hash chains, and threw away the whole
+;	0098	!				 concept of 'duplication vectors' as they 
+;	0099	!				 were fixed size.
+;	0100	!				-Also finally coded routine PV_OF_PC and commented
+;	0101	!				 in the code in SYM_TO_VAL which does
+;	0102	!				 lookups based on the current PC.
+;	0103	!  16	07-11-77	CP	Reference registers from the current
+;	0104	!				run frame pointer.
+;	0105	!  17	8-NOV-77	KGP	-TOOK OUT DBG$SHOW_SCOPE AND PUT IT IN DBGSSV.B32
+;	0106	!  18	14-NOV-77	KGP	-NT records are now doubly-linked.
+;	0107	!  19	16-nov-77	KGP	-sym_to_valu now accepts symbols which
+;	0108	!				 don't PATH_MATCH as long as they are unique.
+;	0109	!  20	17-nov-77	KGP	-Added the access functions DBG$GET_NXT_SAT
+;	0110	!				 and DBG$GET_NXT_LVT which will provide access
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!				 to the SAT and LVT structures.
+;	0112	!  21	18-nov-77	KGP	-Changed LOOKUP_SAT and LOOKUP_LVT to use
+;	0113	!				 the new access functions instead of having
+;	0114	!				 them build-in how to scan the SAT/LVT structure.
+;	0115	!  22	22-nov-77	KGP	-Changed the LVT/SAT access function to fit the
+;	0116	!				 new storage scheme (multiple-block vectors) for
+;	0117	!				 LVTs and SATs.
+;	0118	!  23	28-nov-77	KGP	-Changed get_nxt_sat_lvt for SL_ACCE_FREE
+;	0119	!  24	30-nov-77	KGP	-Added Carol's routine dbg$is_it_fortr. Decides 
+;	0120	!				 whether a symbol is a FORTRAN routine.
+;	0121	!  25	1-dec-77	KGP	-Made LOOKUP_SYMBOLS into DBG$LOOKUP_SYM
+;	0122	!				 since it is now used in BLD as well as RST.
+;	0123	!				 Ditto for DBG$GET_NXT_DUP.
+;	0124	!  26	2-dec-77	KGP	-Broke SYMBOL_VALUE into SYMBOL_VALUE and
+;	0125	!				 DBG$DST_VALUE.
+;	0126	!  27	9-DEC-77	KGP	-TOOK the SAT/LVT access routine out of here
+;	0127	!				 and put them in the new module, DBGREB.B32
+;	0128	!  28	15-dec-77	KGP	-Changed PV_OF_PC to DBG$PC_RULE, and made it
+;	0129	!				 usable for %line as well as for SYM_TO_VALU
+;	0130	!  29	16-dec-77	KGP	-Changed LOOKUP_SAT to be called DBG$VAL_TO_SAT,
+;	0131	!				 and to return a SAT pointer rather than an
+;	0132	!				 NT pointer.  Diddled DBG$VAL_TO_SYM to correspond.
+;	0133	!  30	19-dec-77	KGP	-Made DBG$VAL_TO_SAT GLOBAL
+;	0134	!				 (I forgot this for the 1st 5x17).
+;	0135	!  31	20-DEC-77	KGP	-DBG$DST_VALUE now distinguishes between
+;	0136	!				 what it can't evaluate because there has been some
+;	0137	!				 error, and what it can't evaluate simply because
+;	0138	!				 the given context (register set) is inappropriate.
+;	0139	!  32	30-dec-77	KGP	-Add global routines now begin with DBG$
+;	0140	!  33	15-dec-77	KGP	-Login in DST_VALUE to handle the new
+;	0141	!				 accessing of array descriptors.
+;	0142	!  34	9-mar-77	KGP	-Changed PC_RULE significantly so that it
+;	0143	!				 now works for Fortran and BLISS.
+;	0144	!  35	16-mar-78	KGP	-Fixed DBG$DST_VALUE to NOT reject descriptors
+;	0145	!				 whose _ACCESS field == 2; such implies fixed-
+;	0146	!				 position descriptors and there is no reason
+;	0147	!				 for us not to handle them.
+;	0148	!  36	20-mar-78	KGP	-LOOKUP_SYM now knows about the special
+;	0149	!				 effort involed in looking up globals.
+;	0150	!				-Added LOOKUP_GBL() and GBL_VAL_TO_SAT()
+;	0151	!  37	23-mar-78	KGP	-New MC_GBL field 'LOCKED'.  It means that
+;	0152	!				 the lookup routines are NOT to consult the GST.
+;	0153	!				-Old routine _IS_IT_FORTR changed to
+;	0154	!				 be _IS_IT_ENTRY, and now we add 2 to a BPT
+;	0155	!				 address for all routines.
+;	0156	! 38	01-apr-78	KGP	-Commented out code in DSTR_VALUE to not
+;	0157	!				 accept descriptors (at all) which are not
+;	0158	!				 stored in the DST.
+;	0159	! 39	11-apr-78	KGP	-Made LOOKUP_GBL a global routine so that
+;	0160	!				 BUILD_PATH in INT can use it for %line lookups.
+;	0161	! 40	12-apr-78	KGP	-PC_RULE no longer has specifics for %LINE
+;	0162	! 41	27-APR-78	DAR	Modified the require and library directives
+;	0163	!				for the native build.
+;	0164	! 42	30-MAY-78	DAR	Call to DBG$FIND_MODULE passes flag that says:
+;	0165	!				signal if module not found.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	! 43	06-jun-78	KGP	-Took out all '!/'s in diagnostics
+;	0167	!				-Incorporated new ACCS_ literals
+;	0168	! 44	24-JUL-78	DAR	DBG$DST_VALUE returns 3 if dynamic array.
+;	0169	!				Deleted require file DBGDBG.REQ and converted
+;	0170	!				diagnostic messages to standard form.
+;	0171	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 2
+; Digital Equipment Corporation
+;
+;	0172	! TABLE OF CONTENTS:
+;	0173	!
+;	0174	
+;	0175	FORWARD ROUTINE
+;	0176		DBG$ADD_NT_2_PV,		! Build a pathanme vector by 
+;	0177						!   following an NT scope chain.
+;	0178		LOOKUP_SYM,			! Find all occurrences of a given
+;	0179						!  symbol in the RST/GST data base.
+;	0180		DBG$LOOKUP_GBL,			! Find all occurrences of a given
+;	0181						!  global symbol in the GST.
+;	0182		gbl_val_to_sat,			! Translate VALUE to global symbol.
+;	0183		GET_NXT_DUP,			! Scan along hash chains.
+;	0184		DBG$SYM_TO_VAL,			! LOOK UP A FULLY QUALIFIED SYMBOL.
+;	0185		DBG$SYM_TO_VALU,		! Return more info than sym_to_val,
+;	0186						!   but otherwise do the same thing.
+;	0187		DBG$PC_RULE,			! Implement the PC rule for %line and
+;	0188						!  for SYM_TO_VALU's path matching.
+;	0189		CONCAT_PATHS : NOVALUE,		! Concatenate two pathname vectors together.
+;	0190		DBG$NT_HASH_FCN,		! Hashing function for calculating
+;	0191						! dispersal of NT entries.
+;	0192		PATH_MATCH,			! Match a pathname to the implied
+;	0193						! path associated with an NT record.
+;	0194		DBG$VAL_TO_SYM,			! Translate values to DEBUG-time symbols.
+;	0195		LOOKUP_LVT,			! Search the LVT.
+;	0196		DBG$VAL_TO_SAT,			! Search the SAT.
+;	0197		DBG$SYMBOL_VALU,		! Associate symbols with corresponding values.
+;	0198		DBG$DST_VALUE,			! Deduce the value associated with a DST
+;	0199		dbg$is_it_entry,		! decides whether a symbol is a
+;	0200						!  routine in any language.
+;	0201		STD_SYM_EVAL;			! Evaluate dynamic symbols which use
+;	0202						! a standard encoding for how to do
+;	0203						! this evaluation.
+;	0204	
+;	0205	!
+;	0206	! INCLUDE FILES:
+;	0207	!
+;	0208	%IF %VARIANT		! True for TEN.
+;     L 0209	%THEN
+;     U 0210	LIBRARY 'NEW:LIB';
+;     U 0211	
+;     U 0212	REQUIRE 'DBGPCT.REQ';
+;     U 0213	REQUIRE 'VXSMAC.REQ';
+;     U 0214	REQUIRE 'DBGGEN.REQ';
+;     U 0215	REQUIRE 'DBGRST.REQ';
+;     U 0216	REQUIRE 'DBGMSG.REQ';
+;     U 0217	REQUIRE 'SYSSER.REQ';
+;     U 0218	%ELSE
+;	0219	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0220	
+;	0221	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0233	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0273	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0523	REQUIRE 'SRC$:DBGRST.REQ';
+;	1670	REQUIRE 'LIB$:DBGMSG.REQ';
+;	1949	REQUIRE 'SRC$:SYSSER.REQ';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 2-1
+; Digital Equipment Corporation
+;
+;      R1952	SWITCHES LIST (SOURCE);
+;      R1953	
+;      R1954	EXTERNAL ROUTINE
+;      R1955		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R1956	
+;      R1957	SWITCHES LIST (NOSOURCE);
+;	2002	%FI
+;	2003	
+;	2004	!
+;	2005	! MACROS:
+;	2006	!
+;	2007	
+;	2008	!
+;	2009	! EQUATED SYMBOLS:
+;	2010	!
+;	2011	LITERAL
+;	2012		DBG_RST1	= 0,		! detailed RST messages
+;	2013		DBG_RST2	= 0,		! val_to_sym output
+;	2014		DBG_RST3	= 0,		! get_nxt_dup
+;	2015		DBG_RST4	= 0,		! lookup based on PC
+;	2016		DBG_RST5	= 0,		! global symbol lookup counter
+;	2017		DBG_RST55	= 0,		! detailed global symbol lookup
+;	2018		DBG_RST6	= 0,		! rst symbol lookup
+;	2019		DBG_RST7	= 0,		! pathname printing
+;	2020		DBG_RST8	= 0,		! detailed symbol lookup
+;	2021		DBG_RST9	= 0,		! symbol/value correspondence
+;	2022		DBG_RST10	= 0,		! array descriptor manipulation
+;	2023		DBG_RST11	= 0,		! is_it_entry output
+;	2024		DBG_RST12	= 0,		! sym_to_val search rules
+;	2025		DBG_RST13	= 0,		! std_sym_eval
+;	2026		DBG_RST20	= 0,		! detailed global val_to_sym
+;	2027		DBG_RST25	= 0;		! global val_to_sym counter
+;	2028	
+;	2029	%IF DBG_RST12	! We only want to declare PRINT_SYM_PATH if RST12 is on.
+;     L 2030	%THEN
+;     U 2031		FORWARD ROUTINE
+;     U 2032			PRINT_SYM_PATH : NOVALUE;	! print a symbol's pathname
+;     U 2033	%ELSE
+;	2034		BIND ROUTINE
+;	2035			PRINT_SYM_PATH = 0;
+;	2036	%FI
+;	2037	
+;	2038	
+;	2039	!
+;	2040	! OWN STORAGE:
+;	2041	!
+;	2042	!
+;	2043	! EXTERNAL REFERENCES:
+;	2044	!
+;	2045	
+;	2046	EXTERNAL
+;	2047				! Pointer to the Module Chain (MC).
+;	2048		DBG$GL_MC_PTR	: REF MC_RECORD,
+;	2049	
+;	2050				! Pointer to the name table (NT) hash vector.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 2-2
+; Digital Equipment Corporation
+;
+;	2051		DBG$GL_NT_HASH	: REF RST_POINTER,
+;	2052	
+;	2053		DBG$GB_MOD_PTR : REF VECTOR[,BYTE],
+;	2054		DBG$GL_CSP_PTR : REF PATHNAME_VECTOR,
+;	2055		dbg$gl_runframe : REF BLOCK [, BYTE];	! users registers are here
+;	2056	
+;	2057	
+;	2058	EXTERNAL ROUTINE
+;	2059		DBG$FIND_MODULE,		! Search MC for a specifc "module".
+;	2060		DBG$GET_NXT_SAT,		! Provide access to the SAT
+;	2061		DBG$GET_NXT_LVT,		! Provide access to the LVT
+;	2062		DBG$GET_NXT_GST,		! SCAN the global symbol table.
+;	2063		DBG$GET_DST_REC;		! Make a certain DST record available.
+;	2064	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 3
+; Digital Equipment Corporation
+;
+;	2065	GLOBAL ROUTINE DBG$ADD_NT_2_PV( NT_PTR, PV_PTR ) =
+;	2066	!++
+;	2067	! Functional Description:
+;	2068	!
+;	2069	!	Recur down thru an NT scope chain to build
+;	2070	! a pathname vector to correspond to the pathname
+;	2071	! implied by the scope chain.
+;	2072	!
+;	2073	! Formal Parameters:
+;	2074	!
+;	2075	!  NT_PTR	-a pointer to the NT record where
+;	2076	!		 the symbol name is contained.  This is where the
+;	2077	!		 so-called 'scope chain' BEGins, if you consider such
+;	2078	!		 a pathname to go right to left.
+;	2079	!  PV_PTR	-a pointer to somewhere in the pathname vector we are
+;	2080	!		 building.  Specifically, this points to where we should
+;	2081	!		 store a pointer to the first (MODULE) part
+;	2082	!		 of the pathname.
+;	2083	!
+;	2084	! Implicit Inputs:
+;	2085	!
+;	2086	!	NT scope chains end either when the NT type is MODULE,
+;	2087	!	or when the UP_SCOPE pointer is 0.  (The latter is
+;	2088	!	what we do for NT records which come in to DEBUG as global
+;	2089	!	of DEFine symbols).
+;	2090	!
+;	2091	!	Scope chains, as built by simply chaining thru NT records,
+;	2092	!	are 'reverse pathnames', as defined by PATHNAME_VECTOR.  This
+;	2093	!	is why this routine is recursive - we must recurr down to
+;	2094	!	the end of the NT chain before we can begin returning
+;	2095	!	and filling in the pathname vector.
+;	2096	!
+;	2097	! Implicit Outputs:
+;	2098	!
+;	2099	!	None.
+;	2100	!
+;	2101	! Return Value:
+;	2102	!
+;	2103	!	The address (supposedly within the pathname vector)
+;	2104	! of where the next cs_pointer should be stored.
+;	2105	!
+;	2106	! Side Effects:
+;	2107	!
+;	2108	! This routine will blow up if the NT chain implies a
+;	2109	! pathname that is longer than is expected by the
+;	2110	! PATHNAME_VECTOR declaration.
+;	2111	!
+;	2112	!--
+;	2113	BEGIN
+;	2114		MAP
+;	2115			NT_PTR : REF NT_RECORD,
+;	2116			PV_PTR : REF PATHNAME_VECTOR;
+;	2117	
+;	2118	%IF DBG_RST7
+;     L 2119	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 3-1
+; Digital Equipment Corporation
+;
+;     U 2120		$FAO_TT_OUT('dbg$add_nt_2_pv: NT_PTR=!XL, type=!XL',
+;     U 2121			.nt_ptr, .nt_ptr[ nt_type ] );
+;     U 2122	%FI
+;	2123	
+;	2124		! There's not much we can do till we've reached
+;	2125		! the end of the NT scope chain.
+;	2126	
+;	2127		IF( .NT_PTR[ NT_TYPE ] NEQ DSC$K_DTYPE_MOD 
+;	2128		   AND
+;	2129		    .NT_PTR[ NT_UP_SCOPE ] NEQ 0 
+;	2130		  )
+;	2131		THEN
+;	2132			PV_PTR = DBG$ADD_NT_2_PV( .NT_PTR[ NT_UP_SCOPE ], .PV_PTR );
+;	2133	
+;	2134		! The recursive call has modified our idea of where
+;	2135		! in the pathvector we should put the name pointer
+;	2136		! of the current pathname element.  Once MODULE has
+;	2137		! been reached, though, backing up (and out) is
+;	2138		! straightforward.
+;	2139	
+;	2140	%IF DBG_RST7
+;     L 2141	%THEN
+;     U 2142		$FAO_TT_OUT('adding Name !AS' NT_PTR[NT_NAME_CS] );
+;     U 2143		$FAO_TT_OUT(' to vec at !XL, and returning !XL ', PV_PTR[0], PV_PTR[1] );
+;     U 2144	%FI
+;	2145	
+;	2146		PV_PTR[0] = NT_PTR[ NT_NAME_CS ];
+;	2147	
+;	2148		! The next element's CS pointer goes in the
+;	2149		! next higher pathname vector element.  Since we
+;	2150		! do not recur on the last time around (i.e. after
+;	2151		! the last ROUTINE name was inserted), and since
+;	2152		! we must guarantee to end the pathname vector with
+;	2153		! a 0 cs pointer, we zero each potential 'next'
+;	2154		! entry here to ensure this.  This is the point
+;	2155		! where damage will be done if/when someone gives
+;	2156		! a pathname that is too long, since the recursion
+;	2157		! does not 'count' how many times it fills
+;	2158		! in a PATHNAME_VECTOR entry.
+;	2159	
+;	2160		PV_PTR[1] = 0;
+;	2161		RETURN( PV_PTR[1] );
+;	2162	END;
+
+
+							    .TITLE  DBGRST
+							    .IDENT  \A00044\
+
+						    PRINT_SYM_PATH=	0
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$GL_MC_PTR, DBG$GL_NT_HASH
+							    .GLOBL  DBG$GB_MOD_PTR, DBG$GL_CSP_PTR, DBG$GL_RUNFRAME
+							    .GLOBL  DBG$FIND_MODULE, DBG$GET_NXT_SAT, DBG$GET_NXT_LVT
+							    .GLOBL  DBG$GET_NXT_GST, DBG$GET_DST_REC
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 3-2
+; Digital Equipment Corporation
+;
+
+					 0004 00000 	    .ENTRY  DBG$ADD_NT_2_PV, Save R2				      ; 2065
+	   52	    04   AC 00000000G  8F  C1 00002 	    ADDL3   #DBG$_RST_BEGIN, NT_PTR, R2				      ; 2127
+		    BC   8F	  02   A2  91 0000B 	    CMPB    2(R2), #188						      ;
+				       14  13 00010 	    BEQL    1$							      ;
+				  08   A2  B5 00012 	    TSTW    8(R2)						      ; 2129
+				       0F  13 00015 	    BEQL    1$							      ;
+				  08   AC  DD 00017 	    PUSHL   PV_PTR						      ; 2132
+		         7E	  08   A2  3C 0001A 	    MOVZWL  8(R2), -(SP)					      ;
+		    DE   AF	       02  FB 0001E 	    CALLS   #2, DBG$ADD_NT_2_PV					      ;
+		    08   AC	       50  D0 00022 	    MOVL    R0, PV_PTR						      ;
+		         50	  08   AC  D0 00026 1$:     MOVL    PV_PTR, R0						      ; 2146
+	   80	         52	       0C  C1 0002A 	    ADDL3   #12, R2, (R0)+					      ;
+				       60  D4 0002E 	    CLRL    (R0)						      ; 2160
+					   04 00030 	    RET     							      ; 2065
+
+; Routine Size:  49 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 4
+; Digital Equipment Corporation
+;
+;	2163	ROUTINE LOOKUP_SYM( SYM_CS ) =
+;	2164	!++
+;	2165	! Functional Description:
+;	2166	!	Look for a given symbol (NOT symbol pathname, only the
+;	2167	!	symbol name itself) in the RST's name table (NT) always,
+;	2168	!	and in the GST, sometimes.  The latter happens when
+;	2169	!	the MC_GBL_LOCKED field is FALSE.
+;	2170	
+;	2171	!
+;	2172	!	Since there may be several such pathnames, this routine
+;	2173	!	actually passes back a pointer to a so-called duplication
+;	2174	!	chain.  This chain must be whatever GET_NXT_DUP requires
+;	2175	!	to 'track down' successive duplicates.
+;	2176	!
+;	2177	! Formal Parameters:
+;	2178	!	SYM_CS		-a counted string pointer to the symbol we are
+;	2179	!			 to look for in the NT.
+;	2180	!
+;	2181	! Implicit Inputs:
+;	2182	!	none.
+;	2183	!
+;	2184	! Implicit Outputs:
+;	2185	!	none.
+;	2186	!
+;	2187	! Return Value:
+;	2188	!
+;	2189	!	FALSE, when there is no NT or GST entry for 'sym_cs',
+;	2190	!	an NT-pointer to (a portion of) the hash chain which
+;	2191	!	begins with an NT record which has 'sym_cs' as its symbol,
+;	2192	!	otherwise.  If a global is found to match, its 'fake'
+;	2193	!	NT record begins the hash chain.
+;	2194	!
+;	2195	! Side Effects:
+;	2196	!	The GST may be searched linearlily until the end
+;	2197	!	or until SYM_CS is found.
+;	2198	!--
+;	2199	
+;	2200	BEGIN
+;	2201		MAP
+;	2202					! A pointer to the symbol we are to look for.
+;	2203			SYM_CS : CS_POINTER;
+;	2204	
+;	2205		LOCAL
+;	2206					! pointer to global symbol table record.
+;	2207			gst_recrd : REF GST_RECORD,
+;	2208	
+;	2209			NT_HASH,	! Hash code for the given symbol.
+;	2210	
+;	2211					! Pointer we go thru the NT with.
+;	2212			NT_PTR	: REF NT_RECORD;
+;	2213	
+;	2214	%IF DBG_RST6
+;     L 2215	%THEN
+;     U 2216		$FAO_TT_OUT('lookup: symbol !AS'.SYM_CS);
+;     U 2217	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 4-1
+; Digital Equipment Corporation
+;
+;	2218	
+;	2219		! Whatever we do, we need the hash code for
+;	2220		! the given symbol.
+;	2221	
+;	2222		NT_HASH = DBG$NT_HASH_FCN( .SYM_CS );
+;	2223	
+;	2224		!+
+;	2225		! First see if a global symbol can be found
+;	2226		! by the given name in the GST.
+;	2227		!-
+;	2228	
+;	2229		IF(  (GST_RECRD = DBG$LOOKUP_GBL(.SYM_CS)) NEQ 0
+;	2230		   AND
+;	2231		     (NT_PTR = .DBG$GL_MC_PTR[ MC_GBL_NT_PTR ]) NEQ 0 
+;	2232		  )
+;	2233		THEN
+;	2234			BEGIN
+;	2235			LOCAL
+;	2236				global_type,
+;	2237				NAME_CS : CS_POINTER;
+;	2238	
+;	2239			! Found a global symbol.  Fill in the fake NT
+;	2240			! record for this global so that the rest
+;	2241			! of the sym_to_val routines don't have to
+;	2242			! worry about the special casing for globals.
+;	2243	
+;	2244	%IF DBG_RST55
+;     L 2245	%THEN
+;     U 2246			$fao_tt_out('found global at !XL',.gst_recrd);
+;     U 2247	%FI
+;	2248			! The symbol name is in a different place depending
+;	2249			! on which type of GSD this is.  Pick up a pointer
+;	2250			! to this name, and record the GSD type.
+;	2251	
+;	2252			if( .gst_recrd[ gst_entry_type ] eql GST_GLOBAL_DEFN )
+;	2253			THEN	BEGIN
+;	2254				name_cs = GST_RECRD[ gst_G_name_cs ];
+;	2255				global_type = DSC$K_DTYPE_GBL;
+;	2256				END
+;	2257			ELSE	BEGIN
+;	2258				name_cs = GST_RECRD[ gst_E_name_cs ];
+;	2259				global_type = DSC$K_DTYPE_ENT;
+;	2260				END;
+;	2261	
+;	2262			! Move the relevant fields into the NT record already
+;	2263			! reserved and pointer to by a field in the global MC record.
+;	2264	
+;	2265			CH$MOVE( .name_cs[0]+1, name_cs[0], nt_ptr[ nt_name_cs ]);
+;	2266			nt_ptr[ nt_type ] = .global_type;
+;	2267			nt_ptr[ nt_is_global ] = true;
+;	2268			nt_ptr[ nt_up_scope ] = 0;
+;	2269			nt_ptr[ nt_gbl_value ] = .gst_recrd[ gst_value ];
+;	2270	
+;	2271			! Make this NT point forward to the hash chain
+;	2272			! in the RST for symbols which hash to this
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 4-2
+; Digital Equipment Corporation
+;
+;	2273			! same value.  Whether or not there are any
+;	2274			! such symbols, we have still built a duplication
+;	2275			! chain.  We carefully don't change the existing
+;	2276			! hash chain so that nothing in the RST is
+;	2277			! actually changed by the addition of this new fake NT
+;	2278			! for the found global symbol.
+;	2279	
+;	2280			nt_ptr[ nt_forward ] = .dbg$gl_nt_hash[ .nt_hash ];
+;	2281	
+;	2282			! The duplication chain has been built.
+;	2283	
+;	2284			return(.nt_ptr);
+;	2285			END;
+;	2286	
+;	2287		!+
+;	2288		! Access to the NT is via hashing.  If there is no pointer
+;	2289		! in the hash vector we get to, then no symbols exist
+;	2290		! that hash to the same value as the symbol we are
+;	2291		! looking up.  Otherwise we follow the hash chain and
+;	2292		! pass back a pointer to the first symbol we find
+;	2293		! which matches 'sym_cs'.
+;	2294		!-
+;	2295	
+;	2296		IF( (NT_PTR = .DBG$GL_NT_HASH[ .NT_HASH ]) EQL 0 )
+;	2297		THEN
+;	2298			! If there is no hash chain, then
+;	2299			! there is no 'sym_cs' in the RST data base.
+;	2300	
+;	2301			RETURN(FALSE);
+;	2302	
+;	2303		! There does exist a hash chain for the given symbol.
+;	2304		! If a match does exist, it must be in this chain,
+;	2305		! so we simply follow along it and compare the symbol
+;	2306		! names found therein for the first match.
+;	2307	
+;	2308	
+;	2309		DO
+;	2310			BEGIN
+;	2311	%IF DBG_RST8
+;     L 2312	%THEN
+;     U 2313		$FAO_TT_OUT('comparing to NT=!XL, !AS',.nt_ptr,nt_ptr[nt_name_cs]);
+;     U 2314	%FI
+;	2315			! We are only interested in this entry if the
+;	2316			! symbol names actually do match.
+;	2317	
+;	2318			IF( CH$EQL(.SYM_CS[0],SYM_CS[1],.NT_PTR[NT_NAME_CS],NT_PTR[NT_NAME_ADDR]))
+;	2319			THEN
+;	2320				BEGIN
+;	2321	
+;	2322				! This is the place in the chain
+;	2323				! that we want to pass back a pointer to.
+;	2324	%IF DBG_RST6
+;     L 2325	%THEN
+;     U 2326		$FAO_TT_OUT('Found !AS at NT=!XL in hash.',nt_ptr[nt_name_cs], .nt_ptr);
+;     U 2327	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 4-3
+; Digital Equipment Corporation
+;
+;	2328				RETURN(.NT_PTR);
+;	2329				END;
+;	2330	
+;	2331			! Otherwise just skip along the chain.
+;	2332			! The hash chain ends when the NT_FORWARD
+;	2333			! pointer is 0.
+;	2334	
+;	2335			END
+;	2336		WHILE( (NT_PTR = .NT_PTR[ NT_FORWARD ]) NEQ 0 );
+;	2337	
+;	2338		! If we fall out of the above loop,
+;	2339		! we ran off the end of the hash chain
+;	2340		! without finding a match to the symbol
+;	2341		! we were looking for.
+;	2342	
+;	2343		RETURN(FALSE);
+;	2344	END;
+
+
+
+
+
+					 07FC 00031 LOOKUP_SYM:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10			      ; 2163
+				  04   AC  DD 00033 	    PUSHL   SYM_CS						      ; 2222
+		  0000V  CF	       01  FB 00036 	    CALLS   #1, DBG$NT_HASH_FCN					      ;
+		         59	       50  D0 0003B 	    MOVL    R0, NT_HASH						      ;
+				  04   AC  DD 0003E 	    PUSHL   SYM_CS						      ; 2229
+		  0000V  CF	       01  FB 00041 	    CALLS   #1, DBG$LOOKUP_GBL					      ;
+		         57	       50  D0 00046 	    MOVL    R0, GST_RECRD					      ;
+				       54  13 00049 	    BEQL    3$							      ;
+	   50 00000000G  EF 00000000G  8F  C1 0004B 	    ADDL3   #DBG$_RST_BEGIN, DBG$GL_MC_PTR, R0			      ; 2231
+		         58	  04   A0  3C 00057 	    MOVZWL  4(R0), NT_PTR					      ;
+				       42  13 0005B 	    BEQL    3$							      ;
+		         01	       67  91 0005D 	    CMPB    (GST_RECRD), #1					      ; 2252
+				       0A  12 00060 	    BNEQ    1$							      ;
+	   50	         57	       09  C1 00062 	    ADDL3   #9, GST_RECRD, NAME_CS				      ; 2254
+		         5A	  C1   8F  9A 00066 	    MOVZBL  #193, GLOBAL_TYPE					      ; 2255
+				       08  11 0006A 	    BRB     2$							      ; 2252
+	   50	         57	       0B  C1 0006C 1$:     ADDL3   #11, GST_RECRD, NAME_CS				      ; 2258
+		         5A	  C0   8F  9A 00070 	    MOVZBL  #192, GLOBAL_TYPE					      ; 2259
+		         51	       60  9A 00074 2$:     MOVZBL  (NAME_CS), R1					      ; 2265
+				       51  D6 00077 	    INCL    R1							      ;
+		         56 00000000G  E8  9E 00079 	    MOVAB   DBG$_RST_BEGIN(NT_PTR), R6				      ;
+      0C   A6	         60	       51  28 00080 	    MOVC3   R1, (NAME_CS), 12(R6)				      ;
+		    02   A6	       5A  90 00085 	    MOVB    GLOBAL_TYPE, 2(R6)					      ; 2266
+		    03   A6	       01  88 00089 	    BISB2   #1, 3(R6)						      ; 2267
+				  08   A6  B4 0008D 	    CLRW    8(R6)						      ; 2268
+		    04   A6	  05   A7  D0 00090 	    MOVL    5(GST_RECRD), 4(R6)					      ; 2269
+		         66 00000000GFF49  B0 00095 	    MOVW    @DBG$GL_NT_HASH[NT_HASH], (R6)			      ; 2280
+				       27  11 0009D 	    BRB     5$							      ; 2284
+		         58 00000000GFF49  3C 0009F 3$:     MOVZWL  @DBG$GL_NT_HASH[NT_HASH], NT_PTR			      ; 2296
+				       26  13 000A7 	    BEQL    7$							      ;
+	   55	    04   AC	       01  C1 000A9 	    ADDL3   #1, SYM_CS, R5					      ; 2318
+		         51	  04   BC  9A 000AE 4$:     MOVZBL  @SYM_CS, R1						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 4-4
+; Digital Equipment Corporation
+;
+		         54 00000000G  E8  9E 000B2 	    MOVAB   DBG$_RST_BEGIN(NT_PTR), R4				      ;
+		         50	  0C   A4  9A 000B9 	    MOVZBL  12(R4), R0						      ;
+	   00	         65	       51  2D 000BD 	    CMPC5   R1, (R5), #0, R0, 13(R4)				      ;
+		    0D   A4	       50     000C1									      ;
+				       04  12 000C4 	    BNEQ    6$							      ;
+		         50	       58  D0 000C6 5$:     MOVL    NT_PTR, R0						      ; 2328
+					   04 000C9 	    RET     							      ;
+		         58	       64  3C 000CA 6$:     MOVZWL  (R4), NT_PTR					      ; 2336
+				       DF  12 000CD 	    BNEQ    4$							      ;
+				       50  D4 000CF 7$:     CLRL    R0							      ; 2163
+					   04 000D1 	    RET     							      ;
+
+; Routine Size:  161 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 5
+; Digital Equipment Corporation
+;
+;	2345	GLOBAL ROUTINE DBG$LOOKUP_GBL( SYM_CS ) =
+;	2346	!++
+;	2347	! Functional Description:
+;	2348	!	Look for a given symbol (NOT symbol pathname, only the
+;	2349	!	symbol name itself) in the Global symbol table (GST).
+;	2350	!
+;	2351	! Formal Parameters:
+;	2352	!	SYM_CS		-a counted string pointer to the symbol we are
+;	2353	!			 to look for in the GST.
+;	2354	!
+;	2355	! Implicit Inputs:
+;	2356	!
+;	2357	!	We don't consult the GST if MC_GBL_LOCKED is TRUE.
+;	2358	!
+;	2359	!	GET_NXT_GST is all set up to allow us to
+;	2360	!	read thru the (mapped) GST sequentially.
+;	2361	!
+;	2362	! Implicit Outputs:
+;	2363	!	none.
+;	2364	!
+;	2365	! Return Value:
+;	2366	!
+;	2367	!	0, when no GST entry for 'sym_cs' can be found,
+;	2368	!	a pointer to the GST record for
+;	2369	!	the found symbol, otherwise.
+;	2370	!
+;	2371	! Side Effects:
+;	2372	!	The GST may be searched sequentially until either
+;	2373	!	the end is encounered, or the symbol is found.
+;	2374	!--
+;	2375	
+;	2376	BEGIN
+;	2377		map
+;	2378			sym_cs : CS_POINTER;
+;	2379		LOCAL
+;	2380					! Pointer to where a fetched GST record lives.
+;	2381			GST_RECRD : REF GST_RECORD;
+;	2382	
+;	2383	%IF DBG_RST5
+;     L 2384	%THEN
+;     U 2385		LOCAL
+;     U 2386			sym_count;
+;     U 2387	
+;     U 2388		! Keep track of how many symbol records we search thru.
+;     U 2389	
+;     U 2390		sym_count = 1;
+;     U 2391		$fao_tt_out('global search for !AC ',.sym_cs);
+;     U 2392	%FI
+;	2393		! Don't even look in the GST if it is locked.  This
+;	2394		! happens either because the caller specifically does not
+;	2395		! want a global, or because the caller is using the 
+;	2396		! 'cache' NT and SAT records for globals, and doesn't want
+;	2397		! them overwritten.
+;	2398	
+;	2399		IF( .DBG$GL_MC_PTR[ MC_GBL_LOCKED ] )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 5-1
+; Digital Equipment Corporation
+;
+;	2400		THEN
+;	2401			return(0);
+;	2402	
+;	2403		! Process the GST records sequentially,
+;	2404		! giving up if some error occurs.
+;	2405		! First, do an INIT so that subsequent GETs
+;	2406		! return record pointers starting from the beginning.
+;	2407	
+;	2408		dbg$GET_NXT_GST(1);
+;	2409	
+;	2410		! DBG$GET_NXT_GST returns 0 when there are
+;	2411		! no more GST records to process.  Otherwise it returns
+;	2412		! a pointer to each successive GST record.
+;	2413	
+;	2414	
+;	2415		WHILE( (GST_RECRD = DBG$GET_NXT_GST(0)) NEQ 0 )
+;	2416			DO
+;	2417			BEGIN
+;	2418	%IF DBG_RST55
+;     L 2419	%THEN
+;     U 2420			$FAO_TT_OUT('global sym_to_val: rec is at !XL, type=!XB, val=!XL',
+;     U 2421				.GST_RECRD, .GST_RECRD[ GST_ENTRY_TYPE ],.gst_recrd[gst_value] );
+;     U 2422	%FI
+;	2423			! We process each record depending on its GST type.
+;	2424	
+;	2425			CASE .GST_RECRD[ GST_ENTRY_TYPE ] FROM GST_LOWEST TO GST_HIGHEST OF
+;	2426			    SET
+;	2427	
+;	2428			    [ GST_GLOBAL_DEFN ]:	! Definition of a global symbol.
+;	2429				BEGIN
+;	2430	%IF DBG_RST55
+;     L 2431	%THEN
+;     U 2432				$fao_tt_out('defn rec at !XL, value = !XL, name is !AC',
+;     U 2433					.gst_recrd,.gst_recrd[ GST_VALUE ],
+;     U 2434					gst_recrd[ GST_G_NAME_CS ]);
+;     U 2435	%FI
+;	2436				! Check for string match of given and indicated symbols.
+;	2437	
+;	2438				IF( CH$EQL(	.SYM_CS[0],
+;	2439						SYM_CS[1],
+;	2440						.GST_RECRD[ GST_G_NAME_CS ],
+;	2441						GST_RECRD[ GST_G_NAME_ADDR ]
+;	2442				          )
+;	2443				  )
+;	2444				THEN
+;	2445					! Found the right record,
+;	2446					! and we know there are no more
+;	2447					! (because these are globals).
+;	2448	
+;	2449					EXITLOOP;
+;	2450				END;
+;	2451	
+;	2452			    [ GST_ENTRY_DEFN ]:		! Definition of a entry point.
+;	2453				BEGIN
+;	2454	%IF DBG_RST55
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 5-2
+; Digital Equipment Corporation
+;
+;     L 2455	%THEN
+;     U 2456				$fao_tt_out('entry rec at !XL, value = !XL, name is !AC',
+;     U 2457					.gst_recrd,.gst_recrd[ GST_VALUE ],
+;     U 2458					gst_recrd[ GST_E_NAME_CS ]);
+;     U 2459	%FI
+;	2460				! Check for string match of given and indicated symbols.
+;	2461	
+;	2462				IF( CH$EQL(	.SYM_CS[0],
+;	2463						SYM_CS[1],
+;	2464						.GST_RECRD[ GST_E_NAME_CS ],
+;	2465						GST_RECRD[ GST_E_NAME_ADDR ]
+;	2466				          )
+;	2467				  )
+;	2468				THEN
+;	2469					! Found the right record,
+;	2470					! and we know there are no more
+;	2471					! (because these are globals).
+;	2472	
+;	2473					EXITLOOP;
+;	2474				END;
+;	2475	
+;	2476			    [INRANGE, OUTRANGE]:	! Error.
+;	2477				BEGIN
+;	2478				return(0);
+;	2479				END;
+;	2480	
+;	2481			    TES;
+;	2482	
+;	2483			! Go back and process the next record.
+;	2484	%IF DBG_RST5
+;     L 2485	%THEN
+;     U 2486			sym_count = .sym_count +1;
+;     U 2487	%FI
+;	2488			END;
+;	2489	
+;	2490		! If the above WHILE exits, then either we encountered
+;	2491		! the normal end of GST processing, or we found
+;	2492		! the symbol match.
+;	2493	
+;	2494	%IF DBG_RST5
+;     L 2495	%THEN
+;     U 2496		if( .gst_recrd neq 0 )
+;     U 2497		then
+;     U 2498			$fao_tt_out('searched thru !SL. symbols,',.sym_count)
+;     U 2499		else
+;     U 2500			$fao_tt_out('global symbol lookup searched !SL. recs and failed',.sym_count);
+;     U 2501	%FI
+;	2502	
+;	2503		! Pass back the address of the given symbol's record,
+;	2504		! of 0, the failure code.
+;	2505	
+;	2506		return(.gst_recrd);
+;	2507	end;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 5-3
+; Digital Equipment Corporation
+;
+
+
+
+					 081C 000D2 	    .ENTRY  DBG$LOOKUP_GBL, Save R2,R3,R4,R11			      ; 2345
+		         5B 00000000G  EF  9E 000D4 	    MOVAB   DBG$GET_NXT_GST, R11				      ;
+	   50 00000000G  EF 00000000G  8F  C1 000DB 	    ADDL3   #DBG$_RST_BEGIN, DBG$GL_MC_PTR, R0			      ; 2399
+	   49	    03   A0	       02  E0 000E7 	    BBS     #2, 3(R0), 7$					      ;
+				       01  DD 000EC 	    PUSHL   #1							      ; 2408
+		         6B	       01  FB 000EE 	    CALLS   #1, DBG$GET_NXT_GST					      ;
+				       7E  D4 000F1 1$:     CLRL    -(SP)						      ; 2415
+		         6B	       01  FB 000F3 	    CALLS   #1, DBG$GET_NXT_GST					      ;
+		         54	       50  D0 000F6 	    MOVL    R0, GST_RECRD					      ;
+				       36  13 000F9 	    BEQL    6$							      ;
+	   02	         01	       64  8F 000FB 	    CASEB   (GST_RECRD), #1, #2					      ; 2425
+	 0036	       001D	     0008     000FF 2$:     .WORD   3$-2$,-						      ;
+								    4$-2$,-						      ;
+								    7$-2$						      ;
+				       2E  11 00105 	    BRB     7$							      ; 2478
+		         50	  04   AC  D0 00107 3$:     MOVL    SYM_CS, R0						      ; 2438
+		         52	       60  9A 0010B 	    MOVZBL  (R0), R2						      ;
+		         51	  09   A4  9A 0010E 	    MOVZBL  9(GST_RECRD), R1					      ; 2440
+	   00	    01   A0	       52  2D 00112 	    CMPC5   R2, 1(R0), #0, R1, 10(GST_RECRD)			      ; 2438
+		    0A   A4	       51     00117									      ;
+				       13  11 0011A 	    BRB     5$							      ;
+		         50	  04   AC  D0 0011C 4$:     MOVL    SYM_CS, R0						      ; 2462
+		         52	       60  9A 00120 	    MOVZBL  (R0), R2						      ;
+		         51	  0B   A4  9A 00123 	    MOVZBL  11(GST_RECRD), R1					      ; 2464
+	   00	    01   A0	       52  2D 00127 	    CMPC5   R2, 1(R0), #0, R1, 12(GST_RECRD)			      ; 2462
+		    0C   A4	       51     0012C									      ;
+				       C0  12 0012F 5$:     BNEQ    1$							      ;
+		         50	       54  D0 00131 6$:     MOVL    GST_RECRD, R0					      ; 2506
+					   04 00134 	    RET     							      ;
+				       50  D4 00135 7$:     CLRL    R0							      ; 2345
+					   04 00137 	    RET     							      ;
+
+; Routine Size:  102 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6
+; Digital Equipment Corporation
+;
+;	2508	ROUTINE GBL_VAL_TO_SAT( VALUE ) =
+;	2509	!++
+;	2510	! Functional Description:
+;	2511	!	Search the GST for the closest global symbol match
+;	2512	!	to the given value.  If found, build a temporary SAT
+;	2513	!	and NT entry for this symbol so that the rest
+;	2514	!	of the RST manipulating routine do not have to
+;	2515	!	special-case globals.
+;	2516	!
+;	2517	! Formal Parameters:
+;	2518	!	VALUE	-The key value to match to Global symbol.
+;	2519	!
+;	2520	! Implicit Inputs:
+;	2521	!	We don't consult the GST if MC_GBL_LOCKED.
+;	2522	!	This happens because we normally want 
+;	2523	!	to let VAL_TO_SYM consult globals, but to we need 
+;	2524	!	to override this when PC_RULE calls it.
+;	2525	!
+;	2526	!	GET_NXT_GST is all set up to all us to
+;	2527	!	read thru the (mapped) GST sequentially.
+;	2528	!
+;	2529	!	The first MC record is reserved for manipulating
+;	2530	!	globals.  As such, it has two fields which permanently
+;	2531	!	point to the 'fake' NT and SAT records which get
+;	2532	!	filled by this routine (and others).
+;	2533	!
+;	2534	! Implicit Outputs:
+;	2535	!	If a match is found, the MC_GBL NT and SAT records
+;	2536	!	are filled in so that they are usable just like
+;	2537	!	other NT/SAT pairs are.
+;	2538	!
+;	2539	! Return Value:
+;	2540	!
+;	2541	!	FALSE, when no candidate is found,
+;	2542	!	a pointer to the SAT record for
+;	2543	!	the found symbol, otherwise.
+;	2544	!
+;	2545	! Side Effects:
+;	2546	!	The GST may be searched sequentially until either
+;	2547	!	the end is encountered, or an exact match is found.
+;	2548	!--
+;	2549	
+;	2550	BEGIN
+;	2551		LOCAL
+;	2552			global_type,
+;	2553			name_cs : cs_pointer,
+;	2554					! Pointer to where a fetched GST record lives.
+;	2555			GST_RECRD : REF GST_RECORD,
+;	2556	
+;	2557					! Pointers to the SAT and NT records we build.
+;	2558			GBL_SAT_PTR : REF SAT_RECORD,
+;	2559			GBL_NT_PTR : REF NT_RECORD,
+;	2560	
+;	2561					! Pointer to so-far 'best' match found.
+;	2562			best_match : ref gst_record;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6-1
+; Digital Equipment Corporation
+;
+;	2563	
+;	2564	%IF DBG_RST25
+;     L 2565	%THEN
+;     U 2566	
+;     U 2567		! Tally up how many symbol we search thru
+;     U 2568		! to get the answer.
+;     U 2569	
+;     U 2570		LOCAL
+;     U 2571			sym_count;
+;     U 2572	
+;     U 2573		sym_count = 1;
+;     U 2574		$fao_tt_out('global val to sat on !XL, locked = !XB',
+;     U 2575			.value, .dbg$gl_mc_ptr[ mc_gbl_locked ]);
+;     U 2576	%FI
+;	2577		! If we find a match candidate, we will
+;	2578		! use the GLBOAL temporary SAT and NT records to
+;	2579		! pass on the needed info.  If no space has
+;	2580		! been reserved for these records, we must
+;	2581		! give up now.  Moreover, if this space is
+;	2582		! currently in use (for SYM_TO_VAL) then
+;	2583		! again we must give up.
+;	2584	
+;	2585		IF( .DBG$GL_MC_PTR[ MC_GBL_LOCKED ] )
+;	2586		THEN
+;	2587			RETURN(0);
+;	2588		IF( (GBL_SAT_PTR = .DBG$GL_MC_PTR[ MC_GBL_SAT_PTR ]) EQL 0 )
+;	2589		THEN
+;	2590			RETURN(0);
+;	2591		IF( (GBL_NT_PTR = .DBG$GL_MC_PTR[ MC_GBL_NT_PTR ]) EQL 0 )
+;	2592		THEN
+;	2593			RETURN(0);
+;	2594	
+;	2595		! Process the GST records sequentially,
+;	2596		! giving up if some error occurs.
+;	2597		! First, do an INIT so that subsequent GETs
+;	2598		! return record pointers starting from the beginning.
+;	2599	
+;	2600		dbg$GET_NXT_GST(1);
+;	2601		
+;	2602		best_match = 0;
+;	2603	
+;	2604		! DBG$GET_NXT_GST returns 0 when there are
+;	2605		! no more GST records to process.
+;	2606	
+;	2607		WHILE( (GST_RECRD = DBG$GET_NXT_GST(0)) NEQ 0 )
+;	2608			DO
+;	2609			BEGIN
+;	2610	%IF DBG_RST20
+;     L 2611	%THEN
+;     U 2612			$FAO_TT_OUT('global val_to_sym: gst_recrd is at !XL, type = !XB ',
+;     U 2613				.GST_RECRD, .GST_RECRD[ GST_ENTRY_TYPE ] );
+;     U 2614	%FI
+;	2615	
+;	2616			! We process each record depending on its GST type.
+;	2617	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6-2
+; Digital Equipment Corporation
+;
+;	2618			CASE .GST_RECRD[ GST_ENTRY_TYPE ] FROM GST_LOWEST TO GST_HIGHEST OF
+;	2619			    SET
+;	2620	
+;	2621			    [ GST_GLOBAL_DEFN ,		! Definition of a global symbol.
+;	2622			      GST_ENTRY_DEFN ]:		! Definition of global ENTRY points.
+;	2623				BEGIN
+;	2624	
+;	2625				! Note that the only two types we support can
+;	2626				! be handled together because the GST_VALUE
+;	2627				! field is in the same place in both records.
+;	2628	
+;	2629				! First check for an exact match because then
+;	2630				! we can abandon any further looking.
+;	2631	
+;	2632				IF( .VALUE EQLA .GST_RECRD[ GST_VALUE ] )
+;	2633				THEN
+;	2634					BEGIN
+;	2635					BEST_MATCH = .GST_RECRD;
+;	2636					EXITLOOP;
+;	2637					END;
+;	2638	
+;	2639				! Inexact matches are still better than nothing.
+;	2640	
+;	2641				IF( .VALUE GTRA .GST_RECRD[ GST_VALUE ] )
+;	2642				THEN
+;	2643					! A match.  See if we already have one.
+;	2644	
+;	2645					IF( .BEST_MATCH EQL 0 )
+;	2646					THEN
+;	2647						! Any one is better than none.
+;	2648	
+;	2649						best_match = .gst_recrd
+;	2650					else
+;	2651						! Take the new one only if this symbol
+;	2652						! is closer than the previous best one.
+;	2653	
+;	2654						IF( .BEST_MATCH[ GST_VALUE ] LSSA .GST_RECRD[ GST_VALUE ] )
+;	2655						THEN
+;	2656							BEST_MATCH = .GST_RECRD;
+;	2657				END;
+;	2658	
+;	2659			    [INRANGE, OUTRANGE]:	! Error.
+;	2660				BEGIN
+;	2661				return(false);
+;	2662				END;
+;	2663	
+;	2664			    TES;
+;	2665	
+;	2666			! Go back and process the next record.
+;	2667	%IF DBG_RST25
+;     L 2668	%THEN
+;     U 2669			sym_count = .sym_count + 1;
+;     U 2670	%FI
+;	2671			END;
+;	2672	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6-3
+; Digital Equipment Corporation
+;
+;	2673		! If the above WHILE exits, then we encountered
+;	2674		! the normal end of GST processing.
+;	2675	
+;	2676	%IF DBG_RST25
+;     L 2677	%THEN
+;     U 2678		if( .best_match neq 0 )
+;     U 2679		then
+;     U 2680			$fao_tt_out('searched thru !SL. symbols,',.sym_count)
+;     U 2681		else
+;     U 2682			$fao_tt_out('global val_to_sat failed');
+;     U 2683	%FI
+;	2684		! If we didn't find any possible match,
+;	2685		! return failure status.
+;	2686	
+;	2687		IF( .BEST_MATCH EQL 0 )
+;	2688		THEN
+;	2689			RETURN(0);
+;	2690	
+;	2691		! Success - a candidate has been found.
+;	2692	
+;	2693		! Fill in the required SAT and NT records, and pass
+;	2694		! back a pointer to the former.  These records have
+;	2695		! already been (permanently) allocated space - they
+;	2696		! are pointed to by fields in the global MC record.
+;	2697	
+;	2698	
+;	2699		GBL_SAT_PTR[ SAT_LB ] = .BEST_MATCH[ GST_VALUE ];
+;	2700		GBL_SAT_PTR[ SAT_UB ] = 0;
+;	2701		GBL_SAT_PTR[ SAT_NT_PTR ] = .gbl_nt_ptr;
+;	2702	
+;	2703		! The symbol name is in a different place depending
+;	2704		! on which type of GSD this is.  Pick up a pointer
+;	2705		! to this name, and record the GSD type.
+;	2706	
+;	2707		if( .best_match[ gst_entry_type ] eql GST_GLOBAL_DEFN )
+;	2708		THEN	BEGIN
+;	2709			name_cs = best_match[ gst_G_name_cs ];
+;	2710			global_type = DSC$K_DTYPE_GBL;
+;	2711			END
+;	2712		ELSE	BEGIN
+;	2713			name_cs = best_match[ gst_E_name_cs ];
+;	2714			global_type = DSC$K_DTYPE_ENT;
+;	2715			END;
+;	2716	
+;	2717		CH$MOVE( .name_cs[0]+1, name_cs[0], GBL_nt_ptr[ nt_name_cs ]);
+;	2718		gbl_nt_ptr[ nt_type ] = .global_type;
+;	2719		gbl_nt_ptr[ nt_is_global ] = true;
+;	2720		gbl_nt_ptr[ nt_gbl_value ] = .best_match[ gst_value ];
+;	2721		gbl_nt_ptr[ nt_forward ] = 0;
+;	2722		gbl_nt_ptr[ nt_up_scope ] = 0;
+;	2723	
+;	2724		RETURN(.GBL_SAT_PTR);
+;	2725	end;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6-4
+; Digital Equipment Corporation
+;
+
+
+
+					 0BFC 00138 GBL_VAL_TO_SAT:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R11			      ; 2508
+		         5B 00000000G  EF  9E 0013A 	    MOVAB   DBG$GET_NXT_GST, R11				      ;
+	   50 00000000G  EF 00000000G  8F  C1 00141 	    ADDL3   #DBG$_RST_BEGIN, DBG$GL_MC_PTR, R0			      ; 2585
+	   27	    03   A0	       02  E0 0014D 	    BBS     #2, 3(R0), 3$					      ;
+		         59	  35   A0  D0 00152 	    MOVL    53(R0), GBL_SAT_PTR					      ; 2588
+				       48  13 00156 	    BEQL    8$							      ;
+		         53	  04   A0  3C 00158 	    MOVZWL  4(R0), GBL_NT_PTR					      ; 2591
+				       42  13 0015C 	    BEQL    8$							      ;
+				       01  DD 0015E 	    PUSHL   #1							      ; 2600
+		         6B	       01  FB 00160 	    CALLS   #1, DBG$GET_NXT_GST					      ;
+				       57  D4 00163 	    CLRL    BEST_MATCH						      ; 2602
+				       7E  D4 00165 1$:     CLRL    -(SP)						      ; 2607
+		         6B	       01  FB 00167 	    CALLS   #1, DBG$GET_NXT_GST					      ;
+		         52	       50  D0 0016A 	    MOVL    R0, GST_RECRD					      ;
+				       2F  13 0016D 	    BEQL    7$							      ;
+	   02	         01	       62  8F 0016F 	    CASEB   (GST_RECRD), #1, #2					      ; 2618
+	 0078	       0008	     0008     00173 2$:     .WORD   4$-2$,-						      ;
+								    4$-2$,-						      ;
+								    11$-2$						      ;
+				       70  11 00179 3$:     BRB     11$							      ; 2661
+		    05   A2	  04   AC  D1 0017B 4$:     CMPL    VALUE, 5(GST_RECRD)					      ; 2632
+				       05  12 00180 	    BNEQ    5$							      ;
+		         57	       52  D0 00182 	    MOVL    GST_RECRD, BEST_MATCH				      ; 2635
+				       17  11 00185 	    BRB     7$							      ; 2636
+		    05   A2	  04   AC  D1 00187 5$:     CMPL    VALUE, 5(GST_RECRD)					      ; 2641
+				       D7  1B 0018C 	    BLEQU   1$							      ;
+				       57  D5 0018E 	    TSTL    BEST_MATCH						      ; 2645
+				       07  13 00190 	    BEQL    6$							      ;
+		    05   A2	  05   A7  D1 00192 	    CMPL    5(BEST_MATCH), 5(GST_RECRD)				      ; 2654
+				       CC  1E 00197 	    BGEQU   1$							      ;
+		         57	       52  D0 00199 6$:     MOVL    GST_RECRD, BEST_MATCH				      ; 2656
+				       C7  11 0019C 	    BRB     1$							      ; 2641
+				       57  D5 0019E 7$:     TSTL    BEST_MATCH						      ; 2687
+				       49  13 001A0 8$:     BEQL    11$							      ;
+		    02   A9	  05   A7  D0 001A2 	    MOVL    5(BEST_MATCH), 2(GBL_SAT_PTR)			      ; 2699
+				  06   A9  D4 001A7 	    CLRL    6(GBL_SAT_PTR)					      ; 2700
+		         69	       53  B0 001AA 	    MOVW    GBL_NT_PTR, (GBL_SAT_PTR)				      ; 2701
+		         01	       67  91 001AD 	    CMPB    (BEST_MATCH), #1					      ; 2707
+				       0A  12 001B0 	    BNEQ    9$							      ;
+	   50	         57	       09  C1 001B2 	    ADDL3   #9, BEST_MATCH, NAME_CS				      ; 2709
+		         58	  C1   8F  9A 001B6 	    MOVZBL  #193, GLOBAL_TYPE					      ; 2710
+				       08  11 001BA 	    BRB     10$							      ; 2707
+	   50	         57	       0B  C1 001BC 9$:     ADDL3   #11, BEST_MATCH, NAME_CS				      ; 2713
+		         58	  C0   8F  9A 001C0 	    MOVZBL  #192, GLOBAL_TYPE					      ; 2714
+		         51	       60  9A 001C4 10$:    MOVZBL  (NAME_CS), R1					      ; 2717
+				       51  D6 001C7 	    INCL    R1							      ;
+		         56 00000000G  E3  9E 001C9 	    MOVAB   DBG$_RST_BEGIN(GBL_NT_PTR), R6			      ;
+      0C   A6	         60	       51  28 001D0 	    MOVC3   R1, (NAME_CS), 12(R6)				      ;
+		    02   A6	       58  90 001D5 	    MOVB    GLOBAL_TYPE, 2(R6)					      ; 2718
+		    03   A6	       01  88 001D9 	    BISB2   #1, 3(R6)						      ; 2719
+		    04   A6	  05   A7  D0 001DD 	    MOVL    5(BEST_MATCH), 4(R6)				      ; 2720
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 6-5
+; Digital Equipment Corporation
+;
+				       66  B4 001E2 	    CLRW    (R6)						      ; 2721
+				  08   A6  B4 001E4 	    CLRW    8(R6)						      ; 2722
+		         50	       59  D0 001E7 	    MOVL    GBL_SAT_PTR, R0					      ; 2724
+					   04 001EA 	    RET     							      ;
+				       50  D4 001EB 11$:    CLRL    R0							      ; 2508
+					   04 001ED 	    RET     							      ;
+
+; Routine Size:  182 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 7
+; Digital Equipment Corporation
+;
+;	2726	GLOBAL ROUTINE DBG$SYM_TO_VAL( PATH_VEC_PTR, VALUE_PTR ) =
+;	2727	!++
+;	2728	! Functional Description:
+;	2729	!
+;	2730	!	Use the RST/GST data base to translate a given
+;	2731	! symbol pathname to its corresponding value.
+;	2732	!
+;	2733	!	This routine is quite like DBG$SYM_TO_VALU,
+;	2734	! except that it is called when ONLY the value is
+;	2735	! required.  As this builds in less knowledge of
+;	2736	! the RST and its data structures, this routine
+;	2737	! should be called whenever possible.
+;	2738	!
+;	2739	! Formal Parameters:
+;	2740	!
+;	2741	!  PATH_VEC_PTR	-a pointer to the pathname vector which the user
+;	2742	!		 input as the symbol name.
+;	2743	!
+;	2744	!  VALUE_PTR	-The address of where we are to 'stuff back' the
+;	2745	!		 value which corresponds to the symbol pathname.
+;	2746	!
+;	2747	! Implicit Inputs:
+;	2748	!
+;	2749	!	The value to be passed back is a longword.
+;	2750	!
+;	2751	! Implicit Outputs:
+;	2752	!
+;	2753	!	None.
+;	2754	!
+;	2755	! Return Value:
+;	2756	!	
+;	2757	!	TRUE, if all goes OK,
+;	2758	!	FALSE, otherwise.
+;	2759	!
+;	2760	! Side Effects:
+;	2761	!
+;	2762	!	The corresponding value is passed back
+;	2763	! into the location we are passed a pointer to.
+;	2764	!--
+;	2765	
+;	2766	BEGIN
+;	2767	
+;	2768		MAP
+;	2769			PATH_VEC_PTR : REF PATHNAME_VECTOR,
+;	2770	
+;	2771			VALUE_PTR : REF VECTOR[,LONG];
+;	2772	
+;	2773		LOCAL
+;	2774					! We need a local value descriptor
+;	2775					! because SYM_TO_VALU insists on filling
+;	2776					! one in for us.
+;	2777			VALU_DESC : VALU_DESCRIPTOR;
+;	2778	
+;	2779	%IF DBG_RST6
+;     L 2780	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 7-1
+; Digital Equipment Corporation
+;
+;     U 2781		$FAO_TT_OUT('sym_to_val: path vec at !XL',.PATH_VEC_PTR);
+;     U 2782		$FAO_TT_OUT(', value to end up at !XL',.value_ptr);
+;     U 2783	%FI
+;	2784	
+;	2785		! We really rely on DBG$SYM_To_VALU to do all the
+;	2786		! work and simply pass back the limited information
+;	2787		! which the caller wants.
+;	2788	
+;	2789		IF( DBG$SYM_TO_VALU( .PATH_VEC_PTR, VALU_DESC ) )
+;	2790		THEN
+;	2791			BEGIN
+;	2792	
+;	2793			! Success.  Simply pass back the value
+;	2794			! and completion code.
+;	2795	
+;	2796			VALUE_PTR[0] = .VALU_DESC[ VALU_VALUE ];
+;	2797			RETURN(TRUE);
+;	2798			END
+;	2799		ELSE
+;	2800			! Failure.
+;	2801			! There is really nothing further we can do.
+;	2802	
+;	2803			RETURN(FALSE);
+;	2804	END;
+
+
+
+
+
+					 0000 001EE 	    .ENTRY  DBG$SYM_TO_VAL, Save nothing			      ; 2726
+		         5E	       08  C2 001F0 	    SUBL2   #8, SP						      ;
+				       5E  DD 001F3 	    PUSHL   SP							      ; 2789
+				  04   AC  DD 001F5 	    PUSHL   PATH_VEC_PTR					      ;
+		  0000V  CF	       02  FB 001F8 	    CALLS   #2, DBG$SYM_TO_VALU					      ;
+		         09	       50  E9 001FD 	    BLBC    R0, 1$						      ;
+		    08   BC	  02   AE  D0 00200 	    MOVL    VALU_DESC+2, @VALUE_PTR				      ; 2796
+		         50	       01  D0 00205 	    MOVL    #1, R0						      ; 2797
+					   04 00208 	    RET     							      ;
+				       50  D4 00209 1$:     CLRL    R0							      ; 2726
+					   04 0020B 	    RET     							      ;
+
+; Routine Size:  30 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8
+; Digital Equipment Corporation
+;
+;	2805	GLOBAL ROUTINE DBG$SYM_TO_VALU( PATH_VEC_PTR, VALUE_DESC_ADDR ) =
+;	2806	!++
+;	2807	! Functional Description:
+;	2808	!
+;	2809	!	Use the RST/GST data base to translate a given
+;	2810	! symbol pathname to its corresponding value.
+;	2811	! Build and return a so-called 'value descriptor'
+;	2812	! which corresponds to this found value.  It is
+;	2813	! within this routine that the notion of "search rules"
+;	2814	! is implemented.
+;	2815	!
+;	2816	! Formal Parameters:
+;	2817	!
+;	2818	!  PATH_VEC_PTR	-a pointer to the pathname vector which the user
+;	2819	!		 input as the symbol name.  This can be a simple
+;	2820	!		 "name", a compound "rout\rout1 ...\name",
+;	2821	!		 or a fully-qualified "module\...\name".
+;	2822	!
+;	2823	!  VALUE_DESC_ADDR	-The address of a value descriptor which
+;	2824	!			 we are to 'fill in' with the one which
+;	2825	!			 corresponds to the value we find associated
+;	2826	!			 with the given symbol.
+;	2827	!
+;	2828	! Implicit Inputs:
+;	2829	!
+;	2830	!	The value to be passed back is a longword, or at least,
+;	2831	!  the current definition of VALU_DESCRIPTOR facilitates
+;	2832	!  passing around the value we find.
+;	2833	!
+;	2834	!	The current state of the MODE data structure
+;	2835	!  is used, along with the built-in relationship between the
+;	2836	!  setting of these bits and the implied search rules, to
+;	2837	!  pick out which is the correct match from the RST.
+;	2838	!
+;	2839	!
+;	2840	! Implicit Outputs:
+;	2841	!
+;	2842	!	Whatever is implied by the current definition of
+;	2843	!  VALU_DESCRIPTOR.
+;	2844	!
+;	2845	! Return Value:
+;	2846	!	
+;	2847	!	TRUE, if all goes OK,
+;	2848	!	FALSE, otherwise.
+;	2849	!
+;	2850	! Side Effects:
+;	2851	!
+;	2852	!	none.
+;	2853	!--
+;	2854	
+;	2855	BEGIN
+;	2856	
+;	2857		MAP
+;	2858			PATH_VEC_PTR : REF PATHNAME_VECTOR,
+;	2859	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-1
+; Digital Equipment Corporation
+;
+;	2860			VALUE_DESC_ADDR : REF VALU_DESCRIPTOR;
+;	2861	
+;	2862		LOCAL
+;	2863					! We use a local pathname vector to concat-
+;	2864					! enate various other partial pathname
+;	2865					! vectors into.
+;	2866			TEMP_PATH_VEC : PATHNAME_VECTOR,
+;	2867	
+;	2868					! A pointer to the hash chain which contains
+;	2869					! all occurrences of the symbol which ends
+;	2870					! the pathname pointed to by PATH_VEC_PTR.
+;	2871			CHAIN_PTR : REF NT_RECORD,
+;	2872	
+;	2873					! We extract each RST-pointer from the
+;	2874					! hash chain and use the local NT_PTR
+;	2875					! to contain the entry.
+;	2876			NT_PTR : REF NT_RECORD;
+;	2877	
+;	2878		LOCAL
+;	2879			INDEX;		! Index of symbol in path vector.
+;	2880	
+;	2881	%IF DBG_RST6
+;     L 2882	%THEN
+;     U 2883		$FAO_TT_OUT('sym_to_val: path vec at !XL',.PATH_VEC_PTR);
+;     U 2884		$FAO_TT_OUT(', value to end up at !XL',
+;     U 2885			VALUE_DESC_ADDR[ VALU_VALUE ]);
+;     U 2886	%FI
+;	2887	
+;	2888		! See that the path vector has at least one entry, and
+;	2889		! that the RST/GST has been initialized.
+;	2890	
+;	2891		IF .path_vec_ptr EQL 0
+;	2892		THEN
+;	2893			RETURN FALSE;
+;	2894		IF( .PATH_VEC_PTR[0] EQL 0 OR .DBG$GL_MC_PTR EQL 0 )
+;	2895		THEN
+;	2896			RETURN(FALSE);
+;	2897	
+;	2898		! The symbol is the last entry in the given pathname. 
+;	2899		! Pick up what index this is into the pathname vector.
+;	2900	
+;	2901		INDEX = 0;
+;	2902	
+;	2903		REPEAT
+;	2904			BEGIN
+;	2905			IF( .PATH_VEC_PTR[.INDEX+1] EQL 0 )
+;	2906			THEN
+;	2907				! INDEX points to the symbol name.
+;	2908				EXITLOOP;
+;	2909			IF( (INDEX = .INDEX +1) GEQ MAX_PATH_SIZE )
+;	2910			THEN
+;	2911				RETURN(FALSE);
+;	2912			END;
+;	2913	
+;	2914		! Discover all occurrences of the given symbol
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-2
+; Digital Equipment Corporation
+;
+;	2915		! in the RST data base.  If some error occurs,
+;	2916		! we must give up.  This is because we consider
+;	2917		! not finding any symbols an error.
+;	2918	
+;	2919		IF( (CHAIN_PTR = LOOKUP_SYM( .PATH_VEC_PTR[.INDEX] )) EQL 0 )
+;	2920		THEN
+;	2921			! We can find no such symbol.
+;	2922	
+;	2923			RETURN(FALSE);
+;	2924	
+;	2925	%IF DBG_RST6
+;     L 2926	%THEN
+;     U 2927		$fao_tt_out('nt chain begins at !XL.',.chain_ptr);
+;     U 2928	%FI
+;	2929	
+;	2930		! First, before we bother with all the search rules, see if the
+;	2931		! symbol happens to be unique.  To do this, setup to scan
+;	2932		! the duplication chain.  Grab the first one, and 
+;	2933		! accept it as long as there is no second one, and as
+;	2934		! long as we were given only a symbol name.
+;	2935	
+;	2936		IF( .INDEX EQL 0 ) ! A 1-element pathname has only 1 entry.
+;	2937		THEN
+;	2938			BEGIN
+;	2939	
+;	2940			! We have only a symbol name.  Check for uniqueness.
+;	2941	
+;	2942			GET_NXT_DUP( 1, .CHAIN_PTR );
+;	2943	
+;	2944			IF( (NT_PTR = GET_NXT_DUP(0)) EQL 0 )
+;	2945			THEN
+;	2946				! There is not even one.
+;	2947	
+;	2948				RETURN(FALSE);
+;	2949	
+;	2950			! Make sure that there is no second element
+;	2951			! in the duplication chain.
+;	2952	
+;	2953			IF( GET_NXT_DUP(0) EQL 0 )
+;	2954			THEN
+;	2955				BEGIN
+;	2956	
+;	2957	%IF DBG_RST12
+;     L 2958	%THEN
+;     U 2959				$FAO_TT_OUT('match by uniqueness');
+;     U 2960	%FI
+;	2961	
+;	2962				! The symbol is unique.  Return a corresponding
+;	2963				! value descriptor and status code.
+;	2964	
+;	2965				VALUE_DESC_ADDR[ VALU_NT_PTR ] = .NT_PTR;
+;	2966	
+;	2967				RETURN( DBG$SYMBOL_VALU( .NT_PTR, VALUE_DESC_ADDR[ VALU_VALUE ] ));
+;	2968				END;
+;	2969			END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-3
+; Digital Equipment Corporation
+;
+;	2970	
+;	2971		! We have all the duplicates, and there are 
+;	2972		! more than 1 of them.  Now see if one of
+;	2973		! them matches the given pathname.  Note that we
+;	2974		! have to apply each search rule to ALL of the
+;	2975		! duplicates before we can go on to the next search rule.
+;	2976		! (As opposed to applying all search rules to each consecutive 
+;	2977		! secutive duplicate - which sounds tempting but doesn't work).
+;	2978	
+;	2979		! If GLOBAL symbols are acceptable first,
+;	2980		! (or, really, GLOBAL means 'match as is'), then
+;	2981		! we can just try to match up the two pathnames 
+;	2982		! directly.
+;	2983	
+;	2984		IF( .DBG$GB_MOD_PTR[ MODE_GLOBALS ] )
+;	2985		THEN
+;	2986			BEGIN
+;	2987	%IF DBG_RST12
+;     L 2988	%THEN
+;     U 2989			$FAO_TT_OUT('globals first');
+;     U 2990	%FI
+;	2991			! Set up to scan the duplication chain, and loop along
+;	2992			! it until we have considered all duplicates.
+;	2993	
+;	2994			GET_NXT_DUP( 1, .CHAIN_PTR);
+;	2995	
+;	2996			WHILE( (NT_PTR = GET_NXT_DUP(0)) NEQ 0 )
+;	2997				DO
+;	2998				BEGIN
+;	2999	
+;	3000				IF( PATH_MATCH( .PATH_VEC_PTR, .NT_PTR ) )
+;	3001				THEN
+;	3002					BEGIN
+;	3003	
+;	3004					! Return a value descriptor and status code.
+;	3005	
+;	3006					VALUE_DESC_ADDR[ VALU_NT_PTR ] = .NT_PTR;
+;	3007	
+;	3008					RETURN( DBG$SYMBOL_VALU( .NT_PTR, VALUE_DESC_ADDR[ VALU_VALUE ] ));
+;	3009					END;
+;	3010	
+;	3011				! Loop back and try the next duplicate.
+;	3012				END;
+;	3013	
+;	3014			! The 'as is' rule does not find a match.
+;	3015			END;
+;	3016	
+;	3017		! Next, unless asked not to, we try qualifying the
+;	3018		! given pathname with the one that corresponds to 
+;	3019		! the user-set current scope position (CSP) vector.
+;	3020		! Note that we can't make this check if the CSP
+;	3021		! is null because this is equivalent to allowing
+;	3022		! a GLOBAL to satisfy the match which we can't allow
+;	3023		! at this point.
+;	3024	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-4
+; Digital Equipment Corporation
+;
+;	3025		IF( .DBG$GB_MOD_PTR[ MODE_SCOPE ] AND .DBG$GL_CSP_PTR NEQ 0 )
+;	3026		THEN
+;	3027			BEGIN
+;	3028	%IF DBG_RST12
+;     L 3029	%THEN
+;     U 3030			$FAO_TT_OUT('CSP rule next');
+;     U 3031	%FI
+;	3032			! Set up to scan the duplication chain, and loop along
+;	3033			! it until we have considered all duplicates.
+;	3034	
+;	3035			GET_NXT_DUP( 1, .CHAIN_PTR);
+;	3036	
+;	3037			WHILE( (NT_PTR = GET_NXT_DUP(0)) NEQ 0 )
+;	3038				DO
+;	3039				BEGIN
+;	3040	
+;	3041				! First, build the new pathname by perpending
+;	3042				! the CSP.
+;	3043	
+;	3044				CONCAT_PATHS( TEMP_PATH_VEC, .DBG$GL_CSP_PTR, .PATH_VEC_PTR );
+;	3045	
+;	3046				IF( PATH_MATCH( TEMP_PATH_VEC, .NT_PTR ) )
+;	3047				THEN
+;	3048					BEGIN
+;	3049	
+;	3050					! Return a value descriptor and status code.
+;	3051	
+;	3052					VALUE_DESC_ADDR[ VALU_NT_PTR ] = .NT_PTR;
+;	3053	
+;	3054					RETURN( DBG$SYMBOL_VALU( .NT_PTR, VALUE_DESC_ADDR[ VALU_VALUE ] ));
+;	3055					END;
+;	3056	
+;	3057				! Go back and try the next duplicate.
+;	3058				END;
+;	3059	
+;	3060			! You can't find it via CSP.
+;	3061			END;
+;	3062	
+;	3063		! Next, always, try a lookup based on the scope position
+;	3064		! implied by the current PC.  First we must pick up this
+;	3065		! 'PC vector', and abandon this search rule if this
+;	3066		! PC translation fails.
+;	3067	
+;	3068	%IF DBG_RST12
+;     L 3069	%THEN
+;     U 3070		$FAO_TT_OUT('scope rule failed or was not applied');
+;     U 3071	%FI
+;	3072	
+;	3073		IF( DBG$PC_RULE( TEMP_PATH_VEC ) )
+;	3074		THEN
+;	3075			BEGIN
+;	3076	
+;	3077			! Build the pathname which we want to look up
+;	3078			! by concatenating the PC partial pathname with
+;	3079			! the one we were originally given to lookup.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-5
+; Digital Equipment Corporation
+;
+;	3080	
+;	3081	%IF DBG_RST12
+;     L 3082	%THEN
+;     U 3083			$FAO_TT_OUT('PC rule next');
+;     U 3084	%FI
+;	3085			CONCAT_PATHS( TEMP_PATH_VEC, TEMP_PATH_VEC, .PATH_VEC_PTR );
+;	3086	
+;	3087			! Set up to scan the duplication chain, and loop along
+;	3088			! it until we have considered all duplicates.
+;	3089	
+;	3090			GET_NXT_DUP( 1, .CHAIN_PTR);
+;	3091	
+;	3092			WHILE( (NT_PTR = GET_NXT_DUP(0)) NEQ 0 )
+;	3093				DO
+;	3094	
+;	3095				IF( PATH_MATCH( TEMP_PATH_VEC, .NT_PTR ) )
+;	3096				THEN
+;	3097					BEGIN
+;	3098	
+;	3099					! Return a value descriptor and status code.
+;	3100	
+;	3101					VALUE_DESC_ADDR[ VALU_NT_PTR ] = .NT_PTR;
+;	3102	
+;	3103					RETURN( DBG$SYMBOL_VALU( .NT_PTR, VALUE_DESC_ADDR[ VALU_VALUE ] ));
+;	3104					END;
+;	3105	
+;	3106			! You can't find it via PC scope.
+;	3107			END;
+;	3108	
+;	3109		! Next, if we haven't already considered globals,
+;	3110		! now's the time.
+;	3111	
+;	3112	%IF DBG_RST12
+;     L 3113	%THEN
+;     U 3114		$FAO_TT_OUT('pc rule failed or was not applied');
+;     U 3115	%FI
+;	3116	
+;	3117		IF( NOT .DBG$GB_MOD_PTR[ MODE_GLOBALS ] )
+;	3118		THEN
+;	3119			BEGIN
+;	3120	%IF DBG_RST12
+;     L 3121	%THEN
+;     U 3122			$FAO_TT_OUT('globals last');
+;     U 3123	%FI
+;	3124			! Set up to scan the duplication chain, and loop along
+;	3125			! it until we have considered all duplicates.
+;	3126	
+;	3127			GET_NXT_DUP( 1, .CHAIN_PTR);
+;	3128	
+;	3129			WHILE( (NT_PTR = GET_NXT_DUP(0)) NEQ 0 )
+;	3130				DO
+;	3131				BEGIN
+;	3132	
+;	3133				IF( PATH_MATCH( .PATH_VEC_PTR, .NT_PTR ) )
+;	3134				THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-6
+; Digital Equipment Corporation
+;
+;	3135					BEGIN
+;	3136	
+;	3137					! Return a value descriptor and status code.
+;	3138	
+;	3139					VALUE_DESC_ADDR[ VALU_NT_PTR ] = .NT_PTR;
+;	3140	
+;	3141					RETURN( DBG$SYMBOL_VALU( .NT_PTR, VALUE_DESC_ADDR[ VALU_VALUE ] ));
+;	3142					END;
+;	3143	
+;	3144				! Go back and try the next duplicate.
+;	3145				END;
+;	3146	
+;	3147			! The 'as is' rule does not find a match.
+;	3148			END;
+;	3149	
+;	3150		! We applied all the search rules to all the duplicates
+;	3151		! and none was the one we were looking for.
+;	3152	
+;	3153		RETURN(FALSE);
+;	3154	END;
+
+
+
+
+
+					 0F1C 0020C 	    .ENTRY  DBG$SYM_TO_VALU, Save R2,R3,R4,R8,R9,R10,R11	      ; 2805
+		         58 00000000G  EF  9E 0020E 	    MOVAB   DBG$GL_CSP_PTR, R8					      ;
+		         59	0000V  CF  9E 00215 	    MOVAB   PATH_MATCH, R9					      ;
+		         5A 00000000G  EF  9E 0021A 	    MOVAB   DBG$GB_MOD_PTR, R10					      ;
+		         5B	0000V  CF  9E 00221 	    MOVAB   GET_NXT_DUP, R11					      ;
+		         5E	       2C  C2 00226 	    SUBL2   #44, SP						      ;
+		         54	  04   AC  D0 00229 	    MOVL    PATH_VEC_PTR, R4					      ; 2891
+				       1B  13 0022D 	    BEQL    2$							      ;
+				       64  D5 0022F 	    TSTL    (R4)						      ; 2894
+				       17  13 00231 	    BEQL    2$							      ;
+			    00000000G  EF  D5 00233 	    TSTL    DBG$GL_MC_PTR					      ;
+				       0F  13 00239 	    BEQL    2$							      ;
+				       52  D4 0023B 	    CLRL    INDEX						      ; 2901
+				  04 A442  D5 0023D 1$:     TSTL    4(R4)[INDEX]					      ; 2905
+				       0A  13 00241 	    BEQL    3$							      ;
+				       52  D6 00243 	    INCL    INDEX						      ; 2909
+		         0A	       52  D1 00245 	    CMPL    INDEX, #10						      ;
+				       F3  19 00248 	    BLSS    1$							      ;
+				     00EC  31 0024A 2$:     BRW     15$							      ; 2911
+				     6442  DD 0024D 3$:     PUSHL   (R4)[INDEX]						      ; 2919
+		  FDDC   CF	       01  FB 00250 	    CALLS   #1, LOOKUP_SYM					      ;
+		         53	       50  D0 00255 	    MOVL    R0, CHAIN_PTR					      ;
+				       F0  13 00258 	    BEQL    2$							      ;
+				       52  D5 0025A 	    TSTL    INDEX						      ; 2936
+				       1A  12 0025C 	    BNEQ    4$							      ;
+				       53  DD 0025E 	    PUSHL   CHAIN_PTR						      ; 2942
+				       01  DD 00260 	    PUSHL   #1							      ;
+		         6B	       02  FB 00262 	    CALLS   #2, GET_NXT_DUP					      ;
+				       7E  D4 00265 	    CLRL    -(SP)						      ; 2944
+		         6B	       01  FB 00267 	    CALLS   #1, GET_NXT_DUP					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-7
+; Digital Equipment Corporation
+;
+		         52	       50  D0 0026A 	    MOVL    R0, NT_PTR						      ;
+				       DB  13 0026D 	    BEQL    2$							      ;
+				       7E  D4 0026F 	    CLRL    -(SP)						      ; 2953
+		         6B	       01  FB 00271 	    CALLS   #1, GET_NXT_DUP					      ;
+				       50  D5 00274 	    TSTL    R0							      ;
+				       57  13 00276 	    BEQL    8$							      ;
+		         50	       6A  D0 00278 4$:     MOVL    DBG$GB_MOD_PTR, R0					      ; 2984
+		         1D	  06   A0  E9 0027B 	    BLBC    6(R0), 6$						      ;
+				       53  DD 0027F 	    PUSHL   CHAIN_PTR						      ; 2994
+				       01  DD 00281 	    PUSHL   #1							      ;
+		         6B	       02  FB 00283 	    CALLS   #2, GET_NXT_DUP					      ;
+				       7E  D4 00286 5$:     CLRL    -(SP)						      ; 2996
+		         6B	       01  FB 00288 	    CALLS   #1, GET_NXT_DUP					      ;
+		         52	       50  D0 0028B 	    MOVL    R0, NT_PTR						      ;
+				       0C  13 0028E 	    BEQL    6$							      ;
+				       52  DD 00290 	    PUSHL   NT_PTR						      ; 3000
+				       54  DD 00292 	    PUSHL   R4							      ;
+		         69	       02  FB 00294 	    CALLS   #2, PATH_MATCH					      ;
+		         EC	       50  E9 00297 	    BLBC    R0, 5$						      ;
+				       68  11 0029A 	    BRB     11$							      ; 3006
+		         50	       6A  D0 0029C 6$:     MOVL    DBG$GB_MOD_PTR, R0					      ; 3025
+		         2E	  05   A0  E9 0029F 	    BLBC    5(R0), 9$						      ;
+				       68  D5 002A3 	    TSTL    DBG$GL_CSP_PTR					      ;
+				       2A  13 002A5 	    BEQL    9$							      ;
+				       53  DD 002A7 	    PUSHL   CHAIN_PTR						      ; 3035
+				       01  DD 002A9 	    PUSHL   #1							      ;
+		         6B	       02  FB 002AB 	    CALLS   #2, GET_NXT_DUP					      ;
+				       7E  D4 002AE 7$:     CLRL    -(SP)						      ; 3037
+		         6B	       01  FB 002B0 	    CALLS   #1, GET_NXT_DUP					      ;
+		         52	       50  D0 002B3 	    MOVL    R0, NT_PTR						      ;
+				       19  13 002B6 	    BEQL    9$							      ;
+				       54  DD 002B8 	    PUSHL   R4							      ; 3044
+				       68  DD 002BA 	    PUSHL   DBG$GL_CSP_PTR					      ;
+				  08   AE  9F 002BC 	    PUSHAB  TEMP_PATH_VEC					      ;
+		  0000V  CF	       03  FB 002BF 	    CALLS   #3, CONCAT_PATHS					      ;
+				       52  DD 002C4 	    PUSHL   NT_PTR						      ; 3046
+				  04   AE  9F 002C6 	    PUSHAB  TEMP_PATH_VEC					      ;
+		         69	       02  FB 002C9 	    CALLS   #2, PATH_MATCH					      ;
+		         DF	       50  E9 002CC 	    BLBC    R0, 7$						      ;
+				       57  11 002CF 8$:     BRB     14$							      ; 3052
+				       5E  DD 002D1 9$:     PUSHL   SP							      ; 3073
+		  0000V  CF	       01  FB 002D3 	    CALLS   #1, DBG$PC_RULE					      ;
+		         2B	       50  E9 002D8 	    BLBC    R0, 12$						      ;
+				       54  DD 002DB 	    PUSHL   R4							      ; 3085
+				  04   AE  9F 002DD 	    PUSHAB  TEMP_PATH_VEC					      ;
+				  08   AE  9F 002E0 	    PUSHAB  TEMP_PATH_VEC					      ;
+		  0000V  CF	       03  FB 002E3 	    CALLS   #3, CONCAT_PATHS					      ;
+				       53  DD 002E8 	    PUSHL   CHAIN_PTR						      ; 3090
+				       01  DD 002EA 	    PUSHL   #1							      ;
+		         6B	       02  FB 002EC 	    CALLS   #2, GET_NXT_DUP					      ;
+				       7E  D4 002EF 10$:    CLRL    -(SP)						      ; 3092
+		         6B	       01  FB 002F1 	    CALLS   #1, GET_NXT_DUP					      ;
+		         52	       50  D0 002F4 	    MOVL    R0, NT_PTR						      ;
+				       0D  13 002F7 	    BEQL    12$							      ;
+				       52  DD 002F9 	    PUSHL   NT_PTR						      ; 3095
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 8-8
+; Digital Equipment Corporation
+;
+				  04   AE  9F 002FB 	    PUSHAB  TEMP_PATH_VEC					      ;
+		         69	       02  FB 002FE 	    CALLS   #2, PATH_MATCH					      ;
+		         EB	       50  E9 00301 	    BLBC    R0, 10$						      ;
+				       22  11 00304 11$:    BRB     14$							      ; 3101
+		         50	       6A  D0 00306 12$:    MOVL    DBG$GB_MOD_PTR, R0					      ; 3117
+		         2C	  06   A0  E8 00309 	    BLBS    6(R0), 15$						      ;
+				       53  DD 0030D 	    PUSHL   CHAIN_PTR						      ; 3127
+				       01  DD 0030F 	    PUSHL   #1							      ;
+		         6B	       02  FB 00311 	    CALLS   #2, GET_NXT_DUP					      ;
+				       7E  D4 00314 13$:    CLRL    -(SP)						      ; 3129
+		         6B	       01  FB 00316 	    CALLS   #1, GET_NXT_DUP					      ;
+		         52	       50  D0 00319 	    MOVL    R0, NT_PTR						      ;
+				       1B  13 0031C 	    BEQL    15$							      ;
+				       52  DD 0031E 	    PUSHL   NT_PTR						      ; 3133
+				       54  DD 00320 	    PUSHL   R4							      ;
+		         69	       02  FB 00322 	    CALLS   #2, PATH_MATCH					      ;
+		         EC	       50  E9 00325 	    BLBC    R0, 13$						      ;
+		    08   BC	       52  B0 00328 14$:    MOVW    NT_PTR, @VALUE_DESC_ADDR				      ; 3139
+	   7E	    08   AC	       02  C1 0032C 	    ADDL3   #2, VALUE_DESC_ADDR, -(SP)				      ; 3141
+				       52  DD 00331 	    PUSHL   NT_PTR						      ;
+		  0000V  CF	       02  FB 00333 	    CALLS   #2, DBG$SYMBOL_VALU					      ;
+					   04 00338 	    RET     							      ;
+				       50  D4 00339 15$:    CLRL    R0							      ; 2805
+					   04 0033B 	    RET     							      ;
+
+; Routine Size:  304 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 9
+; Digital Equipment Corporation
+;
+;	3155	ROUTINE GET_NXT_DUP( INIT_FLAG, NEW_CHAIN ) =
+;	3156	!++
+;	3157	! Functional Description:
+;	3158	!
+;	3159	!	Facilitate going along hash chains (or whatever
+;	3160	!	it is that symbol duplicates are stored in) when we only
+;	3161	!	want to look at symbols which match a given symbol.
+;	3162	!
+;	3163	! Formal Parameters:
+;	3164	!
+;	3165	!	INIT_FLAG	0 => we are in the middle of a chain so
+;	3166	!			 pass back the next NT and ignore NEW_CHAIN.
+;	3167	!			 (so that we don't have to always pass 2 parameters)
+;	3168	!			1 => this is a real init.  NEW_CHAIN marks the 
+;	3169	!			 beginning of the new chain we want to look at.
+;	3170	!			-The returned value is undefined for INIT_FLAG==1
+;	3171	!			 type calls.  NEW_CHAIN is not defined, otherwise.
+;	3172	!	NEW_CHAIN	-a pointer to a chain of forward-linked
+;	3173	!			 NT records which all hash to the same value.
+;	3174	!			 When an init is done, (INIT_FLAG == 1), the
+;	3175	!			 first element on the new chain
+;	3176	!			 is assumed to be the one that we henceforth
+;	3177	!			 want to 'key' off.
+;	3178	!
+;	3179	! Implicit Inputs:
+;	3180	!
+;	3181	!	-The way that one 'chains' along hash chains.
+;	3182	!
+;	3183	!	-The first element in the chain when INIT==1 is the
+;	3184	!	 'key' element for that chain.  The symbol name therein
+;	3185	!	 defines what subsequent elements on the chain
+;	3186	!	 may be returned by GET_NXT_DUP(0) calls.
+;	3187	!
+;	3188	! Implicit Outputs:
+;	3189	!	none.
+;	3190	!
+;	3191	! Return Value:
+;	3192	!
+;	3193	!	0 - when there are no more NTs on the chain,
+;	3194	!	an NT_PTR to the next one, otherwise.
+;	3195	!
+;	3196	! Side effects:
+;	3197	!	Local OWN storage for IN_CHAIN and BEGIN_CHAIN get altered.
+;	3198	!--
+;	3199	
+;	3200	BEGIN
+;	3201		OWN
+;	3202					! Keep a static pointer to where we are in
+;	3203					! the current hash chain.
+;	3204			IN_CHAIN : REF NT_RECORD,
+;	3205	
+;	3206					! If we are somewhere valid in the current
+;	3207					! chain, then we also need a static pointer to 
+;	3208					! what was the first element on this chain as
+;	3209					! this is the one we get the chain symbol name from.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 9-1
+; Digital Equipment Corporation
+;
+;	3210			BEGIN_CHAIN    : REF NT_RECORD;
+;	3211	
+;	3212	
+;	3213		! See if this call marks the beginning of a new
+;	3214		! hash chain.
+;	3215	
+;	3216		IF( .INIT_FLAG )
+;	3217		THEN
+;	3218			BEGIN
+;	3219	
+;	3220			! Set up to be looking at a new chain.
+;	3221	
+;	3222	%IF DBG_RST3
+;     L 3223	%THEN
+;     U 3224			$fao_tt_out('new dup chain is at !XL',.NEW_CHAIN);
+;     U 3225	%FI
+;	3226			BEGIN_CHAIN = .NEW_CHAIN;
+;	3227			IN_CHAIN = .NEW_CHAIN;
+;	3228	
+;	3229			! We don't define any return value for this type
+;	3230			! of call.
+;	3231	
+;	3232			RETURN;
+;	3233			END;
+;	3234	
+;	3235		! Skip along the chain until the next NT record
+;	3236		! of interest is found.  We may already be at
+;	3237		! the end because of previous calls.
+;	3238	
+;	3239		IF( .IN_CHAIN EQL 0 )
+;	3240		THEN
+;	3241			RETURN(0);
+;	3242	
+;	3243		! Otherwise scan the chain.
+;	3244	
+;	3245		DO
+;	3246			BEGIN
+;	3247	
+;	3248			! Simply check that the symbol names match.
+;	3249	
+;	3250	%IF DBG_RST3
+;     L 3251	%THEN
+;     U 3252			$FAO_TT_OUT('cmp NTs at !XL and !XL',.IN_CHAIN,.BEGIN_CHAIN);
+;     U 3253	%FI
+;	3254	
+;	3255			IF( CH$EQL( .IN_CHAIN[ NT_NAME_CS ], IN_CHAIN[ NT_NAME_ADDR ],
+;	3256			   .BEGIN_CHAIN[ NT_NAME_CS ], BEGIN_CHAIN[ NT_NAME_ADDR ] )
+;	3257			  )
+;	3258			THEN
+;	3259				BEGIN
+;	3260				LOCAL
+;	3261					MATCH_NT : REF NT_RECORD;
+;	3262	
+;	3263				MATCH_NT = .IN_CHAIN;
+;	3264				IN_CHAIN = .IN_CHAIN[ NT_FORWARD ];
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 9-2
+; Digital Equipment Corporation
+;
+;	3265				RETURN(.MATCH_NT);
+;	3266				END;
+;	3267			END
+;	3268	
+;	3269		WHILE( (IN_CHAIN = .IN_CHAIN[ NT_FORWARD ]) NEQ 0 );
+;	3270	
+;	3271		! There are no more in the chain to consider.
+;	3272	
+;	3273		RETURN(0);
+;	3274	END;
+
+
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 IN_CHAIN:
+							    .BLKB   4
+					      00004 BEGIN_CHAIN:
+							    .BLKB   4
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0C3C 0033C GET_NXT_DUP:
+							    .WORD   Save R2,R3,R4,R5,R10,R11				      ; 3155
+		         5A 00000000G  8F  D0 0033E 	    MOVL    #DBG$_RST_BEGIN, R10				      ;
+		         5B 00000000'  EF  9E 00345 	    MOVAB   IN_CHAIN, R11					      ;
+		         0B	  04   AC  E9 0034C 	    BLBC    INIT_FLAG, 1$					      ; 3216
+		    04   AB	  08   AC  D0 00350 	    MOVL    NEW_CHAIN, BEGIN_CHAIN				      ; 3226
+		         6B	  08   AC  D0 00355 	    MOVL    NEW_CHAIN, IN_CHAIN					      ; 3227
+				       2F  11 00359 	    BRB     4$							      ; 3232
+				       6B  D5 0035B 1$:     TSTL    IN_CHAIN						      ; 3239
+				       2B  13 0035D 	    BEQL    4$							      ;
+	   55	    04   AB	       5A  C1 0035F 	    ADDL3   R10, BEGIN_CHAIN, R5				      ; 3256
+	   54	         6B	       5A  C1 00364 2$:     ADDL3   R10, IN_CHAIN, R4					      ; 3255
+		         51	  0C   A4  9A 00368 	    MOVZBL  12(R4), R1						      ;
+		         50	  0C   A5  9A 0036C 	    MOVZBL  12(R5), R0						      ; 3256
+	   00	    0D   A4	       51  2D 00370 	    CMPC5   R1, 13(R4), #0, R0, 13(R5)				      ; 3255
+		    0D   A5	       50     00375									      ;
+				       07  12 00378 	    BNEQ    3$							      ;
+		         50	       6B  D0 0037A 	    MOVL    IN_CHAIN, MATCH_NT					      ; 3263
+		         6B	       64  3C 0037D 	    MOVZWL  (R4), IN_CHAIN					      ; 3264
+					   04 00380 	    RET     							      ; 3265
+	   50	         6B	       5A  C1 00381 3$:     ADDL3   R10, IN_CHAIN, R0					      ; 3269
+		         6B	       60  3C 00385 	    MOVZWL  (R0), IN_CHAIN					      ;
+				       DA  12 00388 	    BNEQ    2$							      ;
+				       50  D4 0038A 4$:     CLRL    R0							      ; 3155
+					   04 0038C 	    RET     							      ;
+
+; Routine Size:  81 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 10
+; Digital Equipment Corporation
+;
+;	3275	%IF DBG_RST12
+;     L 3276	%THEN
+;     U 3277	
+;     U 3278	ROUTINE PRINT_SYM_PATH( PATH_VEC_PTR ) : NOVALUE =
+;     U 3279	
+;     U 3280	!++
+;     U 3281	! Functional Description:
+;     U 3282	!
+;     U 3283	!	Print out the pathname specified by a given
+;     U 3284	!	PATHNAME_VECTOR - a 0-ended vector of CS_POINTERs.
+;     U 3285	!
+;     U 3286	! Routine Value:
+;     U 3287	!	NOVALUE.
+;     U 3288	!--
+;     U 3289	
+;     U 3290	BEGIN
+;     U 3291		MAP
+;     U 3292			PATH_VEC_PTR : REF PATHNAME_VECTOR;
+;     U 3293		
+;     U 3294	%IF DBG_RST7
+;     U 3295	%THEN
+;     U 3296		$FAO_TT_OUT('print_sym_path: Vector begins at !XL', .PATH_VEC_PTR );
+;     U 3297	%ELSE
+;     U 3298		$FAO_TT_OUT('''');
+;     U 3299	%FI
+;     U 3300	
+;     U 3301		INCR I FROM 0 TO MAX_PATH_SIZE
+;     U 3302			DO
+;     U 3303			IF( .PATH_VEC_PTR[.I] NEQ 0 )
+;     U 3304			THEN
+;     U 3305				BEGIN
+;     U 3306	%IF DBG_RST7
+;     U 3307	%THEN
+;     U 3308				! If debugging, just spew out the information.
+;     U 3309	
+;     U 3310				$FAO_TT_OUT('VEC[!SL] = !XL,  Name !AS',
+;     U 3311					 .I, .PATH_VEC_PTR[.I].PATH_VEC_PTR[.I]);
+;     U 3312	%ELSE
+;     U 3313				! Otherwise we get pretty about it.
+;     U 3314				! The pathname separation character (\)
+;     U 3315				! divides pathname elements but does not
+;     U 3316				! precede the first (MODULE) one.
+;     U 3317	
+;     U 3318				IF( .I NEQ 0 )
+;     U 3319				THEN
+;     U 3320					$FAO_TT_OUT('\');
+;     U 3321				$FAO_TT_OUT('!AC', .PATH_VEC_PTR[.I] );
+;     U 3322	%FI
+;     U 3323				END
+;     U 3324			ELSE
+;     U 3325				BEGIN
+;     U 3326	%IF DBG_RST7
+;     U 3327	%THEN
+;     U 3328				$FAO_TT_OUT('path_vec[!SL] == 0', .I );
+;     U 3329	%ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 10-1
+; Digital Equipment Corporation
+;
+;     U 3330				! This routine should exit here becuase we
+;     U 3331				! insist on the pathname vector ending
+;     U 3332				! with 0.
+;     U 3333	
+;     U 3334				$FAO_TT_OUT('''');
+;     U 3335	%FI
+;     U 3336				RETURN;
+;     U 3337				END;
+;     U 3338	
+;     U 3339		! Control should never get to here.  (see above).
+;     U 3340	
+;     U 3341		$FAO_TT_OUT('print_sym_path error.');
+;     U 3342	END;
+;     U 3343	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 11
+; Digital Equipment Corporation
+;
+;	3344	GLOBAL ROUTINE DBG$PC_RULE( PATH_VEC_PTR ) =
+;	3345	!++
+;	3346	! Functional Description:
+;	3347	!
+;	3348	!	This routine implements the PC-lookup rule.
+;	3349	!	The two places that this rule is used is in
+;	3350	!	INT, for %line, and in RST, for SYM_TO_VALU.
+;	3351	!	In both cases the PC-rule correlates to 
+;	3352	!	the pathname which corresponds to the PC.
+;	3353	!
+;	3354	!	In neither case is there anything to be gained
+;	3355	!	from looking at the global symbol table to find a match
+;	3356	!	to the given PC.  For this reason, MC_GBL_LOCKED is turned
+;	3357	!	ON and then OFF again by this routine.
+;	3358	!
+;	3359	! Inputs:
+;	3360	!
+;	3361	!	PATH_VEC_PTR - a pointer to the pathname vector that we
+;	3362	!			should fill in.
+;	3363	!
+;	3364	! Implicit Inputs:
+;	3365	!
+;	3366	!	The pathname we build assumes the way that we 'connect
+;	3367	!	up scope' for the various languages.  Now we build:
+;	3368	!
+;	3369	!	MARS and FORTRAN	-"module_name" only
+;	3370	!	BLISS			-"module_name\routine_name[\routine_name ...]"
+;	3371	!
+;	3372	! Routine Value:
+;	3373	!
+;	3374	!	TRUE, if the pathname can be constructed,
+;	3375	!	      is non-null, and leads to a ROUTINE,
+;	3376	!	FALSE, otherwise.
+;	3377	!--
+;	3378		BEGIN
+;	3379		MAP
+;	3380					! Where we stuff the pathname vector
+;	3381					! back to.
+;	3382			PATH_VEC_PTR : REF PATHNAME_VECTOR;
+;	3383		LOCAL
+;	3384			LANGUAGE,
+;	3385			MC_PTR : REF MC_RECORD,
+;	3386			MC_NAME_DESC : block[8,byte],
+;	3387			MC_CS_PTR : CS_POINTER,
+;	3388			status,
+;	3389					! The NT record for the supposed ROUTINE
+;	3390					! which the PC is in.
+;	3391			NT_PTR : REF NT_RECORD;
+;	3392	
+;	3393		NT_PTR = 0;
+;	3394	
+;	3395	%IF DBG_RST4
+;     L 3396	%THEN
+;     U 3397		$FAO_TT_OUT('PC = !XL lookup rule',.dbg$gl_runframe [dbg$l_user_pc]);
+;     U 3398	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 11-1
+; Digital Equipment Corporation
+;
+;	3399	
+;	3400		!+
+;	3401		! First, find out which symbol we would
+;	3402		! use if we were to symbolize the current PC.
+;	3403		! Make sure that a global symbol does not come
+;	3404		! back as the answer for two reasons:
+;	3405		!	1) it wouldn't be of any use anyways,
+;	3406		! but more importantly,
+;	3407		!	2) finding a global means that the 1 NT
+;	3408		!	   record reserved for globals gets overwritten.
+;	3409		!	   This causes SYM_TO_VAL to have this NT
+;	3410		!	   overwritten when it is probably in the
+;	3411		!	   middle of considering it as one of the duplicates
+;	3412		!	   it is applying the list of search rules to.
+;	3413		!-
+;	3414	
+;	3415		dbg$gl_mc_ptr[ MC_GBL_LOCKED ] = TRUE;
+;	3416	
+;	3417		status = DBG$VAL_TO_SYM( .dbg$gl_runframe [dbg$l_user_pc], NT_PTR, FALSE);
+;	3418	
+;	3419		dbg$gl_mc_ptr[ MC_GBL_LOCKED ] = FALSE;
+;	3420	
+;	3421	%IF DBG_RST4
+;     L 3422	%THEN
+;     U 3423		$fao_tt_out('pc_rule: val_to_sym status = !XL',.status);
+;     U 3424	%FI
+;	3425		
+;	3426		IF( NOT .STATUS )
+;	3427		THEN
+;	3428			! No symbolization is possible.
+;	3429			! We presumably do not have symbols
+;	3430			! initialized for the module that the
+;	3431			! program is stopped in.
+;	3432	
+;	3433			RETURN(FALSE);
+;	3434	
+;	3435		! Build the path vector which corresponds
+;	3436		! to the NT chain we now have for this
+;	3437		! symbol.
+;	3438		
+;	3439		DBG$ADD_NT_2_PV( .NT_PTR, .PATH_VEC_PTR );
+;	3440	
+;	3441	%IF DBG_RST4
+;     L 3442	%THEN
+;     U 3443		$FAO_TT_OUT('PC pathvector passed back to !XL',.PATH_VEC_PTR);
+;     U 3444	%FI
+;	3445		! The pathvector is bogus (in this case) if it only
+;	3446		! contains 1 element.  This is because GLOBAL
+;	3447		! names can never be something we should prefix
+;	3448		! another symbol with to produce a valid pathname.
+;	3449	
+;	3450		IF( .PATH_VEC_PTR[ 1 ] EQL 0 )
+;	3451		THEN
+;	3452			RETURN(FALSE);
+;	3453	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 11-2
+; Digital Equipment Corporation
+;
+;	3454		! Now we need to know what language the
+;	3455		! pathname corresponds to.  To find this out,
+;	3456		! pick up a counted-string pointer to the module
+;	3457		! name, convert this to a string descriptor and
+;	3458		! then to an MC pointer to this module.
+;	3459	
+;	3460		MC_CS_PTR = .PATH_VEC_PTR[0];
+;	3461		MC_NAME_DESC[ DSC$W_LENGTH ] = .MC_CS_PTR[0];
+;	3462		MC_NAME_DESC[ DSC$A_POINTER ] = MC_CS_PTR[1];
+;	3463		MC_PTR = DBG$FIND_MODULE( MC_NAME_DESC, TRUE );
+;	3464		!+
+;	3465		! For FORTRAN and BLISS we insist that the
+;	3466		! pathname lead to ROUTINE.  In MARS it may lead
+;	3467		! to almost anything and still give us the module_name
+;	3468		! we need for the PC rule.
+;	3469		!-
+;	3470	
+;	3471		LANGUAGE = .MC_PTR[ MC_LANGUAGE ];
+;	3472	
+;	3473		IF( .LANGUAGE EQL FORTRAN_MODULE OR .LANGUAGE EQL BLISS_MODULE )
+;	3474		THEN
+;	3475			IF( .NT_PTR[ NT_TYPE ] NEQ DSC$K_DTYPE_RTN )
+;	3476			THEN
+;	3477				BEGIN
+;	3478	%IF DBG_RST4
+;     L 3479	%THEN
+;     U 3480				$FAO_TT_OUT('ftn or bliss PC symbolizes to symbol type !XB',
+;     U 3481					.NT_PTR[ NT_TYPE ] );
+;     U 3482	%FI
+;	3483				RETURN(FALSE);
+;	3484				END;
+;	3485	
+;	3486		! Finally, make the pathvector suitable for the PC rule
+;	3487		! depending on the source code language.
+;	3488	
+;	3489		IF( .LANGUAGE NEQ BLISS_MODULE )
+;	3490		THEN
+;	3491			! FORTRAN and MACRO scope is module name only.
+;	3492			! Simply discard the rest.
+;	3493	
+;	3494			PATH_VEC_PTR[ 1 ] = 0;
+;	3495	
+;	3496		! Having passed back the pathname,
+;	3497		! return a success status.
+;	3498	
+;	3499		RETURN(TRUE);
+;	3500	end;
+
+
+
+
+
+					 0C04 0038D 	    .ENTRY  DBG$PC_RULE, Save R2,R10,R11			      ; 3344
+		         5A 00000000G  EF  9E 0038F 	    MOVAB   DBG$GL_MC_PTR, R10					      ;
+		         5B 00000000G  8F  D0 00396 	    MOVL    #DBG$_RST_BEGIN, R11				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 11-3
+; Digital Equipment Corporation
+;
+		         5E	       08  C2 0039D 	    SUBL2   #8, SP						      ;
+				       7E  D4 003A0 	    CLRL    NT_PTR						      ; 3393
+	   50	         6A	       5B  C1 003A2 	    ADDL3   R11, DBG$GL_MC_PTR, R0				      ; 3415
+		    03   A0	       04  88 003A6 	    BISB2   #4, 3(R0)						      ;
+				       7E  D4 003AA 	    CLRL    -(SP)						      ; 3417
+				  04   AE  9F 003AC 	    PUSHAB  NT_PTR						      ;
+		         50 00000000G  EF  D0 003AF 	    MOVL    DBG$GL_RUNFRAME, R0					      ;
+				  40   A0  DD 003B6 	    PUSHL   64(R0)						      ;
+		  0000V  CF	       03  FB 003B9 	    CALLS   #3, DBG$VAL_TO_SYM					      ;
+		         51	       50  D0 003BE 	    MOVL    R0, STATUS						      ;
+	   50	         6A	       5B  C1 003C1 	    ADDL3   R11, DBG$GL_MC_PTR, R0				      ; 3419
+		    03   A0	       04  8A 003C5 	    BICB2   #4, 3(R0)						      ;
+		         55	       51  E9 003C9 	    BLBC    STATUS, 4$						      ; 3426
+		         52	  04   AC  D0 003CC 	    MOVL    PATH_VEC_PTR, R2					      ; 3439
+				       52  DD 003D0 	    PUSHL   R2							      ;
+				  04   AE  DD 003D2 	    PUSHL   NT_PTR						      ;
+		  FC26   CF	       02  FB 003D5 	    CALLS   #2, DBG$ADD_NT_2_PV					      ;
+				  04   A2  D5 003DA 	    TSTL    4(R2)						      ; 3450
+				       42  13 003DD 	    BEQL    4$							      ;
+		         50	       62  D0 003DF 	    MOVL    (R2), MC_CS_PTR					      ; 3460
+		    04   AE	       60  9B 003E2 	    MOVZBW  (MC_CS_PTR), MC_NAME_DESC				      ; 3461
+      08   AE	         50	       01  C1 003E6 	    ADDL3   #1, MC_CS_PTR, MC_NAME_DESC+4			      ; 3462
+				       01  DD 003EB 	    PUSHL   #1							      ; 3463
+				  08   AE  9F 003ED 	    PUSHAB  MC_NAME_DESC					      ;
+	      00000000G  EF	       02  FB 003F0 	    CALLS   #2, DBG$FIND_MODULE					      ;
+00000000G  E0	         03	       03  EF 003F7 	    EXTZV   #3, #3, DBG$_RST_BEGIN+3(MC_PTR), LANGUAGE		      ; 3471
+				       51     003FF									      ;
+		         01	       51  D1 00400 	    CMPL    LANGUAGE, #1					      ; 3473
+				       05  13 00403 	    BEQL    1$							      ;
+		         02	       51  D1 00405 	    CMPL    LANGUAGE, #2					      ;
+				       0B  12 00408 	    BNEQ    2$							      ;
+	   50	         6E	       5B  C1 0040A 1$:     ADDL3   R11, NT_PTR, R0					      ; 3475
+		    BE   8F	  02   A0  91 0040E 	    CMPB    2(R0), #190						      ;
+				       0C  12 00413 	    BNEQ    4$							      ;
+		         02	       51  D1 00415 2$:     CMPL    LANGUAGE, #2					      ; 3489
+				       03  13 00418 	    BEQL    3$							      ;
+				  04   A2  D4 0041A 	    CLRL    4(R2)						      ; 3494
+		         50	       01  D0 0041D 3$:     MOVL    #1, R0						      ; 3499
+					   04 00420 	    RET     							      ;
+				       50  D4 00421 4$:     CLRL    R0							      ; 3344
+					   04 00423 	    RET     							      ;
+
+; Routine Size:  151 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 12
+; Digital Equipment Corporation
+;
+;	3501	ROUTINE CONCAT_PATHS( DESTINATION, PV_1, PV_2 ) : NOVALUE =
+;	3502	!++
+;	3503	! Functional Description:
+;	3504	!
+;	3505	!	Concatenate two PATHNAME_VECTORS together and place
+;	3506	!	the resultant vector in the indicated location.
+;	3507	!	If the PV_1 vector is the same as the DESTINATION
+;	3508	!	vector, then this routine is equivalent to routine
+;	3509	!	which just 'tacks' one vector onto the end of another.
+;	3510	!
+;	3511	! Formal Parameters:
+;	3512	!
+;	3513	!  DESTINATION		-a pointer to where the concatenation
+;	3514	!			 of the PV_1 and PV_2 vectors should be
+;	3515	!			 be stored.
+;	3516	!  PV_1			-a pointer to the first source vector.  If PV_1[0]
+;	3517	!			 is 0, the PV_1 vector is considered empty.
+;	3518	!  PV_2			-a pointer to the second source vector.  If PV_2[0]
+;	3519	!			 is 0, the PV_2 vector is considered empty.
+;	3520	!
+;	3521	! Implicit Inputs:
+;	3522	!	None, other than the assumptions made about PATHNAME_VECTORS,
+;	3523	!	namely their characteristics, given via the 'canned' declaration,
+;	3524	!	and the fact that they must end with a 0 entry.
+;	3525	!
+;	3526	! Implicit Outputs:
+;	3527	!	None.
+;	3528	!
+;	3529	! Routine Value:
+;	3530	!
+;	3531	!	NOVALUE
+;	3532	!
+;	3533	! Side Effects:
+;	3534	!	The two vectors are concatenated.
+;	3535	!--
+;	3536	
+;	3537	BEGIN
+;	3538		MAP
+;	3539			! All three input parameters are pointers to
+;	3540			! pathname vectors.
+;	3541	
+;	3542			DESTINATION : REF PATHNAME_VECTOR,
+;	3543			PV_1	    : REF PATHNAME_VECTOR,
+;	3544			PV_2	    : REF PATHNAME_VECTOR;
+;	3545		LOCAL
+;	3546			I_2,			! Index used for PV_2 vector.
+;	3547			INDEX;			! Used to index thru the destination vector.
+;	3548	
+;	3549		! Initialize an index into the destination
+;	3550		! and source pathname vectors.
+;	3551	
+;	3552		INDEX = 0;
+;	3553		I_2 = 0;
+;	3554	
+;	3555		! If we were actually given the first vector,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 12-1
+; Digital Equipment Corporation
+;
+;	3556		! copy each element from it into the destination
+;	3557		! vector.  We do not consider a 0-pointer vector
+;	3558		! to be an error; it just means that that vector
+;	3559		! doesn't contribute anything to the result.
+;	3560	
+;	3561		IF( PV_1[0] NEQ 0 )
+;	3562		THEN
+;	3563			! Copy each element, making sure not to overflow.
+;	3564	
+;	3565			WHILE( .INDEX LSS MAX_PATH_SIZE )
+;	3566				DO
+;	3567				IF( (DESTINATION[.INDEX] = .PV_1[.INDEX]) EQL 0 )
+;	3568				THEN
+;	3569					! The first 0 element => the end.
+;	3570	
+;	3571					EXITLOOP
+;	3572				ELSE
+;	3573					INDEX = .INDEX + 1;
+;	3574	
+;	3575		! Then add on the second vector, again making sure
+;	3576		! that we were actually given something.  Note that
+;	3577		! we don't have to check overflow of the PV_2 vector
+;	3578		! because no matter how long it is, we will overflow
+;	3579		! the destination vector before we overflow it.
+;	3580	
+;	3581		IF( PV_2[0] NEQ 0 )
+;	3582		THEN
+;	3583			WHILE( .INDEX LSS MAX_PATH_SIZE )
+;	3584				DO
+;	3585				IF( (DESTINATION[.INDEX] = .PV_2[.I_2]) EQL 0 )
+;	3586				THEN
+;	3587					! This is the only correct way to 
+;	3588					! return from this routine.
+;	3589	
+;	3590					RETURN
+;	3591				ELSE
+;	3592					BEGIN
+;	3593					I_2 = .I_2 +1;
+;	3594					INDEX = .INDEX +1;
+;	3595					END;
+;	3596	
+;	3597		! If we don't return in the above loop, then it is
+;	3598		! because we were about to overflow the destination
+;	3599		! vector.  We take care of this by effectively wiping
+;	3600		! out the vector we have built.
+;	3601	
+;	3602		DESTINATION[0] = 0;
+;	3603		RETURN;
+;	3604	END;
+
+
+
+
+
+					 0000 00424 CONCAT_PATHS:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 12-2
+; Digital Equipment Corporation
+;
+							    .WORD   Save nothing					      ; 3501
+				       50  7C 00426 	    CLRQ    INDEX						      ; 3552
+				  08   AC  D5 00428 	    TSTL    PV_1						      ; 3561
+				       12  13 0042B 	    BEQL    2$							      ;
+		         0A	       50  D1 0042D 1$:     CMPL    INDEX, #10						      ; 3565
+				       0D  18 00430 	    BGEQ    2$							      ;
+		    04 BC40	  08 BC40  D0 00432 	    MOVL    @PV_1[INDEX], @DESTINATION[INDEX]			      ; 3567
+				       04  13 00439 	    BEQL    2$							      ;
+				       50  D6 0043B 	    INCL    INDEX						      ; 3573
+				       EE  11 0043D 	    BRB     1$							      ; 3565
+				  0C   AC  D5 0043F 2$:     TSTL    PV_2						      ; 3581
+				       14  13 00442 	    BEQL    4$							      ;
+		         0A	       50  D1 00444 3$:     CMPL    INDEX, #10						      ; 3583
+				       0F  18 00447 	    BGEQ    4$							      ;
+		    04 BC40	  0C BC41  D0 00449 	    MOVL    @PV_2[I_2], @DESTINATION[INDEX]			      ; 3585
+				       09  13 00450 	    BEQL    5$							      ;
+				       51  D6 00452 	    INCL    I_2							      ; 3593
+				       50  D6 00454 	    INCL    INDEX						      ; 3594
+				       EC  11 00456 	    BRB     3$							      ; 3583
+				  04   BC  D4 00458 4$:     CLRL    @DESTINATION					      ; 3602
+					   04 0045B 5$:     RET     							      ; 3501
+
+; Routine Size:  56 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 13
+; Digital Equipment Corporation
+;
+;	3605	GLOBAL ROUTINE DBG$NT_HASH_FCN( NAME_CS ) =
+;	3606	!++
+;	3607	! Functional Description:
+;	3608	!	Calculate what we call the 'hash' code associated
+;	3609	!	with a given symbol name (counted string).
+;	3610	!	This function localizes the dispersal that we
+;	3611	!	use to distribute symbol NT-records into so-called
+;	3612	!	NT-chains.  Currently this works by simply adding
+;	3613	!	up the characters which make up the symbol name,
+;	3614	!	adding in the count as well, and then truncating
+;	3615	!	the resultant value to one byte so that we can
+;	3616	!	then use this byte to index into the NT Hash Vector
+;	3617	!	that then gives us the pointer to the NT chain for
+;	3618	!	all symbols that 'hash' to this same byte index.
+;	3619	!
+;	3620	! Formal Parameters:
+;	3621	!	NAME_CS	-the address of a counted string that
+;	3622	!		 is the symbol name we are to 'hash'.
+;	3623	!
+;	3624	! Implicit Inputs:
+;	3625	!	The hash index is supposed to be 1 byte long.
+;	3626	!	(See the literal, NT_HASH_SIZE).
+;	3627	!
+;	3628	! Implicit Outputs:
+;	3629	!
+;	3630	!	None.
+;	3631	!
+;	3632	! Routine Value:
+;	3633	!	The 1-byte hash index, guaranteed not to exceed
+;	3634	!	the range you can reach with an unsigned byte.
+;	3635	!
+;	3636	! Side Effects:
+;	3637	!
+;	3638	!	None.
+;	3639	!--
+;	3640	
+;	3641	BEGIN
+;	3642		MAP
+;	3643			NAME_CS : CS_POINTER;
+;	3644		LOCAL
+;	3645			TALLY;
+;	3646	
+;	3647	%IF DBG_RST1
+;     L 3648	%THEN
+;     U 3649		$FAO_TT_OUT('Hash for !AS'.NAME_CS);
+;     U 3650	%FI
+;	3651	
+;	3652		! We simply add up the characters in the
+;	3653		! supposed name, including the count.
+;	3654	
+;	3655		DECR I FROM (TALLY = .NAME_CS[0]) TO 1
+;	3656			DO
+;	3657			TALLY = .TALLY + .NAME_CS[.I];
+;	3658	
+;	3659		! The hash value is later used as a byte
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 13-1
+; Digital Equipment Corporation
+;
+;	3660		! index into the NT hash table.
+;	3661	
+;	3662	%IF DBG_RST1
+;     L 3663	%THEN
+;     U 3664		$FAO_TT_OUT(' IS: !XL', .TALLY<0,8,0> );
+;     U 3665	%FI
+;	3666	
+;	3667		RETURN( .TALLY<0,8,0> );
+;	3668	END;
+
+
+
+
+
+					 0004 0045C 	    .ENTRY  DBG$NT_HASH_FCN, Save R2				      ; 3605
+		         51	  04   BC  9A 0045E 	    MOVZBL  @NAME_CS, TALLY					      ; 3655
+	   50	         51	       01  C1 00462 	    ADDL3   #1, TALLY, I					      ;
+				       08  11 00466 	    BRB     2$							      ;
+		         52	  04 BC40  9A 00468 1$:     MOVZBL  @NAME_CS[I], R2					      ; 3657
+		         51	       52  C0 0046D 	    ADDL2   R2, TALLY						      ;
+		         F5	       50  F5 00470 2$:     SOBGTR  I, 1$						      ; 3655
+		         50	       51  9A 00473 	    MOVZBL  TALLY, R0						      ; 3667
+					   04 00476 	    RET     							      ; 3605
+
+; Routine Size:  27 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 14
+; Digital Equipment Corporation
+;
+;	3669	ROUTINE PATH_MATCH( PATH_VEC_PTR, NT_PTR ) =
+;	3670	!++
+;	3671	! Functional Description:
+;	3672	!
+;	3673	!	See if the NT record we are passed a pointer to
+;	3674	!	has the same implicit path name as the one 
+;	3675	!	specified in the PATHNAME_VECTOR we are also
+;	3676	!	passed a pointer to.
+;	3677	!
+;	3678	! Formal Parameters:
+;	3679	!
+;	3680	!  PATH_VEC_PTR		-A pointer to the pathname vector which holds
+;	3681	!			 the path name of the symbol we are to match
+;	3682	!			 with the one implied by the NT scope chain.
+;	3683	!  NT_PTR		-A pointer to the NT record which begins a so-called
+;	3684	!			 scope chain.  
+;	3685	!
+;	3686	! Implicit Inputs:
+;	3687	!
+;	3688	!	-Pathname vectors end with a 0 element; NT scope chains
+;	3689	!	 end when DBG$ADD_NT_2_PV says they do.
+;	3690	!	-If the 'top' NT entry in an NT chain IS_GLOBAL,
+;	3691	!	 then we assume that a pathname consisting only
+;	3692	!	 of that global name is sufficient to 'match' the
+;	3693	!	 implicit NT pathname.  This means that PATH_MATCH
+;	3694	!	 had better not be called with the user-given pathname
+;	3695	!	 (ie nothing has been perpended to it) unless
+;	3696	!	 a global answer is acceptable.
+;	3697	!
+;	3698	! Implicit Outputs:
+;	3699	!
+;	3700	!	None.
+;	3701	!
+;	3702	! Return Value:
+;	3703	!	
+;	3704	!	TRUE, if the paths match,
+;	3705	!	FALSE, otherwise.
+;	3706	!
+;	3707	! Side Effects:
+;	3708	!
+;	3709	!	None.
+;	3710	!--
+;	3711	
+;	3712	BEGIN
+;	3713		MAP
+;	3714			PATH_VEC_PTR : REF PATHNAME_VECTOR,
+;	3715			NT_PTR : REF NT_RECORD;
+;	3716		LOCAL
+;	3717			CS_SRC : CS_POINTER,
+;	3718			CS_DST : CS_POINTER,
+;	3719			PATH_VEC : PATHNAME_VECTOR;
+;	3720	
+;	3721	%IF DBG_RST12
+;     L 3722	%THEN
+;     U 3723		$FAO_TT_OUT('path_match: ');
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 14-1
+; Digital Equipment Corporation
+;
+;     U 3724		PRINT_SYM_PATH(.PATH_VEC_PTR);
+;     U 3725		$FAO_TT_OUT(' (user) to ');
+;     U 3726	%FI
+;	3727	
+;	3728		! Since we want to compare to pathnames which 
+;	3729		! have a radically different data structure representation,
+;	3730		! the simplest thing to do is to convert one of the
+;	3731		! two different things into the same kind of thing
+;	3732		! as the other is.  Then comparing them is easy.
+;	3733		! In our case it is easiest to build a real 
+;	3734		! PATHNAME_VECTOR to correspond to the one implied
+;	3735		! by the NT scope chain.
+;	3736	
+;	3737		DBG$ADD_NT_2_PV( .NT_PTR, PATH_VEC );
+;	3738	
+;	3739	%IF DBG_RST12
+;     L 3740	%THEN
+;     U 3741		PRINT_SYM_PATH(PATH_VEC);
+;     U 3742		$FAO_TT_OUT(' (NT).');
+;     U 3743	%FI
+;	3744	
+;	3745		! Now just look thru the two vectors making sure
+;	3746		! that the CS pointers therein point to identical
+;	3747		! strings.  Note that we do the comparison up to
+;	3748		! and including the symbol name which ends the path,
+;	3749		! since although we know these symbols hash to the
+;	3750		! same value we don't know that they are identical.
+;	3751		! Also note that even if we go thru the following loop
+;	3752		! mathing OK up to and including the MAX_PATH_SIZE'th
+;	3753		! time, this is still NOT a valid match since we must
+;	3754		! get a 0 entry to end the pathvectors properly.  This
+;	3755		! is why we say that falling out of this loop implies failure.
+;	3756	
+;	3757		INCR I FROM 0 TO MAX_PATH_SIZE
+;	3758			DO
+;	3759			BEGIN
+;	3760	
+;	3761			! Extract the CS pointers from the pathname vectors
+;	3762			! and make sure that one of them is not 0 unless the
+;	3763			! other one is.  If the two paths are to match, 
+;	3764			! they must end at the same time, otherwise the paths
+;	3765			! do not match because one is longer than the other.
+;	3766	
+;	3767			CS_SRC = .PATH_VEC_PTR[.I]; 
+;	3768			CS_DST = .PATH_VEC[.I];
+;	3769	
+;	3770			IF( .CS_SRC EQL 0 AND .CS_DST EQL 0 )
+;	3771			THEN
+;	3772				! This is one of two places that a match can
+;	3773				! be detected.
+;	3774	
+;	3775				RETURN(TRUE);
+;	3776	
+;	3777			IF( .CS_SRC EQL 0 OR .CS_DST EQL 0 )
+;	3778			THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 14-2
+; Digital Equipment Corporation
+;
+;	3779				! The pathnames don't match because
+;	3780				! one of them is too short.
+;	3781		
+;	3782				EXITLOOP;
+;	3783	
+;	3784			! Now it is safe to actually compare the element strings.
+;	3785	
+;	3786			IF( NOT CH$EQL( .CS_SRC[0], CS_SRC[1], .CS_DST[0], CS_DST[1]) )
+;	3787			THEN
+;	3788				! Mismatch because two elements are not the same.
+;	3789	
+;	3790				EXITLOOP;
+;	3791	
+;	3792			! Corresponding pathname elements match.  Go back
+;	3793			! and check successive elements.
+;	3794	
+;	3795			END;
+;	3796	
+;	3797		! If we fall out of the above loop, then the
+;	3798		! pathnames did not match.
+;	3799	
+;	3800		! As well as a straightforward pathvector match,
+;	3801		! we must also implement a special match for when
+;	3802		! the user asks for a global symbol which happens
+;	3803		! to be a global from a module we have locals for.
+;	3804		! The reason for the special case here is because
+;	3805		! (only) this type of global has a real pathname -
+;	3806		! namely "mod\glob_name".  While we support the user
+;	3807		! giving such names, we must also allow him to say
+;	3808		! simply "glob_name" as well.  
+;	3809	
+;	3810		! To check this, first see that the two symbol
+;	3811		! names are identical.  Then make sure that this is all
+;	3812		! of the user-given pathname, and that the corresponding
+;	3813		! NT record _IS_GLOBAL and is not MODULE.
+;	3814	
+;	3815		CS_SRC = .PATH_VEC_PTR[0]; 
+;	3816	
+;	3817		IF( NOT CH$EQL( .CS_SRC[0], CS_SRC[1], .NT_PTR[NT_NAME_CS], NT_PTR[NT_NAME_ADDR] ))
+;	3818		THEN
+;	3819			BEGIN
+;	3820	
+;	3821			! Mismatch because two elements are not the same.
+;	3822	
+;	3823	%IF DBG_RST12
+;     L 3824	%THEN
+;     U 3825			$FAO_TT_OUT('Special global !AS !AS mismatch.',
+;     U 3826					.CS_SRC, NT_PTR[NT_NAME_CS]);
+;     U 3827	%FI
+;	3828			RETURN(FALSE);
+;	3829			END;
+;	3830	
+;	3831		IF( .PATH_VEC_PTR[1] EQL 0 AND .NT_PTR[ NT_IS_GLOBAL ] ) 
+;	3832		THEN
+;	3833			! Don't get fooled by the MC_IS_GLOBAL MC record.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 14-3
+; Digital Equipment Corporation
+;
+;	3834			! No module names have values, so can never be
+;	3835			! PATH_MATCHed.
+;	3836	
+;	3837			IF( .NT_PTR[ NT_TYPE ] NEQ DSC$K_DTYPE_MOD )
+;	3838			THEN
+;	3839				BEGIN
+;	3840	
+;	3841				! This is the second of 2 places
+;	3842				! were a match can be detected.
+;	3843	
+;	3844	%IF DBG_RST12
+;     L 3845	%THEN
+;     U 3846				$FAO_TT_OUT('!/*** special global match');
+;     U 3847	%FI
+;	3848				RETURN(TRUE);
+;	3849				END;
+;	3850	
+;	3851		! The two pathnames do not match.
+;	3852	
+;	3853		RETURN(FALSE);
+;	3854	END;
+
+
+
+
+
+					 00FC 00477 PATH_MATCH:
+							    .WORD   Save R2,R3,R4,R5,R6,R7				      ; 3669
+		         5E	       2C  C2 00479 	    SUBL2   #44, SP						      ;
+				       5E  DD 0047C 	    PUSHL   SP							      ; 3737
+				  08   AC  DD 0047E 	    PUSHL   NT_PTR						      ;
+		  FB7A   CF	       02  FB 00481 	    CALLS   #2, DBG$ADD_NT_2_PV					      ;
+		         57	  04   AC  D0 00486 	    MOVL    PATH_VEC_PTR, R7					      ; 3767
+				       54  D4 0048A 	    CLRL    I							      ; 3757
+		         56	     6744  D0 0048C 1$:     MOVL    (R7)[I], CS_SRC					      ; 3767
+		         55	     6E44  D0 00490 	    MOVL    PATH_VEC[I], CS_DST					      ; 3768
+				       50  D4 00494 	    CLRL    R0							      ; 3770
+				       56  D5 00496 	    TSTL    CS_SRC						      ;
+				       06  12 00498 	    BNEQ    2$							      ;
+				       50  D6 0049A 	    INCL    R0							      ;
+				       55  D5 0049C 	    TSTL    CS_DST						      ;
+				       48  13 0049E 	    BEQL    4$							      ;
+		         18	       50  E8 004A0 2$:     BLBS    R0, 3$						      ; 3777
+				       55  D5 004A3 	    TSTL    CS_DST						      ;
+				       14  13 004A5 	    BEQL    3$							      ;
+		         51	       66  9A 004A7 	    MOVZBL  (CS_SRC), R1					      ; 3786
+		         50	       65  9A 004AA 	    MOVZBL  (CS_DST), R0					      ;
+	   00	    01   A6	       51  2D 004AD 	    CMPC5   R1, 1(CS_SRC), #0, R0, 1(CS_DST)			      ;
+		    01   A5	       50     004B2									      ;
+				       04  12 004B5 	    BNEQ    3$							      ;
+	   D1	         54	       0A  F3 004B7 	    AOBLEQ  #10, I, 1$						      ; 3757
+		         56	       67  D0 004BB 3$:     MOVL    (R7), CS_SRC					      ; 3815
+		         51	       66  9A 004BE 	    MOVZBL  (CS_SRC), R1					      ; 3817
+	   54	    08   AC 00000000G  8F  C1 004C1 	    ADDL3   #DBG$_RST_BEGIN, NT_PTR, R4				      ;
+		         50	  0C   A4  9A 004CA 	    MOVZBL  12(R4), R0						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 14-4
+; Digital Equipment Corporation
+;
+	   00	    01   A6	       51  2D 004CE 	    CMPC5   R1, 1(CS_SRC), #0, R0, 13(R4)			      ;
+		    0D   A4	       50     004D3									      ;
+				       14  12 004D6 	    BNEQ    5$							      ;
+				  04   A7  D5 004D8 	    TSTL    4(R7)						      ; 3831
+				       0F  12 004DB 	    BNEQ    5$							      ;
+		         0B	  03   A4  E9 004DD 	    BLBC    3(R4), 5$						      ;
+		    BC   8F	  02   A4  91 004E1 	    CMPB    2(R4), #188						      ; 3837
+				       04  13 004E6 	    BEQL    5$							      ;
+		         50	       01  D0 004E8 4$:     MOVL    #1, R0						      ; 3848
+					   04 004EB 	    RET     							      ;
+				       50  D4 004EC 5$:     CLRL    R0							      ; 3669
+					   04 004EE 	    RET     							      ;
+
+; Routine Size:  120 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 15
+; Digital Equipment Corporation
+;
+;	3855	GLOBAL ROUTINE DBG$VAL_TO_SYM( VALUE, NT_PTR_ADDR, LVT_FLAG ) =
+;	3856	!++
+;	3857	! Functional Description:
+;	3858	!
+;	3859	!	Implement the search algorithm which DEBUG uses to
+;	3860	!	correspond values with symbols.
+;	3861	!
+;	3862	! Formal Parameters:
+;	3863	!
+;	3864	!	VALUE		-The key we use in the lookup.
+;	3865	!	NT_PTR_ADDR	-A pointer to where we should copy back
+;	3866	!			 the NT_POINTER to the record we find
+;	3867	!			 to correspond to the value.  The
+;	3868	!			 contents of this location are not changed
+;	3869	!			 if no such correspondence is discovered.
+;	3870	!	LVT_FLAG	-Whether or not we should even try for a
+;	3871	!			 match in the literal value table (LVT).
+;	3872	!			 (We always lookup in the SAT first).
+;	3873	! Warning:
+;	3874	!	
+;	3875	!	We return an NT pointer via NT_PTR_ADDR.
+;	3876	!	As long as this returned value is NOT a longword,
+;	3877	!	due to BLISS's inability to use the REF NT_RECORD
+;	3878	!	ONLY as an NT pointer, (i.e. BLISS assumes that 
+;	3879	!	REFs are longwords), a caller of this routine should
+;	3880	!	initialize the NT_PTR to 0 before expecting this
+;	3881	!	routine to pass back the value.  This routine
+;	3882	!	can not pass back a longword because we won't know that
+;	3883	!	the address we were passed is not a real NT_PTR
+;	3884	!	field - ie, the 2-bytes that it should be...
+;	3885	!
+;	3886	! Implicit Inputs:
+;	3887	!	None.
+;	3888	!
+;	3889	! Implicit Outputs:
+;	3890	!
+;	3891	!	The RESULT parameter via NT_PTR_ADDR.
+;	3892	!	(see above.)
+;	3893	!
+;	3894	! Routine Value:
+;	3895	!
+;	3896	!	TRUE, if a match is found,
+;	3897	!	FALSE, otherwise.
+;	3898	!
+;	3899	! Side Effects:
+;	3900	!
+;	3901	!	The SAT (and LVT) table(s) is/are searched.
+;	3902	!--
+;	3903	BEGIN
+;	3904		MAP
+;	3905					! The NT pointer we return is an RST-pointer.
+;	3906			NT_PTR_ADDR : REF RST_POINTER;
+;	3907		LOCAL
+;	3908			SAT_PTR : REF SAT_RECORD;
+;	3909	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 15-1
+; Digital Equipment Corporation
+;
+;	3910		IF( DBG$VAL_TO_SAT( .VALUE, SAT_PTR ) )
+;	3911		THEN
+;	3912			BEGIN
+;	3913	
+;	3914			! Make up for the fact that we are supposed to
+;	3915			! return an NT pointer, not the SAT pointer
+;	3916			! that VAL_TO_SAT gave us.
+;	3917	
+;	3918			NT_PTR_ADDR[0] = .SAT_PTR[ SAT_NT_PTR ];
+;	3919			RETURN(TRUE);
+;	3920			END;
+;	3921	
+;	3922		RETURN(	IF( .LVT_FLAG )
+;	3923			THEN
+;	3924				LOOKUP_LVT( .VALUE, .NT_PTR_ADDR )
+;	3925			ELSE
+;	3926				FALSE
+;	3927		      );
+;	3928	END;
+
+
+
+
+
+					 0000 004EF 	    .ENTRY  DBG$VAL_TO_SYM, Save nothing			      ; 3855
+		         5E	       04  C2 004F1 	    SUBL2   #4, SP						      ;
+				       5E  DD 004F4 	    PUSHL   SP							      ; 3910
+				  04   AC  DD 004F6 	    PUSHL   VALUE						      ;
+		  0000V  CF	       02  FB 004F9 	    CALLS   #2, DBG$VAL_TO_SAT					      ;
+		         09	       50  E9 004FE 	    BLBC    R0, 1$						      ;
+		    08   BC	  00   BE  B0 00501 	    MOVW    @SAT_PTR, @NT_PTR_ADDR				      ; 3918
+		         50	       01  D0 00506 	    MOVL    #1, R0						      ; 3919
+					   04 00509 	    RET     							      ;
+		         0A	  0C   AC  E9 0050A 1$:     BLBC    LVT_FLAG, 2$					      ; 3922
+		         7E	  04   AC  7D 0050E 	    MOVQ    VALUE, -(SP)					      ; 3924
+		  0000V  CF	       02  FB 00512 	    CALLS   #2, LOOKUP_LVT					      ;
+					   04 00517 	    RET     							      ; 3922
+				       50  D4 00518 2$:     CLRL    R0							      ;
+					   04 0051A 	    RET     							      ; 3855
+
+; Routine Size:  44 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16
+; Digital Equipment Corporation
+;
+;	3929	GLOBAL ROUTINE DBG$VAL_TO_SAT( VALUE, SAT_PTR_ADDR ) =
+;	3930	!++
+;	3931	! Functional Description:
+;	3932	!
+;	3933	!	Search the Static Address Table (SAT) for the best 
+;	3934	!	match to the given value.
+;	3935	!
+;	3936	! Formal Parameters:
+;	3937	!
+;	3938	!	VALUE		-The key we use in the lookup.
+;	3939	!	SAT_PTR_ADDR	-A pointer to where we should copy back
+;	3940	!			 the SAT_POINTER to the record we find
+;	3941	!			 to correspond to the value.  The
+;	3942	!			 contents of this location are not changed
+;	3943	!			 if no such correspondence is discovered.
+;	3944	!
+;	3945	! Implicit Inputs:
+;	3946	!
+;	3947	!	The way we define a 'match' in the SAT is
+;	3948	!	determined solely in this routine.
+;	3949	!
+;	3950	! Implicit Outputs:
+;	3951	!
+;	3952	!	The RESULT parameter, via SAT_PTR_ADDR, also
+;	3953	!	indicates the corresponding NT record
+;	3954	!	(via SAT_NT_PTR).
+;	3955	!
+;	3956	! Routine Value:
+;	3957	!
+;	3958	!	TRUE, if a match is found,
+;	3959	!	FALSE, otherwise.
+;	3960	!
+;	3961	! Side Effects:
+;	3962	!
+;	3963	!	The SAT is searched.
+;	3964	!--
+;	3965	BEGIN
+;	3966		MAP
+;	3967					! The SAT pointer we stuff back is a longword.
+;	3968			SAT_PTR_ADDR : REF VECTOR;
+;	3969		LABEL
+;	3970			SEARCH_SAT;
+;	3971		LOCAL
+;	3972				! When we look at each record of the SAT_VECTOR,
+;	3973				! we apply the proper structure.
+;	3974	
+;	3975			CURRENT_NT  : REF NT_RECORD,
+;	3976			CURRENT_SAT : REF SAT_RECORD,
+;	3977			NEXT_SAT : REF SAT_RECORD,
+;	3978	
+;	3979				! In looking for the 'best' match, we 
+;	3980				! consider at most two candidates at the 
+;	3981				! same time - the 'current' one, and
+;	3982				! the previous, or so-far 'best', one.
+;	3983	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-1
+; Digital Equipment Corporation
+;
+;	3984			BEST_SAT : REF SAT_RECORD;
+;	3985	
+;	3986	%IF DBG_RST2
+;     L 3987	%THEN
+;     U 3988	
+;     U 3989		! Print out parameters and start 'current' off
+;     U 3990		! different from 'best' for the diagnostic, below.
+;     U 3991	
+;     U 3992		$FAO_TT_OUT('val_to_sym: (SAT) value=!XL',.VALUE);
+;     U 3993		CURRENT_SAT = 1;
+;     U 3994	%FI
+;	3995	
+;	3996		! There starts out being no 'previous' best,
+;	3997		! and no current match.
+;	3998	
+;	3999		best_sat = 0;
+;	4000	
+;	4001		! Set up to begin the sequential pass of the SAT.
+;	4002	
+;	4003		DBG$GET_NXT_SAT( SL_ACCE_INIT );
+;	4004	
+;	4005		! Linearly search the SAT looking for an exact match.
+;	4006		! SAT access type is _RECS because we want to quit 
+;	4007		! when the access-mapping routine recognizes that
+;	4008		! even though there may be more potential records in
+;	4009		! the SAT, there are no more ones currently in use.
+;	4010	
+;	4011		WHILE( (NEXT_SAT = DBG$GET_NXT_SAT( SL_ACCE_RECS )) NEQ 0 )
+;	4012			DO
+;	4013	
+;	4014		    SEARCH_SAT:
+;	4015			BEGIN
+;	4016	
+;	4017	%IF DBG_RST2
+;     L 4018	%THEN
+;     U 4019			IF( .BEST_SAT EQL .CURRENT_SAT )
+;     U 4020			THEN
+;     U 4021				! Simply annotate previous selections.
+;     U 4022	
+;     U 4023				$FAO_TT_OUT(' <--');
+;     U 4024	%FI
+;	4025	
+;	4026			! Update our idea of the current SAT to consider.
+;	4027	
+;	4028			CURRENT_SAT = .NEXT_SAT;
+;	4029			CURRENT_NT = .CURRENT_SAT[ SAT_NT_PTR ];
+;	4030	
+;	4031	%IF DBG_RST2
+;     L 4032	%THEN
+;     U 4033			$FAO_TT_OUT('SAT search !XL: -> LB=!XL, UB=!XL, nt=!XL',
+;     U 4034			.CURRENT_SAT,.CURRENT_SAT[ SAT_LB ],.CURRENT_SAT[SAT_UB],.CURRENT_NT);
+;     U 4035	%FI
+;	4036	
+;	4037			IF( .CURRENT_SAT[ SAT_LB ] EQL .VALUE )
+;	4038			THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-2
+; Digital Equipment Corporation
+;
+;	4039				BEGIN
+;	4040			
+;	4041				! We define a match to be 'best' if it is
+;	4042				! an exact one.  Even better, though, is an
+;	4043				! exact match which is NOT to a p-sect symbol.
+;	4044	
+;	4045				IF( .BEST_SAT EQL 0 )
+;	4046				THEN
+;	4047					BEGIN
+;	4048	
+;	4049					! Since there were no previous candidates,
+;	4050					! we take the current one as best.
+;	4051	
+;	4052					BEST_SAT = .CURRENT_SAT;
+;	4053					END
+;	4054				ELSE
+;	4055					BEGIN
+;	4056	
+;	4057					! See if the former 'best' match was exact.
+;	4058	
+;	4059					IF( .BEST_SAT[ SAT_LB ] NEQ .VALUE )
+;	4060					THEN
+;	4061						! The newer and exact match is
+;	4062						! preferable to a previous non-exact
+;	4063						! one no matter what.
+;	4064	
+;	4065						BEST_SAT = .CURRENT_SAT
+;	4066					ELSE
+;	4067						! Since there was a previous exact match, 
+;	4068						! and there now is a current exact match,
+;	4069						! we choose the one which is not a p-sect
+;	4070						! (even if we end up with one which was a
+;	4071						!  match only because its UB is 0).
+;	4072	
+;	4073						IF( .CURRENT_NT[ NT_TYPE ] NEQ DSC$K_DTYPE_PCT )
+;	4074						THEN
+;	4075							BEST_SAT = .CURRENT_SAT;
+;	4076					END;
+;	4077	
+;	4078				! At this point there is nothing further to do
+;	4079				! until we see if there are any more candidates.
+;	4080	
+;	4081				LEAVE SEARCH_SAT;
+;	4082				END;
+;	4083	
+;	4084			! Now try for a non-exact match.
+;	4085	
+;	4086			IF( .CURRENT_SAT[ SAT_LB ] GTRA .VALUE )
+;	4087			THEN
+;	4088				! Once we get past the value we were
+;	4089				! searching for, we know there will be
+;	4090				! no other candidates because the SAT
+;	4091				! is sorted.
+;	4092	
+;	4093				EXITLOOP;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-3
+; Digital Equipment Corporation
+;
+;	4094	
+;	4095			! At this point, we know that the CURRENT lower bound
+;	4096			! value is strictly less than VALUE.  Now we are
+;	4097			! concerned about the corresponding upper bound value.
+;	4098			! Normally this UB value is the address which is the
+;	4099			! upper extent to which the corresponding symbol
+;	4100			! is bound.  Some symbols don't come with this info,
+;	4101			! though, so we handle these cases separately.
+;	4102	
+;	4103			IF( .CURRENT_SAT[ SAT_UB ] NEQ 0 )
+;	4104			THEN
+;	4105				BEGIN
+;	4106	
+;	4107				! Since we have the UB information, we simply
+;	4108				! see if the CURRENT symbol spans the given
+;	4109				! VALUE.
+;	4110	
+;	4111				IF( .CURRENT_SAT[ SAT_UB ] LSSA .VALUE )
+;	4112				THEN
+;	4113					! This datum ends too soon.
+;	4114	
+;	4115					LEAVE SEARCH_SAT;
+;	4116	
+;	4117				! VALUE falls within this symbol's extent.
+;	4118				! If we already have a match but havn't accepted
+;	4119				! it as final, then its UB must be 0, or its type is 
+;	4120				! P-sect.  In either case, this new one is better
+;	4121				! because its UB is not 0.
+;	4122	
+;	4123				BEST_SAT = .CURRENT_SAT;
+;	4124	
+;	4125				! If the best one now is of type P-sect, we 
+;	4126				! should still look further.
+;	4127	
+;	4128				IF( .CURRENT_NT[ NT_TYPE ] NEQ DSC$K_DTYPE_PCT )
+;	4129				THEN
+;	4130					! This is the first non-P-sect match
+;	4131					! so we'll take it without any further
+;	4132					! checks.  This is where we might get
+;	4133					! into trouble later because there may
+;	4134					! still be a more appropriate match
+;	4135					! if we were to take SCOPE into account.
+;	4136	
+;	4137					EXITLOOP;
+;	4138					
+;	4139				! There is nothing further to consider when
+;	4140				! we know the UB value.  At this point we
+;	4141				! want to loop back and perhaps find a
+;	4142				! better match.
+;	4143	
+;	4144				END
+;	4145			ELSE
+;	4146				BEGIN
+;	4147	
+;	4148				! We must consider it to be a match
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-4
+; Digital Equipment Corporation
+;
+;	4149				! when the upper bound is 0 because
+;	4150				! we don't know that it isn't a match.
+;	4151				! It is certainly not a good match,
+;	4152				! though, so we throw it away unless we
+;	4153				! don't have anything better.
+;	4154	
+;	4155				IF( .BEST_SAT EQL 0 )
+;	4156				THEN
+;	4157					BEST_SAT = .CURRENT_SAT
+;	4158				ELSE
+;	4159					IF( .BEST_SAT[ SAT_UB ] EQL 0 )
+;	4160					THEN
+;	4161						BEST_SAT = .CURRENT_SAT
+;	4162					ELSE
+;	4163						! BEST must be p-sect
+;	4164	
+;	4165						IF( .CURRENT_NT[ NT_TYPE ] NEQ DSC$K_DTYPE_PCT )
+;	4166						THEN
+;	4167							BEST_SAT = .CURRENT_SAT;
+;	4168				END;
+;	4169	
+;	4170			! Loop back and try again with the next 
+;	4171			! SAT record.
+;	4172	
+;	4173			END;
+;	4174	
+;	4175		! If we fall out of the above loop, then there
+;	4176		! are no more candidates from the RST to
+;	4177		! consider.  See if the answer we got was good
+;	4178		! enough, or if we should consult the GST.
+;	4179	
+;	4180		IF( .BEST_SAT EQL 0 )
+;	4181		THEN
+;	4182			! Any global is better than nothing.
+;	4183	
+;	4184			BEST_SAT = GBL_VAL_TO_SAT(.VALUE)
+;	4185		ELSE
+;	4186		
+;	4187		! Don't even try for a global if we already got
+;	4188		! an exact match from the RST.
+;	4189	
+;	4190		IF( NOT .VALUE EQLA .BEST_SAT[ SAT_LB ] )
+;	4191		THEN
+;	4192			BEGIN
+;	4193			LOCAL
+;	4194				best_nt : ref nt_record;
+;	4195	
+;	4196			! Check for a better match.
+;	4197	
+;	4198			best_nt = .best_sat[ sat_nt_ptr ];
+;	4199	
+;	4200			if(  (.best_sat[ sat_ub ] eql 0 )
+;	4201			   OR
+;	4202			     (.best_nt[ nt_type ] eql DSC$K_DTYPE_PCT )
+;	4203			  )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-5
+; Digital Equipment Corporation
+;
+;	4204			THEN
+;	4205				IF( (CURRENT_SAT = GBL_VAL_TO_SAT(.VALUE)) NEQ 0 )
+;	4206				THEN
+;	4207					! The global match is better if it
+;	4208					! is closer.
+;	4209	
+;	4210					IF( .CURRENT_SAT[ SAT_LB ] GTRA .BEST_SAT[ SAT_LB ] )
+;	4211					THEN
+;	4212						BEST_SAT = .CURRENT_SAT;
+;	4213			END;
+;	4214	
+;	4215		! Now see how we've done.
+;	4216	
+;	4217		IF( .BEST_SAT NEQ 0 )
+;	4218		THEN
+;	4219			BEGIN
+;	4220	
+;	4221			! Pass back the SAT-pointer to the match
+;	4222			! and return a success status.
+;	4223	
+;	4224			SAT_PTR_ADDR[0] = .BEST_SAT;
+;	4225			RETURN(TRUE);
+;	4226			END;
+;	4227	
+;	4228		! No 'match' was found - return the standard
+;	4229		! failure status.
+;	4230	
+;	4231		RETURN(FALSE);
+;	4232	END;
+
+
+
+
+
+					 087C 0051B 	    .ENTRY  DBG$VAL_TO_SAT, Save R2,R3,R4,R5,R6,R11		      ; 3929
+		         5B 00000000G  EF  9E 0051D 	    MOVAB   DBG$GET_NXT_SAT, R11				      ;
+				       53  D4 00524 	    CLRL    BEST_SAT						      ; 3999
+				       7E  D4 00526 	    CLRL    -(SP)						      ; 4003
+		         6B	       01  FB 00528 	    CALLS   #1, DBG$GET_NXT_SAT					      ;
+		         55	  04   AC  D0 0052B 	    MOVL    VALUE, R5						      ; 4037
+				       01  DD 0052F 1$:     PUSHL   #1							      ; 4011
+		         6B	       01  FB 00531 	    CALLS   #1, DBG$GET_NXT_SAT					      ;
+		         56	       50  D0 00534 	    MOVL    R0, NEXT_SAT					      ;
+				       58  13 00537 	    BEQL    6$							      ;
+		         52	       56  D0 00539 	    MOVL    NEXT_SAT, CURRENT_SAT				      ; 4028
+		         54	       62  3C 0053C 	    MOVZWL  (CURRENT_SAT), CURRENT_NT				      ; 4029
+		         55	  02   A2  D1 0053F 	    CMPL    2(CURRENT_SAT), R5					      ; 4037
+				       14  12 00543 	    BNEQ    2$							      ;
+				       53  D5 00545 	    TSTL    BEST_SAT						      ; 4045
+				       43  13 00547 	    BEQL    5$							      ;
+		         55	  02   A3  D1 00549 	    CMPL    2(BEST_SAT), R5					      ; 4059
+				       3D  12 0054D 	    BNEQ    5$							      ;
+		    B8   8F 00000000G  E4  91 0054F 	    CMPB    DBG$_RST_BEGIN+2(CURRENT_NT), #184			      ; 4073
+				       31  11 00557 	    BRB     4$							      ;
+		         55	  02   A2  D1 00559 2$:     CMPL    2(CURRENT_SAT), R5					      ; 4086
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 16-6
+; Digital Equipment Corporation
+;
+				       32  1A 0055D 	    BGTRU   6$							      ;
+				  06   A2  D5 0055F 	    TSTL    6(CURRENT_SAT)					      ; 4103
+				       15  13 00562 	    BEQL    3$							      ;
+		         55	  06   A2  D1 00564 	    CMPL    6(CURRENT_SAT), R5					      ; 4111
+				       C5  1F 00568 	    BLSSU   1$							      ;
+		         53	       52  D0 0056A 	    MOVL    CURRENT_SAT, BEST_SAT				      ; 4123
+		    B8   8F 00000000G  E4  91 0056D 	    CMPB    DBG$_RST_BEGIN+2(CURRENT_NT), #184			      ; 4128
+				       B8  13 00575 	    BEQL    1$							      ;
+				       18  11 00577 	    BRB     6$							      ; 4137
+				       53  D5 00579 3$:     TSTL    BEST_SAT						      ; 4155
+				       0F  13 0057B 	    BEQL    5$							      ;
+				  06   A3  D5 0057D 	    TSTL    6(BEST_SAT)						      ; 4159
+				       0A  13 00580 	    BEQL    5$							      ;
+		    B8   8F 00000000G  E4  91 00582 	    CMPB    DBG$_RST_BEGIN+2(CURRENT_NT), #184			      ; 4165
+				       A3  13 0058A 4$:     BEQL    1$							      ;
+		         53	       52  D0 0058C 5$:     MOVL    CURRENT_SAT, BEST_SAT				      ; 4167
+				       9E  11 0058F 	    BRB     1$							      ; 4011
+				       53  D5 00591 6$:     TSTL    BEST_SAT						      ; 4180
+				       0C  12 00593 	    BNEQ    7$							      ;
+				       55  DD 00595 	    PUSHL   R5							      ; 4184
+		  FB9C   CF	       01  FB 00597 	    CALLS   #1, GBL_VAL_TO_SAT					      ;
+		         53	       50  D0 0059C 	    MOVL    R0, BEST_SAT					      ;
+				       2E  11 0059F 	    BRB     9$							      ; 4180
+		    02   A3	       55  D1 005A1 7$:     CMPL    R5, 2(BEST_SAT)					      ; 4190
+				       28  13 005A5 	    BEQL    9$							      ;
+		         50	       63  3C 005A7 	    MOVZWL  (BEST_SAT), BEST_NT					      ; 4198
+				  06   A3  D5 005AA 	    TSTL    6(BEST_SAT)						      ; 4200
+				       0A  13 005AD 	    BEQL    8$							      ;
+		    B8   8F 00000000G  E0  91 005AF 	    CMPB    DBG$_RST_BEGIN+2(BEST_NT), #184			      ; 4202
+				       16  12 005B7 	    BNEQ    9$							      ;
+				       55  DD 005B9 8$:     PUSHL   R5							      ; 4205
+		  FB78   CF	       01  FB 005BB 	    CALLS   #1, GBL_VAL_TO_SAT					      ;
+		         52	       50  D0 005C0 	    MOVL    R0, CURRENT_SAT					      ;
+				       0A  13 005C3 	    BEQL    9$							      ;
+		    02   A3	  02   A2  D1 005C5 	    CMPL    2(CURRENT_SAT), 2(BEST_SAT)				      ; 4210
+				       03  1B 005CA 	    BLEQU   9$							      ;
+		         53	       52  D0 005CC 	    MOVL    CURRENT_SAT, BEST_SAT				      ; 4212
+				       53  D5 005CF 9$:     TSTL    BEST_SAT						      ; 4217
+				       08  13 005D1 	    BEQL    10$							      ;
+		    08   BC	       53  D0 005D3 	    MOVL    BEST_SAT, @SAT_PTR_ADDR				      ; 4224
+		         50	       01  D0 005D7 	    MOVL    #1, R0						      ; 4225
+					   04 005DA 	    RET     							      ;
+				       50  D4 005DB 10$:    CLRL    R0							      ; 4231
+					   04 005DD 	    RET     							      ; 3929
+
+; Routine Size:  195 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 17
+; Digital Equipment Corporation
+;
+;	4233	ROUTINE LOOKUP_LVT( VALUE, NT_PTR_ADDR ) =
+;	4234	!++
+;	4235	! Functional Description:
+;	4236	!
+;	4237	!	Search the literal value table (LVT) for a match
+;	4238	!	to the given value.
+;	4239	!
+;	4240	! Formal Parameters:
+;	4241	!
+;	4242	!	VALUE		-The key we use in the lookup.
+;	4243	!	NT_PTR_ADDR	-A pointer to where we should copy back
+;	4244	!			 the NT_POINTER to the record we find
+;	4245	!			 to correspond to the value.  The
+;	4246	!			 contents of this location are not changed
+;	4247	!			 if no such correspondence is discovered.
+;	4248	!
+;	4249	! Warning:
+;	4250	!	
+;	4251	!	We return an NT pointer via NT_PTR_ADDR.
+;	4252	!	As long as this returned value is NOT a longword,
+;	4253	!	due to BLISS's inability to use the REF NT_RECORD
+;	4254	!	ONLY as an NT pointer, (i.e. BLISS assumes that 
+;	4255	!	REFs are longwords), a caller of this routine should
+;	4256	!	initialize the NT_PTR to 0 before expecting this
+;	4257	!	routine to pass back the value.  This routine
+;	4258	!	can not pass back a longword because we won't know that
+;	4259	!	the address we were passed is not a real NT_PTR
+;	4260	!	field - ie, the 2-bytes that it should be...
+;	4261	!
+;	4262	! Implicit Inputs:
+;	4263	!
+;	4264	!	The way we define a 'match' in the LVT which is 
+;	4265	!	simply that the given value must be exactly the
+;	4266	!	same as the corresponding one from the LVT.  The
+;	4267	!	first one found is always the one passed back.
+;	4268	!
+;	4269	! Implicit Outputs:
+;	4270	!
+;	4271	!	The RESULT parameter via NT_PTR_ADDR.
+;	4272	!	(see above.)
+;	4273	!
+;	4274	! Routine Value:
+;	4275	!
+;	4276	!	TRUE, if a match is found,
+;	4277	!	FALSE, otherwise.
+;	4278	!
+;	4279	! Side Effects:
+;	4280	!
+;	4281	!	The LVT is searched.
+;	4282	!--
+;	4283	
+;	4284	BEGIN
+;	4285		MAP
+;	4286			NT_PTR_ADDR : REF RST_POINTER;
+;	4287		LOCAL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 17-1
+; Digital Equipment Corporation
+;
+;	4288				! When we look at each record of the LVT_VECTOR,
+;	4289				! we apply the proper structure.
+;	4290	
+;	4291			LVT_PTR : REF LVT_RECORD;
+;	4292	
+;	4293	%IF DBG_RST2
+;     L 4294	%THEN
+;     U 4295		$FAO_TT_OUT('val_to_sym: (LVT) value=!XL',.VALUE);
+;     U 4296	%FI
+;	4297	
+;	4298		! Set up to begin the sequential pass of the LVT.
+;	4299	
+;	4300		DBG$GET_NXT_LVT( SL_ACCE_INIT );
+;	4301	
+;	4302		! Linearly search the LVT looking for an exact match.
+;	4303		! LVT access type is _RECS because we want to quit 
+;	4304		! when the access-mapping routine recognizes that
+;	4305		! even though there may be more potential records in
+;	4306		! the LVT, there are no more ones currently in use.
+;	4307	
+;	4308		WHILE( (LVT_PTR = DBG$GET_NXT_LVT( SL_ACCE_RECS )) NEQ 0 )
+;	4309			DO
+;	4310			BEGIN
+;	4311	
+;	4312	%IF DBG_RST2
+;     L 4313	%THEN
+;     U 4314			$FAO_TT_OUT('lvt search !XL: -> value=!XL, nt=!XL',
+;     U 4315				.LVT_PTR, .LVT_PTR[ LVT_VALUE ], .LVT_PTR[ LVT_NT_PTR ]);
+;     U 4316	%FI
+;	4317	
+;	4318			IF( .LVT_PTR[ LVT_VALUE ] EQL .VALUE )
+;	4319			THEN
+;	4320				BEGIN
+;	4321			
+;	4322				! This is the only place we
+;	4323				! can find a match and return an OK status.
+;	4324	
+;	4325				NT_PTR_ADDR[0] = .LVT_PTR[ LVT_NT_PTR ];
+;	4326				RETURN(TRUE);
+;	4327				END;
+;	4328	
+;	4329			! Loop back and try again with the next 
+;	4330			! LVT record.
+;	4331	
+;	4332			END;
+;	4333	
+;	4334		! If we fall out of the above loop,
+;	4335		! no match can be found.
+;	4336	
+;	4337		RETURN(FALSE);
+;	4338	END;
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 17-2
+; Digital Equipment Corporation
+;
+
+					 0804 005DE LOOKUP_LVT:
+							    .WORD   Save R2,R11						      ; 4233
+		         5B 00000000G  EF  9E 005E0 	    MOVAB   DBG$GET_NXT_LVT, R11				      ;
+				       7E  D4 005E7 	    CLRL    -(SP)						      ; 4300
+		         6B	       01  FB 005E9 	    CALLS   #1, DBG$GET_NXT_LVT					      ;
+				       01  DD 005EC 1$:     PUSHL   #1							      ; 4308
+		         6B	       01  FB 005EE 	    CALLS   #1, DBG$GET_NXT_LVT					      ;
+		         52	       50  D0 005F1 	    MOVL    R0, LVT_PTR						      ;
+				       0F  13 005F4 	    BEQL    2$							      ;
+		    04   AC	  02   A2  D1 005F6 	    CMPL    2(LVT_PTR), VALUE					      ; 4318
+				       EF  12 005FB 	    BNEQ    1$							      ;
+		    08   BC	       62  B0 005FD 	    MOVW    (LVT_PTR), @NT_PTR_ADDR				      ; 4325
+		         50	       01  D0 00601 	    MOVL    #1, R0						      ; 4326
+					   04 00604 	    RET     							      ;
+				       50  D4 00605 2$:     CLRL    R0							      ; 4337
+					   04 00607 	    RET     							      ; 4233
+
+; Routine Size:  42 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 18
+; Digital Equipment Corporation
+;
+;	4339	GLOBAL ROUTINE DBG$SYMBOL_VALU( NT_PTR, VALUE_PTR ) =
+;	4340	!++
+;	4341	! Functional Description:
+;	4342	!	-Look up the value associated with a given
+;	4343	!	 NT record.
+;	4344	!	-Note that we refer to 'value' associated with a symbol
+;	4345	!	 but really mean 'address', since that is as far as RST
+;	4346	!	 manipulation handles symbol-value correlation.
+;	4347	!
+;	4348	! Formal Parameters:
+;	4349	!	NT_PTR		-a pointer to the NT_RECORD that corresponds
+;	4350	!			 to the symbol we want the value of.
+;	4351	!	VALUE_PTR	-where we are to copy the value back to.
+;	4352	!
+;	4353	! Implicit Inputs:
+;	4354	!
+;	4355	!	-We can call DBG$DST_VALUE with a DST_REC_ID.
+;	4356	!	 (in BLD's ADD_NT we call it with a DST_RECRD pointer).
+;	4357	!
+;	4358	!	-The value bound to a symbol can be passed
+;	4359	!	 back in a longword.
+;	4360	!
+;	4361	!	-NT records marked NT_IS_GLOBAL may be 1 of 2 types:
+;	4362	!	   1) one which was first a normal NT record but
+;	4363	!		which was later marked NT_IS_GLOBAL.  In this case
+;	4364	!		there IS scope info, and we pick up the value
+;	4365	!		from the DST as usual.
+;	4366	!	   2) a fake NT record which was created from a GST
+;	4367	!		record.  In this case the 'value' field is stored
+;	4368	!		in the NT_GBL_VALUE field of the NT record.
+;	4369	!
+;	4370	!	We use the current context (DBG$GL_RUNFRAME) to do the
+;	4371	!	evaluation.
+;	4372	!
+;	4373	! Implicit Outputs:
+;	4374	!	None.
+;	4375	!
+;	4376	! Routine Value:
+;	4377	!	TRUE	- If the symbol is found and a value is passed back.
+;	4378	!	FALSE	- If DBG$DST_VALUE returns false and no value.
+;	4379	!
+;	4380	! Side Effects:
+;	4381	!	The value gets passed back.
+;	4382	!--
+;	4383	
+;	4384	BEGIN
+;	4385		MAP
+;	4386			NT_PTR    : REF NT_RECORD,
+;	4387			VALUE_PTR : REF VECTOR[,LONG];
+;	4388	
+;	4389		! If this NT record corresponds only to a GLOBAL symbol,
+;	4390		! there is no associated DST record.  In this case
+;	4391		! we use the DST pointer space from the NT record
+;	4392		! to contain the value associated with the global
+;	4393		! symbol.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 18-1
+; Digital Equipment Corporation
+;
+;	4394	
+;	4395	%IF DBG_RST9
+;     L 4396	%THEN
+;     U 4397		$FAO_TT_OUT('dbg$symbol_valu: NT-ptr = !XL, ',.NT_PTR);
+;     U 4398	%FI
+;	4399	
+;	4400		IF( .NT_PTR[ NT_IS_GLOBAL ] AND .NT_PTR[ NT_UP_SCOPE ] EQL 0 )
+;	4401		THEN
+;	4402			BEGIN
+;	4403	
+;	4404			VALUE_PTR[0] = .NT_PTR[ NT_GBL_VALUE ];
+;	4405	%IF DBG_RST9
+;     L 4406	%THEN
+;     U 4407			$FAO_TT_OUT('global value is !XL',.VALUE_PTR[0] );
+;     U 4408	%FI
+;	4409			RETURN(TRUE);
+;	4410			END;
+;	4411	
+;	4412	%IF DBG_RST9
+;     L 4413	%THEN
+;     U 4414		$FAO_TT_OUT(' DST ptr is !XL',.NT_PTR[NT_DST_PTR] );
+;     U 4415	%FI
+;	4416	
+;	4417		! We localize all DST understanding to yet another routine.
+;	4418	
+;	4419		RETURN( DBG$DST_VALUE (.NT_PTR[ NT_DST_PTR ], .VALUE_PTR));
+;	4420	END;
+
+
+
+
+
+					 0000 00608 	    .ENTRY  DBG$SYMBOL_VALU, Save nothing			      ; 4339
+	   50	    04   AC 00000000G  8F  C1 0060A 	    ADDL3   #DBG$_RST_BEGIN, NT_PTR, R0				      ; 4400
+		         0E	  03   A0  E9 00613 	    BLBC    3(R0), 1$						      ;
+				  08   A0  B5 00617 	    TSTW    8(R0)						      ;
+				       09  12 0061A 	    BNEQ    1$							      ;
+		    08   BC	  04   A0  D0 0061C 	    MOVL    4(R0), @VALUE_PTR					      ; 4404
+		         50	       01  D0 00621 	    MOVL    #1, R0						      ; 4409
+					   04 00624 	    RET     							      ;
+				  08   AC  DD 00625 1$:     PUSHL   VALUE_PTR						      ; 4419
+				  04   A0  DD 00628 	    PUSHL   4(R0)						      ;
+		  0000V  CF	       02  FB 0062B 	    CALLS   #2, DBG$DST_VALUE					      ;
+					   04 00630 	    RET     							      ; 4339
+
+; Routine Size:  41 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19
+; Digital Equipment Corporation
+;
+;	4421	GLOBAL ROUTINE DBG$DST_VALUE( DST_REC_ID, VALUE_PTR ) =
+;	4422	!++
+;	4423	! Functional Description:
+;	4424	!	-Look up the value associated with a given
+;	4425	!	 DST record.
+;	4426	!	-Note that we refer to 'value' associated with a symbol
+;	4427	!	 but really mean 'address', since that is as far as RST
+;	4428	!	 manipulation handles symbol-value correlation.
+;	4429	!	 Normally this 'address' is the virtual address which is
+;	4430	!	 bound to the symbol.  If the symbol is associated with
+;	4431	!	 a descriptor, though, it is the address of the descriptor
+;	4432	!	 which is returned for this symbol.
+;	4433	!
+;	4434	! Formal Parameters:
+;	4435	!
+;	4436	!	DST_REC_ID	-a pointer to the DST RECORD that corresponds
+;	4437	!			 to the symbol we want the value of.
+;	4438	!			-this may also be 'DST record ID' (defined in DBGINT)
+;	4439	!			 which is assigned to each DST record therein.
+;	4440	!			 ***** see implicit inputs below.
+;	4441	!	VALUE_PTR	-where we are to copy the value back to.
+;	4442	!
+;	4443	! Implicit Inputs:
+;	4444	!
+;	4445	!	The concept of a DST_REC_ID vs a DST_RECRD pointer
+;	4446	!	is merged by this routine.  i.e. we don't consider
+;	4447	!	these two things to be different even though everything
+;	4448	!	else in debug does not preclude this.  If the
+;	4449	!	DST interface routine is changed so that these two things
+;	4450	!	are no longer the same, we must change calls to this routine
+;	4451	!	to be consistent.
+;	4452	!
+;	4453	!	-The value bound to a symbol can be passed
+;	4454	!	 back in a longword.
+;	4455	!
+;	4456	!	We use the current context (DBG$GL_RUNFRAME) to do the
+;	4457	!	evaluation.
+;	4458	!
+;	4459	! Implicit Outputs:
+;	4460	!
+;	4461	!	None.
+;	4462	!
+;	4463	! Routine Value:
+;	4464	!	TRUE, if all goes OK and the value gets passed back,
+;	4465	!	NOT TRUE, otherwise.  In this case we distinguish two
+;	4466	!		possibilities:  0 => a real error - the symbol
+;	4467	!				     could not be evaluated,
+;	4468	!			   and  2 => a soft error - the evaluation
+;	4469	!				     failed because of an inappropriate
+;	4470	!				     context.
+;	4471	!
+;	4472	! Side Effects:
+;	4473	!
+;	4474	!	The value gets passed back.
+;	4475	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-1
+; Digital Equipment Corporation
+;
+;	4476	!	The DST is 'read' in such a way as to ensure that 
+;	4477	!	if any DBG$GET_NXT_DST sequence is in progress it
+;	4478	!	is NOT disturbed by this call.
+;	4479	!--
+;	4480	
+;	4481	BEGIN
+;	4482		MAP
+;	4483			VALUE_PTR : REF VECTOR[,LONG];
+;	4484	
+;	4485		LOCAL
+;	4486			STATUS,		! The value we pass back says how the
+;	4487					! evaluation went.
+;	4488			VALUE,		! Used to accumulate the symbol's value.
+;	4489			ACCESS,		! The access field from the DST record.
+;	4490			DST_RECRD : REF DST_RECORD;
+;	4491	
+;	4492		! Assume that things will go OK.
+;	4493	
+;	4494		STATUS = TRUE;
+;	4495	
+;	4496		! Fetch the indicated DST record.
+;	4497	
+;	4498		IF( (DST_RECRD = DBG$GET_DST_REC( .DST_REC_ID )) EQL 0 )
+;	4499		THEN
+;	4500			BEGIN
+;	4501			! The supposed record does not exist.  An error message
+;	4502			! should already have been produced.
+;	4503	%IF DBG_RST9
+;     L 4504	%THEN
+;     U 4505			$FAO_TT_OUT('dst_value: dst_rec_id = !XL, NO record',.dst_rec_id);
+;     U 4506	%FI
+;	4507			RETURN(FALSE);
+;	4508			END;
+;	4509	
+;	4510	%IF DBG_RST9
+;     L 4511	%THEN
+;     U 4512		$FAO_TT_OUT('DST_VALUE: REC - !XL Type = !UB.', .DST_RECRD, .DST_RECRD[DSTR_TYPE] );
+;     U 4513	%FI
+;	4514	
+;	4515		! How we pick up the value depends on what
+;	4516		! class of DST record this is.
+;	4517	
+;	4518		IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	4519		THEN
+;	4520		    BEGIN
+;	4521		    !+
+;	4522		    ! BLISS Type Zero records have a format which 
+;	4523		    ! is different from standard DST records.
+;	4524		    !-
+;	4525		    LOCAL
+;	4526			BLZ_VALUE;		! Holds the Bliss record value field.
+;	4527		    BIND
+;	4528			BLZ_RECRD = DST_RECRD : REF BLZ_RECORD;
+;	4529	
+;	4530		    BLZ_VALUE = .(BLZ_RECRD[BLZ_TYPE] + .BLZ_RECRD[BLZ_TYP_SIZ]);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-2
+; Digital Equipment Corporation
+;
+;	4531	
+;	4532	%IF DBG_RST9
+;     L 4533	%THEN
+;     U 4534			$FAO_TT_OUT('Bliss type 0: size=!XB, type=!XB, access=!XB, strct=!XB, value=!XL',
+;     U 4535			.BLZ_RECRD[BLZ_TYP_SIZ],.BLZ_RECRD[BLZ_TYPE],
+;     U 4536			.BLZ_RECRD[BLZ_ACCESS],.BLZ_RECRD[BLZ_STRUCT],.BLZ_VALUE );
+;     U 4537	%FI
+;	4538			!+
+;	4539			! We can't make any sense out of these
+;	4540			! records (yet) unless
+;	4541			!	1) no optional type into was given
+;	4542			!	   (i.e. we only get the standard 3 bytes)
+;	4543			!	2) the structure attribute is 0
+;	4544			!	3) the sub-type is within the
+;	4545			!	   range we currently support.
+;	4546			!	   (i.e. only FORMALs and SYMBOLs are OK)
+;	4547			!
+;	4548			! We have already implicitly checked the first
+;	4549			! two of these because we wouldn't have entered
+;	4550			! the symbol into the NT had this check
+;	4551			! not succeeded.
+;	4552			!-
+;	4553	
+;	4554			! Pick up the value of this symbol.
+;	4555	
+;	4556			STATUS = STD_SYM_EVAL (VALUE, .BLZ_RECRD[BLZ_ACCESS], .BLZ_VALUE );
+;	4557	
+;	4558	%IF DBG_RST9
+;     L 4559	%THEN
+;     U 4560			CASE .BLZ_RECRD[ BLZ_TYPE ] FROM BLZ_LOWEST TO BLZ_HIGHEST OF
+;     U 4561			    SET
+;     U 4562	
+;     U 4563			    [BLISS_Z_FORMAL]:	! Routine Formals.
+;     U 4564	
+;     U 4565				BEGIN
+;     U 4566				$FAO_TT_OUT('Formal value of !XL', .VALUE);
+;     U 4567				END;
+;     U 4568	
+;     U 4569			    [BLISS_Z_SYMBOL]:	! All other LOCAL symbols.
+;     U 4570	
+;     U 4571				BEGIN
+;     U 4572				$FAO_TT_OUT('Symbol value of !XL', .VALUE);
+;     U 4573				END;
+;     U 4574	
+;     U 4575			    [INRANGE,OUTRANGE]:	! Probably an error.
+;     U 4576	
+;     U 4577				BEGIN
+;     U 4578				$FAO_TT_OUT('Unknown type value of !XL', .VALUE);
+;     U 4579				RETURN(FALSE);
+;     U 4580				END;
+;     U 4581	
+;     U 4582			    TES;
+;     U 4583	
+;     U 4584	%FI
+;	4585			! End of special handling for type ZERO variables.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-3
+; Digital Equipment Corporation
+;
+;	4586	
+;	4587			END
+;	4588		ELSE
+;	4589	
+;	4590		! Class 1 is the so-called SRM 'standard' types.
+;	4591	
+;	4592		IF( .DST_RECRD[ DSTR_TYPE ] LEQ DST_TYP_HIGHEST )
+;	4593		THEN
+;	4594			BEGIN
+;	4595			!+
+;	4596			! Array descriptors are an anomoly because the "dst-stype"
+;	4597			! PC relative mode has its own notion of PC.
+;	4598			!-
+;	4599			IF( .DST_RECRD[ DSTR_ACCES_TYPE ] EQL ACCS_DESCRIPTOR )
+;	4600			THEN
+;	4601			    BEGIN
+;	4602	%IF DBG_RST10
+;     L 4603	%THEN
+;     U 4604			    $FAO_TT_OUT('DST record at !XL has access !XB, val !XL',
+;     U 4605			     .DST_RECRD,.dst_recrd[dstr_access],.DST_RECRD[DSTR_VALUE]);
+;     U 4606	%FI
+;	4607			    IF ( (.DST_RECRD[DSTR_ACCES_BASD] EQL 2)
+;	4608			    AND  (.DST_RECRD[DSTR_ACCES_BREG] EQL 15) )
+;	4609			    THEN
+;	4610				value = .DST_RECRD[DSTR_VALUE] + DST_RECRD[DSTR_VALUE] + %UPVAL
+;	4611			    ELSE
+;	4612				BEGIN
+;	4613				VALUE = 0;
+;	4614				STATUS = STD_SYM_EVAL (VALUE, .DST_RECRD[DSTR_ACCESS],
+;	4615						.DST_RECRD[DSTR_VALUE]);
+;	4616				IF .STATUS
+;	4617				THEN
+;	4618				    STATUS = 3;
+;	4619				END;
+;	4620			    END
+;	4621			ELSE
+;	4622				! For standard types, we simply apply the corresponding
+;	4623				! standard algorithm.  The various TYPEs will be used
+;	4624				! mainly to sort out what we do with the value
+;	4625				! after the algorithm tells us how to get it, but
+;	4626				! this is handled outside of this routine.
+;	4627		
+;	4628				STATUS = STD_SYM_EVAL( VALUE, .DST_RECRD[DSTR_ACCESS], .DST_RECRD[DSTR_VALUE] );
+;	4629			END
+;	4630		ELSE
+;	4631			BEGIN
+;	4632	
+;	4633			! Class 2 is 'the rest'.  We expect them to be
+;	4634			! from the standard DSTR_TYPEs class.
+;	4635	
+;	4636			CASE .DST_RECRD[DSTR_TYPE] FROM DST_DST_LOWEST TO DST_DST_HIGHEST OF
+;	4637			    SET
+;	4638	
+;	4639			    [DSC$K_DTYPE_FLD]:	! Bliss fields.
+;	4640	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-4
+; Digital Equipment Corporation
+;
+;	4641				BEGIN
+;	4642				$FAO_TT_OUT('FLD not supported');
+;	4643				RETURN(FALSE);
+;	4644				END;
+;	4645	
+;	4646			    [DSC$K_DTYPE_PCT,
+;	4647			     DSC$K_DTYPE_LBL,
+;	4648			     dsc$k_dtype_slb,
+;	4649			     DSC$K_DTYPE_RTN]:	! These ones have values.
+;	4650	
+;	4651				VALUE = .DST_RECRD[DSTR_VALUE];
+;	4652	
+;	4653			    [INRANGE,OUTRANGE]:	! Probably an error.
+;	4654	
+;	4655				RETURN(FALSE);
+;	4656	
+;	4657			    TES;
+;	4658	
+;	4659			END;
+;	4660	
+;	4661		! At this point, the value has been obtained
+;	4662		! or a RETURN has been done.  We simply pass
+;	4663		! back this value and return the status code.
+;	4664	
+;	4665		VALUE_PTR[0] = .VALUE;
+;	4666		RETURN(.STATUS);
+;	4667	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   17							      ;
+					      00001 	    .ASCII  \FLD not supported\					      ;
+					      00012	    .BLKB   2
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 000C 00631 	    .ENTRY  DBG$DST_VALUE, Save R2,R3				      ; 4421
+		         5E	       04  C2 00633 	    SUBL2   #4, SP						      ;
+		         53	       01  D0 00636 	    MOVL    #1, STATUS						      ; 4494
+				  04   AC  DD 00639 	    PUSHL   DST_REC_ID						      ; 4498
+	      00000000G  EF	       01  FB 0063C 	    CALLS   #1, DBG$GET_DST_REC					      ;
+		         52	       50  D0 00643 	    MOVL    R0, DST_RECRD					      ;
+				       03  12 00646 	    BNEQ    1$							      ;
+				     00A8  31 00648 	    BRW     11$							      ;
+				  01   A2  95 0064B 1$:     TSTB    1(DST_RECRD)					      ; 4518
+				       13  12 0064E 	    BNEQ    2$							      ;
+		         50	  02   A2  9A 00650 	    MOVZBL  2(DST_RECRD), R0					      ; 4530
+		         50	       52  C0 00654 	    ADDL2   DST_RECRD, R0					      ;
+		         50	  03   A0  D0 00657 	    MOVL    3(R0), BLZ_VALUE					      ;
+				       50  DD 0065B 	    PUSHL   BLZ_VALUE						      ; 4556
+		         7E	  04   A2  9A 0065D 	    MOVZBL  4(DST_RECRD), -(SP)					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-5
+; Digital Equipment Corporation
+;
+				       4C  11 00661 	    BRB     5$							      ;
+		         17	  01   A2  91 00663 2$:     CMPB    1(DST_RECRD), #23					      ; 4592
+				       53  1A 00667 	    BGTRU   6$							      ;
+		         50	  03   A2  9E 00669 	    MOVAB   3(DST_RECRD), R0					      ; 4610
+		         51	  02   A2  9E 0066D 	    MOVAB   2(DST_RECRD), R1					      ; 4599
+	   61	         02	       00  ED 00671 	    CMPZV   #0, #2, (R1), #2					      ;
+				       02     00675									      ;
+				       32  12 00676 	    BNEQ    4$							      ;
+	   61	         02	       02  ED 00678 	    CMPZV   #2, #2, (R1), #2					      ; 4607
+				       02     0067C									      ;
+				       11  12 0067D 	    BNEQ    3$							      ;
+	   61	         04	       04  ED 0067F 	    CMPZV   #4, #4, (R1), #15					      ; 4608
+				       0F     00683									      ;
+				       0A  12 00684 	    BNEQ    3$							      ;
+	   52	         60	       50  C1 00686 	    ADDL3   R0, (R0), R2					      ; 4610
+	   6E	         52	       04  C1 0068A 	    ADDL3   #4, R2, VALUE					      ;
+				       5B  11 0068E 	    BRB     10$							      ; 4607
+				       6E  D4 00690 3$:     CLRL    VALUE						      ; 4613
+				       60  DD 00692 	    PUSHL   (R0)						      ; 4614
+		         7E	       61  98 00694 	    CVTBL   (R1), -(SP)						      ;
+				  08   AE  9F 00697 	    PUSHAB  VALUE						      ;
+		  0000V  CF	       03  FB 0069A 	    CALLS   #3, STD_SYM_EVAL					      ;
+		         53	       50  D0 0069F 	    MOVL    R0, STATUS						      ;
+		         46	       53  E9 006A2 	    BLBC    STATUS, 10$						      ; 4616
+		         53	       03  D0 006A5 	    MOVL    #3, STATUS						      ; 4618
+				       41  11 006A8 	    BRB     10$							      ; 4599
+				       60  DD 006AA 4$:     PUSHL   (R0)						      ; 4628
+		         7E	       61  98 006AC 	    CVTBL   (R1), -(SP)						      ;
+				  08   AE  9F 006AF 5$:     PUSHAB  VALUE						      ;
+		  0000V  CF	       03  FB 006B2 	    CALLS   #3, STD_SYM_EVAL					      ;
+		         53	       50  D0 006B7 	    MOVL    R0, STATUS						      ;
+				       2F  11 006BA 	    BRB     10$							      ; 4592
+	   08	    B7   8F	  01   A2  8F 006BC 6$:     CASEB   1(DST_RECRD), #183, #8				      ; 4636
+	 0031	       0025	     0014     006C2 7$:     .WORD   8$-7$,-						      ;
+	 0031	       0025	     0025     006C8		    9$-7$,-						      ;
+	 0031	       0025	     0031     006CE		    11$-7$,-						      ;
+								    9$-7$,-						      ;
+								    9$-7$,-						      ;
+								    11$-7$,-						      ;
+								    11$-7$,-						      ;
+								    9$-7$,-						      ;
+								    11$-7$						      ;
+				       1D  11 006D4 	    BRB     11$							      ; 4655
+				       7E  D4 006D6 8$:     CLRL    -(SP)						      ; 4642
+			    00000000'  EF  9F 006D8 	    PUSHAB  P.AAA						      ;
+	      00000000G  EF	       02  FB 006DE 	    CALLS   #2, DBG$FAO_OUT					      ;
+				       0C  11 006E5 	    BRB     11$							      ; 4643
+		         6E	  03   A2  D0 006E7 9$:     MOVL    3(DST_RECRD), VALUE					      ; 4651
+		    08   BC	       6E  D0 006EB 10$:    MOVL    VALUE, @VALUE_PTR					      ; 4665
+		         50	       53  D0 006EF 	    MOVL    STATUS, R0						      ; 4666
+					   04 006F2 	    RET     							      ;
+				       50  D4 006F3 11$:    CLRL    R0							      ; 4421
+					   04 006F5 	    RET     							      ;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 19-6
+; Digital Equipment Corporation
+;
+; Routine Size:  197 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 20
+; Digital Equipment Corporation
+;
+;	4668	GLOBAL ROUTINE dbg$is_it_entry (address_value) =
+;	4669	!++
+;	4670	! Functional description:
+;	4671	!	Decides whether an absolute value corresponds to the name of a
+;	4672	!	routine. This routine is used, for example, by the break-
+;	4673	!	point setting function to decide whether the real breakpoint should
+;	4674	!	be set after the entry mask to the routine.
+;	4675	!
+;	4676	! Inputs:
+;	4677	!	address_value	- the address to be matched
+;	4678	!
+;	4679	! Implicit inputs:
+;	4680	!	none.
+;	4681	!
+;	4682	! Implicit outputs:
+;	4683	!	none
+;	4684	!
+;	4685	! Routine value:
+;	4686	!	TRUE (address is bound to routine name) or FALSE otherwise.
+;	4687	!
+;	4688	! Side effects:
+;	4689	!	none
+;	4690	!
+;	4691	!--
+;	4692	
+;	4693		BEGIN
+;	4694	
+;	4695		LOCAL
+;	4696			symbol_ptr	: REF nt_record,	! pointer to address' NT record
+;	4697			value;					! value of NT record's symbol
+;	4698	
+;	4699	%IF DBG_RST11
+;     L 4700	%THEN
+;     U 4701		$fao_tt_out('is_it_entry on !XL',.address_value);
+;     U 4702	%FI
+;	4703		!++
+;	4704		! See whether the address can be matched to any symbol known about
+;	4705		! by the RST or the GST. If not, return FALSE.
+;	4706		!--
+;	4707		symbol_ptr = 0;
+;	4708		IF NOT dbg$val_to_sym (.address_value, symbol_ptr, FALSE)
+;	4709		THEN RETURN FALSE;
+;	4710	
+;	4711	%IF DBG_RST11
+;     L 4712	%THEN
+;     U 4713		$fao_tt_out('is_it_entry symbol type is !XB',.symbol_ptr[nt_type]);
+;     U 4714	%FI
+;	4715		!++
+;	4716		! If symbol returned is not a routine name, no match.
+;	4717		!--
+;	4718		IF( .symbol_ptr [nt_type] NEQ dsc$k_dtype_rtn
+;	4719		  AND
+;	4720		    .symbol_ptr [nt_type] NEQ dsc$k_dtype_ENT
+;	4721		  )
+;	4722		THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 20-1
+; Digital Equipment Corporation
+;
+;	4723			RETURN(FALSE);
+;	4724	
+;	4725		!++
+;	4726		! Find absolute address of the symbol found in the val_to_sym
+;	4727		! call. If this address does not match our address exactly,
+;	4728		! then the symbolization was misleading.
+;	4729		!--
+;	4730		IF NOT DBG$SYMBOL_VALU (.symbol_ptr, value)
+;	4731		THEN RETURN FALSE;
+;	4732		IF .value NEQ .address_value
+;	4733		THEN RETURN FALSE;
+;	4734	
+;	4735		! The BPT is on an entry point.
+;	4736	
+;	4737		return(TRUE);
+;	4738	END;
+
+
+
+
+
+					 0000 006F6 	    .ENTRY  DBG$IS_IT_ENTRY, Save nothing			      ; 4668
+		         5E	       08  C2 006F8 	    SUBL2   #8, SP						      ;
+				  04   AE  D4 006FB 	    CLRL    SYMBOL_PTR						      ; 4707
+				       7E  D4 006FE 	    CLRL    -(SP)						      ; 4708
+				  08   AE  9F 00700 	    PUSHAB  SYMBOL_PTR						      ;
+				  04   AC  DD 00703 	    PUSHL   ADDRESS_VALUE					      ;
+		  FDE4   CF	       03  FB 00706 	    CALLS   #3, DBG$VAL_TO_SYM					      ;
+		         2E	       50  E9 0070B 	    BLBC    R0, 2$						      ;
+	   50	    04   AE 00000000G  8F  C1 0070E 	    ADDL3   #DBG$_RST_BEGIN, SYMBOL_PTR, R0			      ; 4718
+		    BE   8F	  02   A0  91 00717 	    CMPB    2(R0), #190						      ;
+				       07  13 0071C 	    BEQL    1$							      ;
+		    C0   8F	  02   A0  91 0071E 	    CMPB    2(R0), #192						      ; 4720
+				       17  12 00723 	    BNEQ    2$							      ;
+				       5E  DD 00725 1$:     PUSHL   SP							      ; 4730
+				  08   AE  DD 00727 	    PUSHL   SYMBOL_PTR						      ;
+		  FED9   CF	       02  FB 0072A 	    CALLS   #2, DBG$SYMBOL_VALU					      ;
+		         0A	       50  E9 0072F 	    BLBC    R0, 2$						      ;
+		    04   AC	       6E  D1 00732 	    CMPL    VALUE, ADDRESS_VALUE				      ; 4732
+				       04  12 00736 	    BNEQ    2$							      ;
+		         50	       01  D0 00738 	    MOVL    #1, R0						      ; 4737
+					   04 0073B 	    RET     							      ;
+				       50  D4 0073C 2$:     CLRL    R0							      ; 4668
+					   04 0073E 	    RET     							      ;
+
+; Routine Size:  73 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 21
+; Digital Equipment Corporation
+;
+;	4739	ROUTINE STD_SYM_EVAL( PASS_BACK_ADDR, ACCESS, IN_VALUE ) =
+;	4740	!++
+;	4741	! Functional Description:
+;	4742	!	Implement the algorithm which comes up with
+;	4743	!	a symbol's value given the so-called ACCESS
+;	4744	!	and VALUE fields taken from (various places within)
+;	4745	!	the DST record for a symbol which uses
+;	4746	!	'standard encoding'.
+;	4747	!
+;	4748	!	See CP0021.MEM, pgs 9-10 for this algorithm.
+;	4749	!
+;	4750	! Formal Parameters:
+;	4751	!	PASS_BACK_ADDR	-The address of where we stuff back the
+;	4752	!			 value the algorithm determines.
+;	4753	!	ACCESS		-The 1-byte field which encodes the
+;	4754	!			 3-element fields described in CP0021.MEM
+;	4755	!			 for so-called 'standard encoding'.
+;	4756	!	IN_VALUE	-The value field which may be used in
+;	4757	!			 conjunction with ACCESS.
+;	4758	!
+;	4759	! Implicit Inputs:
+;	4760	!	That the value bound to a symbol can be passed
+;	4761	!	back in a longword.
+;	4762	!
+;	4763	!	The current context is used to do the evaluation.
+;	4764	!
+;	4765	! Implicit Outputs:
+;	4766	!	The value which is currently associated with
+;	4767	!	the symbol which presumably corresponds to
+;	4768	!	the ACCESS and VALUE fields given, is passed back.
+;	4769	!
+;	4770	! Routine Value:
+;	4771	!	TRUE, if all goes OK and the value gets passed back,
+;	4772	!	NOT TRUE, otherwise.  In this case we distinguish two
+;	4773	!		possibilities:  0 => a real error - the symbol
+;	4774	!				     could not be evaluated,
+;	4775	!			   and  2 => a soft error - the evaluation
+;	4776	!				     failed because of an inappropriate
+;	4777	!				     context.
+;	4778	!
+;	4779	! Side Effects:
+;	4780	!
+;	4781	!	None.
+;	4782	!--
+;	4783	
+;	4784	BEGIN
+;	4785		BUILTIN
+;	4786				! We do out best not to fault when the
+;	4787				! current context (DBG$GL_RUNFRAME) is
+;	4788				! inappropriate.
+;	4789			PROBER;
+;	4790		MAP
+;	4791				! The value we pass back is a longword.
+;	4792			PASS_BACK_ADDR : REF VECTOR;
+;	4793		LOCAL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 21-1
+; Digital Equipment Corporation
+;
+;	4794			RET_VALUE;		! We accumulate the value we return.
+;	4795		BIND
+;	4796			register_vector = dbg$gl_runframe [dbg$l_user_regs] : VECTOR;
+;	4797	
+;	4798	%IF DBG_RST13
+;     L 4799	%THEN
+;     U 4800		$FAO_TT_OUT('std_eval: access=!XB, value=!XL',.ACCESS,.IN_VALUE);
+;     U 4801	%FI
+;	4802	
+;	4803		! The access field for this symbol from the DST
+;	4804		! contains the key to how we correspond symbols
+;	4805		! and values.
+;	4806	
+;	4807		IF( .ACCESS<0,2,0> EQL ACCS_REGISTER )
+;	4808		THEN
+;	4809			BEGIN
+;	4810	
+;	4811			! VALUE field from DST is number of REG bound to symbol.
+;	4812	%IF DBG_RST13
+;     L 4813	%THEN
+;     U 4814			$FAO_TT_OUT('Symbol bound to REG !UL; Value of: !XL',
+;     U 4815					.IN_VALUE, .REGISTER_VECTOR[.IN_VALUE]);
+;     U 4816	%FI
+;	4817	
+;	4818			!++
+;	4819			! Return the address that holds the user's contents of
+;	4820			! this register.
+;	4821			!--
+;	4822			RET_VALUE = register_vector[ .IN_VALUE ];
+;	4823			END
+;	4824		ELSE
+;	4825			BEGIN
+;	4826	
+;	4827			! The algorithm is more complicated, and the
+;	4828			! interpretation of what we come up with is not
+;	4829			! simply that it is a REGister value.
+;	4830	
+;	4831			RET_VALUE = .IN_VALUE;
+;	4832	%IF DBG_RST13
+;     L 4833	%THEN
+;     U 4834			$FAO_TT_OUT('Begin with value: !XL, ',.RET_VALUE);
+;     U 4835	%FI
+;	4836			IF( .ACCESS<3,1,0> )
+;	4837			THEN
+;	4838				BEGIN
+;	4839	%IF DBG_RST13
+;     L 4840	%THEN
+;     U 4841				$FAO_TT_OUT('!_add REG[!SL.] (which is !XL), ',
+;     U 4842					.ACCESS<4,4,0>,.register_vector[.ACCESS<4,4,0>] );
+;     U 4843	%FI
+;	4844				RET_VALUE = .RET_VALUE + .register_vector[ .ACCESS<4,4,0> ];
+;	4845				END;
+;	4846	
+;	4847			IF( .ACCESS<2,1,0> )
+;	4848			THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 21-2
+; Digital Equipment Corporation
+;
+;	4849				BEGIN
+;	4850	%IF DBG_RST13
+;     L 4851	%THEN
+;     U 4852				$FAO_TT_OUT('!_then try to indirect thru !XL, ',.RET_VALUE );
+;     U 4853	%FI
+;	4854				IF( NOT PROBER( %REF(0), %REF(%UPVAL), .RET_VALUE) )
+;	4855				THEN
+;	4856					BEGIN
+;	4857	%IF DBG_RST13
+;     L 4858	%THEN
+;     U 4859					$FAO_TT_OUT('only don''t.');
+;     U 4860	%FI
+;	4861					RETURN(2);
+;	4862					END;
+;	4863				RET_VALUE = .(.RET_VALUE);
+;	4864				END;
+;	4865	
+;	4866	%IF DBG_RST13
+;     L 4867	%THEN
+;     U 4868			IF( .ACCESS<0,2,0> EQL ACCS_ADDRESS )
+;     U 4869			THEN
+;     U 4870				$FAO_TT_OUT('Return address !XL', .RET_VALUE)
+;     U 4871			ELSE
+;     U 4872				IF( .ACCESS<0,2,0> EQL ACCS_DESCRIPTOR )
+;     U 4873				THEN
+;     U 4874					$FAO_TT_OUT('Return descriptor !XL',.RET_VALUE)
+;     U 4875				ELSE
+;     U 4876					$FAO_TT_OUT('Return literal !XL', .RET_VALUE);
+;     U 4877	%FI
+;	4878			END;
+;	4879	
+;	4880		! Pass back the value.
+;	4881	
+;	4882		PASS_BACK_ADDR[0] = .RET_VALUE;
+;	4883		RETURN(TRUE);
+;	4884	END;
+
+
+
+
+
+					 0004 0073F STD_SYM_EVAL:
+							    .WORD   Save R2						      ; 4739
+	   52 00000000G  EF	       04  C1 00741 	    ADDL3   #4, DBG$GL_RUNFRAME, R2				      ; 4796
+		         50	  0C   AC  D0 00749 	    MOVL    IN_VALUE, R0					      ; 4822
+      08   AC	         02	       00  ED 0074D 	    CMPZV   #0, #2, ACCESS, #3					      ; 4807
+				       03     00752									      ;
+				       06  12 00753 	    BNEQ    1$							      ;
+		         51	     6240  DE 00755 	    MOVAL   (R2)[R0], RET_VALUE					      ; 4822
+				       24  11 00759 	    BRB     4$							      ; 4807
+		         51	       50  D0 0075B 1$:     MOVL    R0, RET_VALUE					      ; 4831
+	   0A	    08   AC	       03  E1 0075E 	    BBC     #3, ACCESS, 2$					      ; 4836
+      08   AC	         04	       04  EF 00763 	    EXTZV   #4, #4, ACCESS, R0					      ; 4844
+				       50     00768									      ;
+		         51	     6240  C0 00769 	    ADDL2   (R2)[R0], RET_VALUE					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 21-3
+; Digital Equipment Corporation
+;
+	   0D	    08   AC	       02  E1 0076D 2$:     BBC     #2, ACCESS, 4$					      ; 4847
+	   61	         04	       00  0C 00772 	    PROBER  #0, #4, (RET_VALUE)					      ; 4854
+				       04  12 00776 	    BNEQ    3$							      ;
+		         50	       02  D0 00778 	    MOVL    #2, R0						      ; 4861
+					   04 0077B 	    RET     							      ;
+		         51	       61  D0 0077C 3$:     MOVL    (RET_VALUE), RET_VALUE				      ; 4863
+		    04   BC	       51  D0 0077F 4$:     MOVL    RET_VALUE, @PASS_BACK_ADDR				      ; 4882
+		         50	       01  D0 00783 	    MOVL    #1, R0						      ; 4883
+					   04 00786 	    RET     							      ; 4739
+
+; Routine Size:  72 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:31:47	DBB3:[DEBUG.SRC]DBGRST.B32;6					Page 22
+; Digital Equipment Corporation
+;
+;	4885	END				!End of module
+;	4886	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	  1927  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$OWN        	     8    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$PLIT       	    20  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        12         0       225
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      955	00:38.6		00:42.8
+;	FLOWAN	       71	00:05.9		00:05.9
+;	DELAY	       51	00:03.0		00:03.0
+;	TNBIND	       81	00:03.6		00:03.6
+;	CODE	       96	00:06.6		00:06.6
+;	FINAL	      209	00:11.6		00:12.0
+;	Total	     1463	01:09.2		01:13.9
+
+; Size:		1927 code + 28 data bytes
+; Run Time:	01:09.7
+; Elapsed Time:	01:14.5
+; Memory Used:	392 pages
+; Compilation Complete

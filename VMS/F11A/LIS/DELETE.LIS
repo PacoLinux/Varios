@@ -1,0 +1,571 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 1
+;
+;	0001	MODULE DELETE (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0014'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine performs the DELETE function.
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET operating system, including privileged system services
+;	0037	!	and internal exec routines.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  1-Apr-1977
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   Andrew C. Goldstein, 7-Apr-1977  13:31
+;	0047	!   X0002 - Break out MARK_DELETE routine, do deletion in line
+;	0048	!
+;	0049	!   Andrew C. Goldstein, 12-Apr-1977  15:24
+;	0050	!   X0003 - Modify for buffer manager
+;	0051	!
+;	0052	!   Andrew C. Goldstein, 21-Apr-1977  14:41
+;	0053	!   X0004 - Move GETFIB out of kernel mode
+;	0054	!
+;	0055	!   Andrew C. Goldstein, 3-May-1977  15:06
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 1-1
+;
+;	0056	!   X0005 - Add file protection check
+;	0057	!
+;	0058	!   Andrew C. Goldstein, 11-May-1977  13:33
+;	0059	!   X0006 - Check for reserved file ID
+;	0060	!
+;	0061	!   Andrew C. Goldstein, 11-May-1977  15:17
+;	0062	!   X0007 - Globalize MARKDEL_FCB
+;	0063	!
+;	0064	!   Andrew C. Goldstein, 13-Jul-1977  15:40
+;	0065	!   X0008 - Rework file header checksumming
+;	0066	!
+;	0067	!   Andrew C. Goldstein, 2-Aug-1977  14:54
+;	0068	!   X0009 - Deallocate extension FCB's in MARKDEL_FCB
+;	0069	!
+;	0070	!   Andrew C. Goldstein, 12-Dec-1977  13:28
+;	0071	!   X0010 - file ID interface changes
+;	0072	!
+;	0073	!   Andrew C. Goldstein, 9-Jan-1978  11:28
+;	0074	!   X0011 - Prevent delete of file open for write
+;	0075	!
+;	0076	!   Andrew C. Goldstein, 21-Jun-78  17:33
+;	0077	!   A0012 - Add allocation interlock
+;	0078	!
+;	0079	!   Andrew C. Goldstein, 21-Jul-78  14:59
+;	0080	!   A0013 - Add delete logger
+;	0081	!
+;	0082	!   Andrew C. Goldstein, 18-Aug-78  14:16
+;	0083	!   A0014 - Tie off delete logger
+;	0084	!
+;	0085	!**
+;	0086	
+;	0087	
+;	0088	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0089	REQUIRE 'SRC$:FCPDEF.B32';
+;	0408	
+;	0409	
+;	0410	FORWARD ROUTINE
+;	0411		DELETE,				! main delete function
+;	0412		MARK_DELETE	: NOVALUE,	! mark file for delete
+;	0413		MARKDEL_FCB;			! mark FCB of file for delete
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 2
+;
+;	0414	GLOBAL ROUTINE DELETE =
+;	0415	
+;	0416	!++
+;	0417	!
+;	0418	! FUNCTIONAL DESCRIPTION:
+;	0419	!
+;	0420	!	This routine performs the remove and mark for delete functions.
+;	0421	!
+;	0422	! CALLING SEQUENCE:
+;	0423	!	DELETE ()
+;	0424	!
+;	0425	! INPUT PARAMETERS:
+;	0426	!	NONE
+;	0427	!
+;	0428	! IMPLICIT INPUTS:
+;	0429	!	IO_PACKET: I/O packet in process
+;	0430	!
+;	0431	! OUTPUT PARAMETERS:
+;	0432	!	PRIMARY_FCB: FCB of file
+;	0433	!
+;	0434	! IMPLICIT OUTPUTS:
+;	0435	!	NONE
+;	0436	!
+;	0437	! ROUTINE VALUE:
+;	0438	!	1
+;	0439	!
+;	0440	! SIDE EFFECTS:
+;	0441	!	directory entry removed
+;	0442	!	file marked for delete or deleted
+;	0443	!
+;	0444	!--
+;	0445	
+;	0446	BEGIN
+;	0447	
+;	0448	LOCAL
+;	0449		ABD		: REF BBLOCKVECTOR [,ABD$C_LENGTH],
+;	0450						! buffer descriptors
+;	0451		FIB		: REF BBLOCK;	! FIB
+;	0452	
+;	0453	EXTERNAL
+;	0454		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0455		IO_PACKET	: REF BBLOCK,	! I/O packet in process
+;	0456		CURRENT_WINDOW	: REF BBLOCK,	! window of open file
+;	0457		PRIMARY_FCB	: REF BBLOCK,	! FCB of file
+;	0458		CURRENT_VCB	: REF BBLOCK;	! VCB of volume
+;	0459	
+;	0460	EXTERNAL ROUTINE
+;	0461		GET_FIB,			! get FIB of request
+;	0462		FIND,				! find name in directory
+;	0463		SEARCH_FCB;			! search FCB list
+;	0464	
+;	0465	
+;	0466	! First find the buffer descriptor, FIB, FCB, etc. then remove the
+;	0467	! directory entry.
+;	0468	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 2-1
+;
+;	0469	
+;	0470						! pointer to buffer descriptors
+;	0471	ABD = .BBLOCK [.IO_PACKET[IRP$L_SVAPTE], AIB$L_DESCRIPT];
+;	0472	FIB = GET_FIB (.ABD);
+;	0473	
+;	0474	IF .CURRENT_VCB[VCB$V_NOALLOC]
+;	0475	THEN ERR_EXIT (SS$_WRITLCK);
+;	0476	
+;	0477	! If a directory ID is present, do a directory search first and remove
+;	0478	! the directory entry.
+;	0479	!
+;	0480	
+;	0481	IF .FIB[FIB$W_DID_NUM] NEQ 0
+;	0482	THEN FIND (.ABD, .FIB, 1);
+;	0483	
+;	0484	! If there is a file open on the channel, check the file ID returned by the
+;	0485	! FIND against that of the open file. If they do not match, treat the file
+;	0486	! as if it were not open.
+;	0487	!
+;	0488	
+;	0489	IF .PRIMARY_FCB NEQ 0
+;	0490	THEN
+;	0491	    BEGIN
+;	0492	    IF .PRIMARY_FCB[FCB$W_FID_NUM] NEQ .FIB[FIB$W_FID_NUM]
+;	0493	    OR .PRIMARY_FCB[FCB$W_FID_SEQ] NEQ .FIB[FIB$W_FID_SEQ]
+;	0494	    THEN CURRENT_WINDOW = 0;
+;	0495	    END;
+;	0496	
+;	0497	PRIMARY_FCB = SEARCH_FCB (FIB[FIB$W_FID]);
+;	0498	
+;	0499	! Now actually mark the file for delete if requested.
+;	0500	!
+;	0501	
+;	0502	IF .BBLOCK [IO_PACKET[IRP$W_FUNC], IO$V_DELETE]
+;	0503	THEN MARK_DELETE (.FIB);
+;	0504	
+;	0505	RETURN 1;
+;	0506	
+;	0507	END;					! end of routine DELETE
+
+
+							    .TITLE  DELETE
+							    .IDENT  \A0014\
+
+							    .EXTRN  CLEANUP_FLAGS, IO_PACKET, CURRENT_WINDOW, PRIMARY_FCB
+							    .EXTRN  CURRENT_VCB, GET_FIB, FIND, SEARCH_FCB
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 000C 00000 	    .ENTRY  DELETE, Save R2,R3					      ; 0414
+		         50 	0000G  CF  D0 00002 	    MOVL    IO_PACKET, R0					      ; 0471
+		         53 	  2C   B0  D0 00007 	    MOVL    @44(R0), ABD					      ;
+				       53  DD 0000B 	    PUSHL   ABD							      ; 0472
+		  0000G  CF	       01  FB 0000D 	    CALLS   #1, GET_FIB						      ;
+		         52 	       50  D0 00012 	    MOVL    R0, FIB						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 2-2
+;
+		         50 	0000G  CF  D0 00015 	    MOVL    CURRENT_VCB, R0					      ; 0474
+	   04 	    0B   A0	       04  E1 0001A 	    BBC     #4, 11(R0), 1$					      ;
+				025C   8F  BF 0001F 	    CHMU    #604						      ; 0475
+				  0A   A2  B5 00023 1$:     TSTW    10(FIB)						      ; 0481
+				       0B  13 00026 	    BEQL    2$							      ;
+				       01  DD 00028 	    PUSHL   #1							      ; 0482
+				       52  DD 0002A 	    PUSHL   FIB							      ;
+				       53  DD 0002C 	    PUSHL   ABD							      ;
+		  0000G  CF	       03  FB 0002E 	    CALLS   #3, FIND						      ;
+		         50 	0000G  CF  D0 00033 2$:     MOVL    PRIMARY_FCB, R0					      ; 0489
+				       12  13 00038 	    BEQL    4$							      ;
+		    04   A2	  20   A0  B1 0003A 	    CMPW    32(R0), 4(FIB)					      ; 0492
+				       07  12 0003F 	    BNEQ    3$							      ;
+		    06   A2	  22   A0  B1 00041 	    CMPW    34(R0), 6(FIB)					      ; 0493
+				       04  13 00046 	    BEQL    4$							      ;
+				0000G  CF  D4 00048 3$:     CLRL    CURRENT_WINDOW					      ; 0494
+				  04   A2  9F 0004C 4$:     PUSHAB  4(FIB)						      ; 0497
+		  0000G  CF	       01  FB 0004F 	    CALLS   #1, SEARCH_FCB					      ;
+		  0000G  CF	       50  D0 00054 	    MOVL    R0, PRIMARY_FCB					      ;
+		         50 	0000G  CF  D0 00059 	    MOVL    IO_PACKET, R0					      ; 0502
+		         07 	  21   A0  E9 0005E 	    BLBC    33(R0), 5$						      ;
+				       52  DD 00062 	    PUSHL   FIB							      ; 0503
+		  0000V  CF	       01  FB 00064 	    CALLS   #1, MARK_DELETE					      ;
+		         50 	       01  D0 00069 5$:     MOVL    #1, R0						      ; 0505
+					   04 0006C 	    RET     							      ; 0414
+
+; Routine Size:  109 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 3
+;
+;	0508	GLOBAL ROUTINE MARK_DELETE (FIB) : NOVALUE =
+;	0509	
+;	0510	!++
+;	0511	!
+;	0512	! FUNCTIONAL DESCRIPTION:
+;	0513	!
+;	0514	!	This routine marks the indicated file for delete and deletes it
+;	0515	!	if it is not accessed.
+;	0516	!
+;	0517	! CALLING SEQUENCE:
+;	0518	!	MARK_DELETE (ARG1)
+;	0519	!
+;	0520	! INPUT PARAMETERS:
+;	0521	!	ARG1: address of FIB
+;	0522	!
+;	0523	! IMPLICIT INPUTS:
+;	0524	!	NONE
+;	0525	!
+;	0526	! OUTPUT PARAMETERS:
+;	0527	!	NONE
+;	0528	!
+;	0529	! IMPLICIT OUTPUTS:
+;	0530	!	NONE
+;	0531	!
+;	0532	! ROUTINE VALUE:
+;	0533	!	NONE
+;	0534	!
+;	0535	! SIDE EFFECTS:
+;	0536	!	file marked for delete or deleted
+;	0537	!
+;	0538	!--
+;	0539	
+;	0540	BEGIN
+;	0541	
+;	0542	MAP
+;	0543		FIB		: REF BBLOCK;	! FIB
+;	0544	
+;	0545	LOCAL
+;	0546		FCB		: REF BBLOCK,	! FCB of file
+;	0547		HEADER		: REF BBLOCK;	! file header
+;	0548	
+;	0549	OWN
+;	0550		DELETELOGENB	: INITIAL (0);	! delete logger enable
+;	0551	
+;	0552	EXTERNAL
+;	0553		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0554		CURRENT_WINDOW	: REF BBLOCK;	! window of open file
+;	0555	
+;	0556	EXTERNAL ROUTINE
+;	0557		SEARCH_FCB,			! search FCB list
+;	0558		READ_HEADER,			! read file header
+;	0559		LOG_DELETE,			! send message to delete logger
+;	0560		CHECK_PROTECT,			! check file protection
+;	0561		MARK_DIRTY,			! mark buffer for write-back
+;	0562		DELETE_FILE,			! delete the file
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 3-1
+;
+;	0563		CHECKSUM;			! checksum file header
+;	0564	
+;	0565	
+;	0566	! Check that the file is not a reserved file (FID less than 5).
+;	0567	!
+;	0568	
+;	0569	IF .FIB[FIB$W_FID_NUM] LSSU 5
+;	0570	THEN ERR_EXIT (SS$_NOPRIV);
+;	0571	
+;	0572	! Find the FCB, if any, and then read the header. Check file protection.
+;	0573	! Check if the file is write accessed by someone else and not the deleter.
+;	0574	!
+;	0575	
+;	0576	FCB = SEARCH_FCB (FIB[FIB$W_FID]);
+;	0577	HEADER = READ_HEADER (FIB[FIB$W_FID], .FCB);
+;	0578	
+;	0579	IF .DELETELOGENB THEN LOG_DELETE (.FIB, .HEADER);
+;	0580	
+;	0581	CHECK_PROTECT (DELETE_ACCESS, .HEADER, .FCB);
+;	0582	IF (
+;	0583	    IF .FCB EQL 0
+;	0584	    THEN 0
+;	0585	    ELSE .FCB[FCB$W_WCNT] NEQ 0)
+;	0586	AND (
+;	0587	    IF .CURRENT_WINDOW EQL 0
+;	0588	    THEN 1
+;	0589	    ELSE NOT .CURRENT_WINDOW[WCB$V_WRITE])
+;	0590	THEN ERR_EXIT (SS$_ACCONFLICT);
+;	0591	
+;	0592	CLEANUP_FLAGS[CLF_REENTER] = 0;		! from now on deletion proceeds
+;	0593	
+;	0594	
+;	0595	! Mark the file for delete. If the file is not accessed, then proceed to
+;	0596	! actually delete it.
+;	0597	!
+;	0598	
+;	0599	HEADER[FH1$V_MARKDEL] = 1;
+;	0600	MARK_DIRTY (.HEADER);
+;	0601	
+;	0602	IF KERNEL_CALL (MARKDEL_FCB, .FCB)
+;	0603	THEN DELETE_FILE (.FIB, .HEADER)
+;	0604	ELSE CHECKSUM (.HEADER);
+;	0605	
+;	0606	END;					! end of routine MARK_DELETE
+
+
+
+							    .PSECT  $LOCKEDD1$,NOEXE,2
+
+				    00000000  00000 DELETELOGENB:
+							    .LONG   0							      ;
+
+							    .EXTRN  READ_HEADER, LOG_DELETE, CHECK_PROTECT, MARK_DIRTY
+							    .EXTRN  DELETE_FILE, CHECKSUM, SYS$CMKRNL
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 3-2
+;
+							    .PSECT  $CODE$,NOWRT,2
+
+					 000C 0006D 	    .ENTRY  MARK_DELETE, Save R2,R3				      ; 0508
+		         50 	  04   AC  D0 0006F 	    MOVL    FIB, R0						      ; 0569
+		         05 	  04   A0  B1 00073 	    CMPW    4(R0), #5						      ;
+				       02  1E 00077 	    BGEQU   1$							      ;
+				       24  BF 00079 	    CHMU    #36							      ; 0570
+	   52 	    04   AC	       04  C1 0007B 1$:     ADDL3   #4, FIB, R2						      ; 0576
+				       52  DD 00080 	    PUSHL   R2							      ;
+		  0000G  CF	       01  FB 00082 	    CALLS   #1, SEARCH_FCB					      ;
+		         53 	       50  D0 00087 	    MOVL    R0, FCB						      ;
+				       0C  BB 0008A 	    PUSHR   #^M<R2,R3>						      ; 0577
+		  0000G  CF	       02  FB 0008C 	    CALLS   #2, READ_HEADER					      ;
+		         52 	       50  D0 00091 	    MOVL    R0, HEADER						      ;
+		         0A 	0000'  CF  E9 00094 	    BLBC    DELETELOGENB, 2$					      ; 0579
+				       52  DD 00099 	    PUSHL   HEADER						      ;
+				  04   AC  DD 0009B 	    PUSHL   FIB							      ;
+		  0000G  CF	       02  FB 0009E 	    CALLS   #2, LOG_DELETE					      ;
+				       0C  BB 000A3 2$:     PUSHR   #^M<R2,R3>						      ; 0581
+				       02  DD 000A5 	    PUSHL   #2							      ;
+		  0000G  CF	       03  FB 000A7 	    CALLS   #3, CHECK_PROTECT					      ;
+				       53  D5 000AC 	    TSTL    FCB							      ; 0583
+				       15  13 000AE 	    BEQL    4$							      ;
+				  1C   A3  B5 000B0 	    TSTW    28(FCB)						      ; 0585
+				       10  13 000B3 	    BEQL    4$							      ;
+		         50 	0000G  CF  D0 000B5 	    MOVL    CURRENT_WINDOW, R0					      ; 0587
+				       05  13 000BA 	    BEQL    3$							      ;
+	   04 	    0B   A0	       01  E0 000BC 	    BBS     #1, 11(R0), 4$					      ; 0589
+				0800   8F  BF 000C1 3$:     CHMU    #2048						      ; 0590
+		  0000G  CF	  80   8F  8A 000C5 4$:     BICB2   #128, CLEANUP_FLAGS+2				      ; 0592
+		    0D   A2	  80   8F  88 000CB 	    BISB2   #128, 13(HEADER)					      ; 0599
+				       52  DD 000D0 	    PUSHL   HEADER						      ; 0600
+		  0000G  CF	       01  FB 000D2 	    CALLS   #1, MARK_DIRTY					      ;
+				       53  DD 000D7 	    PUSHL   FCB							      ; 0602
+				       01  DD 000D9 	    PUSHL   #1							      ;
+				       5E  DD 000DB 	    PUSHL   SP							      ;
+				0000V  CF  9F 000DD 	    PUSHAB  MARKDEL_FCB						      ;
+	      00000000G  9F	       04  FB 000E1 	    CALLS   #4, @#SYS$CMKRNL					      ;
+		         0B 	       50  E9 000E8 	    BLBC    R0, 5$						      ;
+				       52  DD 000EB 	    PUSHL   HEADER						      ; 0603
+				  04   AC  DD 000ED 	    PUSHL   FIB							      ;
+		  0000G  CF	       02  FB 000F0 	    CALLS   #2, DELETE_FILE					      ;
+					   04 000F5 	    RET     							      ; 0602
+				       52  DD 000F6 5$:     PUSHL   HEADER						      ; 0604
+		  0000G  CF	       01  FB 000F8 	    CALLS   #1, CHECKSUM					      ;
+					   04 000FD 	    RET     							      ; 0508
+
+; Routine Size:  145 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 4
+;
+;	0607	GLOBAL ROUTINE MARKDEL_FCB (FCB) =
+;	0608	
+;	0609	!++
+;	0610	!
+;	0611	! FUNCTIONAL DESCRIPTION:
+;	0612	!
+;	0613	!	This routine marks the FCB for the current file, if any, for delete.
+;	0614	!	This routine must be executed in kernel mode.
+;	0615	!
+;	0616	! CALLING SEQUENCE:
+;	0617	!	MARKDEL_FCB (ARG1)
+;	0618	!
+;	0619	! INPUT PARAMETERS:
+;	0620	!	ARG1: address of FCB
+;	0621	!
+;	0622	! IMPLICIT INPUTS:
+;	0623	!	PRIMARY_FCB: FCB of file if any
+;	0624	!	DIR_FCB: FCB of directory file if any
+;	0625	!	CURRENT_VCB: VCB of volume
+;	0626	!
+;	0627	! OUTPUT PARAMETERS:
+;	0628	!	NONE
+;	0629	!
+;	0630	! IMPLICIT OUTPUTS:
+;	0631	!	NONE
+;	0632	!
+;	0633	! ROUTINE VALUE:
+;	0634	!	1 if FCB removed (i.e., if file is deletable)
+;	0635	!	0 if delete is to be deferred
+;	0636	!
+;	0637	! SIDE EFFECTS:
+;	0638	!	FCB marked for delete, may be deallocated
+;	0639	!
+;	0640	!--
+;	0641	
+;	0642	BEGIN
+;	0643	
+;	0644	MAP
+;	0645		FCB		: REF BBLOCK;	! FCB arg
+;	0646	
+;	0647	LOCAL
+;	0648		DUMMY;				! dummy destination for REMQUE
+;	0649	
+;	0650	EXTERNAL
+;	0651		CURRENT_VCB	: REF BBLOCK,	! VCB of volume
+;	0652		PRIMARY_FCB	: REF BBLOCK,	! FCB of current file
+;	0653		DIR_FCB		: REF BBLOCK;	! FCB of directory file
+;	0654	
+;	0655	EXTERNAL ROUTINE
+;	0656		DEL_EXTFCB,			! delete extension FCB's
+;	0657		DEALLOCATE;			! deallocate dynamic memory
+;	0658	
+;	0659	
+;	0660	! If the FCB exists, we mark it for delete (causing the file to be deleted
+;	0661	! when the access count goes to 0). Make sure that the directory LRU bit
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 4-1
+;
+;	0662	! in the FCB is off (crediting 1 to the LRU count if it was on). If the
+;	0663	! access count is zero, dump the FCB and its extensions.
+;	0664	!
+;	0665	
+;	0666	IF .FCB NEQ 0
+;	0667	THEN
+;	0668	    BEGIN
+;	0669	    FCB[FCB$V_MARKDEL] = 1;
+;	0670	    IF TESTBITSC (FCB[FCB$V_DIR])
+;	0671	    THEN CURRENT_VCB[VCB$B_LRU_LIM] = .CURRENT_VCB[VCB$B_LRU_LIM] + 1;
+;	0672	    IF .FCB[FCB$W_ACNT] NEQ 0 THEN RETURN 0; ! file is accessed
+;	0673	    REMQUE (.FCB, DUMMY);
+;	0674	    DEL_EXTFCB (.FCB);
+;	0675	    DEALLOCATE (.FCB);
+;	0676	    IF .PRIMARY_FCB EQL .FCB THEN PRIMARY_FCB = 0;
+;	0677	    IF .DIR_FCB EQL .FCB THEN DIR_FCB = 0;
+;	0678	    END;
+;	0679	
+;	0680	RETURN 1;				! ok to delete file
+;	0681	
+;	0682	END;					! end of routine MARKDEL_FCB
+
+
+
+							    .EXTRN  DIR_FCB, DEL_EXTFCB, DEALLOCATE
+
+					 0000 000FE 	    .ENTRY  MARKDEL_FCB, Save nothing				      ; 0607
+		         51 	  04   AC  D0 00100 	    MOVL    FCB, R1						      ; 0666
+				       41  13 00104 	    BEQL    3$							      ;
+		    1E   A1	       02  88 00106 	    BISB2   #2, 30(R1)						      ; 0669
+	   08 	    1E   A1	       00  E5 0010A 	    BBCC    #0, 30(R1), 1$					      ; 0670
+		         50 	0000G  CF  D0 0010F 	    MOVL    CURRENT_VCB, R0					      ; 0671
+				  49   A0  96 00114 	    INCB    73(R0)						      ;
+				  18   A1  B5 00117 1$:     TSTW    24(R1)						      ; 0672
+				       2F  12 0011A 	    BNEQ    4$							      ;
+		         50 	       61  0F 0011C 	    REMQUE  (R1), DUMMY						      ; 0673
+				  04   AC  DD 0011F 	    PUSHL   FCB							      ; 0674
+		  0000G  CF	       01  FB 00122 	    CALLS   #1, DEL_EXTFCB					      ;
+				  04   AC  DD 00127 	    PUSHL   FCB							      ; 0675
+		  0000G  CF	       01  FB 0012A 	    CALLS   #1, DEALLOCATE					      ;
+		    04   AC	0000G  CF  D1 0012F 	    CMPL    PRIMARY_FCB, FCB					      ; 0676
+				       04  12 00135 	    BNEQ    2$							      ;
+				0000G  CF  D4 00137 	    CLRL    PRIMARY_FCB						      ;
+		    04   AC	0000G  CF  D1 0013B 2$:     CMPL    DIR_FCB, FCB					      ; 0677
+				       04  12 00141 	    BNEQ    3$							      ;
+				0000G  CF  D4 00143 	    CLRL    DIR_FCB						      ;
+		         50 	       01  D0 00147 3$:     MOVL    #1, R0						      ; 0680
+					   04 0014A 	    RET     							      ;
+				       50  D4 0014B 4$:     CLRL    R0							      ; 0607
+					   04 0014D 	    RET     							      ;
+
+; Routine Size:  80 bytes
+
+
+;	0683	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:53:23	DBB3:[F11A.SRC]DELETE.B32;10					Page 4-2
+;
+;	0684	END
+;	0685	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   334  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDD1$     	     4    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        23         0       242
+
+
+
+
+
+; Size:		334 code + 4 data bytes
+; Run Time:	00:08.5
+; Elapsed Time:	00:20.6
+; Memory Used:	276 pages
+; Compilation Complete

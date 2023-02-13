@@ -1,0 +1,566 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 1
+; Digital Equipment Corporation
+;
+;00100  0001	MODULE LNK_DYNMEM (IDENT='X01.02') =
+;00200  0002	
+;00300  0003	BEGIN
+;00400  0004	!
+;00500  0005	!
+;00600  0006	! Copyright (C) 1976, 1977, 1978
+;00700  0007	! Digital Equipment Corporation,  Maynard, Massachusetts  01754
+;00800  0008	!
+;00900  0009	! This software is furnished under a license for use only on  a
+;01000  0010	! single computer system and may be copied only with the inclu-
+;01100  0011	! sion of the above copyright notice.  This  software,  or  any
+;01200  0012	! other  copies  thereof, may not be provided or otherwise made
+;01300  0013	! available to any other person except for use on  such  system
+;01400  0014	! and  to  one who agrees to these license terms.  Title to and
+;01500  0015	! ownership of the software shall at all times remain in DEC.
+;01600  0016	!
+;01700  0017	! The information in this software is subject to change without
+;01800  0018	! notice and should not be construed as a commitment by Digital
+;01900  0019	! Equipment Corporation.
+;02000  0020	!
+;02100  0021	! DEC assumes no responsibility for the use or  reliability  of
+;02200  0022	! its software on equipment which is not supplied by DEC.
+;02300  0023	!
+;02400  0024	!
+;02500  0025	!
+;02600  0026	!
+;02700  0027	!
+;02800  0028	!++
+;02900  0029	!
+;03000  0030	! MODULE: LNK_DYNMEM
+;03100  0031	!
+;03200  0032	! FACILITY: LINKER
+;03300  0033	!
+;03400  0034	! ABSTRACT:  DYNAMIC MEMORY ALLOCATION AND DEALLOCATION
+;03500  0035	!
+;03600  0036	! HISTORY:
+;03700  0037	!
+;03800  0038	!	VERSION: X01.00
+;03900  0039	!
+;04000  0040	!	AUTHOR: T.J. PORTER 14-JAN-77
+;04100  0041	!
+;04200  0042	!	MODIFICATIONS:
+;04300  0043	!
+;04400  0044	! NO.	DATE		PROGRAMMER	PURPOSE
+;04500  0045	! ---	----		----------	-------
+;04600  0046	! 001	19-SEP-77	T.J. PORTER	REMEMBER THE HIGHEST ADDRESS ALLOCATED
+;04700  0047	! 002	20-APR-78	T.J. PORTER	REQUIRE FILE CLEAN UP
+;04800  0048	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2
+; Digital Equipment Corporation
+;
+;04900  0049	     
+;05000  0050	!
+;05100  0051	!++
+;05200  0052	!
+;05300  0053	! FUNCTIONAL DESCRIPTION:
+;05400  0054	!
+;05500  0055	!	THIS MODULE CONTAINS ALL THE DYNAMIC MEMORY ALLOCATION
+;05600  0056	!	AND DE-ALLOCATION LOGIC OF THE LINKER.  A SINGLY
+;05700  0057	!	LINKED LIST OF FREE BLOCKS OF MEMORY IS MAINTAINED
+;05800  0058	!	(LISTHEAD IS LNK$GL_MEMLHD) AND MEMORY IS ALLOCATED
+;05900  0059	!	BY FIRST FIT.  SHOULD THERE BE NO AVAILABLE MEMORY BLOCK
+;06000  0060	!	OF REQUIRED SIZE, THE ALLOCATION ROUTINE EXPANDS
+;06100  0061	!	THE PROGRAM REGION BY THE NUMBER OF PAGES EQUAL TO 
+;06200  0062	!	LNK$C_MEMEXP, LINKS THIS ON THE END OF THE FREE
+;06300  0063	!	LIST AND ALLOCATES THE REQUIRED MEMORY FROM THAT NEW
+;06400  0064	!	BLOCK.  THE FREE MEMORY LIST IS THEREFORE INITIALIZED
+;06500  0065	!	ON FIRST ALLOCATION CALL.  MEMORY IS ALWAYS ALLOCATED
+;06600  0066	!	IN EIGHT BYTE QUANTA, WITH A MAXIMUM OF LNK$C_MEMEXP*512
+;06700  0067	!	BYTES.  DEALLOCATION EFFECTS COMPACTION WHENEVER POSSIBLE.
+;06800  0068	!
+;06900  0069	! CALLING SEQUENCES:
+;07000  0070	!	LNK$ALLOBLK(BLOCKSIZE,BLOCKADDR)
+;07100  0071	!	LNK$DEALBLK(BLOCKSIZE,BLOCKADDR)
+;07200  0072	!		WHERE:
+;07300  0073	!		  BLOCKSIZE = NUMBER OF BYTES TO BE (DE)ALLOCATED.
+;07400  0074	!		  BLOCKADDR = ADDRESS OF CELL FOR THE ADDRESS OF
+;07500  0075	!		              THE BLOCK ALLOCATED OR TO BE DEALLOCATED.
+;07600  0076	! ERROR CONDITIONS:
+;07700  0077	!
+;07800  0078	!	1.  BLOCKSIZE < OR = 0 OR > LNK$C_MEMEXP*512 (CODE = 0,10)
+;07900  0079	!
+;08000  0080	!	2.  FAILURE TO EXPAND THE PROGRAM REGION ISSUES A MESSAGE
+;08100  0081	!	    THAT MEMORY IS FULL AND THE LINKER ABORTS.
+;08200  0082	!
+;08300  0083	!	3.  ANY PART OF A BLOCK TO BE DEALLOCATED IS:
+;08400  0084	!		(I) WITHIN A FREE BLOCK (CODE = 2,13)
+;08500  0085	!		(II) BEYOND TOP OF PROGRAM REGION (CODE = 11)
+;08600  0086	!		(III) LOWER THAN THAN LOWEST BLOCK EVER ALLOCATED (CODE = 12)
+;08700  0087	!
+;08800  0088	!	IN CASES 1 AND 3 A FATAL ("BUG") MESSAGE IS ISSUED AND
+;08900  0089	!		THE LINKER TERMINATES.
+;09000  0090	!
+;09100  0091	!--
+;09200  0092	!
+;09300  0093	REQUIRE
+;09400  0094		'PREFIX';
+;09500  0286	!
+;09600  0287	FORWARD ROUTINE
+;09700  0288		ALLOCATE,			! ALLOCATION ROUTINE
+;09800  0289		DEALLOCATE;			! DEALLOCATION ROUTINE
+;09900  0290	GLOBAL
+;10000  0291		LNK$GL_MEMLHD : VECTOR[2]
+;10100  0292				INITIAL (0,0),	! FREE MEMORY LISTHEAD
+;10200  0293		LNK$GL_MINADDR : INITIAL(CONTROL_REGION);	! LOWEST ADDRESS EVER ALLOCATED
+;10300  0294	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-1
+; Digital Equipment Corporation
+;
+;10400  0295	EXTERNAL LITERAL
+;10500  0296		SEV$C_FATAL : SHORT,
+;10600  0297		ERM$C_MEMBUG : BYTLIT,			! ILLEGAL BLOCK SIZE MESSAGE
+;10700  0298		ERM$C_MEMFUL : BYTLIT;			! NO VIRTUAL MEMORY
+;10800  0299	!
+;10900  0300	EXTERNAL ROUTINE
+;11000  0301		LNK$ERRMSG,				! ERROR MESSAGE HANDLER
+;11100  0302		SYS$EXPREG : ADDRESSING_MODE(GENERAL);	! EXPAND REGION SYSTEM SERVICE
+;11200  0303	!
+;11300  0304	GLOBAL LITERAL
+;11400  0305		LNK$C_MEMEXP = 128;			! NO. OF PAGES TO EXTEND PROGRAM REGION
+;11500  0306	!
+;11600  0307	LITERAL
+;11700  0308		MAXBLOCKSIZE = LNK$C_MEMEXP*512;	! MAXIMUM ALLOCATION SIZE
+;11800  0309	!
+;11900  0310	OWN
+;12000  0311		ERRORCODE : BYTE,			! ERROR CODE FOR FAILURE MESSAGE
+;12100  0312		NEWBLOCK : REF VECTOR[2],		! CURRENT BLOCK POINTER
+;12200  0313		NEXTBLOCK : REF VECTOR[2],		! NEXT BLOCK POINTER
+;12300  0314		LASTBLOCK : REF VECTOR[2];		! PREVIOUS BLOCK POINTER
+;12400  0315	!
+;12500  0316	GLOBAL ROUTINE LNK$ALLOBLK(SIZE,BLOCKADDR):NOVALUE =
+;12600  0317	!
+;12700  0318	!	ALLOCATE A BLOCK FROM THE FREE
+;12800  0319	!	MEMORY LIST.
+;12900  0320	!
+;13000  0321	BEGIN
+;13100  0322	!
+;13200  0323	LOCAL
+;13300  0324		BLOCKSIZE;
+;13400  0325	!
+;13500  0326	ERRORCODE = 0;					! INITIALIZE ERROR CODE
+;13600  0327	!
+;13700  0328	BLOCKSIZE = (.SIZE + 7) AND ( NOT 7);		! ROUND UP TO MULTIPLE OF 8 BYTES
+;13800  0329	!
+;13900  0330	IF .BLOCKSIZE EQL 0				! CHECK LEGAL BLOCK
+;14000  0331	OR	 					! SIZE WAS REQUESTED
+;14100  0332		.BLOCKSIZE GTRU MAXBLOCKSIZE
+;14200  0333	OR NOT ( ERRORCODE = .ERRORCODE + 1;		! SET NEW ERROR CODE
+;14300  0334		ALLOCATE (.BLOCKSIZE, .BLOCKADDR))	! GO ALLOCATE
+;14400  0335	THEN
+;14500  0336		LNK$ERRMSG(ERM$C_MEMBUG,SEV$C_FATAL,	! ISSUE ERROR MESSAGE AND
+;14600  0337			.BLOCKSIZE,.BLOCKADDR,.ERRORCODE);	! TERMINATE IF FAILURE
+;14700  0338	RETURN;						! OTHERWISE RETURN
+;14800  0339	END;		! OF LNK$ALLOBLK ROUTINE
+
+
+							    .TITLE  LNK_DYNMEM
+							    .IDENT  \X01.02\
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00000 ERRORCODE:
+							    .BLKB   1
+					      00001	    .BLKB   3
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-2
+; Digital Equipment Corporation
+;
+					      00004 NEWBLOCK:
+							    .BLKB   4
+					      00008 NEXTBLOCK:
+							    .BLKB   4
+					      0000C LASTBLOCK:
+							    .BLKB   4
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 LNK$GL_MEMLHD::
+							    .LONG   0, 0						      ;
+					      00008 LNK$GL_MINADDR::
+							    .LONG   1073741824						      ;
+
+						    SYM$C_MAXLNG==	15
+						    LNK$C_MEMEXP==	128
+							    .GLOBL  SEV$C_FATAL, ERM$C_MEMBUG, ERM$C_MEMFUL, LNK$ERRMSG
+							    .GLOBL  SYS$EXPREG
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0804 00000 	    .ENTRY  LNK$ALLOBLK, Save R2,R11				      ; 0316
+		         5B	0000'  CF  9E 00002 	    MOVAB   ERRORCODE, R11					      ;
+				       6B  94 00007 	    CLRB    ERRORCODE						      ; 0326
+	   50	    04   AC	       07  C1 00009 	    ADDL3   #7, SIZE, R0					      ; 0328
+	   52	         50	       07  CB 0000E 	    BICL3   #7, R0, BLOCKSIZE					      ;
+				       18  13 00012 	    BEQL    1$							      ; 0330
+	      00010000   8F	       52  D1 00014 	    CMPL    BLOCKSIZE, #65536					      ; 0332
+				       0F  1A 0001B 	    BGTRU   1$							      ;
+				       6B  96 0001D 	    INCB    ERRORCODE						      ; 0333
+				  08   AC  DD 0001F 	    PUSHL   BLOCKADDR						      ; 0334
+				       52  DD 00022 	    PUSHL   BLOCKSIZE						      ;
+		  0000V  CF	       02  FB 00024 	    CALLS   #2, ALLOCATE					      ;
+		         14	       50  E8 00029 	    BLBS    R0, 2$						      ;
+		         7E	       6B  9A 0002C 1$:     MOVZBL  ERRORCODE, -(SP)					      ; 0336
+				  08   AC  DD 0002F 	    PUSHL   BLOCKADDR						      ;
+				       52  DD 00032 	    PUSHL   BLOCKSIZE						      ;
+		         7E	       00  9A 00034 	    MOVZBL  #SEV$C_FATAL, -(SP)					      ;
+		         7E	  00G  8F  9A 00037 	    MOVZBL  #ERM$C_MEMBUG, -(SP)				      ;
+		  0000G  CF	       05  FB 0003B 	    CALLS   #5, LNK$ERRMSG					      ;
+					   04 00040 2$:     RET     							      ; 0316
+
+; Routine Size:  65 bytes
+
+
+;14900  0340	!
+;15000  0341	ROUTINE ALLOCATE (SIZE,ADDRESS) =
+;15100  0342	!
+;15200  0343	!	ROUTINE TO DO ACTUAL ALLOCATION AND PROGRAM
+;15300  0344	!	REGION EXPANSION
+;15400  0345	!
+;15500  0346	BEGIN
+;15600  0347	!
+;15700  0348	LOCAL
+;15800  0349		MEMLIMITS : VECTOR[2];
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-3
+; Digital Equipment Corporation
+;
+;15900  0350	!
+;16000  0351	LASTBLOCK = LNK$GL_MEMLHD[0];			! INITIALLY AT TOP OF FREE LIST
+;16100  0352	!
+;16200  0353	WHILE (NEWBLOCK = .LASTBLOCK[0])NEQ 0 DO	! FOLLOW DOWN FREE LIST
+;16300  0354		BEGIN
+;16400  0355		IF .NEWBLOCK[1] EQL .SIZE		! LOOK FOR SUITABLE FREE BLOCK
+;16500  0356		THEN BEGIN				! EXACT SIZE MATCH
+;16600  0357			LASTBLOCK[0] = .NEWBLOCK[0];	! SO LAST POINTS WHERE THIS ONE POINTED
+;16700  0358			IF (.ADDRESS = NEWBLOCK[0]) LSSU .LNK$GL_MINADDR ! NOW RECORD LOWEST
+;16800  0359			THEN LNK$GL_MINADDR = NEWBLOCK[0];	! ALLOCATED ADDRESS
+;16900  0360			RETURN TRUE;			! AND WE ARE DONE
+;17000  0361			END
+;17100  0362		ELSE IF .NEWBLOCK[1] GTRU .SIZE		! OR ONE LARGER THAN REQUESTED
+;17200  0363		THEN BEGIN
+;17300  0364			NEXTBLOCK = NEWBLOCK[0]+.SIZE; 			! IN WHICH CASE THERE IS A NEW
+;17400  0365			NEXTBLOCK[0] = .NEWBLOCK[0];
+;17500  0366			NEXTBLOCK[1] = .NEWBLOCK[1]-.SIZE; 		! NEXT BLOCK (THE PART REMAIN-
+;17600  0367			LASTBLOCK[0] = NEXTBLOCK[0];			! ING) AFTER TAKING REQUESTED BLOCK OFF
+;17700  0368			IF (.ADDRESS = NEWBLOCK[0]) LSSU .LNK$GL_MINADDR ! NOW RECORD LOWEST
+;17800  0369			THEN LNK$GL_MINADDR = NEWBLOCK[0];		! ALLOCATED ADDRESS
+;17900  0370			RETURN TRUE;			! AND WE ARE DONE
+;18000  0371		     END
+;18100  0372		ELSE LASTBLOCK = NEWBLOCK[0];		! WHEN NOT SUITABLE THIS BLOCK BECOMES PREVIOUS BLOCK
+;18200  0373		END;					! OF WHILE LOOP
+;18300  0374	!
+;18400  0375	!	AT THIS POINT WE HAVE REACHED THE END OF THE FREE
+;18500  0376	!	MEMORY LIST WITHOUT FINDING A BLOCK OF REQUIRED SIZE.
+;18600  0377	!	THUS, WE EXPAND THE ADDRESS SPACE AND ATTEMPT TO
+;18700  0378	!	ALLOCATE FROM ADDITIONAL VIRTUAL MEMORY.
+;18800  0379	!
+;18900  0380	IF SYS$EXPREG(LNK$C_MEMEXP,MEMLIMITS,,)
+;19000  0381							! SUCCESSFULLY EXPANDED PROGRAM REGION
+;19100  0382	THEN BEGIN					! DEALLOCATE NEW SPACE TO END OF
+;19200  0383		IF NOT DEALLOCATE(MAXBLOCKSIZE,.MEMLIMITS[0],LASTBLOCK[0])
+;19300  0384			THEN RETURN FALSE;
+;19400  0385		IF NOT ALLOCATE(.SIZE,.ADDRESS)		! FREE LIST THEN ALLOCATE FROM IT
+;19500  0386			THEN RETURN FALSE;
+;19600  0387		RETURN TRUE;
+;19700  0388	     END
+;19800  0389							! FAILURE TO EXPAND PROGRAM REGION
+;19900  0390	ELSE LNK$ERRMSG(ERM$C_MEMFUL,SEV$C_FATAL);	! IS FATAL
+;20000  0391	END;			! OF ALLOCATE ROUTINE
+
+
+
+
+
+					 080C 00041 ALLOCATE:
+							    .WORD   Save R2,R3,R11					      ; 0341
+		         5B	0000'  CF  9E 00043 	    MOVAB   LASTBLOCK, R11					      ;
+		         5E	       08  C2 00048 	    SUBL2   #8, SP						      ;
+		         6B	0000'  CF  9E 0004B 	    MOVAB   LNK$GL_MEMLHD, LASTBLOCK				      ; 0351
+		         53	  04   AC  D0 00050 	    MOVL    SIZE, R3						      ; 0355
+		         52	       6B  D0 00054 1$:     MOVL    LASTBLOCK, R2					      ; 0353
+		    F8   AB	       62  D0 00057 	    MOVL    (R2), NEWBLOCK					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-4
+; Digital Equipment Corporation
+;
+				       41  13 0005B 	    BEQL    5$							      ;
+		         51	  F8   AB  D0 0005D 	    MOVL    NEWBLOCK, R1					      ; 0355
+		         53	  04   A1  D1 00061 	    CMPL    4(R1), R3						      ;
+				       05  12 00065 	    BNEQ    2$							      ;
+		         62	       61  D0 00067 	    MOVL    (R1), (R2)						      ; 0357
+				       1B  11 0006A 	    BRB     3$							      ; 0358
+		         53	  04   A1  D1 0006C 2$:     CMPL    4(R1), R3						      ; 0362
+				       27  1B 00070 	    BLEQU   4$							      ;
+      FC   AB	         51	       53  C1 00072 	    ADDL3   R3, R1, NEXTBLOCK					      ; 0364
+		         50	  FC   AB  D0 00077 	    MOVL    NEXTBLOCK, R0					      ; 0365
+		         60	       61  D0 0007B 	    MOVL    (R1), (R0)						      ;
+      04   A0	    04   A1	       53  C3 0007E 	    SUBL3   R3, 4(R1), 4(R0)					      ; 0366
+		         62	       50  D0 00084 	    MOVL    R0, (R2)						      ; 0367
+		    08   BC	       51  D0 00087 3$:     MOVL    R1, @ADDRESS					      ; 0368
+		  0000'  CF	       51  D1 0008B 	    CMPL    R1, LNK$GL_MINADDR					      ;
+				       3F  1E 00090 	    BGEQU   6$							      ;
+		  0000'  CF	       51  D0 00092 	    MOVL    R1, LNK$GL_MINADDR					      ; 0369
+				       38  11 00097 	    BRB     6$							      ; 0370
+		         6B	       51  D0 00099 4$:     MOVL    R1, LASTBLOCK					      ; 0372
+				       B6  11 0009C 	    BRB     1$							      ; 0353
+				       7E  7C 0009E 5$:     CLRQ    -(SP)						      ; 0380
+				  08   AE  9F 000A0 	    PUSHAB  MEMLIMITS						      ;
+		         7E	  80   8F  9A 000A3 	    MOVZBL  #128, -(SP)						      ;
+	      00000000G  00	       04  FB 000A7 	    CALLS   #4, SYS$EXPREG					      ;
+		         24	       50  E9 000AE 	    BLBC    R0, 7$						      ;
+				       6B  DD 000B1 	    PUSHL   LASTBLOCK						      ; 0383
+				  04   AE  DD 000B3 	    PUSHL   MEMLIMITS						      ;
+			    00010000   8F  DD 000B6 	    PUSHL   #65536						      ;
+		  0000V  CF	       03  FB 000BC 	    CALLS   #3, DEALLOCATE					      ;
+		         1D	       50  E9 000C1 	    BLBC    R0, 8$						      ;
+				  08   AC  DD 000C4 	    PUSHL   ADDRESS						      ; 0385
+				       53  DD 000C7 	    PUSHL   R3							      ;
+		  FF73   CF	       02  FB 000C9 	    CALLS   #2, ALLOCATE					      ;
+		         10	       50  E9 000CE 	    BLBC    R0, 8$						      ;
+		         50	       01  D0 000D1 6$:     MOVL    #1, R0						      ; 0387
+					   04 000D4 	    RET     							      ;
+		         7E	       00  9A 000D5 7$:     MOVZBL  #SEV$C_FATAL, -(SP)					      ; 0390
+		         7E	  00G  8F  9A 000D8 	    MOVZBL  #ERM$C_MEMFUL, -(SP)				      ;
+		  0000G  CF	       02  FB 000DC 	    CALLS   #2, LNK$ERRMSG					      ;
+				       50  D4 000E1 8$:     CLRL    R0							      ; 0341
+					   04 000E3 	    RET     							      ;
+
+; Routine Size:  163 bytes
+
+
+;20100  0392	GLOBAL ROUTINE LNK$DEALBLK(SIZE,BLOCKADDR):NOVALUE =
+;20200  0393	!
+;20300  0394	!	ROUTINE TO DEALLOCATE A BLOCK TO THE FREE
+;20400  0395	!	MEMORY LIST AFTER CHECKING ITS SIZE
+;20500  0396	!
+;20600  0397	BEGIN
+;20700  0398	!
+;20800  0399	LOCAL
+;20900  0400		BLOCKSIZE;
+;21000  0401	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-5
+; Digital Equipment Corporation
+;
+;21100  0402	ERRORCODE = 10;					! INITIALIZE ERROR CODE
+;21200  0403	!
+;21300  0404	BLOCKSIZE = (.SIZE + 7) AND ( NOT 7);		! ROUND UP TO A MULTIPLE OF 8 BYTES
+;21400  0405	!
+;21500  0406	IF .BLOCKSIZE EQL 0				! CHECK BLOCK SIZE IS
+;21600  0407	OR
+;21700  0408	.BLOCKSIZE GTRU MAXBLOCKSIZE			! LEGAL AND THAT IT LIES
+;21800  0409	OR (ERRORCODE = .ERRORCODE + 1;			!
+;21900  0410	(.BLOCKADDR + .BLOCKSIZE) ) GTRU CONTROL_REGION	! COMPLETELY WITHIN PROGRAM REGION
+;22000  0411							! AND IF NOT...
+;22100  0412	OR (ERRORCODE = .ERRORCODE + 1;			! ISSUE FATAL ERROR MESSAGE
+;22200  0413	.BLOCKADDR LSSU .LNK$GL_MINADDR)			! ALSO IF BELOW MINIMUM ALLOCATED ADDRESS
+;22300  0414	OR NOT DEALLOCATE(.BLOCKSIZE,.BLOCKADDR,LNK$GL_MEMLHD)	! ATTEMPT DEALLOCATION
+;22400  0415	THEN LNK$ERRMSG(ERM$C_MEMBUG,SEV$C_FATAL,	! ISSUING FATAL ERROR IF FAILURE
+;22500  0416		.BLOCKSIZE,.BLOCKADDR,.ERRORCODE);
+;22600  0417	RETURN;						! OTHERWISE JUST RETURN
+;22700  0418	END;
+
+
+
+
+
+					 0804 000E4 	    .ENTRY  LNK$DEALBLK, Save R2,R11				      ; 0392
+		         5B	0000'  CF  9E 000E6 	    MOVAB   ERRORCODE, R11					      ;
+		         6B	       0A  90 000EB 	    MOVB    #10, ERRORCODE					      ; 0402
+	   50	    04   AC	       07  C1 000EE 	    ADDL3   #7, SIZE, R0					      ; 0404
+	   52	         50	       07  CB 000F3 	    BICL3   #7, R0, BLOCKSIZE					      ;
+				       34  13 000F7 	    BEQL    1$							      ; 0406
+	      00010000   8F	       52  D1 000F9 	    CMPL    BLOCKSIZE, #65536					      ; 0408
+				       2B  1A 00100 	    BGTRU   1$							      ;
+				       6B  96 00102 	    INCB    ERRORCODE						      ; 0409
+	   50	    08   AC	       52  C1 00104 	    ADDL3   BLOCKSIZE, BLOCKADDR, R0				      ; 0410
+	      40000000   8F	       50  D1 00109 	    CMPL    R0, #1073741824					      ;
+				       1B  1A 00110 	    BGTRU   1$							      ;
+				       6B  96 00112 	    INCB    ERRORCODE						      ; 0412
+		  0000'  CF	  08   AC  D1 00114 	    CMPL    BLOCKADDR, LNK$GL_MINADDR				      ; 0413
+				       11  1F 0011A 	    BLSSU   1$							      ;
+				0000'  CF  9F 0011C 	    PUSHAB  LNK$GL_MEMLHD					      ; 0414
+				  08   AC  DD 00120 	    PUSHL   BLOCKADDR						      ;
+				       52  DD 00123 	    PUSHL   BLOCKSIZE						      ;
+		  0000V  CF	       03  FB 00125 	    CALLS   #3, DEALLOCATE					      ;
+		         14	       50  E8 0012A 	    BLBS    R0, 2$						      ;
+		         7E	       6B  9A 0012D 1$:     MOVZBL  ERRORCODE, -(SP)					      ; 0415
+				  08   AC  DD 00130 	    PUSHL   BLOCKADDR						      ;
+				       52  DD 00133 	    PUSHL   BLOCKSIZE						      ;
+		         7E	       00  9A 00135 	    MOVZBL  #SEV$C_FATAL, -(SP)					      ;
+		         7E	  00G  8F  9A 00138 	    MOVZBL  #ERM$C_MEMBUG, -(SP)				      ;
+		  0000G  CF	       05  FB 0013C 	    CALLS   #5, LNK$ERRMSG					      ;
+					   04 00141 2$:     RET     							      ; 0392
+
+; Routine Size:  94 bytes
+
+
+;22800  0419	!
+;22900  0420	ROUTINE DEALLOCATE(SIZE,ADDRESS,LISTHEAD) =
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-6
+; Digital Equipment Corporation
+;
+;23000  0421	!
+;23100  0422	!	ROUTINE TO PUT A BLOCK ONTO A LIST OF FREE BLOCKS,
+;23200  0423	!	WITH MAXIMAL COMPACTION
+;23300  0424	!
+;23400  0425	BEGIN
+;23500  0426	LASTBLOCK = .LISTHEAD;				! PREVIOUS BLOCK INITIALLY THE LISTHEAD
+;23600  0427	NEWBLOCK = .ADDRESS;				! CURRENT BLOCK IS TO BE INSERTED
+;23700  0428	!
+;23800  0429	WHILE (NEXTBLOCK = .LASTBLOCK[0])NEQ 0 DO	! FOLLOW DOWN FREE LIST TILL
+;23900  0430	BEGIN						! THE END, OR TILL WE REACH
+;24000  0431	IF NEWBLOCK[0] LEQU NEXTBLOCK[0]
+;24100  0432	THEN
+;24200  0433		BEGIN					! THE POSITION FOR INSERTION.
+;24300  0434		IF NEWBLOCK[0]+.SIZE EQL NEXTBLOCK[0]
+;24400  0435		THEN
+;24500  0436			BEGIN				! HERE WE COMPACT WITH NEXT BLOCK
+;24600  0437			NEWBLOCK[0] = .NEXTBLOCK[0];
+;24700  0438			NEWBLOCK[1] = .NEXTBLOCK[1]+.SIZE;
+;24800  0439			END
+;24900  0440		ELSE
+;25000  0441			BEGIN
+;25100  0442			IF NEWBLOCK[0] + .SIZE GTRU NEXTBLOCK[0] ! IF THE BLOCK TO DEALLOCATE
+;25200  0443			THEN (ERRORCODE = .ERRORCODE + 1; 	! EXTENDS INTO NEXT FREE BLOCK
+;25300  0444				RETURN FALSE);			! AND RETURN FAILURE
+;25400  0445			NEWBLOCK[0] = NEXTBLOCK[0];		! ELSE SET POINTER AND SIZE SINCE NO
+;25500  0446			NEWBLOCK[1] = .SIZE;			! FORWARD COMPACTION NEEDED
+;25600  0447			END;
+;25700  0448		IF NEWBLOCK[0] EQL LASTBLOCK[0]+.LASTBLOCK[1]
+;25800  0449		THEN
+;25900  0450			BEGIN					! HERE WE COMPACT WITH PREVIOUS
+;26000  0451			LASTBLOCK[0] = .NEWBLOCK[0];		! BLOCK
+;26100  0452			LASTBLOCK[1] = .NEWBLOCK[1]+.LASTBLOCK[1];
+;26200  0453			END
+;26300  0454		ELSE						! NO BACKWARD COMPACTION BUT...
+;26400  0455			BEGIN					! MUST CHECK THAT BLOCK TO
+;26500  0456			IF NEWBLOCK[0] LSSU LASTBLOCK[0] + .LASTBLOCK[1]
+;26600  0457								! DEALLOCATE IS NOT PARTIALLY IN
+;26700  0458				THEN (ERRORCODE = .ERRORCODE + 1; ! PREVIOUS HOLE -- FAILURE IF SO
+;26800  0459				     RETURN FALSE);
+;26900  0460			LASTBLOCK[0] = NEWBLOCK[0];	! IF OK PREVIOUS POINTS TO NEW ONE.
+;27000  0461			END;				! AND WE ARE DONE COMPACTING
+;27100  0462		RETURN TRUE;				! SO RETURN SUCCESS.
+;27200  0463		END
+;27300  0464	ELSE
+;27400  0465		LASTBLOCK = NEXTBLOCK[0];		! NOT THERE YET SO LAST BLOCK IS ONE JUST TESTED
+;27500  0466	END;						! OF WHILE LOOP
+;27600  0467	!
+;27700  0468	! THE BLOCK TO DEALLOCATE IS BEYOND LAST HOLE
+;27800  0469	!
+;27900  0470	IF NEWBLOCK[0] LSSU LASTBLOCK[0] + .LASTBLOCK[1]	! BUT IF IT STARTS WITHIN
+;28000  0471	THEN (ERRORCODE = .ERRORCODE + 1;			! THE LAST HOLE - FAIL IT
+;28100  0472			RETURN FALSE)
+;28200  0473	ELSE
+;28300  0474		BEGIN						! OTHERWISE CHECK FOR COMPACTION
+;28400  0475		IF NEWBLOCK[0] EQL LASTBLOCK[0] + .LASTBLOCK[1]	! WITH LAST HOLE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-7
+; Digital Equipment Corporation
+;
+;28500  0476		THEN LASTBLOCK[1] = .LASTBLOCK[1] + .SIZE	! AND ADD IN SIZE IF REQUIRED
+;28600  0477		ELSE
+;28700  0478			BEGIN				! OTHERWISE JUST
+;28800  0479			NEWBLOCK[0] = 0;		! PUT ON END OF FREE LIST.
+;28900  0480			NEWBLOCK[1] =.SIZE;
+;29000  0481			LASTBLOCK[0] = NEWBLOCK[0];
+;29100  0482			END;				! AND ALL DONE
+;29200  0483		RETURN TRUE;			! SO RETURN SUCCESS
+;29300  0484		END;
+;29400  0485	END;			! OF ROUTINE
+
+
+
+
+
+					 080C 00142 DEALLOCATE:
+							    .WORD   Save R2,R3,R11					      ; 0420
+		         5B	0000'  CF  9E 00144 	    MOVAB   LASTBLOCK, R11					      ;
+		         6B	  0C   AC  D0 00149 	    MOVL    LISTHEAD, LASTBLOCK					      ; 0426
+		    F8   AB	  08   AC  D0 0014D 	    MOVL    ADDRESS, NEWBLOCK					      ; 0427
+		         51	  F8   AB  D0 00152 	    MOVL    NEWBLOCK, R1					      ; 0431
+		         50	       6B  D0 00156 1$:     MOVL    LASTBLOCK, R0					      ; 0429
+		    FC   AB	       60  D0 00159 	    MOVL    (R0), NEXTBLOCK					      ;
+				       4C  13 0015D 	    BEQL    6$							      ;
+		         52	  FC   AB  D0 0015F 	    MOVL    NEXTBLOCK, R2					      ; 0431
+		         52	       51  D1 00163 	    CMPL    R1, R2						      ;
+				       3E  1A 00166 	    BGTRU   5$							      ;
+	   53	         51	  04   AC  C1 00168 	    ADDL3   SIZE, R1, R3					      ; 0434
+		         52	       53  D1 0016D 	    CMPL    R3, R2						      ;
+				       0C  12 00170 	    BNEQ    2$							      ;
+		         61	       62  D0 00172 	    MOVL    (R2), (R1)						      ; 0437
+      04   A1	    04   A2	  04   AC  C1 00175 	    ADDL3   SIZE, 4(R2), 4(R1)					      ; 0438
+				       0D  11 0017C 	    BRB     3$							      ; 0434
+		         52	       53  D1 0017E 2$:     CMPL    R3, R2						      ; 0442
+				       35  1A 00181 	    BGTRU   7$							      ;
+		         61	       52  D0 00183 	    MOVL    R2, (R1)						      ; 0445
+		    04   A1	  04   AC  D0 00186 	    MOVL    SIZE, 4(R1)						      ; 0446
+	   52	         50	  04   A0  C1 0018B 3$:     ADDL3   4(R0), R0, R2					      ; 0448
+		         52	       51  D1 00190 	    CMPL    R1, R2						      ;
+				       0A  12 00193 	    BNEQ    4$							      ;
+		         60	       61  D0 00195 	    MOVL    (R1), (R0)						      ; 0451
+		    04   A0	  04   A1  C0 00198 	    ADDL2   4(R1), 4(R0)					      ; 0452
+				       34  11 0019D 	    BRB     11$							      ; 0448
+		         52	       51  D1 0019F 4$:     CMPL    R1, R2						      ; 0456
+				       2C  1E 001A2 	    BGEQU   10$							      ;
+				       12  11 001A4 	    BRB     7$							      ; 0458
+		         6B	       52  D0 001A6 5$:     MOVL    R2, LASTBLOCK					      ; 0465
+				       AB  11 001A9 	    BRB     1$							      ; 0429
+		         50	       6B  D0 001AB 6$:     MOVL    LASTBLOCK, R0					      ; 0470
+	   52	         50	  04   A0  C1 001AE 	    ADDL3   4(R0), R0, R2					      ;
+		         52	       51  D1 001B3 	    CMPL    R1, R2						      ;
+				       05  1E 001B6 	    BGEQU   8$							      ;
+				  F4   AB  96 001B8 7$:     INCB    ERRORCODE						      ; 0471
+				       1A  11 001BB 	    BRB     12$							      ; 0472
+		         52	       51  D1 001BD 8$:     CMPL    R1, R2						      ; 0475
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:43:05	DBB3:[LINKER.SRC]LNKDYNMEM.B32;4				Page 2-8
+; Digital Equipment Corporation
+;
+				       07  12 001C0 	    BNEQ    9$							      ;
+		    04   A0	  04   AC  C0 001C2 	    ADDL2   SIZE, 4(R0)						      ; 0476
+				       0A  11 001C7 	    BRB     11$							      ; 0475
+				       61  D4 001C9 9$:     CLRL    (R1)						      ; 0479
+		    04   A1	  04   AC  D0 001CB 	    MOVL    SIZE, 4(R1)						      ; 0480
+		         60	       51  D0 001D0 10$:    MOVL    R1, (R0)						      ; 0481
+		         50	       01  D0 001D3 11$:    MOVL    #1, R0						      ; 0483
+					   04 001D6 	    RET     							      ;
+				       50  D4 001D7 12$:    CLRL    R0							      ; 0420
+					   04 001D9 	    RET     							      ;
+
+; Routine Size:  152 bytes
+
+
+;29500  0486	END ELUDOM		! OF MODULE
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	    12    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $OWN$          	    16    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   474  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+
+; Size:		474 code + 28 data bytes
+; Run Time:	00:10.8
+; Elapsed Time:	00:11.2
+; Memory Used:	86 pages
+; Compilation Complete

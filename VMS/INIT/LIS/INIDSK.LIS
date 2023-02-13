@@ -1,0 +1,783 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE INIDSK (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'X0009A'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  INIT Utility Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine contains the main level logic to initialize a disk.
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET operating system, including privileged system services
+;	0037	!	and internal exec routines.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  9-Nov-1977  19:29
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   Andrew C. Goldstein, 21-Nov-1977  20:31
+;	0047	!   X0002 - Move device data table to separate module
+;	0048	!
+;	0049	!   Andrew C. Goldstein, 3-Jan-1978  21:51
+;	0050	!   X0003 - Put lower limit on cluster factor
+;	0051	!
+;	0052	!   Andrew C. Goldstein, 25-Jan-1978  14:54
+;	0053	!   X0004 - Fix processing of index file position options
+;	0054	!
+;	0055	!   Andrew C. Goldstein, 16-Feb-1978  16:24
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   X0005 - Fix UIC of system volume
+;	0057	!
+;	0058	!   Andrew C. Goldstein, 15-May-78  16:04
+;	0059	!   X0006 - Set software valid bit in UCB
+;	0060	!
+;	0061	!   Andrew C. Goldstein, 16-May-78  17:29
+;	0062	!   X0007 - Add globals for READ_HOMEBLOCK
+;	0063	!
+;	0064	!   Andrew C. Goldstein, 9-Jun-78  15:05
+;	0065	!   X0008 - Add structure level 1
+;	0066	!
+;	0067	!   Andrew C. Goldstein, 19-Jul-78  1:41
+;	0068	!   X0009 - Add volume protection
+;	0069	!
+;	0070	!**
+;	0071	
+;	0072	
+;	0073	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0074	REQUIRE 'SRC$:INIDEF.B32';
+;	0336	REQUIRE 'LIBD$:[VMSLIB.OBJ]INITMSG.B32';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 2
+; Digital Equipment Corporation
+;
+;	0396	!+
+;	0397	!
+;	0398	! Impure data specific to disk initialization.
+;	0399	!
+;	0400	!-
+;	0401	
+;	0402	GLOBAL LITERAL
+;	0403		BADBLOCK_MAX	= 128,		! maximum size of bad block table
+;	0404		ALLOC_MAX	= BADBLOCK_MAX + 8; ! total size of allocation table
+;	0405	
+;	0406	GLOBAL
+;	0407		BUFFER		: BBLOCK [512],	! all purpose I/O buffer
+;	0408	
+;	0409	!
+;	0410	! Allocation table. Consists of 2 parallel tables, for size and LBN of
+;	0411	! allocated areas. Each contains 1 entry for each piece of the disk which
+;	0412	! is allocated to something.
+;	0413	!
+;	0414		ALLOC_TABLE_CNT	: VECTOR [ALLOC_MAX],
+;	0415		ALLOC_TABLE_LBN	: VECTOR [ALLOC_MAX];
+;	0416	!
+;	0417	! Various parts of the allocation table have dedicated meanings.
+;	0418	!
+;	0419	
+;	0420	GLOBAL LITERAL
+;	0421		BOOTBLOCK_IDX	= 0,
+;	0422		HOMEBLOCK1_IDX	= 1,
+;	0423		HOMEBLOCK2_IDX	= 2,
+;	0424		IDXHDR2_IDX	= 3,
+;	0425		IDXFILE_IDX	= 4,
+;	0426		BITMAP_IDX	= 5,
+;	0427		MFD_IDX		= 6,
+;	0428		VOLEND_IDX	= 7,
+;	0429		BADBLOCK_IDX	= 8;
+;	0430	
+;	0431	GLOBAL BIND
+;	0432		BOOTBLOCK_CNT	= ALLOC_TABLE_CNT [BOOTBLOCK_IDX],
+;	0433		BOOTBLOCK_LBN	= ALLOC_TABLE_LBN [BOOTBLOCK_IDX],
+;	0434		HOMEBLOCK1_CNT	= ALLOC_TABLE_CNT [HOMEBLOCK1_IDX],
+;	0435		HOMEBLOCK1_LBN	= ALLOC_TABLE_LBN [HOMEBLOCK1_IDX],
+;	0436		HOMEBLOCK2_CNT	= ALLOC_TABLE_CNT [HOMEBLOCK2_IDX],
+;	0437		HOMEBLOCK2_LBN	= ALLOC_TABLE_LBN [HOMEBLOCK2_IDX],
+;	0438		IDXHDR2_CNT	= ALLOC_TABLE_CNT [IDXHDR2_IDX],
+;	0439		IDXHDR2_LBN	= ALLOC_TABLE_LBN [IDXHDR2_IDX],
+;	0440		IDXFILE_CNT	= ALLOC_TABLE_CNT [IDXFILE_IDX],
+;	0441		IDXFILE_LBN	= ALLOC_TABLE_LBN [IDXFILE_IDX],
+;	0442		BITMAP_CNT	= ALLOC_TABLE_CNT [BITMAP_IDX],
+;	0443		BITMAP_LBN	= ALLOC_TABLE_LBN [BITMAP_IDX],
+;	0444		MFD_CNT		= ALLOC_TABLE_CNT [MFD_IDX],
+;	0445		MFD_LBN		= ALLOC_TABLE_LBN [MFD_IDX],
+;	0446		VOLEND_CNT	= ALLOC_TABLE_CNT [VOLEND_IDX],
+;	0447		VOLEND_LBN	= ALLOC_TABLE_LBN [VOLEND_IDX],
+;	0448		BADBLOCK_CNT	= ALLOC_TABLE_CNT [BADBLOCK_IDX]	: VECTOR,
+;	0449		BADBLOCK_LBN	= ALLOC_TABLE_LBN [BADBLOCK_IDX]	: VECTOR;
+;	0450	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 2-1
+; Digital Equipment Corporation
+;
+;	0451	!
+;	0452	! Other globals
+;	0453	!
+;	0454	
+;	0455	GLOBAL BIND
+;	0456		HOME_BLOCK	= BUFFER : BBLOCK; ! buffer to read original home block
+;	0457	
+;	0458	GLOBAL
+;	0459		DEV_INDEX,			! position in device table of this disk
+;	0460		VOLUME_SIZE,			! volume size rounded up to next cluster
+;	0461		REAL_HOMEBLOCK,			! LBN of actual secondary home block
+;	0462		BADBLOCK_TOTAL,			! current count of bad areas
+;	0463		HOMEBLOCK_LBN,			! LBN of home block read
+;	0464		MOUNT_OPTIONS	: BITVECTOR [64]; ! used by some subroutines
+;	0465	
+;	0466	!
+;	0467	! Default parameters. All have global names so they can be patched.
+;	0468	!
+;	0469	
+;	0470	GLOBAL BIND
+;	0471		DEF_PRV_PROT	= UPLIT (%X'FF00'),	! default private protection
+;	0472		DEF_GRP_PROT	= UPLIT (%X'F000'),	! default group protection
+;	0473		DEF_SYS_PROT	= UPLIT (%X'0000'),	! default system protection
+;	0474		DEF_SHR_PROT	= UPLIT (%X'0000'),	! default shared protection
+;	0475		DEF_FIL_PROT	= UPLIT (%X'A000'),	! default file protection
+;	0476		DEF_FIL_PROT1	= UPLIT (%X'E000'),	! default file protection, ODS1
+;	0477		DEF_REC_PROT	= UPLIT (%X'E000'),	! default record protection
+;	0478		DEF_EXTEND	= UPLIT (5),		! default file extend
+;	0479		DEF_WINDOW	= UPLIT (7),		! default window size
+;	0480		DEF_ACCESSED	= UPLIT (3),		! default directory LRU limit
+;	0481		DEF_HEADERS	= UPLIT (16);		! default initial # headers
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3
+; Digital Equipment Corporation
+;
+;	0482	GLOBAL ROUTINE INIT_DISK : NOVALUE =
+;	0483	
+;	0484	!++
+;	0485	!
+;	0486	! FUNCTIONAL DESCRIPTION:
+;	0487	!
+;	0488	!	This routine contains the main line logic specific to initializing
+;	0489	!	a disk. It sets up the bad block table, allocates the system files,
+;	0490	!	initializes the storage map, and initializes the contents of the
+;	0491	!	other files.
+;	0492	!
+;	0493	!
+;	0494	! CALLING SEQUENCE:
+;	0495	!	INIT_DISK ()
+;	0496	!
+;	0497	! INPUT PARAMETERS:
+;	0498	!	NONE
+;	0499	!
+;	0500	! IMPLICIT INPUTS:
+;	0501	!	parser data base
+;	0502	!	own storage of this module
+;	0503	!
+;	0504	! OUTPUT PARAMETERS:
+;	0505	!	NONE
+;	0506	!
+;	0507	! IMPLICIT OUTPUTS:
+;	0508	!	NONE
+;	0509	!
+;	0510	! ROUTINE VALUE:
+;	0511	!	NONE
+;	0512	!
+;	0513	! SIDE EFFECTS:
+;	0514	!	disk volume initialized
+;	0515	!
+;	0516	!--
+;	0517	
+;	0518	BEGIN
+;	0519	
+;	0520	LOCAL
+;	0521		J,				! device table index
+;	0522		C,				! available clusters on volume
+;	0523		VOLUME_OWNER,			! previous owner UIC of volume
+;	0524		STATUS,				! system service status
+;	0525		IO_STATUS	: VECTOR [2],	! I/O status block
+;	0526		PRIVILEGE_MASK	: REF BBLOCK;	! process privilege mask
+;	0527	
+;	0528	EXTERNAL
+;	0529		INIT_OPTIONS	: BITVECTOR,	! command options
+;	0530		DEVICE_CHAR	: BBLOCK,	! disk device characteristics
+;	0531		DEVICE_TABLE	: BBLOCKVECTOR [,DVT_LENGTH],
+;	0532						! device data table
+;	0533		CHANNEL,			! channel assigned to device
+;	0534		PROCESS_UIC,			! UIC of this process
+;	0535		PROTECTION,			! volume protection
+;	0536		FILE_PROT,			! volume default file protection
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-1
+; Digital Equipment Corporation
+;
+;	0537		RECORD_PROT,			! volume default record protection
+;	0538		OWNER_UIC,			! volume owner UIC
+;	0539		EXTENSION,			! volume default file extend
+;	0540		WINDOW,				! volume default window size
+;	0541		ACCESSED,			! volume default directory LRU limit
+;	0542		HEADERS,			! initial file header allocation
+;	0543		CLUSTER,			! volume cluster factor
+;	0544		MAXIMUM,			! maximum number of files
+;	0545		INDEX,				! index file start LBN
+;	0546		CTL$GL_PHD	: REF BBLOCK ADDRESSING_MODE (ABSOLUTE);
+;	0547						! vector page pointer to process header
+;	0548	
+;	0549	EXTERNAL ROUTINE
+;	0550		SET_VALID,			! set software volume valid
+;	0551		READ_HOMEBLOCK,			! read volume home block
+;	0552		CLEAR_VALID,			! clear software volume valid
+;	0553		INIT_BADBLOCKS,			! do bad block processing
+;	0554		INIT_ALLOCATE,			! allocate file structures
+;	0555		INIT_BITMAP,			! set up the storage map
+;	0556		INIT_INDEX,			! initialize contents of index file
+;	0557		INIT_INDEX1,			! initialize contents of index file, ODS1
+;	0558		INIT_MFD;			! initialize contents of MFD
+;	0559	
+;	0560	
+;	0561	! First search the device table for the entry matching the disk we are
+;	0562	! initializing.
+;	0563	!
+;	0564	
+;	0565	J = 0;
+;	0566	WHILE 1 DO
+;	0567	    BEGIN
+;	0568	    IF .DEVICE_TABLE[.J, DVT_SIGNATURE] EQL 0
+;	0569	    THEN ERR_EXIT (INIT$_UNKDEV);
+;	0570	    IF .DEVICE_TABLE[.J, DVT_SIGNATURE] EQL .DEVICE_CHAR[DIB$L_DEVDEPEND]
+;	0571	    THEN EXITLOOP;
+;	0572	    J = .J + 1;
+;	0573	    END;
+;	0574	DEV_INDEX = .J;
+;	0575	
+;	0576	! If the process does not have VOLPRO privilege, attempt to read the old
+;	0577	! home block. If there is a home block, check the volume owner UIC. It must be
+;	0578	! zero (unowned) or match the UIC of the user.
+;	0579	!
+;	0580	
+;	0581	PRIVILEGE_MASK = CTL$GL_PHD[PHD$Q_PRIVMSK];
+;	0582	IF NOT .PRIVILEGE_MASK[PRV$V_VOLPRO]
+;	0583	THEN
+;	0584	    BEGIN
+;	0585	    STATUS = READ_HOMEBLOCK (UPLIT (0, 0), 0);
+;	0586	
+;	0587	    IF .STATUS
+;	0588	    OR .STATUS EQL SS$_INCVOLLABEL
+;	0589	    THEN
+;	0590		BEGIN
+;	0591		IF .HOME_BLOCK[HM2$B_STRUCLEV] EQL 2
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-2
+; Digital Equipment Corporation
+;
+;	0592		THEN VOLUME_OWNER = .HOME_BLOCK[HM2$L_VOLOWNER]
+;	0593		ELSE
+;	0594		    BEGIN
+;	0595		    VOLUME_OWNER = .(HOME_BLOCK[HM1$W_VOLOWNER])<0,8>;
+;	0596		    VOLUME_OWNER<16,8> = .(HOME_BLOCK[HM1$W_VOLOWNER])<8,8>;
+;	0597		    END;
+;	0598	
+;	0599		IF .VOLUME_OWNER NEQ 0
+;	0600		AND .VOLUME_OWNER NEQ .PROCESS_UIC
+;	0601		THEN ERR_EXIT (SS$_NOPRIV);
+;	0602		END;
+;	0603	    END;
+;	0604	
+;	0605	! Establish defaults for volume parameters not specified in the command.
+;	0606	! Also, if structure level 1 is specified, use level 1 defaults and disallow
+;	0607	! options that are not supported.
+;	0608	!
+;	0609	
+;	0610	IF .INIT_OPTIONS[OPT_STRUCTURE1]
+;	0611	THEN
+;	0612	    BEGIN
+;	0613	    IF (.INIT_OPTIONS AND LEVEL2_OPTIONS) NEQ 0
+;	0614	    THEN ERR_EXIT (INIT$_NOTSTRUC1);
+;	0615	
+;	0616	    IF .DEVICE_TABLE[.J, DVT_VOLSIZE] GTRU 255^12
+;	0617	    THEN ERR_EXIT (INIT$_LARGECNT);
+;	0618	    END;
+;	0619	
+;	0620	IF NOT .INIT_OPTIONS[OPT_PROTECTION]
+;	0621	THEN
+;	0622	    BEGIN
+;	0623	    IF .INIT_OPTIONS[OPT_SYSTEM]
+;	0624	    THEN PROTECTION = .DEF_SYS_PROT
+;	0625	    ELSE IF .INIT_OPTIONS[OPT_GROUP]
+;	0626	    THEN PROTECTION = .DEF_GRP_PROT
+;	0627	    ELSE PROTECTION = .DEF_PRV_PROT;
+;	0628	    IF .INIT_OPTIONS[OPT_SHARE]
+;	0629	    THEN PROTECTION = .PROTECTION AND .DEF_SHR_PROT;
+;	0630	    END;
+;	0631	
+;	0632	IF NOT .INIT_OPTIONS[OPT_FILE_PROT]
+;	0633	THEN
+;	0634	    IF .INIT_OPTIONS[OPT_STRUCTURE1]
+;	0635	    THEN FILE_PROT = .DEF_FIL_PROT1
+;	0636	    ELSE FILE_PROT = .DEF_FIL_PROT;
+;	0637	
+;	0638	IF NOT .INIT_OPTIONS[OPT_RECORD_PROT]
+;	0639	THEN RECORD_PROT = .DEF_REC_PROT;
+;	0640	
+;	0641	IF NOT .INIT_OPTIONS[OPT_EXTENSION]
+;	0642	THEN EXTENSION = .DEF_EXTEND;
+;	0643	
+;	0644	IF NOT .INIT_OPTIONS[OPT_WINDOW]
+;	0645	THEN WINDOW = .DEF_WINDOW;
+;	0646	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-3
+; Digital Equipment Corporation
+;
+;	0647	IF NOT .INIT_OPTIONS[OPT_ACCESSED]
+;	0648	THEN ACCESSED = .DEF_ACCESSED;
+;	0649	
+;	0650	IF NOT .INIT_OPTIONS[OPT_HEADERS]
+;	0651	THEN HEADERS = .DEF_HEADERS;
+;	0652	
+;	0653	IF NOT .INIT_OPTIONS[OPT_OWNER_UIC]
+;	0654	THEN
+;	0655	    BEGIN
+;	0656	    OWNER_UIC = .PROCESS_UIC;
+;	0657	    IF .INIT_OPTIONS[OPT_GROUP]
+;	0658	    THEN OWNER_UIC<0,16> = 0;
+;	0659	    IF .INIT_OPTIONS[OPT_SYSTEM]
+;	0660	    THEN OWNER_UIC = %X'10001';
+;	0661	    END;
+;	0662	
+;	0663	IF NOT .INIT_OPTIONS[OPT_CLUSTER]
+;	0664	THEN
+;	0665	    IF .INIT_OPTIONS[OPT_STRUCTURE1]
+;	0666	    THEN CLUSTER = 1
+;	0667	    ELSE CLUSTER = .DEVICE_TABLE[.J, DVT_CLUSTER];
+;	0668	
+;	0669	IF NOT .INIT_OPTIONS[OPT_MAXIMUM]
+;	0670	THEN MAXIMUM = .DEVICE_TABLE[.J, DVT_MAXFILES];
+;	0671	
+;	0672	! Now verify the parameters against the volume size and characteristics.
+;	0673	!
+;	0674	! Compute volume size, rounded up to next cluster boundary.
+;	0675	!
+;	0676	
+;	0677	VOLUME_SIZE = (.DEVICE_TABLE[.J, DVT_VOLSIZE] + .CLUSTER - 1) / .CLUSTER * .CLUSTER;
+;	0678	
+;	0679	! Check the cluster factor against its lower bound such that the storage map
+;	0680	! does not exceed 255 blocks. Also check for a reasonable minimum number of
+;	0681	! clusters.
+;	0682	!
+;	0683	
+;	0684	IF .VOLUME_SIZE / .CLUSTER GTRU 255^12
+;	0685	OR .VOLUME_SIZE / .CLUSTER LSS 50
+;	0686	THEN ERR_EXIT (INIT$_CLUSTER);
+;	0687	
+;	0688	! Check maximum number of files against number of clusters.
+;	0689	!
+;	0690	
+;	0691	C = .VOLUME_SIZE / (.CLUSTER+1);
+;	0692	IF .MAXIMUM GTR .C
+;	0693	THEN MAXIMUM = .C;
+;	0694	
+;	0695	! Check initial index file size against max files.
+;	0696	!
+;	0697	
+;	0698	IF .HEADERS LSSU 16 THEN HEADERS = 16;
+;	0699	IF .HEADERS GTRU .MAXIMUM THEN HEADERS = .MAXIMUM;
+;	0700	IF .HEADERS GTRU 25000 THEN HEADERS = 25000;
+;	0701	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-4
+; Digital Equipment Corporation
+;
+;	0702	! Check the position of ths initial index file.
+;	0703	!
+;	0704	
+;	0705	IF .INIT_OPTIONS[OPT_INDEX_BEG]
+;	0706	THEN INDEX = 0
+;	0707	
+;	0708	ELSE IF .INIT_OPTIONS[OPT_INDEX_END]
+;	0709	THEN INDEX = .DEVICE_TABLE[.J, DVT_VOLSIZE] - 1
+;	0710	
+;	0711	ELSE IF .INIT_OPTIONS[OPT_INDEX_MID] OR NOT .INIT_OPTIONS[OPT_INDEX_LBN]
+;	0712	THEN INDEX = .DEVICE_TABLE[.J, DVT_VOLSIZE] / 2;
+;	0713	
+;	0714	IF .INDEX GTR .DEVICE_TABLE[.J, DVT_VOLSIZE]
+;	0715	THEN ERR_EXIT (INIT$_INDEX);
+;	0716	
+;	0717	! Now call the routines that do the work of initializing.
+;	0718	!
+;	0719	
+;	0720	KERNEL_CALL (SET_VALID);
+;	0721	
+;	0722	STATUS = $QIOW (CHAN = .CHANNEL,
+;     P 0723			FUNC = IO$_PACKACK,
+;     P 0724			IOSB = IO_STATUS);
+;	0725	IF .STATUS THEN STATUS = .IO_STATUS<0,16>;
+;	0726	IF NOT .STATUS AND .STATUS NEQ SS$_ILLIOFUNC
+;	0727	THEN ERR_EXIT (.STATUS);
+;	0728	
+;	0729	INIT_BADBLOCKS ();
+;	0730	INIT_ALLOCATE ();
+;	0731	INIT_BITMAP ();
+;	0732	IF .INIT_OPTIONS[OPT_STRUCTURE1]
+;	0733	THEN INIT_INDEX1 ()
+;	0734	ELSE INIT_INDEX ();
+;	0735	INIT_MFD ();
+;	0736	
+;	0737	KERNEL_CALL (CLEAR_VALID);
+;	0738	
+;	0739	END;					! end of routine INIT_DISK
+
+
+							    .TITLE  INIDSK
+							    .IDENT  \X0009A\
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .LONG   65280						      ;
+					      00004 P.AAB:  .LONG   61440						      ;
+					      00008 P.AAC:  .LONG   0							      ;
+					      0000C P.AAD:  .LONG   0							      ;
+					      00010 P.AAE:  .LONG   40960						      ;
+					      00014 P.AAF:  .LONG   57344						      ;
+					      00018 P.AAG:  .LONG   57344						      ;
+					      0001C P.AAH:  .LONG   5							      ;
+					      00020 P.AAI:  .LONG   7							      ;
+					      00024 P.AAJ:  .LONG   3							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-5
+; Digital Equipment Corporation
+;
+					      00028 P.AAK:  .LONG   16							      ;
+					      0002C P.AAL:  .LONG   0, 0						      ;
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 BUFFER::.BLKB   512
+					      00200 ALLOC_TABLE_CNT::
+							    .BLKB   544
+					      00420 ALLOC_TABLE_LBN::
+							    .BLKB   544
+					      00640 DEV_INDEX::
+							    .BLKB   4
+					      00644 VOLUME_SIZE::
+							    .BLKB   4
+					      00648 REAL_HOMEBLOCK::
+							    .BLKB   4
+					      0064C BADBLOCK_TOTAL::
+							    .BLKB   4
+					      00650 HOMEBLOCK_LBN::
+							    .BLKB   4
+					      00654 MOUNT_OPTIONS::
+							    .BLKB   8
+
+						    BADBLOCK_MAX==	128
+						    ALLOC_MAX==		136
+						    BOOTBLOCK_IDX==	0
+						    HOMEBLOCK1_IDX==	1
+						    HOMEBLOCK2_IDX==	2
+						    IDXHDR2_IDX==	3
+						    IDXFILE_IDX==	4
+						    BITMAP_IDX==	5
+						    MFD_IDX==		6
+						    VOLEND_IDX==	7
+						    BADBLOCK_IDX==	8
+						    BOOTBLOCK_CNT==	ALLOC_TABLE_CNT
+						    BOOTBLOCK_LBN==	ALLOC_TABLE_LBN
+						    HOMEBLOCK1_CNT==	ALLOC_TABLE_CNT+4
+						    HOMEBLOCK1_LBN==	ALLOC_TABLE_LBN+4
+						    HOMEBLOCK2_CNT==	ALLOC_TABLE_CNT+8
+						    HOMEBLOCK2_LBN==	ALLOC_TABLE_LBN+8
+						    IDXHDR2_CNT==	ALLOC_TABLE_CNT+12
+						    IDXHDR2_LBN==	ALLOC_TABLE_LBN+12
+						    IDXFILE_CNT==	ALLOC_TABLE_CNT+16
+						    IDXFILE_LBN==	ALLOC_TABLE_LBN+16
+						    BITMAP_CNT==	ALLOC_TABLE_CNT+20
+						    BITMAP_LBN==	ALLOC_TABLE_LBN+20
+						    MFD_CNT==		ALLOC_TABLE_CNT+24
+						    MFD_LBN==		ALLOC_TABLE_LBN+24
+						    VOLEND_CNT==	ALLOC_TABLE_CNT+28
+						    VOLEND_LBN==	ALLOC_TABLE_LBN+28
+						    BADBLOCK_CNT==	ALLOC_TABLE_CNT+32
+						    BADBLOCK_LBN==	ALLOC_TABLE_LBN+32
+						    HOME_BLOCK==	BUFFER
+						    DEF_PRV_PROT==	P.AAA
+						    DEF_GRP_PROT==	P.AAB
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-6
+; Digital Equipment Corporation
+;
+						    DEF_SYS_PROT==	P.AAC
+						    DEF_SHR_PROT==	P.AAD
+						    DEF_FIL_PROT==	P.AAE
+						    DEF_FIL_PROT1==	P.AAF
+						    DEF_REC_PROT==	P.AAG
+						    DEF_EXTEND==	P.AAH
+						    DEF_WINDOW==	P.AAI
+						    DEF_ACCESSED==	P.AAJ
+						    DEF_HEADERS==	P.AAK
+							    .GLOBL  INIT_OPTIONS, DEVICE_CHAR, DEVICE_TABLE, CHANNEL
+							    .GLOBL  PROCESS_UIC, PROTECTION, FILE_PROT, RECORD_PROT
+							    .GLOBL  OWNER_UIC, EXTENSION, WINDOW, ACCESSED, HEADERS
+							    .GLOBL  CLUSTER, MAXIMUM, INDEX, CTL$GL_PHD, SET_VALID
+							    .GLOBL  READ_HOMEBLOCK, CLEAR_VALID, INIT_BADBLOCKS, INIT_ALLOCATE
+							    .GLOBL  INIT_BITMAP, INIT_INDEX, INIT_INDEX1, INIT_MFD
+							    .GLOBL  SYS$CMKRNL, SYS$QIOW
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00000 	    .ENTRY  INIT_DISK, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0482
+		         55	0000G  CF  9E 00002 	    MOVAB   MAXIMUM, R5						      ;
+		         56	0000G  CF  9E 00007 	    MOVAB   DEVICE_TABLE, R6					      ;
+		         57	0000G  CF  9E 0000C 	    MOVAB   HEADERS, R7						      ;
+		         58	0000'  CF  9E 00011 	    MOVAB   VOLUME_SIZE, R8					      ;
+		         59	0000'  CF  9E 00016 	    MOVAB   P.AAL, R9						      ;
+		         5A 00000000G  00  9E 0001B 	    MOVAB   LIB$STOP, R10					      ;
+		         5B	0000G  CF  9E 00022 	    MOVAB   INIT_OPTIONS, R11					      ;
+		         5E	       08  C2 00027 	    SUBL2   #8, SP						      ;
+				       53  D4 0002A 	    CLRL    J							      ; 0565
+	   52	         53	       04  78 0002C 1$:     ASHL    #4, J, R2						      ; 0568
+				     6642  9F 00030 	    PUSHAB  DEVICE_TABLE[R2]					      ;
+				       9E  D5 00033 	    TSTL    @(SP)+						      ;
+				       09  12 00035 	    BNEQ    2$							      ;
+			    0075804C   8F  DD 00037 	    PUSHL   #7700556						      ; 0569
+		         6A	       01  FB 0003D 	    CALLS   #1, LIB$STOP					      ;
+				     6642  9F 00040 2$:     PUSHAB  DEVICE_TABLE[R2]					      ; 0570
+		  0000G  CF	       9E  D1 00043 	    CMPL    @(SP)+, DEVICE_CHAR+8				      ;
+				       04  13 00048 	    BEQL    3$							      ;
+				       53  D6 0004A 	    INCL    J							      ; 0572
+				       DE  11 0004C 	    BRB     1$							      ; 0566
+		    FC   A8	       53  D0 0004E 3$:     MOVL    J, DEV_INDEX					      ; 0574
+		         50 00000000G  9F  D0 00052 	    MOVL    @#CTL$GL_PHD, PRIVILEGE_MASK			      ; 0581
+	   42	         60	       15  E0 00059 	    BBS     #21, (PRIVILEGE_MASK), 7$				      ; 0582
+				       7E  D4 0005D 	    CLRL    -(SP)						      ; 0585
+				       59  DD 0005F 	    PUSHL   R9							      ;
+		  0000G  CF	       02  FB 00061 	    CALLS   #2, READ_HOMEBLOCK					      ;
+		         54	       50  D0 00066 	    MOVL    R0, STATUS						      ;
+		         09	       54  E8 00069 	    BLBS    STATUS, 4$						      ; 0587
+	      0000010C   8F	       54  D1 0006C 	    CMPL    STATUS, #268					      ; 0588
+				       2A  12 00073 	    BNEQ    7$							      ;
+		         02	F9C9   C8  91 00075 4$:     CMPB    HOME_BLOCK+13, #2					      ; 0591
+				       07  12 0007A 	    BNEQ    5$							      ;
+		         50	F9E8   C8  D0 0007C 	    MOVL    HOME_BLOCK+44, VOLUME_OWNER				      ; 0592
+				       0C  11 00081 	    BRB     6$							      ; 0591
+		         50	F9DA   C8  9A 00083 5$:     MOVZBL  HOME_BLOCK+30, VOLUME_OWNER				      ; 0595
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-7
+; Digital Equipment Corporation
+;
+	   08	         10	F9DB   C8  F0 00088 	    INSV    HOME_BLOCK+31, #16, #8, VOLUME_OWNER		      ; 0596
+				       50     0008E									      ;
+				       50  D5 0008F 6$:     TSTL    VOLUME_OWNER					      ; 0599
+				       0C  13 00091 	    BEQL    7$							      ;
+		  0000G  CF	       50  D1 00093 	    CMPL    VOLUME_OWNER, PROCESS_UIC				      ; 0600
+				       05  13 00098 	    BEQL    7$							      ;
+				       24  DD 0009A 	    PUSHL   #36							      ; 0601
+		         6A	       01  FB 0009C 	    CALLS   #1, LIB$STOP					      ;
+	   2A	    03   AB	       07  E1 0009F 7$:     BBC     #7, INIT_OPTIONS+3, 9$				      ; 0610
+		  9180   8F	       6B  B3 000A4 	    BITW    INIT_OPTIONS, #37248				      ; 0613
+				       09  13 000A9 	    BEQL    8$							      ;
+			    007580EC   8F  DD 000AB 	    PUSHL   #7700716						      ; 0614
+		         6A	       01  FB 000B1 	    CALLS   #1, LIB$STOP					      ;
+	   52	         53	       04  78 000B4 8$:     ASHL    #4, J, R2						      ; 0616
+				  08 A642  9F 000B8 	    PUSHAB  DEVICE_TABLE+8[R2]					      ;
+	      000FF000   8F	       9E  D1 000BC 	    CMPL    @(SP)+, #1044480					      ;
+				       09  1B 000C3 	    BLEQU   9$							      ;
+			    007580DC   8F  DD 000C5 	    PUSHL   #7700700						      ; 0617
+		         6A	       01  FB 000CB 	    CALLS   #1, LIB$STOP					      ;
+	   2B	    01   AB	       02  E0 000CE 9$:     BBS     #2, INIT_OPTIONS+1, 13$				      ; 0620
+	   08	         6B	       04  E1 000D3 	    BBC     #4, INIT_OPTIONS, 10$				      ; 0623
+		  0000G  CF	  DC   A9  D0 000D7 	    MOVL    DEF_SYS_PROT, PROTECTION				      ; 0624
+				       12  11 000DD 	    BRB     12$							      ; 0623
+	   08	         6B	       03  E1 000DF 10$:    BBC     #3, INIT_OPTIONS, 11$				      ; 0625
+		  0000G  CF	  D8   A9  D0 000E3 	    MOVL    DEF_GRP_PROT, PROTECTION				      ; 0626
+				       06  11 000E9 	    BRB     12$							      ; 0625
+		  0000G  CF	  D4   A9  D0 000EB 11$:    MOVL    DEF_PRV_PROT, PROTECTION				      ; 0627
+	   09	         6B	       02  E1 000F1 12$:    BBC     #2, INIT_OPTIONS, 13$				      ; 0628
+		         50	  E0   A9  D2 000F5 	    MCOML   DEF_SHR_PROT, R0					      ; 0629
+		  0000G  CF	       50  CA 000F9 	    BICL2   R0, PROTECTION					      ;
+	   13	    01   AB	       03  E0 000FE 13$:    BBS     #3, INIT_OPTIONS+1, 15$				      ; 0632
+	   08	    03   AB	       07  E1 00103 	    BBC     #7, INIT_OPTIONS+3, 14$				      ; 0634
+		  0000G  CF	  E8   A9  D0 00108 	    MOVL    DEF_FIL_PROT1, FILE_PROT				      ; 0635
+				       06  11 0010E 	    BRB     15$							      ; 0634
+		  0000G  CF	  E4   A9  D0 00110 14$:    MOVL    DEF_FIL_PROT, FILE_PROT				      ; 0636
+	   06	    01   AB	       04  E0 00116 15$:    BBS     #4, INIT_OPTIONS+1, 16$				      ; 0638
+		  0000G  CF	  EC   A9  D0 0011B 	    MOVL    DEF_REC_PROT, RECORD_PROT				      ; 0639
+	   06	    02   AB	       01  E0 00121 16$:    BBS     #1, INIT_OPTIONS+2, 17$				      ; 0641
+		  0000G  CF	  F0   A9  D0 00126 	    MOVL    DEF_EXTEND, EXTENSION				      ; 0642
+	   06	    02   AB	       02  E0 0012C 17$:    BBS     #2, INIT_OPTIONS+2, 18$				      ; 0644
+		  0000G  CF	  F4   A9  D0 00131 	    MOVL    DEF_WINDOW, WINDOW					      ; 0645
+	   06	    02   AB	       03  E0 00137 18$:    BBS     #3, INIT_OPTIONS+2, 19$				      ; 0647
+		  0000G  CF	  F8   A9  D0 0013C 	    MOVL    DEF_ACCESSED, ACCESSED				      ; 0648
+		         04	  02   AB  E8 00142 19$:    BLBS    INIT_OPTIONS+2, 20$					      ; 0650
+		         67	  FC   A9  D0 00146 	    MOVL    DEF_HEADERS, HEADERS				      ; 0651
+	   1C	    01   AB	       05  E0 0014A 20$:    BBS     #5, INIT_OPTIONS+1, 22$				      ; 0653
+		  0000G  CF	0000G  CF  D0 0014F 	    MOVL    PROCESS_UIC, OWNER_UIC				      ; 0656
+	   04	         6B	       03  E1 00156 	    BBC     #3, INIT_OPTIONS, 21$				      ; 0657
+				0000G  CF  B4 0015A 	    CLRW    OWNER_UIC						      ; 0658
+	   09	         6B	       04  E1 0015E 21$:    BBC     #4, INIT_OPTIONS, 22$				      ; 0659
+		  0000G  CF 00010001   8F  D0 00162 	    MOVL    #65537, OWNER_UIC					      ; 0660
+	   19	    01   AB	       07  E0 0016B 22$:    BBS     #7, INIT_OPTIONS+1, 24$				      ; 0663
+	   07	    03   AB	       07  E1 00170 	    BBC     #7, INIT_OPTIONS+3, 23$				      ; 0665
+		  0000G  CF	       01  D0 00175 	    MOVL    #1, CLUSTER						      ; 0666
+				       0D  11 0017A 	    BRB     24$							      ; 0665
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-8
+; Digital Equipment Corporation
+;
+	   52	         53	       04  78 0017C 23$:    ASHL    #4, J, R2						      ; 0667
+				  06 A642  9F 00180 	    PUSHAB  DEVICE_TABLE+6[R2]					      ;
+		  0000G  CF	       9E  3C 00184 	    MOVZWL  @(SP)+, CLUSTER					      ;
+	   0B	    01   AB	       06  E0 00189 24$:    BBS     #6, INIT_OPTIONS+1, 25$				      ; 0669
+	   52	         53	       04  78 0018E 	    ASHL    #4, J, R2						      ; 0670
+				  0C A642  9F 00192 	    PUSHAB  DEVICE_TABLE+12[R2]					      ;
+		         65	       9E  D0 00196 	    MOVL    @(SP)+, MAXIMUM					      ;
+	   52	         53	       04  78 00199 25$:    ASHL    #4, J, R2						      ; 0677
+		         52	  08 A642  9E 0019D 	    MOVAB   DEVICE_TABLE+8[R2], R2				      ;
+		         50	0000G  CF  D0 001A2 	    MOVL    CLUSTER, R0						      ;
+	   51	         62	       50  C1 001A7 	    ADDL3   R0, (R2), R1					      ;
+				       51  D7 001AB 	    DECL    R1							      ;
+		         51	       50  C6 001AD 	    DIVL2   R0, R1						      ;
+	   68	         51	       50  C5 001B0 	    MULL3   R0, R1, VOLUME_SIZE					      ;
+	   50	         68	       50  C7 001B4 	    DIVL3   R0, VOLUME_SIZE, R0					      ; 0684
+	      000FF000   8F	       50  D1 001B8 	    CMPL    R0, #1044480					      ;
+				       05  1A 001BF 	    BGTRU   26$							      ;
+		         32	       50  D1 001C1 	    CMPL    R0, #50						      ; 0685
+				       09  18 001C4 	    BGEQ    27$							      ;
+			    0075809C   8F  DD 001C6 26$:    PUSHL   #7700636						      ; 0686
+		         6A	       01  FB 001CC 	    CALLS   #1, LIB$STOP					      ;
+	   50	  0000G  CF	       01  C1 001CF 27$:    ADDL3   #1, CLUSTER, R0					      ; 0691
+	   50	         68	       50  C7 001D5 	    DIVL3   R0, VOLUME_SIZE, C					      ;
+		         50	       65  D1 001D9 	    CMPL    MAXIMUM, C						      ; 0692
+				       03  15 001DC 	    BLEQ    28$							      ;
+		         65	       50  D0 001DE 	    MOVL    C, MAXIMUM						      ; 0693
+		         10	       67  D1 001E1 28$:    CMPL    HEADERS, #16					      ; 0698
+				       03  1E 001E4 	    BGEQU   29$							      ;
+		         67	       10  D0 001E6 	    MOVL    #16, HEADERS					      ;
+		         65	       67  D1 001E9 29$:    CMPL    HEADERS, MAXIMUM					      ; 0699
+				       03  1B 001EC 	    BLEQU   30$							      ;
+		         67	       65  D0 001EE 	    MOVL    MAXIMUM, HEADERS					      ;
+	      000061A8   8F	       67  D1 001F1 30$:    CMPL    HEADERS, #25000					      ; 0700
+				       05  1B 001F8 	    BLEQU   31$							      ;
+		         67	61A8   8F  3C 001FA 	    MOVZWL  #25000, HEADERS					      ;
+	   06	    02   AB	       04  E1 001FF 31$:    BBC     #4, INIT_OPTIONS+2, 32$				      ; 0705
+				0000G  CF  D4 00204 	    CLRL    INDEX						      ; 0706
+				       1D  11 00208 	    BRB     35$							      ; 0705
+	   08	    02   AB	       06  E1 0020A 32$:    BBC     #6, INIT_OPTIONS+2, 33$				      ; 0708
+    0000G  CF	         62	       01  C3 0020F 	    SUBL3   #1, (R2), INDEX					      ; 0709
+				       10  11 00215 	    BRB     35$							      ; 0708
+	   05	    02   AB	       05  E0 00217 33$:    BBS     #5, INIT_OPTIONS+2, 34$				      ; 0711
+	   06	    02   AB	       07  E0 0021C 	    BBS     #7, INIT_OPTIONS+2, 35$				      ;
+    0000G  CF	         62	       02  C7 00221 34$:    DIVL3   #2, (R2), INDEX					      ; 0712
+		         62	0000G  CF  D1 00227 35$:    CMPL    INDEX, (R2)						      ; 0714
+				       09  15 0022C 	    BLEQ    36$							      ;
+			    007580B4   8F  DD 0022E 	    PUSHL   #7700660						      ; 0715
+		         6A	       01  FB 00234 	    CALLS   #1, LIB$STOP					      ;
+				       7E  D4 00237 36$:    CLRL    -(SP)						      ; 0720
+				       5E  DD 00239 	    PUSHL   SP							      ;
+				0000G  CF  9F 0023B 	    PUSHAB  SET_VALID						      ;
+	      00000000G  9F	       03  FB 0023F 	    CALLS   #3, @#SYS$CMKRNL					      ;
+				       7E  7C 00246 	    CLRQ    -(SP)						      ; 0724
+				       7E  7C 00248 	    CLRQ    -(SP)						      ;
+				       7E  7C 0024A 	    CLRQ    -(SP)						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-9
+; Digital Equipment Corporation
+;
+				       7E  7C 0024C 	    CLRQ    -(SP)						      ;
+				  20   AE  9F 0024E 	    PUSHAB  IO_STATUS						      ;
+				       08  DD 00251 	    PUSHL   #8							      ;
+				0000G  CF  DD 00253 	    PUSHL   CHANNEL						      ;
+				       7E  D4 00257 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       0C  FB 00259 	    CALLS   #12, @#SYS$QIOW					      ;
+		         54	       50  D0 00260 	    MOVL    R0, STATUS						      ;
+		         06	       54  E9 00263 	    BLBC    STATUS, 37$						      ; 0725
+		         54	       6E  3C 00266 	    MOVZWL  IO_STATUS, STATUS					      ;
+		         0E	       54  E8 00269 	    BLBS    STATUS, 38$						      ; 0726
+	      000000F4   8F	       54  D1 0026C 37$:    CMPL    STATUS, #244					      ;
+				       05  13 00273 	    BEQL    38$							      ;
+				       54  DD 00275 	    PUSHL   STATUS						      ; 0727
+		         6A	       01  FB 00277 	    CALLS   #1, LIB$STOP					      ;
+		  0000G  CF	       00  FB 0027A 38$:    CALLS   #0, INIT_BADBLOCKS					      ; 0729
+		  0000G  CF	       00  FB 0027F 	    CALLS   #0, INIT_ALLOCATE					      ; 0730
+		  0000G  CF	       00  FB 00284 	    CALLS   #0, INIT_BITMAP					      ; 0731
+	   07	    03   AB	       07  E1 00289 	    BBC     #7, INIT_OPTIONS+3, 39$				      ; 0732
+		  0000G  CF	       00  FB 0028E 	    CALLS   #0, INIT_INDEX1					      ; 0733
+				       05  11 00293 	    BRB     40$							      ; 0732
+		  0000G  CF	       00  FB 00295 39$:    CALLS   #0, INIT_INDEX					      ; 0734
+		  0000G  CF	       00  FB 0029A 40$:    CALLS   #0, INIT_MFD					      ; 0735
+				       7E  D4 0029F 	    CLRL    -(SP)						      ; 0737
+				       5E  DD 002A1 	    PUSHL   SP							      ;
+				0000G  CF  9F 002A3 	    PUSHAB  CLEAR_VALID						      ;
+	      00000000G  9F	       03  FB 002A7 	    CALLS   #3, @#SYS$CMKRNL					      ;
+					   04 002AE 	    RET     							      ; 0482
+
+; Routine Size:  687 bytes
+
+
+;	0740	
+;	0741	END
+;	0742	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	  1628    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $PLIT$         	    52  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   687  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:20:27	DBB3:[INIT.SRC]INIDSK.B32;19					Page 3-10
+; Digital Equipment Corporation
+;
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        14         0       233
+
+
+
+
+
+; Size:		687 code + 1680 data bytes
+; Run Time:	02:16.3
+; Elapsed Time:	04:29.4
+; Memory Used:	394 pages
+; Compilation Complete

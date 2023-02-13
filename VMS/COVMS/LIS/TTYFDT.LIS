@@ -1,0 +1,990 @@
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (2)      61  TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER
+   (3)     282  TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TE
+   (4)     421  TTY$FDTSETM -- FUNCTION DECISION ROUTINE FOR TE
+   (5)     450  TTY$FDTSETC - FUNCTION DECISION ROUTINE FOR TER
+   (6)     502  CARRAIGE CONTROL INTERPRETATION
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   1
+X05                                                                                                                              (1)
+
+                                     0000     1 	.TITLE TTYFDT - TERMINAL FUNCTION DECISION ROUTINES
+                                     0000     2 	.IDENT	/X05/		
+                                     0000     3 ;
+                                     0000     4 ; COPYRIGHT (C) 1977
+                                     0000     5 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     6 ;
+                                     0000     7 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000     8 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000     9 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    10 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    11 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    12 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    13 ; REMAIN IN DEC.
+                                     0000    14 ;
+                                     0000    15 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    16 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    17 ; CORPORATION.
+                                     0000    18 ;
+                                     0000    19 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    20 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    21 ;++
+                                     0000    22 ; FACILITY:
+                                     0000    23 ;
+                                     0000    24 ;	VAX/VMS TERMINAL DRIVER
+                                     0000    25 ;
+                                     0000    26 ; ABSTRACT: THIS MODULE CONTAINS THE FUNCTION DECISION ROUTINES FOR TERMINAL
+                                     0000    27 ; RELATED I/O FUNCTIONS. THERE IS A SEPARATE ROUTINE FOR READ, WRITE AND
+                                     0000    28 ; SET MODE. EACH ROUTINE VALIDATES THE REQUEST AND PROCESSES THE I/O PACKET
+                                     0000    29 ; BEFORE QUEUING IT TO THE DEVICE UCB.
+                                     0000    30 ;
+                                     0000    31 ; AUTHOR: R.HEINEN 23-SEPT-76 VERSION X06
+                                     0000    32 ;--
+                                     0000    33 ;
+                                     0000    34 ; EXTERNAL SYMBOLS:
+                                     0000    35 ;
+                                     0000    36 	$DYNDEF				; DEFINE DYNAMIC MEMORY BLOCK TYPES
+                                     0000    37 	$IODEF				; DEFINE I/O FUNCTION CODES
+                                     0000    38 	$IPLDEF				; DEFINE IPL CONSTANTS
+                                     0000    39 	$IRPDEF				; DEFINE I/O PACKET OFFSETS
+                                     0000    40 	$PCBDEF				; DEFINE PCB OFFSETS
+                                     0000    41 	$PRDEF				; DEFINE PROCESSOR REGISTERS
+                                     0000    42 	$PRVDEF				; DEFINE PRIVILEGES
+                                     0000    43 	$PSLDEF				; DEFINE PSL OFFSETS
+                                     0000    44 	$UCBDEF				; DEFINE UCB
+                                     0000    45 	$TTYDEF				; DEFINE TERMINAL DRIVER SYMBOLS
+                                     0000    46 	$TTDEF				; DEFINE TERMINAL CHARACTERISTICS
+                                     0000    47 	$TTYUCBDEF			; DEFINE TERMINAL DRIVER SYMBOLS
+                                     0000    48 	TTYMACS				; TERMINAL MACROS
+                                     0000    49 ;
+                                     0000    50 ; LOCAL DEFINITIONS
+                                     0000    51 ;
+                                     0000    52 ; QIO ARGUMENT LIST OFFSETS
+                                     0000    53 ;
+                           00000000  0000    54 P1 = 0
+                           00000004  0000    55 P2 = 4
+                           00000008  0000    56 P3 = 8
+                           0000000C  0000    57 P4 = 12
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   2
+X05                                                                                                                              (1)
+
+                           00000010  0000    58 P5 = 16
+                           00000014  0000    59 P6 = 20
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   3
+X05             TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER                                                                  (2)
+
+                                     0000    61 	.SBTTL	TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TERMINAL READ FUNCTIONS
+                                     0000    62  
+                                 00000000    63 	.PSECT	Y$EXEPAGED
+                                     0000    64 ;++
+                                     0000    65 ; TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TERMINAL READ
+                                     0000    66 ;
+                                     0000    67 ;
+                                     0000    68 ; FUNCTIONAL DESCRIPTION:
+                                     0000    69 ;
+                                     0000    70 ; THIS ROUTINE IS THE FUNCTION DECISION ACTION ROUTINE FOR TERMINAL READS.
+                                     0000    71 ;
+                                     0000    72 ; 1. THE P4 SPECIFIED READ TERMINATOR BITMASK IS ADDRESSED BY IRP$B_CARCON.
+                                     0000    73 ; 2. THE P1,P2 SPECIFIED USER BUFFER IS VALIDATED FOR WRITE ACCESS.
+                                     0000    74 ; 3. IF THE FUNCTION IS A IO$_READPROMPT THEN THE P5,P6 SPECIFIED PROMPT
+                                     0000    75 ;    STRING IS VALIDATED FOR READ ACCESS.
+                                     0000    76 ; 4. A BUFFERED I/O DATA BLOCK IS ALLOCATED FROM NONPAGED DYNAMIC MEMORY
+                                     0000    77 ;    AND THE PROCESS BUFFERED I/O QUOTA.
+                                     0000    78 ;
+                                     0000    79 ; 4. THE ADDRESS OF THE BLOCK IS PLACED IN IRP$L_SVAPTE.
+                                     0000    80 ; 5. THE INITIAL TERMINAL STATE IS SET UP FOR THIS READ FUNCTION.
+                                     0000    81 ;    THE NEW STATE IS PLACED IN IRP$L_MEDIA.
+                                     0000    82 ; 7. THE SIZE OF THE PROMPT STRING PLUS 12 ( SIZE OF BLOCK HEADER ) IS
+                                     0000    83 ;    PLACED IN IRP$B_CARCON+6. WHILE THE SIZE OF THE DATA RECORD REQUESTED IS
+                                     0000    84 ;    PLACED IN IRP$W_BCNT.
+                                     0000    85 ; 8. IO$_READPBLK AND IO$_READPROMPT.
+                                     0000    86 ;
+                                     0000    87 ;	IO$_READPBLK
+                                     0000    88 ;		SETS TTY$V_ST_PASALL. THIS BIT WILL CAUSE THE UNIT TO ENTER
+                                     0000    89 ;		A TEMPORARY PASSALL STATE. THAT IS, CHARACTERS ARE BUFFERED
+                                     0000    90 ;		AS 8-BITS BINARY AND ECHOED AS THEMSELVES. IO$M_NOECHO,
+                                     0000    91 ;		IO$M_TIMED, IO$M_PURGE, IO$M_DSABLMBX ARE MEANINGFULL
+                                     0000    92 ;		FUNCTION MODIFIERS. NOTE THAT SINCE THE PASSALL STATE IS
+                                     0000    93 ;		ENTERED WHEN THE READ IS STARTED, CHARACTERS ALREADY IN THE
+                                     0000    94 ;		TYPEAHEAD BUFFER MAY HAVE BEEN STRIPPED OF THEIR 8TH BIT.
+                                     0000    95 ;		ALSO THEY HAVE BEEN SUBJECT TO CONTROL CHARACTER INTERPRETATION.
+                                     0000    96 ;		SEE PASSALL STATE INFORMATION.
+                                     0000    97 ;		THE TERMINATOR BITMASK, IF SPECIFIED, FOR PASSALL TERMINALS
+                                     0000    98 ;		IS 32 BYTES LONG.
+                                     0000    99 ;
+                                     0000   100 ;	IO$_READPROMPT
+                                     0000   101 ;		SETS TTY$V_ST_PROMPT AND TTY$V_ST_CTRLR.
+                                     0000   102 ;		TTY$V_ST_CTRLR WILL CAUSE THE DRIVER TO BELEIVE THAT
+                                     0000   103 ;		A CONTROL R HAS JUST BEEN TYPED AT THE TERMINAL. THUS
+                                     0000   104 ;		CAUSING IT TO DISPLAY THE DATA CURRENTLY IN THE READ
+                                     0000   105 ;		BUFFERED I/O BLOCK. AT THE TIME WHEN THE READ IS STARTED
+                                     0000   106 ;		THIS IS ONLY THE PROMPT STRING.
+                                     0000   107 ; 
+                                     0000   108 ; 9. SEVERAL FUNCTION MODIFIERS CAUSE STATE BITS TO BE SET AT THIS TIME.
+                                     0000   109 ;
+                                     0000   110 ;	IO$M_NOECHO
+                                     0000   111 ;
+                                     0000   112 ;		SETS TTY$V_ST_NOECHO.
+                                     0000   113 ;		THIS BIT PLACES THE UNIT IN A TEMPORARY NOECHO STATE.
+                                     0000   114 ;		THE CHARACTERS RECEIVED TO FULFILL THIS REQUEST ARE NOT ECHOED.
+                                     0000   115 ;		NOTHING EXCEPT XON/XOFF IS SENT TO THE UNIT IN THIS STATE.
+                                     0000   116 ;		AN EXCEPTION IS A BREAK THROUGH WRITE.
+                                     0000   117 ;
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   4
+X05             TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER                                                                  (2)
+
+                                     0000   118 ;	IO$M_NOFILTR
+                                     0000   119 ;		SETS TTY$V_ST_NOFLTR.
+                                     0000   120 ;		THIS BIT CAUSES THE DRIVER TO SKIP THE INTERPRETATION
+                                     0000   121 ;		OF CONTROL R,U AND DELETE. THE CHARACTERS ARE PLACED IN
+                                     0000   122 ;		THE TARGET BUFFER.
+                                     0000   123 ;
+                                     0000   124 ;	IO$M_TIMED
+                                     0000   125 ;		SETS THE NUMBER OF SECONDS SPECIFIED BY P3 INTO THE READ BUFFER 
+                                     0000   126 ;		BLOCK WHICH CAUSES UCB$V_TIMO TO BE SET AND THE SYSTEM DEVICE
+                                     0000   127 ;		TIMEOUT TO CHECK THE STATUS
+                                     0000   128 ;
+                                     0000   129 ;
+                                     0000   130 ; THE OTHER FUNCTION MODIFIERS FOR READ ARE CHECKED DURING THE OPERATION.
+                                     0000   131 ;
+                                     0000   132 ;	THEY ARE: IO$M_CVTLOW,IO$M_TRMNOECHO,IO$M_PURGE AND IO$M_MBDSABL.
+                                     0000   133 ;
+                                     0000   134 ; INPUTS:
+                                     0000   135 ;
+                                     0000   136 ;	R3 = ADDRESS OF THE PACKET FOR THIS REQUEST
+                                     0000   137 ;	R4 = CURRENT PCB
+                                     0000   138 ;	R5 = UCB ADDRESS
+                                     0000   139 ;	R6 = ASSIGNED CCB
+                                     0000   140 ;	R7 = FUNCTION CODE
+                                     0000   141 ;	AP = ADDRESS OF FIRST FUNCTION DEPENDENT QIO PARAMETER
+                                     0000   142 ;
+                                     0000   143 ; OUTPUTS:
+                                     0000   144 ;
+                                     0000   145 ;	THE I/O IF IN ERROR IS COMPLETED VIA "EXE$ABORTIO".
+                                     0000   146 ;	THE I/O IF VALID IS QUEUED TO THE DRIVER BY "EXE$QIODRVPKT".
+                                     0000   147 ;
+                                     0000   148 ; IMPLICIT OUTPUTS:
+                                     0000   149 ;
+                                     0000   150 ;	R3,R5 ARE PRESERVED.
+                                     0000   151 ;
+                                     0000   152 ; COMPLETION CODES:
+                                     0000   153 ;
+                                     0000   154 ;	SS$_ACCVIO - ACCESS VIOLATION ON BUFFER.
+                                     0000   155 ;	SS$_EXQUOTA - OVER QUOTA FOR BUFFERED I/O
+                                     0000   156 ;	SS$_INSFMEM - INSUFICIENT MEMORY
+                                     0000   157 ;--
+                                     0000   158 TTY$FDTREAD::				;
+                          53     DD  0000   159 	PUSHL	R3			; SAVE PACKET ADDRESS
+                                     0002   160 ;
+                                     0002   161 ; SET PROPER STATE BITS FOR READ FUNCTIONS AND FUNCTION MODIFIERS
+                                     0002   162 ;
+         20 A3            09     78  0002   163 	ASHL	#TTY$V_ST_NOECHO-IO$V_NOECHO,IRP$W_FUNC(R3),R8
+                          58         0006       
+            58   FFFB7FFF 8F     CA  0007   164 	BICL	#^C<TTY$M_ST_NOECHO!TTY$M_ST_NOFLTR>,R8
+            58       0800 8F     A8  000E   165 	BISW	#TTY$M_ST_READ,R8	; SET READ
+                                     0013   166 ;
+                                     0013   167 ; CHECK ACCESS TO READ BUFFER
+                                     0013   168 ;
+            50            6C     D0  0013   169 	MOVL	P1(AP),R0		; GET BUFFER ADDRESS AND SIZE
+            51         04 AC     3C  0016   170 	MOVZWL	P2(AP),R1		;
+                          04     12  001A   171 	BNEQ	5$			; IF NEQ THEN ACTUAL READ
+            58            09     E3  001C   172 	BBCS	#TTY$V_ST_EOL,R8,10$	; SET EOL AND BRANCH
+                          06         001F       
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   5
+X05             TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER                                                                  (2)
+
+                 00000000'EF     16  0020   173 5$:	JSB	EXE$READCHK		; CHECK READ ACCESS FOR BUFFER
+                                     0026   174 					; NO RETURN MEANS NO ACCESS
+            59            50     7D  0026   175 10$:	MOVQ	R0,R9			; COPY INPUT BUFFER PARAMS
+                          57     D4  0029   176 	CLRL	R7			; RESET EXTRA ALLOCATE SIZE
+            06            00     ED  002B   177 	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3),#IO$_READPBLK; PASSALL?
+            0C         20 A3         002E       
+                          04     12  0031   178 	BNEQ	20$			; IF NEQ THEN NO
+            58            0E     E3  0033   179 	BBCS	#TTY$V_ST_PASALL,R8,50$; SET PASSALL MODE
+                          31         0036       
+                                     0037   180 ;
+                                     0037   181 ; DO SPECIAL FUNCTION LOGIC FOR READ WITH PROMPT
+                                     0037   182 ;
+            06            00     ED  0037   183 20$:	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3),#IO$_READPROMPT; READ PROMPT?
+            37         20 A3         003A       
+                          29     12  003D   184 	BNEQ	50$			; BR IF NO
+                                     003F   185 ;
+                                     003F   186 ; SEE IF NO PROMPT IS SPECIFIED
+                                     003F   187 ;
+            57         14 AC     3C  003F   188 	MOVZWL	P6(AP),R7		; GET SIZE OF PROMPT
+                          23     13  0043   189 	BEQL	50$			; IF EQL THEN MAKE THIS NORMAL READ
+                                     0045   190 ;
+                                     0045   191 ; READ WITH PROMPT
+                                     0045   192 ;
+            58   00020400 8F     C8  0045   193 	BISL	#TTY$M_ST_PROMPT!TTY$M_ST_CTRLR,R8; INSERT BITS FOR PROMPT
+            50         10 AC     D0  004C   194 	MOVL	P5(AP),R0		; GET PROMPT BUFFER ADDRESS
+                                     0050   195 ;
+                                     0050   196 ; CHECK ACCESS TO PROMPT STRING
+                                     0050   197 ;
+            51            57     3C  0050   198 	MOVZWL	R7,R1			; GET SIZE PROMPT
+                 00000000'EF     16  0053   199 	JSB	EXE$WRITECHK		; CHECK PROMPT BUFFER ACCESS
+                                     0059   200 					; NO RETURN MEANS NO ACCESS
+            56            50     D0  0059   201 	MOVL	R0,R6			; COPY PROMPT STRING ADDRESS
+            51            5A     C0  005C   202 	ADDL	R10,R1			; ADJUST PROMPT SIZE TO OVERALLOCATE
+         32 A3            5A     B0  005F   203 	MOVW	R10,IRP$W_BCNT(R3)	; SAVE ACTUAL READ SIZE
+         2A A3            01     E2  0063   204 	BBSS	#IRP$V_FUNC,IRP$W_STS(R3),50$; RESET TRANSFER DIRECTION
+                          00         0067       
+            57            10     A1  0068   205 50$:	ADDW3	#TTY$L_RB_DATA,R7,IRP$W_TT_PRMPT(R3); ADJUST PROMPT SIZE FOR HEADER
+                       3C A3         006B       
+            51            10     C0  006D   206 	ADDL	#TTY$L_RB_DATA,R1	; ADJUST SIZE FOR BLOCK HEADER
+         38 A3       0000'CF     9E  0070   207 	MOVAB	W^TTY$A_STANDARD,IRP$L_TT_TERM(R3); ASSUME STANDARD TERMINATORS
+         34 A3         0C AC     D0  0076   208 	MOVL	P4(AP),IRP$L_MEDIA(R3)	; GET ADDRESS OF TERMINATOR BITMASK
+                          2E     13  007B   209 	BEQL	67$			; IF EQL THEN STANDARD
+            52         34 A3     D0  007D   210 	MOVL	IRP$L_MEDIA(R3),R2	; RETREIVE ADDRESS
+         38 A3            51     3C  0081   211 	MOVZWL	R1,IRP$B_CARCON(R3)	; SAVE OFFSET IN BUFFER BLOCK
+            50       0000'8F     3C  0085   212 	MOVZWL	#SS$_ACCVIO,R0		; ASSUME ACCESS VIOLATION
+                                     008A   213 	IFNORD	#8,(R2),70$		; DESC. ACCESSIBLE?
+            53            62     3C  0090   214 	MOVZWL	(R2),R3			; GET BITMAP SIZE
+                          07     13  0093   215 	BEQL	60$			; IF EQL THEN SHORT FORM
+                                     0095   216 	IFNORD	R3,@4(R2),70$		; BITMAP ACCESSIBLE?
+            51            10     C0  009C   217 60$:	ADDL	#16,R1			; ASSUME NOT PASSALL
+            58            0E     E0  009F   218 	BBS	#TTY$V_ST_PASALL,R8,65$; BR IF PASSALL REQUEST
+                          05         00A2       
+                                     00A3   219 ;
+                                     00A3   220 ; BY RIGHTS, THIS TEST SHOULD NOT BE MADE HERE, THE DEVICE COULD
+                                     00A3   221 ; CHANGE PASSALL STATES BETWEEN NOW AND THE TIME THE READ TERMINATOR
+                                     00A3   222 ; TEST IS MADE. THIS MEANS THAT THE TERMINATOR TEST MAY NOT BE CORRECT
+                                     00A3   223 ; ON THE INTERRIM I/O.
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   6
+X05             TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER                                                                  (2)
+
+                                     00A3   224 ;
+         3C A5            00     E1  00A3   225 	BBC	#TT$V_PASSALL,UCB$L_DEVDEPEND(R5),67$; BR IF NOT PASSALL
+                          03         00A7       
+            51            10     C0  00A8   226 65$:	ADDL	#16,R1			; MAKE BITMAP PASSALL SIZE
+                                     00AB   227 ;
+                                     00AB   228 ; ALLOCATE THE BUFFERED I/O BLOCK + HEADER
+                                     00AB   229 ;
+                                     00AB   230 ; CHECK FOR BUFFERED I/O QUOTA
+                                     00AB   231 ;
+                 00000000'EF     16  00AB   232 67$:	JSB	EXE$BUFFRQUOTA		; CHECK QUOTA
+            06            50     E9  00B1   233 	BLBC	R0,70$			; SIGNAL ERROR IF LOW CLEAR
+                                     00B4   234 ;
+                                     00B4   235 ; ALLOCATE THE BUFFER
+                                     00B4   236 ;
+                 00000000'EF     16  00B4   237 	JSB	EXE$ALLOCBUF		; ALLOCATE THE BUFFER
+                          08     BA  00BA   238 70$:	POPR	#^M<R3>			; RESTORE PACKET
+            62            50     E9  00BC   239 	BLBC	R0,100$			; IF LOW CLEAR THEN ERROR
+         2C A3            52     D0  00BF   240 	MOVL	R2,IRP$L_SVAPTE(R3)	; SAVE ADDRESS OF BUFFERED I/O BLOCK
+         30 A3            51     B0  00C3   241 	MOVW	R1,IRP$W_BOFF(R3)	; SAVE BLOCK SIZE AS QUOTA
+                                     00C7   242 ;
+                                     00C7   243 ; ADJUST BUFFERED I/O QUOTA
+                                     00C7   244 ;
+         42 A4            51     A2  00C7   245 	SUBW	R1,PCB$W_BYTCNT(R4)	; ADJUST QUOTA WORD
+                                     00CB   246 ;
+                                     00CB   247 ; SET UP BUFFERED I/O BLOCK
+                                     00CB   248 ;
+         04 A2            59     D0  00CB   249 	MOVL	R9,TTY$L_RB_UVA(R2)	; INSERT USER VIRTUAL ADDRESS
+            62         10 A2     9E  00CF   250 	MOVAB	TTY$L_RB_DATA(R2),TTY$L_RB_NXT(R2); INSERT POINTER TO DATA AREA
+                          2C     BB  00D3   251 	PUSHR	#^M<R2,R3,R5>		; SAVE REGISTERS
+            54         34 A3     D0  00D5   252 	MOVL	IRP$L_MEDIA(R3),R4	; ADDRESS BITMAP ADDRESS
+                          23     13  00D9   253 	BEQL	90$			; IF EQL THEN STANDARD
+         38 A3            52     C0  00DB   254 	ADDL	R2,IRP$L_TT_TERM(R3)	; CALC ADDRESS OF BITMAP SPACE
+            51         3C A3     A2  00DF   255 	SUBW	IRP$W_TT_PRMPT(R3),R1	; CALC BITMAP SIZE
+            51         32 A3     A2  00E3   256 	SUBW	IRP$W_BCNT(R3),R1	;
+            55         04 A4     D0  00E7   257 	MOVL	4(R4),R5		; ADDRESS BITMAP
+            52            64     3C  00EB   258 	MOVZWL	(R4),R2			; GET SIZE OF MAP
+                          07     12  00EE   259 	BNEQ	80$			; IF NEQ THEN SPECIFIED
+            52            04     9A  00F0   260 	MOVZBL	#4,R2			; SET SIZE OF SHORT FORM
+            55         04 A4     9E  00F3   261 	MOVAB	4(R4),R5		; ADDRESS SHORT FORM LONG WORD
+            65            52     2C  00F7   262 80$:	MOVC5	R2,(R5),#0,R1,@IRP$L_TT_TERM(R3); COPY BITMAP
+            51            00         00FA       
+                       38 B3         00FC       
+            52            8E     D0  00FE   263 90$:	MOVL	(SP)+,R2		; RETREIVE BLOCK ADDRESS
+         0E A2         08 AC     B0  0101   264 	MOVW	P3(AP),TTY$W_RB_TIMOS(R2); GET TIMEOUT COUNT
+                                     0106   265 ;
+                                     0106   266 ; READ WITH PROMPT?
+                                     0106   267 ;
+            58            11     E1  0106   268 	BBC	#TTY$V_ST_PROMPT,R8,95$	; BR IF NOT PROMPT READ
+                          05         0109       
+            66            57     28  010A   269 	MOVC3	R7,(R6),TTY$L_RB_DATA(R2); COPY PROMPT STRING TO BUFFERED BLOCK
+                       10 A2         010D       
+                          28     BA  010F   270 95$:	POPR	#^M<R3,R5>		; RESTORE REGISTERS
+                                     0111   271 ;
+                                     0111   272 ; QUEUE I/O PACKET TO UNIT
+                                     0111   273 ;
+         34 A3            58     D0  0111   274 	MOVL	R8,IRP$L_MEDIA(R3)	; INSERT NEW STATE DATA
+            00            00     F0  0115   275 	INSV	#TTY$C_FC_READ,#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3)
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   7
+X05             TTY$FDTREAD - FUNCTION DECISION ROUTINE FOR TER                                                                  (2)
+
+         20 A3            06         0118       
+                 00000000'EF     17  011B   276 	JMP	EXE$QIODRVPKT		; INSERT PACKET ON QUEUE
+                                     0121   277 ;
+                                     0121   278 ; ERROR IN PROCESSING
+                                     0121   279 ;
+                 00000000'EF     17  0121   280 100$:	JMP	EXE$ABORTIO		; THE I/O IS DONE
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   8
+X05             TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TE                                                                  (3)
+
+                                     0127   282 	.SBTTL	TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TERMINAL WRITE FUNCTIONS
+                                     0127   283 ;++
+                                     0127   284 ; TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TERMINAL WRITE FUNCTIONS
+                                     0127   285 ;
+                                     0127   286 ;
+                                     0127   287 ; FUNCTIONAL DESCRIPTION:
+                                     0127   288 ;
+                                     0127   289 ; THIS ROUTINE IS THE FUNCTION DECISION ACTION FOR TERMINAL WRITE FUNCTIONS.
+                                     0127   290 ; 
+                                     0127   291 ; 1. THE P4 SPECIFIED IMPLIED CARRIAGE CONTROL IS IS DECODED UNLESS THE
+                                     0127   292 ;    FUNCTION IS IO$_WRITEPBLK.
+                                     0127   293 ; 2. THE P1,P2 SPECIFIED BUFFER IS VALIDATED FOR READ ACCESS.
+                                     0127   294 ; 3. A BUFFERED I/O BLOCK IS ALLOCATED FROM NONPAGED DYNAMIC MEMORY
+                                     0127   295 ;    AND FROM THE PROCESS BUFFERED I/O QUOTA.
+                                     0127   296 ; 4. THE DATA IS COPIED TO THE BUFFERED I/O BLOCK AND THE CARRIAGE CONTROL
+                                     0127   297 ;    IF ANY IS APPENDED.
+                                     0127   298 ; 5. THE ADDRESS OF THE BUFFERED I/O BLOCK IS PLACED IN IRP$L_SVAPTE,
+                                     0127   299 ; 6. THE SIZE OF THE DATA IS PLACED IN IRP$W_BCNT.
+                                     0127   300 ; 7. TTY$V_ST_WRITE IS SET IN IRP$L_MEDIA AS THE NEW STATE FOR I/O START.
+                                     0127   301 ; 8. IF THIS FUNCTION IS IO$_WRITEPBLK THEN TTY$V_ST_WRITEALL IS SET TO
+                                     0127   302 ;    CAUSE THE CHARACTER FORMAT ON OUTPUT TO BE AVOIDED.
+                                     0127   303 ;
+                                     0127   304 ; THE OTHER FUNCTION MODIFIERS FOR WRITE, IO$M_CANCTRLO AND IO$_ENABLMBX
+                                     0127   305 ; ARE HANDLED AT THE START OF THE OPERATION.
+                                     0127   306 ;
+                                     0127   307 ;
+                                     0127   308 ; INPUTS:
+                                     0127   309 ;
+                                     0127   310 ;	R3 = I/O PACKET
+                                     0127   311 ;	R4 = PCB OF PROCESS
+                                     0127   312 ;	R5 = UCB
+                                     0127   313 ;	R6 = ASSIGNED CCB
+                                     0127   314 ;	R7 = FUNCTION CODE
+                                     0127   315 ;	AP = ADDRESS OF FIRST USER QIO PARAMETER
+                                     0127   316 ;
+                                     0127   317 ; OUTPUTS:
+                                     0127   318 ;
+                                     0127   319 ;	IF THE I/O IS IN ERROR THEN IT IS COMPLETED BY "EXE$ABORTIO".
+                                     0127   320 ;	IF THE I/O IS VALID THEN IT IS QUEUED TO THE UNIT BY "EXE$QIODRVPKT".
+                                     0127   321 ;
+                                     0127   322 ; IMPLICIT OUTPUTS:
+                                     0127   323 ;
+                                     0127   324 ;	R3,R5 ARE PRESERVED.
+                                     0127   325 ;
+                                     0127   326 ; COMPLETION CODES:
+                                     0127   327 ;
+                                     0127   328 ;	SS$_ACCVIO - ACCESS VIOLATION ON BUFFER ( FROM "EXE$WRTCHK" )
+                                     0127   329 ;	SS$_INSFMEM - INSUFFICIENT MEMORY FOR REQUEST
+                                     0127   330 ;	SS$_EXQUOTA - BUFFERED I/O QUOTA EXCEEDED
+                                     0127   331 ;--
+                                     0127   332 TTY$FDTWRITE::				;
+            56            6C     D0  0127   333 	MOVL	P1(AP),R6		; GET USER VIRTUAL ADDRESS
+                       38 A3     D4  012A   334 	CLRL	IRP$B_CARCON(R3)	; ZERO CARRIAGE CONTROL SPECIFIER
+            06            00     ED  012D   335 	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,R7,#IO$_WRITEPBLK; WRITE PHYSICAL BLOCK?
+            0B            57         0130       
+                          08     13  0132   336 	BEQL	10$			; IF EQL THEN YES
+         38 A3         0C AC     D0  0134   337 	MOVL	P4(AP),IRP$B_CARCON(R3)	; GET CARRIAGE CONTROL SPECIFIER
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page   9
+X05             TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TE                                                                  (3)
+
+                          FEE2'  30  0139   338 	BSBW	TT$CARRIAGE		; GET THE CARRIAGE CONTROL
+            58         38 A3     9A  013C   339 10$:	MOVZBL	IRP$B_CARCON(R3),R8	; CALC NUMBER OF EXTRA PLACES NEEDED FOR CONTROL
+            52         3A A3     9A  0140   340 	MOVZBL	IRP$B_CARCON+2(R3),R2	;
+            58            52     C0  0144   341 	ADDL	R2,R8			;
+            50            56     D0  0147   342 	MOVL	R6,R0			; SET UP FOR WRITE CHECK CALL
+            57         04 AC     3C  014A   343 	MOVZWL	P2(AP),R7		; GET TRANSFER SIZE
+            51            57     D0  014E   344 	MOVL	R7,R1			; COPY TRANSFER SIZE
+                          06     13  0151   345 	BEQL	20$			; SKIP CHECK IF ZERO
+                 00000000'EF     16  0153   346 	JSB	EXE$WRITECHK		; CHECK BUFFER ACCESS
+                                     0159   347 					; NO RETURN MEANS NO ACCESS
+                          38     BB  0159   348 20$:	PUSHR	#^M<R3,R4,R5>		; SAVE SOME REGISTERS
+            51         10 A841   9E  015B   349 	MOVAB	TTY$L_WB_DATA+4(R8)[R1],R1; ADD 16 TO REQUEST AND CARRIAGE CONTROL
+                                     0160   350 ;
+                                     0160   351 ; CHECK BUFFERED I/O QUOTA
+                                     0160   352 ;
+                 00000000'EF     16  0160   353 	JSB	EXE$BUFFRQUOTA		; CHECK QUOTA
+            5F            50     E9  0166   354 	BLBC	R0,105$			; BR IF ERROR
+                                     0169   355 ;
+                                     0169   356 ; ALLOCATE THE BUFFER
+                                     0169   357 ;
+                 00000000'EF     16  0169   358 	JSB	EXE$ALLOCBUF		; ALLOCATE THE BUFFERED I/O BLOCK
+            56            50     E9  016F   359 	BLBC	R0,105$			; BR IF ERROR
+            53            6E     D0  0172   360 	MOVL	(SP),R3			; RESTORE PACKET ADDRESS
+         2C A3            52     D0  0175   361 	MOVL	R2,IRP$L_SVAPTE(R3)	; SAVE BLOCK ADDRESS
+         32 A3            58     A0  0179   362 	ADDW	R8,IRP$W_BCNT(R3)	; ADJUST TRANSFER SIZE FOR CARRIAGE CONTROL
+                                     017D   363 ;
+                                     017D   364 ; ADJUST QUOTA
+                                     017D   365 ;
+         42 A4            51     A2  017D   366 	SUBW	R1,PCB$W_BYTCNT(R4)	; ADJUST BUFFERED I/O QUOTA
+         30 A3            51     B0  0181   367 	MOVW	R1,IRP$W_BOFF(R3)	; SAVE BLOCK SIZE AS QUOTA
+                                     0185   368 ;
+                                     0185   369 ; SET UP THE BLOCK
+                                     0185   370 ;
+            62         0C A2     9E  0185   371 	MOVAB	TTY$L_WB_DATA(R2),(R2)	; INSERT DATA ADDRESS
+            52            0C     C0  0189   372 	ADDL	#TTY$L_WB_DATA,R2	; POINT TO DATA
+                                     018C   373 ;
+                                     018C   374 ; INSERT INITIAL CARRIAGE CONTROL
+                                     018C   375 ;
+            58         38 A3     9E  018C   376 	MOVAB	IRP$B_CARCON(R3),R8	; INSERT THE CHARACTERS
+                          3E     10  0190   377 	BSBB	110$			;
+                                     0192   378 ;
+                                     0192   379 ; COPY USER DATA TO BUFFER
+                                     0192   380 ;
+            66            57     28  0192   381 50$:	MOVC3	R7,(R6),(R2)		; MOVE THE DATA
+                          62         0195       
+            52            53     D0  0196   382 	MOVL	R3,R2			; COPY CURRENT END OF DATA
+                                     0199   383 ;
+                                     0199   384 ; THE USER DATA IS COPIED -- ADD TRAILING CARRIAGE RETURN IF NECESS.
+                                     0199   385 ;
+                          38     BA  0199   386 	POPR	#^M<R3,R4,R5>		; RESTORE REGISTERS
+            58         3A A3     9E  019B   387 	MOVAB	IRP$B_CARCON+2(R3),R8	;
+                          2F     10  019F   388 	BSBB	110$			; INSERT CHARACTERS
+         34 A3       0100 8F     3C  01A1   389 	MOVZWL	#<TTY$M_ST_WRITE>,IRP$L_MEDIA(R3); SET UP FUNCTION DEPENDENT DATA
+                                     01A7   390 ;
+                                     01A7   391 ; SET WRITE PASSALL STATE FOR WRTPASSALL
+                                     01A7   392 ;
+            06            00     ED  01A7   393 	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3),#IO$_WRITEPBLK; PASSALL WRITE?
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  10
+X05             TTY$FDTWRITE - FUNCTION DECISION ROUTINE FOR TE                                                                  (3)
+
+            0B         20 A3         01AA       
+                          05     12  01AD   394 	BNEQ	100$			; BR IF NO
+         34 A3            10     E2  01AF   395 	BBSS	#TTY$V_ST_WRTALL,IRP$L_MEDIA(R3),100$; SET PASSALL MODE FOR WRITE
+                          00         01B3       
+                                     01B4   396 ;
+                                     01B4   397 ; COMPLETE THE WRITE OPERATION
+                                     01B4   398 ;
+            51         2C A3     D0  01B4   399 100$:	MOVL	IRP$L_SVAPTE(R3),R1	; GET BLOCK ADDRESS
+         04 A1            52     D0  01B8   400 	MOVL	R2,TTY$L_WB_END(R1)	; INSERT ADDRESS OF DATA END
+            00            01     F0  01BC   401 	INSV	#TTY$C_FC_WRITE,#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3);
+         20 A3            06         01BF       
+                 00000000'EF     17  01C2   402 	JMP	EXE$QIODRVPKT		; QUEUE PACKET TO DRIVER
+                                     01C8   403 ;
+                                     01C8   404 ; ERROR IN PROCESSING
+                                     01C8   405 ;
+                          38     BA  01C8   406 105$:	POPR	#^M<R3,R4,R5>		; RESTORE REGISTERS
+                 00000000'EF     17  01CA   407 	JMP	EXE$ABORTIO		; ABORT THE I/O
+                                     01D0   408 ;
+                                     01D0   409 ; SUBROUTINE TO INSERT PRE/SUF CARRIAGE CONTROL
+                                     01D0   410 ;
+            50            68     9A  01D0   411 110$:	MOVZBL	(R8),R0			; GET NUMBER OF CHARACTERS
+                          13     13  01D3   412 	BEQL	130$			; IF EQL THEN NONE
+            82         01 A8     90  01D5   413 	MOVB	1(R8),(R2)+		; INSERT CHARACTER
+                          0D     12  01D9   414 	BNEQ	130$			; IF NEQ THEN DONE
+         FF A2            0D     90  01DB   415 	MOVB	#TTY$C_CR,-1(R2)		; INSERT CARRIAGE RETURN TO START
+                       32 A3     B6  01DF   416 	INCW	IRP$W_BCNT(R3)		; INCREASE BYTE COUNT FOR CR
+            82            0A     90  01E2   417 120$:	MOVB	#TTY$C_LF,(R2)+		; INSERT LINE FEEDS
+            FA            50     F5  01E5   418 	SOBGTR	R0,120$			; UNTIL DONE
+                                 05  01E8   419 130$:	RSB				;
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  11
+X05             TTY$FDTSETM -- FUNCTION DECISION ROUTINE FOR TE                                                                  (4)
+
+                                     01E9   421 	.SBTTL	TTY$FDTSETM -- FUNCTION DECISION ROUTINE FOR TERMINAL SET MODE
+                                     01E9   422 ;++
+                                     01E9   423 ; TTY$FDTSETM - FUNCTION DECISION ROUTINE FOR TERMINAL SET MODE FUNCTIONS
+                                     01E9   424 ;
+                                     01E9   425 ; FUNCTIONAL DESCRIPTION:
+                                     01E9   426 ;
+                                     01E9   427 ; THIS ROUTINE IS THE FUNCTION DECISION ROUTINE FOR TERMINAL SET MODE FUNCTIONS.
+                                     01E9   428 ; THERE ARE TWO BASIC FUNCTIONS -- SET UP FOR CONTROL C AND SET MODE.
+                                     01E9   429 ;
+                                     01E9   430 ; INPUTS:
+                                     01E9   431 ;
+                                     01E9   432 ;	R3 = I/O PACKET ADDRESS
+                                     01E9   433 ;	R4 = PCB ADDRESS OF CURRENT PROCESS
+                                     01E9   434 ;	R5 = UCB ADDRESS
+                                     01E9   435 ;	R6 = CCB ADDRESS FOR ASSIGNED UNIT
+                                     01E9   436 ;	AP = ADDRESS OF ARGUMENT LIST AT USER PARAMETERS
+                                     01E9   437 ;
+                                     01E9   438 ; OUTPUTS:
+                                     01E9   439 ;
+                                     01E9   440 ;	THE FUNCTION IS COMPLETED HERE BY "EXE$FINISHIO".
+                                     01E9   441 ;
+                                     01E9   442 ; IMPLICIT OUTPUTS:
+                                     01E9   443 ;
+                                     01E9   444 ; 	R3,R5 ARE PRESERVED.
+                                     01E9   445 ;--
+                                     01E9   446 TTY$FDTSETM::				;
+            00            02     F0  01E9   447 	INSV	#TTY$C_FC_SETM,#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3);
+         20 A3            06         01EC       
+                          06     11  01EF   448 	BRB	SET_COMMON
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  12
+X05             TTY$FDTSETC - FUNCTION DECISION ROUTINE FOR TER                                                                  (5)
+
+                                     01F1   450 	.SBTTL	TTY$FDTSETC - FUNCTION DECISION ROUTINE FOR TERMINAL SET CHARS
+                                     01F1   451 ;++
+                                     01F1   452 ; TTY$FDTSETC - FUNCTION DECISION ROUTINE FOR TERMINAL SET CHARACTERISTICS FUNCTIONS
+                                     01F1   453 ;
+                                     01F1   454 ; FUNCTIONAL DESCRIPTION:
+                                     01F1   455 ;
+                                     01F1   456 ; THIS ROUTINE IS THE FUNCTION DECISION ROUTINE FOR TERMINAL SET MODE FUNCTIONS.
+                                     01F1   457 ; THERE ARE TWO BASIC FUNCTIONS -- SET UP FOR CONTROL Y AND SET MODE.
+                                     01F1   458 ;
+                                     01F1   459 ; INPUTS:
+                                     01F1   460 ;
+                                     01F1   461 ;	R3 = I/O PACKET ADDRESS
+                                     01F1   462 ;	R4 = PCB ADDRESS OF CURRENT PROCESS
+                                     01F1   463 ;	R5 = UCB ADDRESS
+                                     01F1   464 ;	R6 = CCB ADDRESS FOR ASSIGNED UNIT
+                                     01F1   465 ;	AP = ADDRESS OF ARGUMENT LIST AT USER PARAMETERS
+                                     01F1   466 ;
+                                     01F1   467 ; OUTPUTS:
+                                     01F1   468 ;
+                                     01F1   469 ;	THE FUNCTION IS COMPLETED HERE BY "EXE$FINISHIO".
+                                     01F1   470 ;
+                                     01F1   471 ; IMPLICIT OUTPUTS:
+                                     01F1   472 ;
+                                     01F1   473 ; 	R3,R5 ARE PRESERVED.
+                                     01F1   474 ;--
+                                     01F1   475 TTY$FDTSETC::				;
+            00            03     F0  01F1   476 	INSV	#TTY$C_FC_SETC,#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3);
+         20 A3            06         01F4       
+                                     01F7   477 SET_COMMON:
+            57         E0 A5     9E  01F7   478 	MOVAB	UCB$L_TT_CTRLC(R5),R7	; ASSUME CONTROL C
+         20 A3            08     E0  01FB   479 	BBS	#IO$V_CTRLCAST,IRP$W_FUNC(R3),CTRLAST; BR IF CONTROL C
+                          17         01FF       
+            57         DC A5     9E  0200   480 	MOVAB	UCB$L_TT_CTRLY(R5),R7	; ADDRESS LIST HEAD
+         20 A3            07     E1  0204   481 	BBC	#IO$V_CTRLYAST,IRP$W_FUNC(R3),SET; BR IF SET CHAR
+                          17         0208       
+            50       0000'8F     3C  0209   482 	MOVZWL	#SS$_NOPRIV,R0		; ASSUME NO PRIVILEGE
+                          51     DC  020E   483 	MOVPSL	R1			; GET PSL
+            02            16     ED  0210   484 	CMPZV	#PSL$V_PRVMOD,#PSL$S_PRVMOD,R1,#PSL$C_SUPER
+            02            51         0213       
+                          3A     14  0215   485 	BGTR	BAD_SET			; IF GTR THEN NOT PRIVILEGED
+                          FDE6'  30  0217   486 CTRLAST:BSBW	COM$SETATTNAST		; ENTER SET UP CODE
+                 00000000'EF     17  021A   487 	JMP	EXE$FINISHIOC		;
+                                     0220   488 SET:					;
+            50       0000'8F     3C  0220   489 	MOVZWL	#SS$_ACCVIO,R0		; ASSUME ACCESS VIOLATION
+            51            6C     D0  0225   490 	MOVL	P1(AP),R1		; ADDRESS BUFFER
+                          1F     13  0228   491 	BEQL	20$			; IF EQL THEN NO CHANGE MUST BE SENSE
+                                     022A   492 	IFNORD	#8,(R1),BAD_SET		; ERROR IF NO ACCESS
+         34 A3            61     7D  0230   493 	MOVQ	(R1),IRP$L_MEDIA(R3)	; SAVE NEW DATA
+         3C A3         08 AC     B0  0234   494 	MOVW	P3(AP),IRP$W_TT_PRMPT(R3); GET THE SPEED PARAMETER
+         3E A3         0C AC     B0  0239   495 	MOVW	P4(AP),IRP$W_TT_PRMPT+2(R3); SAVE FILLS
+         34 A3         10 AC     90  023E   496 	MOVB	P5(AP),IRP$L_MEDIA(R3)	; SAVE PARITY
+                 00000000'EF     17  0243   497 15$:	JMP	EXE$QIODRVPKT		; QUEUE PACKET TO DRIVER
+            00            04     F0  0249   498 20$:	INSV	#TTY$C_FC_N_SET,#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3); SET SENSE, NO SE
+         20 A3            06         024C       
+                          F2     11  024F   499 	BRB	15$			; AND CONTINUE
+                 00000000'EF     17  0251   500 BAD_SET:JMP	EXE$ABORTIO		; RETURN ON ERROR
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  13
+X05             CARRAIGE CONTROL INTERPRETATION                                                                                  (6)
+
+                                     0257   502 	.SBTTL	CARRAIGE CONTROL INTERPRETATION
+                                     0257   503  
+                                 00000000   504 	.PSECT	WIONONPAGED
+                                     0000   505  
+                                     0000   506 ;++
+                                     0000   507 ; TT$CARRIAGE - INTERPRET CARRIAGE CONTROL SPECIFIER
+                                     0000   508 ;
+                                     0000   509 ; FUNCTIONAL DESCRIPTION:
+                                     0000   510 ;
+                                     0000   511 ; THIS ROUTINE IS USED BY THE LINE PRINTER DRIVER AND THE TERMINAL
+                                     0000   512 ; DRIVER TO INTERPRET THE CARRIAGE CONTROL SPECIFIER IN IRP$B_CARCON .
+                                     0000   513 ;
+                                     0000   514 ; THE SPECIFIER IS AS FOLLOWS:
+                                     0000   515 ;
+                                     0000   516 ;	.BYTE 1 -- FORTRAN CARRIAGE CONTROL CHARACTER IF NOT 0
+                                     0000   517 ;	.BYTE 2 -- 0
+                                     0000   518 ;	.BYTE 3 -- PREFIX CARRIAGE CONTROL
+                                     0000   519 ;	.BYTE 4 -- SUFFIX CARRIAGE CONTROL
+                                     0000   520 ;
+                                     0000   521 ; THE PRE/SUF FIELDS ARE AS FOLLOWS
+                                     0000   522 ;
+                                     0000   523 ;	IF BIT 7=0 THEN BITS 6-0 ARE THE NUMBER OF NEWLINES TO INSERT.
+                                     0000   524 ;	IF BIT 7=1 AND BIT 6=0 THEN BITS 4-0 ARE THE ASCII CHARACTER TO
+                                     0000   525 ;			       OUTPUT. ASCII SET C0 OR C1 IS SPECIFIED BY BIT 5.
+                                     0000   526 ;	IF BIT 7=1 AND BIT 6=1 THEN BITS 5-0 ARE THE PRINTER CHANNEL NUMBER
+                                     0000   527 ;
+                                     0000   528 ; ASCII SET C0 IS ASSUMED AND BIT 6 IS IGNORED IF BIT 7=0.
+                                     0000   529 ;
+                                     0000   530 ; INPUTS:
+                                     0000   531 ;
+                                     0000   532 ;	R3 = ADDRESS OF THE I/O PACKET
+                                     0000   533 ;	R5 = ADDRESS OF THE UCB
+                                     0000   534 ;
+                                     0000   535 ; OUTPUTS:
+                                     0000   536 ;
+                                     0000   537 ;	IRP$B_CARCON IS SET UP TO REFLECT THE PRE/SUF CHARACTERS TO SEND.
+                                     0000   538 ;
+                                     0000   539 ;	BYTE 0 = NUMBER OF CHARACTERS TO SEND
+                                     0000   540 ;	BYTE 1 = CHARACTER, IF 0 THEN NEWLINE
+                                     0000   541 ;
+                                     0000   542 ;	IRP$B_CARCON+2 HAS THE SUFFIX CONTROL.
+                                     0000   543 ;
+                                     0000   544 ;	R0,R1 ARE USED.
+                                     0000   545 ;
+                                     0000   546 ;--
+                                     0000   547 ;
+                                     0000   548 ; LOCAL DATA TABLE
+                                     0000   549 ;
+                                     0000   550 CCTABLE:				; CARRIAGE CONTROL TO FORTRAN MATCH TABLE
+                        0D 01 00 01  0000   551 	.BYTE	1,0,1,TTY$C_CR		; SPACE
+                                 20  0004   552 	.ASCII	/ /			;
+                        0D 01 00 02  0005   553 	.BYTE	2,0,1,TTY$C_CR		; "0"
+                                 30  0009   554 	.ASCII	/0/
+                        0D 01 0C 01  000A   555 	.BYTE	1,TTY$C_FF,1,TTY$C_CR	; "1"
+                                 31  000E   556 	.ASCII	/1/
+                        0D 01 00 00  000F   557 	.BYTE	0,0,1,TTY$C_CR		; "+"
+                                 2B  0013   558 	.ASCII	/+/
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  14
+X05             CARRAIGE CONTROL INTERPRETATION                                                                                  (6)
+
+                        00 00 00 01  0014   559 	.BYTE	1,0,0,0			; "$"
+                                 24  0018   560 	.ASCII	/$/
+                        0D 01 00 01  0019   561 	.BYTE	1,0,1,TTY$C_CR		; DEFAULT
+                                 00  001D   562 	.BYTE	0			; TABLE END
+                                     001E   563 ;
+                                     001E   564 ;
+                                     001E   565 ;
+                                     001E   566 TT$CARRIAGE::				; INTERPRET CARRIAGE CONTROL
+            51         38 A3     9A  001E   567 	MOVZBL	IRP$B_CARCON(R3),R1	; GET FORTRAN SPECIFIER
+                          12     13  0022   568 	BEQL	20$			; IF EQL THEN TRY PRE/SUF
+            50         D9 AF     9E  0024   569 	MOVAB	B^CCTABLE,R0		; ADDRESS MATCH TABLE
+         38 A3            80     D0  0028   570 10$:	MOVL	(R0)+,IRP$B_CARCON(R3)	; ASSUME MATCH
+                          60     95  002C   571 	TSTB	(R0)			; END OF TABLE?
+                          05     13  002E   572 	BEQL	15$			; IF EQL THEN YES
+            51            80     91  0030   573 	CMPB	(R0)+,R1		; MATCH?
+                          F3     12  0033   574 	BNEQ	10$			; NO THEN SEARCH
+                                 05  0035   575 15$:	RSB				; ELSE RETURN
+                                     0036   576 ;
+                                     0036   577 ; PRE/SUF CARRIAGE CONTROL
+                                     0036   578 ;
+            51         3A A3     9A  0036   579 20$:	MOVZBL	IRP$B_CARCON+2(R3),R1	; GET PREFIX SPECIFIER
+                          02     13  003A   580 	BEQL	30$			; IF EQL THEN NONE
+                          19     10  003C   581 	BSBB	100$			; INTERPRET THE SPECIFIER
+         38 A3            51     90  003E   582 30$:	MOVB	R1,IRP$B_CARCON(R3)	; INSERT NUMBER
+         39 A3            50     90  0042   583 	MOVB	R0,IRP$B_CARCON+1(R3)	; INSERT CHARACTER
+            51         3B A3     9A  0046   584 	MOVZBL	IRP$B_CARCON+3(R3),R1	; GET SUFFIX SPECIFIER
+                          02     13  004A   585 	BEQL	40$			; IF EQL THEN NONE
+                          09     10  004C   586 	BSBB	100$			; CONVERT THE SPECIFIER
+         3A A3            51     90  004E   587 40$:	MOVB	R1,IRP$B_CARCON+2(R3)	; INSERT NUMBER
+         3B A3            50     90  0052   588 	MOVB	R0,IRP$B_CARCON+3(R3)	; INSERT CHARACTER
+                                 05  0056   589 	RSB				; RETURN
+                                     0057   590 ;
+                                     0057   591 ; SUBROUTINE TO INTERPRET PRE/SUF SPECIFIER
+                                     0057   592 ;
+                          50     D4  0057   593 100$:	CLRL	R0			; ASSUME NEWLINE
+            51            07     E1  0059   594 	BBC	#7,R1,110$		; IF BIT 7 CLEAR THEN DONE
+                          08         005C       
+            51         E0 8F     8B  005D   595 	BICB3	#^X0E0,R1,R0		; REMOVE OTHER BITS
+                          50         0061       
+            51            01     9A  0062   596 	MOVZBL	#1,R1			; SET ONE CHARACTER
+                                 05  0065   597 110$:	RSB				; RETURN
+                                     0066   598 ;
+                                     0066   599 	.END
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  15
+SYMBOL TABLE                                                                                                                     (6)
+
+BAD_SET          00000251 R     03   IO$M_CREATE    = 00000080            IO$V_NOFILTR   = 00000009            
+BIT...         = 00000006            IO$M_CTRLCAST  = 00000100            IO$V_NOFORMAT  = 00000008            
+CCTABLE          00000000 R     04   IO$M_CTRLYAST  = 00000080            IO$V_NOW       = 00000006            
+COM$SETATTNAST   ********   X   03   IO$M_CVTLOW    = 00000100            IO$V_NOWAIT    = 00000007            
+CTRLAST          00000217 R     03   IO$M_DATACHECK = 00004000            IO$V_PACKED    = 00000007            
+DYN$C_ACB      = 00000002            IO$M_DELETE    = 00000100            IO$V_PURGE     = 0000000B            
+DYN$C_ADP      = 00000001            IO$M_DMOUNT    = 00000400            IO$V_READATTN  = 00000007            
+DYN$C_AQB      = 00000003            IO$M_DSABLMBX  = 00000400            IO$V_REVERSE   = 00000006            
+DYN$C_BRDCST   = 0000001A            IO$M_ENABLMBX  = 00000080            IO$V_SHUTDOWN  = 00000007            
+DYN$C_BUFIO    = 00000013            IO$M_FCODE     = 0000003F            IO$V_STARTUP   = 00000006            
+DYN$C_CEB      = 00000004            IO$M_HANGUP    = 00000200            IO$V_SYNCH     = 00000009            
+DYN$C_CIR      = 0000001E            IO$M_INHERLOG  = 00000800            IO$V_TIMED     = 00000007            
+DYN$C_CRB      = 00000005            IO$M_INHEXTGAP = 00001000            IO$V_TRMNOECHO = 0000000C            
+DYN$C_CXB      = 0000001B            IO$M_INHRETRY  = 00008000            IO$V_WRTATTN   = 00000008            
+DYN$C_DDB      = 00000006            IO$M_INHSEEK   = 00001000            IO$_ACCESS     = 00000032            
+DYN$C_FCB      = 00000007            IO$M_INTERRUPT = 00000040            IO$_ACPCONTROL = 00000038            
+DYN$C_FRK      = 00000008            IO$M_MOUNT     = 00000200            IO$_CREATE     = 00000033            
+DYN$C_GSD      = 00000015            IO$M_NOECHO    = 00000040            IO$_DEACCESS   = 00000034            
+DYN$C_IDB      = 00000009            IO$M_NOFILTR   = 00000200            IO$_DELETE     = 00000035            
+DYN$C_IRP      = 0000000A            IO$M_NOFORMAT  = 00000100            IO$_DIAGNOSE   = 0000001D            
+DYN$C_JPB      = 0000001F            IO$M_NOW       = 00000040            IO$_DRVCLR     = 00000004            
+DYN$C_KFH      = 00000026            IO$M_NOWAIT    = 00000080            IO$_ERASETAPE  = 00000006            
+DYN$C_KFI      = 00000018            IO$M_PACKED    = 00000080            IO$_LOGICAL    = 0000002F            
+DYN$C_LOG      = 0000000B            IO$M_PURGE     = 00000800            IO$_MODIFY     = 00000036            
+DYN$C_MTL      = 00000019            IO$M_READATTN  = 00000080            IO$_MOUNT      = 00000039            
+DYN$C_MVL      = 00000016            IO$M_REVERSE   = 00000040            IO$_NOP        = 00000000            
+DYN$C_NDB      = 0000001C            IO$M_SHUTDOWN  = 00000080            IO$_OFFSET     = 00000006            
+DYN$C_NET      = 00000017            IO$M_STARTUP   = 00000040            IO$_PACKACK    = 00000008            
+DYN$C_PBH      = 00000020            IO$M_SYNCH     = 00000200            IO$_PHYSICAL   = 0000001F            
+DYN$C_PCB      = 0000000C            IO$M_TIMED     = 00000080            IO$_READHEAD   = 0000000E            
+DYN$C_PDB      = 00000021            IO$M_TRMNOECHO = 00001000            IO$_READLBLK   = 00000021            
+DYN$C_PFL      = 00000023            IO$M_WRTATTN   = 00000100            IO$_READPBLK   = 0000000C            
+DYN$C_PIB      = 00000022            IO$S_FCODE     = 00000006            IO$_READPRESET = 00000019            
+DYN$C_PQB      = 0000000D            IO$V_ABORT     = 00000008            IO$_READPROMPT = 00000037            
+DYN$C_PTR      = 00000025            IO$V_ACCESS    = 00000006            IO$_READTRACKD = 00000010            
+DYN$C_RVT      = 0000000E            IO$V_ATTNAST   = 00000008            IO$_READVBLK   = 00000031            
+DYN$C_SFT      = 00000024            IO$V_BINARY    = 00000006            IO$_RECAL      = 00000003            
+DYN$C_SSB      = 0000001D            IO$V_CANCTRLO  = 00000006            IO$_RELEASE    = 00000005            
+DYN$C_TQE      = 0000000F            IO$V_COMMOD    = 00000006            IO$_RETCENTER  = 00000007            
+DYN$C_TYPAHD   = 00000014            IO$V_CREATE    = 00000007            IO$_REWIND     = 00000024            
+DYN$C_UCB      = 00000010            IO$V_CTRLCAST  = 00000008            IO$_REWINDOFF  = 00000022            
+DYN$C_VCB      = 00000011            IO$V_CTRLYAST  = 00000007            IO$_SEARCH     = 00000009            
+DYN$C_WCB      = 00000012            IO$V_CVTLOW    = 00000008            IO$_SEEK       = 00000002            
+EXE$ABORTIO      ********   X   03   IO$V_DATACHECK = 0000000E            IO$_SENSECHAR  = 0000001B            
+EXE$ALLOCBUF     ********   X   03   IO$V_DELETE    = 00000008            IO$_SENSEMODE  = 00000027            
+EXE$BUFFRQUOTA   ********   X   03   IO$V_DMOUNT    = 0000000A            IO$_SETCHAR    = 0000001A            
+EXE$FINISHIOC    ********   X   03   IO$V_DSABLMBX  = 0000000A            IO$_SETMODE    = 00000023            
+EXE$QIODRVPKT    ********   X   03   IO$V_ENABLMBX  = 00000007            IO$_SKIPFILE   = 00000025            
+EXE$READCHK      ********   X   03   IO$V_FCODE     = 00000000            IO$_SKIPRECORD = 00000026            
+EXE$WRITECHK     ********   X   03   IO$V_HANGUP    = 00000009            IO$_SPACEFILE  = 00000002            
+GBL...         = 00000000            IO$V_INHERLOG  = 0000000B            IO$_SPACERECORD= 00000009            
+IO$M_ABORT     = 00000100            IO$V_INHEXTGAP = 0000000C            IO$_STARTSPNDL = 00000019            
+IO$M_ACCESS    = 00000040            IO$V_INHRETRY  = 0000000F            IO$_UNLOAD     = 00000001            
+IO$M_ATTNAST   = 00000100            IO$V_INHSEEK   = 0000000C            IO$_VIRTUAL    = 0000003F            
+IO$M_BINARY    = 00000040            IO$V_INTERRUPT = 00000006            IO$_WRITECHECK = 0000000A            
+IO$M_CANCTRLO  = 00000040            IO$V_MOUNT     = 00000009            IO$_WRITECHECKH= 00000018            
+IO$M_COMMOD    = 00000040            IO$V_NOECHO    = 00000006            IO$_WRITEHEAD  = 0000000D            
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  16
+SYMBOL TABLE                                                                                                                     (6)
+
+IO$_WRITELBLK  = 00000020            IRP$V_FUNC     = 00000001            PCB$V_PHDRES   = 00000012            
+IO$_WRITEMARK  = 0000001C            IRP$V_MODE     = 00000000            PCB$V_PSWAPM   = 00000004            
+IO$_WRITEOF    = 00000028            IRP$V_PAGIO    = 00000002            PCB$V_RES      = 00000000            
+IO$_WRITEPBLK  = 0000000B            IRP$V_PHYSIO   = 00000008            PCB$V_RESPEN   = 00000005            
+IO$_WRITETRACKD= 0000000F            IRP$V_PRIVIO   = 00000009            PCB$V_SSFEXC   = 00000006            
+IO$_WRITEVBLK  = 00000030            IRP$V_SWAPIO   = 00000006            PCB$V_SSFEXCE  = 00000007            
+IPL$_ASTDEL    = 00000002            IRP$V_VIRTUAL  = 00000004            PCB$V_SSFEXCS  = 00000008            
+IPL$_HWCLK     = 00000018            IRP$W_ABCNT      0000003C            PCB$V_SSFEXCU  = 00000009            
+IPL$_IOPOST    = 00000004            IRP$W_BCNT       00000032            PCB$V_SSRWAIT  = 0000000A            
+IPL$_MAILBOX   = 0000000B            IRP$W_BOFF       00000030            PCB$V_SUSPEN   = 0000000B            
+IPL$_POWER     = 0000001F            IRP$W_CHAN       00000028            PCB$V_SWPVBN   = 00000010            
+IPL$_QUEUEAST  = 00000006            IRP$W_FUNC       00000020            PCB$V_WAKEPEN  = 0000000C            
+IPL$_SCHED     = 00000003            IRP$W_OBCNT      0000003E            PCB$V_WALL     = 0000000D            
+IPL$_SYNCH     = 00000007            IRP$W_SIZE       00000008            PCB$W_APTCNT     00000034            
+IPL$_TIMER     = 00000007            IRP$W_STS        0000002A            PCB$W_ASTCNT     0000003C            
+IRP$B_CARCON     00000038            IRP$W_TT_PRMPT   0000003C            PCB$W_BIOCNT     0000003E            
+IRP$B_EFN        00000022            P1             = 00000000            PCB$W_BIOLM      00000040            
+IRP$B_PRI        00000023            P2             = 00000004            PCB$W_BYTCNT     00000042            
+IRP$B_RMOD       0000000B            P3             = 00000008            PCB$W_BYTLM      00000068            
+IRP$B_TYPE       0000000A            P4             = 0000000C            PCB$W_DIOCNT     00000044            
+IRP$C_LENGTH     0000004C            P5             = 00000010            PCB$W_DIOLM      00000046            
+IRP$K_LENGTH     0000004C            P6             = 00000014            PCB$W_FILCNT     00000048            
+IRP$L_AST        00000010            PCB$B_ASTACT     0000000C            PCB$W_GPGCNT     00000038            
+IRP$L_ASTPRM     00000014            PCB$B_ASTEN      0000000D            PCB$W_GRP        00000022            
+IRP$L_DIAGBUF    00000044            PCB$B_PRI        0000000B            PCB$W_MEM        00000020            
+IRP$L_IOQBL      00000004            PCB$B_PRIB       00000033            PCB$W_MTXCNT     0000000E            
+IRP$L_IOQFL      00000000            PCB$B_TYPE       0000000A            PCB$W_PPGCNT     0000003A            
+IRP$L_IOSB       00000024            PCB$B_WEFC       00000032            PCB$W_PRCCNT     0000006A            
+IRP$L_IOST1      00000034            PCB$C_LENGTH     0000007C            PCB$W_SIZE       00000008            
+IRP$L_IOST2      00000038            PCB$K_LENGTH     0000007C            PCB$W_STATE      00000030            
+IRP$L_MEDIA      00000034            PCB$L_ASTQBL     00000014            PCB$W_TMBU       00000036            
+IRP$L_PID        0000000C            PCB$L_ASTQFL     00000010            PCB$W_TQCNT      0000004A            
+IRP$L_SEGVBN     00000040            PCB$L_EFC2P      00000058            PR$_ACCR       = 00000029            
+IRP$L_SEQNUM     00000048            PCB$L_EFC3P      0000005C            PR$_ACCS       = 00000028            
+IRP$L_SVAPTE     0000002C            PCB$L_EFCS       00000050            PR$_ASTLVL     = 00000013            
+IRP$L_TT_TERM    00000038            PCB$L_EFCU       00000054            PR$_ESP        = 00000001            
+IRP$L_UCB        0000001C            PCB$L_EFWM       0000004C            PR$_ICCS       = 00000018            
+IRP$L_WIND       00000018            PCB$L_OWNER      0000001C            PR$_ICR        = 0000001A            
+IRP$M_BUFIO    = 00000001            PCB$L_PHD        00000064            PR$_IPL        = 00000012            
+IRP$M_CHAINED  = 00000020            PCB$L_PHYPCB     00000018            PR$_ISP        = 00000004            
+IRP$M_COMPLX   = 00000008            PCB$L_PID        00000060            PR$_KSP        = 00000000            
+IRP$M_DIAGBUF  = 00000080            PCB$L_PQB        0000004C            PR$_MAPEN      = 00000038            
+IRP$M_FUNC     = 00000002            PCB$L_SQBL       00000004            PR$_NICR       = 00000019            
+IRP$M_PAGIO    = 00000004            PCB$L_SQFL       00000000            PR$_P0BR       = 00000008            
+IRP$M_PHYSIO   = 00000100            PCB$L_STS        00000028            PR$_P0LR       = 00000009            
+IRP$M_PRIVIO   = 00000200            PCB$L_UIC        00000020            PR$_P1BR       = 0000000A            
+IRP$M_SWAPIO   = 00000040            PCB$L_WSSWP      00000024            PR$_P1LR       = 0000000B            
+IRP$M_VIRTUAL  = 00000010            PCB$L_WTIME      0000002C            PR$_PCBB       = 00000010            
+IRP$S_FCODE    = 00000006            PCB$T_LNAME      0000006C            PR$_RXCS       = 00000020            
+IRP$S_FMOD     = 0000000A            PCB$V_ASTPEN   = 00000011            PR$_RXDB       = 00000021            
+IRP$S_MODE     = 00000002            PCB$V_BATCH    = 0000000E            PR$_SBIER      = 00000034            
+IRP$V_BUFIO    = 00000000            PCB$V_DELPEN   = 00000001            PR$_SBIFS      = 00000030            
+IRP$V_CHAINED  = 00000005            PCB$V_FORCPEN  = 00000002            PR$_SBIMT      = 00000033            
+IRP$V_COMPLX   = 00000003            PCB$V_HIBER    = 00000013            PR$_SBIQC      = 00000036            
+IRP$V_DIAGBUF  = 00000007            PCB$V_INQUAN   = 00000003            PR$_SBIS       = 00000031            
+IRP$V_FCODE    = 00000000            PCB$V_LOGIN    = 00000014            PR$_SBISC      = 00000032            
+IRP$V_FMOD     = 00000006            PCB$V_NOACNT   = 0000000F            PR$_SBITA      = 00000035            
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  17
+SYMBOL TABLE                                                                                                                     (6)
+
+PR$_SBR        = 0000000C            PSL$S_CURMOD   = 00000002            TT$V_EIGHTBIT  = 0000000F            
+PR$_SCBB       = 00000011            PSL$S_IPL      = 00000005            TT$V_ESCAPE    = 00000003            
+PR$_SID        = 0000003E            PSL$S_PRVMOD   = 00000002            TT$V_HOLDSCREEN= 0000000E            
+PR$_SIRR       = 00000014            PSL$V_CM       = 0000001F            TT$V_HOSTSYNC  = 00000004            
+PR$_SISR       = 00000015            PSL$V_CURMOD   = 00000018            TT$V_LFFILL    = 0000000B            
+PR$_SLR        = 0000000D            PSL$V_DV       = 00000007            TT$V_LOWER     = 00000007            
+PR$_SSP        = 00000002            PSL$V_FPD      = 0000001B            TT$V_MBXDSABL  = 00000010            
+PR$_TBIA       = 00000039            PSL$V_FU       = 00000006            TT$V_MECHTAB   = 00000008            
+PR$_TBIS       = 0000003A            PSL$V_IPL      = 00000010            TT$V_NOBRDCST  = 00000011            
+PR$_TODR       = 0000001B            PSL$V_IS       = 0000001A            TT$V_NOECHO    = 00000001            
+PR$_TXCS       = 00000022            PSL$V_IV       = 00000005            TT$V_NOTYPEAHD = 00000002            
+PR$_TXDB       = 00000023            PSL$V_PRVMOD   = 00000016            TT$V_ODD       = 00000007            
+PR$_USP        = 00000003            PSL$V_TBIT     = 00000004            TT$V_PAGE      = 00000019            
+PR$_WCSA       = 0000002C            PSL$V_TP       = 0000001E            TT$V_PARITY    = 00000006            
+PR$_WCSD       = 0000002D            SET              00000220 R     03   TT$V_PASSALL   = 00000000            
+PRV$V_ALLSPOOL = 00000004            SET_COMMON       000001F7 R     03   TT$V_REMOTE    = 0000000D            
+PRV$V_BUGCHK   = 00000017            SS$_ACCVIO       ********   X   03   TT$V_SCOPE     = 0000000C            
+PRV$V_CMEXEC   = 00000001            SS$_NOPRIV       ********   X   03   TT$V_SCRIPT    = 00000006            
+PRV$V_CMKRNL   = 00000000            TT$CARRIAGE      0000001E RG    04   TT$V_TTSYNC    = 00000005            
+PRV$V_DETACH   = 00000005            TT$C_BAUD_110  = 00000003            TT$V_WRAP      = 00000009            
+PRV$V_DEVCHAR  = 00000011            TT$C_BAUD_1200 = 00000008            TT$_LA120      = 00000021            
+PRV$V_DIAGNOSE = 00000006            TT$C_BAUD_134  = 00000004            TT$_LA36       = 00000020            
+PRV$V_EXQUOTA  = 00000013            TT$C_BAUD_150  = 00000005            TT$_LAX        = 00000020            
+PRV$V_GROUP    = 00000008            TT$C_BAUD_1800 = 00000009            TT$_UNKNOWN    = 00000000            
+PRV$V_GRPNAM   = 00000003            TT$C_BAUD_2000 = 0000000A            TT$_VT05       = 00000001            
+PRV$V_LOG_IO   = 00000007            TT$C_BAUD_2400 = 0000000B            TT$_VT52       = 00000040            
+PRV$V_NETMBX   = 00000014            TT$C_BAUD_300  = 00000006            TT$_VT55       = 00000041            
+PRV$V_NOACNT   = 00000009            TT$C_BAUD_3600 = 0000000C            TT$_VT5X       = 00000040            
+PRV$V_OPER     = 00000012            TT$C_BAUD_4800 = 0000000D            TTY$A_STANDARD   ********   X   03   
+PRV$V_PHY_IO   = 00000016            TT$C_BAUD_50   = 00000001            TTY$B_BD_CNT     00000015            
+PRV$V_PRMCEB   = 0000000A            TT$C_BAUD_600  = 00000007            TTY$B_BD_IPL     00000017            
+PRV$V_PRMGBL   = 00000018            TT$C_BAUD_7200 = 0000000E            TTY$B_BD_REFC    00000016            
+PRV$V_PRMMBX   = 0000000B            TT$C_BAUD_75   = 00000002            TTY$B_BD_TYPE    0000000A            
+PRV$V_PSWAPM   = 0000000C            TT$C_BAUD_9600 = 0000000F            TTY$B_BD_WHO     00000014            
+PRV$V_SETPRI   = 0000000D            TT$M_CRFILL    = 00000400            TTY$B_TA_TYPE    0000000A            
+PRV$V_SETPRV   = 0000000E            TT$M_EIGHTBIT  = 00008000            TTY$C_BELL     = 00000007            
+PRV$V_SYSGBL   = 00000019            TT$M_ESCAPE    = 00000008            TTY$C_BLANK    = 00000020            
+PRV$V_SYSNAM   = 00000002            TT$M_HOLDSCREEN= 00004000            TTY$C_BS       = 00000008            
+PRV$V_TMPMBX   = 0000000F            TT$M_HOSTSYNC  = 00000010            TTY$C_CR       = 0000000D            
+PRV$V_VOLPRO   = 00000015            TT$M_LFFILL    = 00000800            TTY$C_CTRLC    = 00000003            
+PRV$V_WORLD    = 00000010            TT$M_LOWER     = 00000080            TTY$C_CTRLO    = 0000000F            
+PSL$C_EXEC     = 00000001            TT$M_MBXDSABL  = 00010000            TTY$C_CTRLQ    = 00000011            
+PSL$C_KERNEL   = 00000000            TT$M_MECHTAB   = 00000100            TTY$C_CTRLR    = 00000012            
+PSL$C_SUPER    = 00000002            TT$M_NOBRDCST  = 00020000            TTY$C_CTRLS    = 00000013            
+PSL$C_USER     = 00000003            TT$M_NOECHO    = 00000002            TTY$C_CTRLU    = 00000015            
+PSL$M_CM       = 80000000            TT$M_NOTYPEAHD = 00000004            TTY$C_CTRLX    = 00000018            
+PSL$M_CURMOD   = 03000000            TT$M_ODD       = 00000080            TTY$C_CTRLY    = 00000019            
+PSL$M_DV       = 00000080            TT$M_PAGE      = FE000000            TTY$C_CTRLZ    = 0000001A            
+PSL$M_FPD      = 08000000            TT$M_PARITY    = 00000040            TTY$C_DELETE   = 0000007F            
+PSL$M_FU       = 00000040            TT$M_PASSALL   = 00000001            TTY$C_DOLLAR   = 00000024            
+PSL$M_IPL      = 001F0000            TT$M_REMOTE    = 00002000            TTY$C_DS_ACTIVE= 00000001            
+PSL$M_IS       = 04000000            TT$M_SCOPE     = 00001000            TTY$C_DS_ATTN1 = 00000002            
+PSL$M_IV       = 00000020            TT$M_SCRIPT    = 00000040            TTY$C_DS_ATTN2 = 00000003            
+PSL$M_PRVMOD   = 00C00000            TT$M_TTSYNC    = 00000020            TTY$C_DS_ATTN3 = 00000004            
+PSL$M_SAFBITS  = 000037FF            TT$M_WRAP      = 00000200            TTY$C_DS_HANG  = 00000005            
+PSL$M_TBIT     = 00000010            TT$S_PAGE      = 00000008            TTY$C_DS_HANG2 = 00000006            
+PSL$M_TP       = 40000000            TT$V_CRFILL    = 0000000A            TTY$C_DS_IDLE  = 00000000            
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  18
+SYMBOL TABLE                                                                                                                     (6)
+
+TTY$C_DS_RESET = 00000007            TTY$M_ST_HANGUP= 01000000            UCB$B_AMOD       00000053            
+TTY$C_ESCAPE   = 0000001B            TTY$M_ST_MULTI = 00000040            UCB$B_CEX        00000077            
+TTY$C_FC_N_SET = 00000004            TTY$M_ST_NL    = 00200000            UCB$B_CM1        0000004A            
+TTY$C_FC_READ  = 00000000            TTY$M_ST_NOECHO= 00008000            UCB$B_CM2        0000004B            
+TTY$C_FC_SETC  = 00000003            TTY$M_ST_NOFLTR= 00040000            UCB$B_DEVCLASS   00000038            
+TTY$C_FC_SETM  = 00000002            TTY$M_ST_PASALL= 00004000            UCB$B_DEVTYPE    00000039            
+TTY$C_FC_WRITE = 00000001            TTY$M_ST_PROMPT= 00020000            UCB$B_DIPL       00000052            
+TTY$C_FF       = 0000000C            TTY$M_ST_READ  = 00000800            UCB$B_DX_SCTCNT  FFFFFFFE            
+TTY$C_HIGHIPL  = 00000016            TTY$M_ST_SENDLF= 00000020            UCB$B_DX_SPARE   FFFFFFFF            
+TTY$C_LF       = 0000000A            TTY$M_ST_SKIPLF= 00800000            UCB$B_ERTCNT     00000070            
+TTY$C_LOWA     = 00000061            TTY$M_ST_TYPFUL= 00400000            UCB$B_ERTMAX     00000071            
+TTY$C_LOWZ     = 0000007B            TTY$M_ST_UNSOL = 04000000            UCB$B_ESCAPE     0000004B            
+TTY$C_NL       = 00000080            TTY$M_ST_WRITE = 00000100            UCB$B_FEX        00000076            
+TTY$C_ONE      = 00000031            TTY$M_ST_WRTALL= 00010000            UCB$B_FIPL       0000000B            
+TTY$C_PLUS     = 0000002B            TTY$M_ST_XOFF  = 00000002            UCB$B_LOCSRV     0000003C            
+TTY$C_SCRIPT   = 00000060            TTY$M_ST_XON   = 00000001            UCB$B_OFFNDX     00000090            
+TTY$C_TAB      = 00000009            TTY$Q_BD_LINK    00000000            UCB$B_OFFRTC     00000091            
+TTY$C_TYPAHDSIZ= 0000004E            TTY$S_A        = 0000000E            UCB$B_REMSRV     0000003D            
+TTY$C_VT       = 0000000B            TTY$V_A        = 00000000            UCB$B_SECTORS    0000003C            
+TTY$C_XOFF     = 00000013            TTY$V_CH_CTRL  = 00000005            UCB$B_SLAVE      00000074            
+TTY$C_XON      = 00000011            TTY$V_CH_CTRL2 = 00000007            UCB$B_SPR        00000075            
+TTY$C_ZERO     = 00000030            TTY$V_CH_LOWER = 00000006            UCB$B_STATE      00000052            
+TTY$FDTREAD      00000000 RG    03   TTY$V_CH_SPEC  = 00000004            UCB$B_TRACKS     0000003D            
+TTY$FDTSETC      000001F1 RG    03   TTY$V_ST_BADESC= 00000014            UCB$B_TT_BRDPT   FFFFFFFC            
+TTY$FDTSETM      000001E9 RG    03   TTY$V_ST_BRDCST= 00000007            UCB$B_TT_CRFILL  FFFFFFF9            
+TTY$FDTWRITE     00000127 RG    03   TTY$V_ST_CTRLO = 0000000C            UCB$B_TT_DIAL    FFFFFFF3            
+TTY$L_BD_DATA    00000018            TTY$V_ST_CTRLR = 0000000A            UCB$B_TT_ESC     FFFFFFF2            
+TTY$L_BD_FORK    0000000C            TTY$V_ST_CTRLS = 00000002            UCB$B_TT_ESC_O   FFFFFFFD            
+TTY$L_BD_MIN     00000028            TTY$V_ST_CURSOR= 00000004            UCB$B_TT_FILL    FFFFFFF8            
+TTY$L_BD_UCB     00000010            TTY$V_ST_DEL   = 0000000D            UCB$B_TT_LFFILL  FFFFFFFA            
+TTY$L_RB_DATA    00000010            TTY$V_ST_EOL   = 00000009            UCB$B_TT_LINE    FFFFFFF1            
+TTY$L_RB_NXT     00000000            TTY$V_ST_ESC   = 00000013            UCB$B_TT_SPARE   FFFFFFF0            
+TTY$L_RB_UVA     00000004            TTY$V_ST_ESC_O = 0000001B            UCB$B_TT_SPEED   FFFFFFFB            
+TTY$L_TA_DATA    00000010            TTY$V_ST_FILL  = 00000003            UCB$B_TYPE       0000000A            
+TTY$L_TA_END     0000000C            TTY$V_ST_GETAHD= 00000019            UCB$B_VERTSZ     0000003F            
+TTY$L_TA_GET     00000004            TTY$V_ST_HANGUP= 00000018            UCB$C_LENGTH     00000074            
+TTY$L_TA_PUT     00000000            TTY$V_ST_MULTI = 00000006            UCB$C_LOGLNK   = 00000001            
+TTY$L_WB_DATA    0000000C            TTY$V_ST_NL    = 00000015            UCB$K_LENGTH     00000074            
+TTY$L_WB_END     00000004            TTY$V_ST_NOECHO= 0000000F            UCB$L_AMB        00000054            
+TTY$L_WB_NXT     00000000            TTY$V_ST_NOFLTR= 00000012            UCB$L_ASTQBL     00000010            
+TTY$M_A        = 00003FFF            TTY$V_ST_PASALL= 0000000E            UCB$L_ASTQFL     0000000C            
+TTY$M_CH_CTRL  = 00000020            TTY$V_ST_PROMPT= 00000011            UCB$L_CPID       0000005C            
+TTY$M_CH_CTRL2 = 00000080            TTY$V_ST_READ  = 0000000B            UCB$L_CRB        00000020            
+TTY$M_CH_LOWER = 00000040            TTY$V_ST_SENDLF= 00000005            UCB$L_DDB        00000024            
+TTY$M_CH_SPEC  = 00000010            TTY$V_ST_SKIPLF= 00000017            UCB$L_DEVCHAR    00000034            
+TTY$M_ST_BADESC= 00100000            TTY$V_ST_TYPFUL= 00000016            UCB$L_DEVDEPEND  0000003C            
+TTY$M_ST_BRDCST= 00000080            TTY$V_ST_UNSOL = 0000001A            UCB$L_DPC        0000007C            
+TTY$M_ST_CTRLO = 00001000            TTY$V_ST_WRITE = 00000008            UCB$L_DUETIM     0000005C            
+TTY$M_ST_CTRLR = 00000400            TTY$V_ST_WRTALL= 00000010            UCB$L_DX_BFPNT   FFFFFFF4            
+TTY$M_ST_CTRLS = 00000004            TTY$V_ST_XOFF  = 00000001            UCB$L_DX_BUF     FFFFFFF0            
+TTY$M_ST_CURSOR= 00000010            TTY$V_ST_XON   = 00000000            UCB$L_DX_RXDB    FFFFFFF8            
+TTY$M_ST_DEL   = 00002000            TTY$W_BD_SIZE    00000008            UCB$L_EMB        00000078            
+TTY$M_ST_EOL   = 00000200            TTY$W_RB_ORGHOR  0000000C            UCB$L_FIRST      00000014            
+TTY$M_ST_ESC   = 00080000            TTY$W_RB_SIZE    00000008            UCB$L_FPC        0000000C            
+TTY$M_ST_ESC_O = 08000000            TTY$W_RB_TIMOS   0000000E            UCB$L_FQBL       00000004            
+TTY$M_ST_FILL  = 00000008            TTY$W_TA_SIZE    00000008            UCB$L_FQFL       00000000            
+TTY$M_ST_GETAHD= 02000000            TTY$W_WB_SIZE    00000008            UCB$L_FR3        00000010            
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  19
+SYMBOL TABLE                                                                                                                     (6)
+
+UCB$L_FR4        00000014            UCB$S_TT_ODD   = 00000001            UCB$W_MSGCNT     00000016            
+UCB$L_IOQBL      00000044            UCB$S_TT_PARTY = 00000001            UCB$W_MSGMAX     00000014            
+UCB$L_IOQFL      00000040            UCB$S_TT_SPEED = 00000004            UCB$W_NT_CHAN    0000007C            
+UCB$L_IRP        0000004C            UCB$T_PARTNER    0000000C            UCB$W_OFFSET     00000086            
+UCB$L_LINK       0000002C            UCB$V_BACKP    = 00000005            UCB$W_REFC       00000050            
+UCB$L_LOGADR     00000064            UCB$V_BSY      = 00000008            UCB$W_SIZE       00000008            
+UCB$L_MAXBLOCK   00000080            UCB$V_CANCEL   = 00000003            UCB$W_SRCADDR    0000001A            
+UCB$L_MEDIA      00000088            UCB$V_DEADMO   = 0000000A            UCB$W_STS        00000058            
+UCB$L_NT_DATSSB  00000074            UCB$V_DELMBX   = 00000001            UCB$W_TT_CURSOR  FFFFFFFE            
+UCB$L_NT_INTSSB  00000078            UCB$V_DIAGBUF  = 00000001            UCB$W_TT_HOLD    FFFFFFF4            
+UCB$L_OPCNT      00000060            UCB$V_DX_WRITE = 00000003            UCB$W_TT_INAHD   FFFFFFF6            
+UCB$L_OWNUIC     0000001C            UCB$V_ECC      = 00000000            UCB$W_UNIT       00000048            
+UCB$L_PID        00000028            UCB$V_ERLOGIP  = 00000002            UCB$W_VPROT      0000001A            
+UCB$L_RQBL       00000004            UCB$V_INT      = 00000001            
+UCB$L_RQFL       00000000            UCB$V_INTTYPE  = 00000007            
+UCB$L_SVAPTE     00000068            UCB$V_JOB      = 00000000            
+UCB$L_SVPN       00000064            UCB$V_LNKPRI   = 00000006            
+UCB$L_TTCHAR     0000003C            UCB$V_LTYPE    = 00000000            
+UCB$L_TT_BRDCST  FFFFFFE4            UCB$V_MOUNTING = 00000009            
+UCB$L_TT_CTRLC   FFFFFFE0            UCB$V_MSGACK   = 00000004            
+UCB$L_TT_CTRLY   FFFFFFDC            UCB$V_MSGFLO   = 00000003            
+UCB$L_TT_MULTI   FFFFFFD8            UCB$V_NOCNVRT  = 00000002            
+UCB$L_TT_RDUE    FFFFFFEC            UCB$V_NT_BFROVF= 00000002            
+UCB$L_TT_STATE   FFFFFFD4            UCB$V_NT_BREAK = 00000005            
+UCB$L_TT_TYPAHD  FFFFFFE8            UCB$V_NT_NAME  = 00000004            
+UCB$L_VCB        00000030            UCB$V_NT_NONTR = 00000006            
+UCB$M_BSY      = 00000100            UCB$V_NT_SDP   = 00000003            
+UCB$M_CANCEL   = 00000008            UCB$V_ONLINE   = 00000004            
+UCB$M_DEADMO   = 00000400            UCB$V_POWER    = 00000005            
+UCB$M_DELMBX   = 00000002            UCB$V_PRMMBX   = 00000000            
+UCB$M_DIAGBUF  = 00000002            UCB$V_SEGFLO   = 00000002            
+UCB$M_DX_WRITE = 00000008            UCB$V_TIM      = 00000000            
+UCB$M_ECC      = 00000001            UCB$V_TIMOUT   = 00000006            
+UCB$M_ERLOGIP  = 00000004            UCB$V_TT_NOTIF = 00000002            
+UCB$M_INT      = 00000002            UCB$V_TT_ODD   = 00000005            
+UCB$M_INTTYPE  = 00000080            UCB$V_TT_PARTY = 00000004            
+UCB$M_JOB      = 00000001            UCB$V_TT_SPEED = 00000000            
+UCB$M_MOUNTING = 00000200            UCB$V_TT_TIMO  = 00000001            
+UCB$M_NOCNVRT  = 00000004            UCB$V_VALID    = 0000000B            
+UCB$M_NT_BFROVF= 00000004            UCB$W_BCNT       0000006E            
+UCB$M_NT_BREAK = 00000020            UCB$W_BCR        00000092            
+UCB$M_NT_NAME  = 00000010            UCB$W_BOFF       0000006C            
+UCB$M_NT_NONTR = 00000040            UCB$W_BUFQUO     00000018            
+UCB$M_NT_SDP   = 00000008            UCB$W_BYTESTOGO  0000003E            
+UCB$M_ONLINE   = 00000010            UCB$W_CHARGE     0000004A            
+UCB$M_POWER    = 00000020            UCB$W_CYLINDERS  0000003E            
+UCB$M_PRMMBX   = 00000001            UCB$W_DA         00000088            
+UCB$M_TIM      = 00000001            UCB$W_DC         0000008A            
+UCB$M_TIMOUT   = 00000040            UCB$W_DEVBUFSIZ  0000003A            
+UCB$M_TT_NOTIF = 00000004            UCB$W_DEVSTS     0000005A            
+UCB$M_TT_ODD   = 00000020            UCB$W_DSTADDR    00000018            
+UCB$M_TT_PARTY = 00000010            UCB$W_DX_BCR     FFFFFFFC            
+UCB$M_TT_SPEED = 0000000F            UCB$W_EC1        0000008C            
+UCB$M_TT_TIMO  = 00000002            UCB$W_EC2        0000008E            
+UCB$M_VALID    = 00000800            UCB$W_ERRCNT     00000072            
+UCB$S_LNKPRI   = 00000002            UCB$W_FUNC       00000084            
+UCB$S_LTYPE    = 00000002            UCB$W_MB_SEED    FFFFFFFC            
+TTYFDT          - TERMINAL FUNCTION DECISION ROUTINES            21-AUG-1978 23:59:27   VAX-11 MACRO X0.3-11               Page  20
+PROGRAM SECTION SYNOPSIS                                                                                                         (6)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFF      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+Y$EXEPAGED       00000257      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+WIONONPAGED      00000066      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+4906. BYTES LEFT IN FREE MEMORY POOL.
+2142. BYTES OF RECLAIMED MEMORY.
+OBJ$:TTYFDT,LIS$:TTYFDT/-SP=LIB$:LIB/ML,SRC$:TTYFDT
+10 MLB DIR RDS - 1151 GETS TO DEFINE 23 MACROS. 100 INTER. FILE WRITES. 

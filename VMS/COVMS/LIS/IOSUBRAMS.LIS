@@ -1,0 +1,547 @@
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)    4100  APPLY ECC CORRECTION
+   (1)   10400  CONVERT LOGICAL BLOCK TO PHYSICAL ADDRESS
+   (1)   14200  MAP VIRTUAL TO LOGICAL BLOCK
+   (1)   25500  UPDATE TRANSFER PARAMETERS
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   1
+01                                                                                                                               (1)
+
+                                     0000   100 	.TITLE	IOSUBRAMS - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELATED ROUTINES
+                                     0000   200 	.IDENT	/01/
+                                     0000   300  
+                                     0000   400 ;
+                                     0000   500 ; COPYRIGHT (C) 1977
+                                     0000   600 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+                                     0000   700 ;
+                                     0000   800 ; THIS SOFTWARE IS FURNISHED UNDER  A LICENSE FOR USE ONLY  ON  A
+                                     0000   900 ; SINGLE COMPUTER SYSTEM AND MAY BE  COPIED ONLY WITH  THE INCLU-
+                                     0000  1000 ; SION OF  THE  ABOVE  COPYRIGHT NOTICE.  THIS SOFTWARE,  OR  ANY
+                                     0000  1100 ; OTHER COPIES THEREOF, MAY NOT BE  PROVIDED  OR  OTHERWISE  MADE
+                                     0000  1200 ; AVAILABLE TO ANY OTHER PERSON EXCEPT  FOR  USE  ON  SUCH SYSTEM
+                                     0000  1300 ; AND TO  ONE WHO AGREES  TO  THESE LICENSE  TERMS.  TITLE TO AND
+                                     0000  1400 ; OWNERSHIP OF THE SOFTWARE SHALL AT ALL TIMES REMAIN IN DEC.
+                                     0000  1500 ;
+                                     0000  1600 ; THE INFORMATION IN THIS SOFTWARE  IS  SUBJECT TO CHANGE WITHOUT
+                                     0000  1700 ; NOTICE AND SHOULD NOT BE CONSTRUED  AS  A COMMITMENT BY DIGITAL
+                                     0000  1800 ; EQUIPMENT CORPORATION.
+                                     0000  1900 ;
+                                     0000  2000 ; DEC ASSUMES NO RESPONSIBILITY FOR THE USE OR RELIABILITY OF ITS
+                                     0000  2100 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000  2200 ;
+                                     0000  2300 ; D. N. CUTLER 16-MAR-77
+                                     0000  2400 ;
+                                     0000  2500 ; NONPAGED RANDOM ACCESS MASS STORAGE I/O RELATED ROUTINES
+                                     0000  2600 ;
+                                     0000  2700 ; MACRO LIBRARY CALLS
+                                     0000  2800 ;
+                                     0000  2900  
+                                     0000  3000 	$DEVDEF				;DEFINE DEVICE CHARACTERISTIC BITS
+                                     0000  3100 	$DYNDEF				;DEFINE DATA STRUCTURE TYPE CODES
+                                     0000  3200 	$IPLDEF				;DEFINE INTERRUPT PRIORITY LEVELS
+                                     0000  3300 	$IRPDEF				;DEFINE IRP OFFSETS
+                                     0000  3400 	$PRDEF				;DEFINE PROCESSOR REGISTERS
+                                     0000  3500 	$PTEDEF				;DEFINE PAGE TABLE ENTRY FIELDS
+                                     0000  3600 	$RVTDEF				;DEFINE RVT OFFSETS
+                                     0000  3700 	$UCBDEF				;DEFINE UCB OFFSETS
+                                     0000  3800 	$VADEF				;DEFINE VIRTUAL ADDRESS FIELDS
+                                     0000  3900 	$WCBDEF				;DEFINE WCB OFFSETS
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   2
+01              APPLY ECC CORRECTION                                                                                             (1)
+
+                                     0000  4100 	.SBTTL	APPLY ECC CORRECTION
+                                     0000  4200 ;+
+                                     0000  4300 ; IOC$APPLYECC - APPLY ECC CORRECTION
+                                     0000  4400 ;
+                                     0000  4500 ; THIS ROUTINE IS CALLED TO APPLY AN ECC CORRECTION TO DATA THAT HAS BEEN
+                                     0000  4600 ; TRANSFERED INTO MEMORY FROM A DISK DEVICE.
+                                     0000  4700 ;
+                                     0000  4800 ; INPUTS:
+                                     0000  4900 ;
+                                     0000  5000 ;	R0 = NUMBER OF BYTES OF DATA THAT WERE TRANSFERED UP TO, BUT NOT
+                                     0000  5100 ;		INCLUDING, BLOCK TO BE CORRECTED (MUST BE A MULTIPLE OF 512
+                                     0000  5200 ;		BYTES).
+                                     0000  5300 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     0000  5400 ;
+                                     0000  5500 ;	UCB$W_BCNT(R5) = LENGTH OF TRANSFER IN BYTES.
+                                     0000  5600 ;	UCB$W_EC1(R5) = STARTING BIT NUMBER OF ERROR BURST.
+                                     0000  5700 ;	UCB$W_EC2(R5) = EXCLUSIVE OR CORRECTION PATTERN.
+                                     0000  5800 ;	UCB$L_SVAPTE(R5) = SYSTEM VIRTUAL ADDRESS OF PAGE TABLE THAT MAPS
+                                     0000  5900 ;		THE TRANSFER.
+                                     0000  6000 ;
+                                     0000  6100 ; OUTPUTS:
+                                     0000  6200 ;
+                                     0000  6300 ;	THE CORRECTION PATTERN IS EXCLUSIVE OR'ED WITH THE DATA IN MEMORY
+                                     0000  6400 ;	PROVIDING THE NECESSARY CORRECTION.
+                                     0000  6500 ;
+                                     0000  6600 ;	R3 IS PRESERVED ACROSS CALL.
+                                     0000  6700 ;-
+                                     0000  6800  
+                                 00000000  6900 	.PSECT	WIONONPAGED
+                                     0000  7000 IOC$APPLYECC::				;APPLY ECC CORRECTION
+                          18     BB  0000  7100 	PUSHR	#^M<R3,R4>		;SAVE REGISTERS
+            52       008C C5     3C  0002  7200 	MOVZWL	UCB$W_EC1(R5),R2	;GET STARTING BIT NUMBER OF ERROR BURST
+                          52     D7  0007  7300 	DECL	R2			;CONVERT TO RELATIVE BIT NUMBER
+            52         F8 8F     8B  0009  7400 	BICB3	#^XF8,R2,R1		;ISOLATE PATTERN SHIFT COUNT
+                          51         000D       
+            52            08     C6  000E  7500 	DIVL	#8,R2			;CALCULATE RELATIVE BYTE OFFSET IN BLOCK
+            52            50     C0  0011  7600 	ADDL	R0,R2			;CALCULATE RELATIVE OFFSET IN BUFFER
+            50       008E C5     3C  0014  7700 	MOVZWL	UCB$W_EC2(R5),R0	;GET EXCLUSIVE OR CORRECTION PATTERN
+            50            51     78  0019  7800 	ASHL	R1,R0,R0		;SHIFT PATTERN TO PROPER POSITION
+                          50         001C       
+            54            03     D0  001D  7900 	MOVL	#3,R4			;SET LOOP COUNT
+         6E A5            52     B1  0020  8000 10$:	CMPW	R2,UCB$W_BCNT(R5)	;BYTE OFFSET WITHIN RANGE?
+                          47     1E  0024  8100 	BGEQU	40$			;IF GEQU NO
+            51         6C A5     3C  0026  8200 	MOVZWL	UCB$W_BOFF(R5),R1	;GET BYTE OFFSET IN PAGE
+            51            52     C0  002A  8300 	ADDL	R2,R1			;CALCULATE BYTE OFFSET OF TRANFER PTE
+            51         F7 8F     78  002D  8400 	ASHL	#-VA$S_BYTE,R1,R1	;CALCULATE LONGWORD OFFSET TO TRANSFER PTE
+                          51         0031       
+            53         68 B541   D0  0032  8500 	MOVL	@UCB$L_SVAPTE(R5)[R1],R3 ;GET TRANSFER PTE
+                          03     19  0037  8600 	BLSS	20$			;IF LSS VALID PTE
+                          FFC4'  30  0039  8700 	BSBW	IOC$PTETOPFN		;CONVERT TO VALID PTE
+         64 A5            04     C5  003C  8800 20$:	MULL3	#4,UCB$L_SVPN(R5),R1	;CALCULATE BYTE OFFSET TO SYSTEM PTE
+                          51         0040       
+                          53     F0  0041  8900 	INSV	R3,#PTE$V_PFN,-		;MOVE TRANSFER PTE INTO SYSTEM PAGE TABLE
+            15            00         0043  9000 		#PTE$S_PFN,@MMG$GL_SPTBASE[R1]	;
+                 00000000'FF41       0045       
+            51            07     78  004B  9100 	ASHL	#VA$S_BYTE-2,R1,R1	;CONVERT SVPN TO SYSTEM VIRTUAL ADDRESS
+                          51         004E       
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   3
+01              APPLY ECC CORRECTION                                                                                             (1)
+
+            51            1F     E2  004F  9200 	BBSS	#VA$V_SYSTEM,R1,30$	;SET SYSTEM VIRTUAL ADDRESS BIT
+                          00         0052       
+                                     0053  9300 30$:	INVALID	R1			;INVALIDATE TRANSLATION BUFFER
+            00            52     F0  0056  9400 	INSV	R2,#VA$V_BYTE,#VA$S_BYTE,R1 ;INSERT BYTE OFFSET IN BLOCK
+            51            09         0059       
+            53         6C A5     3C  005B  9500 	MOVZWL	UCB$W_BOFF(R5),R3	;GET BYTE OFFSET IN BUFFER
+            6143          50     8C  005F  9600 	XORB	R0,(R1)[R3]		;CORRECT MEMORY BYTE
+            50         F8 8F     78  0063  9700 	ASHL	#-8,R0,R0		;SHIFT NEXT CORRECTION BYTE INTO PLACE
+                          50         0067       
+                          52     D6  0068  9800 	INCL	R2			;UPDATE OFFSET IN BUFFER
+            B3            54     F5  006A  9900 	SOBGTR	R4,10$			;ANY MORE CORRECTIONS TO MAKE?
+                          18     BA  006D 10000 40$:	POPR	#^M<R3,R4>		;RESTORE REGISTERS
+         5A A5            01     A8  006F 10100 	BISW	#UCB$M_ECC,UCB$W_DEVSTS(R5) ;SET ECC CORRECTION MADE
+                                 05  0073 10200 	RSB				;
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   4
+01              CONVERT LOGICAL BLOCK TO PHYSICAL ADDRESS                                                                        (1)
+
+                                     0074 10400 	.SBTTL	CONVERT LOGICAL BLOCK TO PHYSICAL ADDRESS
+                                     0074 10500 ;+
+                                     0074 10600 ; IOC$CVTLOGPHY - CONVERT LOGICAL BLOCK TO PHYSICAL ADDRESS
+                                     0074 10700 ;
+                                     0074 10800 ; THIS ROUTINE IS CALLED TO CONDITIONALLY CONVERT A LOGICAL BLOCK NUMBER
+                                     0074 10900 ; TO A PHYSICAL DISK ADDRESS AND STORE THE RESULT IN THE I/O PACKET.
+                                     0074 11000 ;
+                                     0074 11100 ; INPUTS:
+                                     0074 11200 ;
+                                     0074 11300 ;	R0 = LOGICAL BLOCK NUMBER TO BE CONVERTED.
+                                     0074 11400 ;	R3 = I/O PACKET ADDRESS.
+                                     0074 11500 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     0074 11600 ;
+                                     0074 11700 ; OUTPUTS:
+                                     0074 11800 ;
+                                     0074 11900 ;	IF UCB$V_NOCNVRT IS CLEAR IN UCB$W_DEVSTS, THE LOGICAL BLOCK NUMBER
+                                     0074 12000 ;	IS CONVERTED TO A PHYSICAL DISK ADDRESS USING THE DISK GEOMETRY PARA-
+                                     0074 12100 ;	METERS IN THE UCB. THE RESULT IS STORED IN THE MEDIA ADDRESS LONGWORD
+                                     0074 12200 ;	OF THE I/O PACKET.
+                                     0074 12300 ;
+                                     0074 12400 ;	IF UCB$V_NOCNVRT IS SET, THE BLOCK NUMBER IS STORED IN THE MEDIA ADDRESS
+                                     0074 12500 ;	LONGWORD WITHOUT CONVERSION.
+                                     0074 12600 ;
+                                     0074 12700 ;	R3 IS PRESERVED ACROSS CALL.
+                                     0074 12800 ;-
+                                     0074 12900  
+                                     0074 13000 IOC$CVTLOGPHY::				;CONVERT LOGICAL BLOCK TO PHYSICAL ADDRESS
+         34 A3            50     D0  0074 13100 	MOVL	R0,IRP$L_MEDIA(R3)	;ASSUME NO CONVERSION
+         5A A5            02     E0  0078 13200 	BBS	#UCB$V_NOCNVRT,UCB$W_DEVSTS(R5),10$ ;BYPASS CONVERSION IF SET
+                          1D         007C       
+            52         3C A5     9A  007D 13300 	MOVZBL	UCB$L_DEVDEPEND(R5),R2	;GET NUMBER OF SECTORS PER TRACK
+                          51     D4  0081 13400 	CLRL	R1			;CLEAR HIGH PART OF DIVIDEND
+            50            52     7B  0083 13500 	EDIV	R2,R0,R0,IRP$L_MEDIA(R3) ;CALCULATE SECTOR NUMBER AND STORE
+         34 A3            50         0086       
+            52         3D A5     9A  0089 13600 	MOVZBL	UCB$L_DEVDEPEND+1(R5),R2 ;GET NUMBER OF TRACKS PER CYLINDER
+            50            52     7B  008D 13700 	EDIV	R2,R0,R0,R1		;CALCULATE TRACK AND CYLINDER
+            51            50         0090       
+         35 A3            51     90  0092 13800 	MOVB	R1,IRP$L_MEDIA+1(R3)	;STORE TRACK NUMBER
+         36 A3            50     B0  0096 13900 	MOVW	R0,IRP$L_MEDIA+2(R3)	;STORE CYLINDER NUMBER
+                                 05  009A 14000 10$:	RSB				;
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   5
+01              MAP VIRTUAL TO LOGICAL BLOCK                                                                                     (1)
+
+                                     009B 14200 	.SBTTL	MAP VIRTUAL TO LOGICAL BLOCK
+                                     009B 14300 ;+
+                                     009B 14400 ; IOC$MAPVBLK - MAP VIRTUAL TO LOGICAL BLOCK
+                                     009B 14500 ;
+                                     009B 14600 ; THIS ROUTINE IS CALLED TO MAP A VIRTUAL BLOCK TO A LOGICAL BLOCK USING A
+                                     009B 14700 ; MAPPING WINDOW.
+                                     009B 14800 ;
+                                     009B 14900 ; INPUTS:
+                                     009B 15000 ;
+                                     009B 15100 ;	R0 = VIRTUAL BLOCK NUMBER.
+                                     009B 15200 ;	R1 = NUMBER OF BYTES TO MAP.
+                                     009B 15300 ;	R2 = ADDRESS OF WINDOW MAPPING BLOCK.
+                                     009B 15400 ;	R5 = UCB ADDRESS OF DEVICE UNIT.
+                                     009B 15500 ;
+                                     009B 15600 ; OUTPUTS:
+                                     009B 15700 ;
+                                     009B 15800 ;	R0 LOW BIT CLEAR INDICATES A TOTAL MAPPING FAILURE.
+                                     009B 15900 ;
+                                     009B 16000 ;		R2 = NUMBER OF UNMAPPED BYTES.
+                                     009B 16100 ;
+                                     009B 16200 ;	R0 LOW BIT SET INDICATES PARTIAL MAP WITH:
+                                     009B 16300 ;
+                                     009B 16400 ;		R1 = LOGICAL BLOCK NUMBER OF FIRST BLOCK.
+                                     009B 16500 ;		R2 = NUMBER OF UNMAPPED BYTES.
+                                     009B 16600 ;		R5 = UCB ADDRESS OF DEVICE UNIT (POSSIBLY MODIFIED).
+                                     009B 16700 ;
+                                     009B 16800 ;	R3 IS PRESERVED ACROSS CALL.
+                                     009B 16900 ;-
+                                     009B 17000  
+                                     009B 17100 IOC$MAPVBLK1::				;ENTER HERE TO LOAD UCB FROM WCB
+            55         10 A2     D0  009B 17200 	MOVL	WCB$L_ORGUCB(R2),R5	;GET UCB ADDRESS FROM WINDOW
+                                     009F 17300 IOC$MAPVBLK::				;MAP VIRTUAL TO LOGICAL BLOCK
+            12         0A A2     91  009F 17400 	CMPB	WCB$B_TYPE(R2),#DYN$C_WCB ;SEE IF THIS IS REALLY A WINDOW
+                          77     12  00A3 17500 	BNEQ	110$			;IF NEQ NO
+                                     00A5 17600 10$:	DSBINT	UCB$B_FIPL(R5)		;SYNCHRONIZE ACCESS TO SYSTEM DATABASE
+                          1A     BB  00AC 17700 	PUSHR	#^M<R1,R3,R4>		;SAVE REGISTERS
+            53         16 A2     3C  00AE 17800 	MOVZWL	WCB$W_NMAP(R2),R3	;GET COUNT OF RETRIEVAL POINTERS
+                          1B     13  00B2 17900 	BEQL	30$			;BRANCH IF EMPTY WINDOW
+            54         20 A2     DE  00B4 18000 	MOVAL	WCB$L_STVBN(R2),R4	;POINT TO STARTING VBN
+            50            84     C2  00B8 18100 	SUBL	(R4)+,R0		;SUBTRACT STARTING VBN FROM DESIRED
+         34 A5            05     E0  00BB 18200 	BBS	#DEV$V_SQD,UCB$L_DEVCHAR(R5),40$ ;IF SET, SEQUENTIAL DEVICE
+                          13         00BF       
+                          0D     1F  00C0 18300 	BLSSU	30$			;BRANCH IF VBN PRECEDES WINDOW
+                                     00C2 18400  
+                                     00C2 18500 ;
+                                     00C2 18600 ; SCAN THE WINDOW, SUBTRACTING THE COUNT FIELD OF EACH POINTER FROM THE
+                                     00C2 18700 ; CURRENT RELATIVE BLOCK NUMBER.
+                                     00C2 18800 ;
+                                     00C2 18900  
+            51            84     3C  00C2 19000 20$:	MOVZWL	(R4)+,R1		;GET COUNT FIELD OF RETRIEVAL POINTER
+            50            51     C2  00C5 19100 	SUBL	R1,R0			;SUBTRACT FROM RELATIVE BLOCK NUMBER
+                          0E     1F  00C8 19200 	BLSSU	50$			;BRANCH IF VBN LOCATED IN THIS POINTER
+                          84     D5  00CA 19300 	TSTL	(R4)+			;SKIP LBN FIELD OF POINTER
+            F3            53     F5  00CC 19400 	SOBGTR	R3,20$			;LOOP THRU WINDOW
+                          50     D4  00CF 19500 30$:	CLRL	R0			;VBN IS BEYOND WINDOW
+                          43     11  00D1 19600 	BRB	100$			;RETURN FAILURE
+                                     00D3 19700  
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   6
+01              MAP VIRTUAL TO LOGICAL BLOCK                                                                                     (1)
+
+                                     00D3 19800 ;
+                                     00D3 19900 ; DEVICE IS A SEQUENTIAL DEVICE. FIRST MAPPING POINTER CONTAINS THE UCB ADDRESS
+                                     00D3 20000 ; OF THE CURRENT VOLUME THAT IS BEING PROCESSED. ALL BYTES ALWAYS MAP.
+                                     00D3 20100 ;
+                                     00D3 20200  
+            55            64     D0  00D3 20300 40$:	MOVL	(R4),R5			;GET CURRENT VOLUME UCB ADDRESS
+                          35     11  00D6 20400 	BRB	80$			;
+                                     00D8 20500  
+                                     00D8 20600 ;
+                                     00D8 20700 ; FOUND THE RETRIEVAL POINTER CONTAINING THE STARTING VBN. R0 NOW
+                                     00D8 20800 ; CONTAINS A NEGATIVE VALUE WHICH IS THE NUMBER OF BLOCKS BETWEEN
+                                     00D8 20900 ; THE STARTING VBN AND THE END OF THE POINTER.
+                                     00D8 21000 ;
+                                     00D8 21100  
+                          50     DD  00D8 21200 50$:	PUSHL	R0			;SAVE # BLOCKS MAPPED PAST START VBN
+            51            84     C0  00DA 21300 	ADDL	(R4)+,R1		;FIRST LBN BEYOND THIS POINTER
+            50            51     C0  00DD 21400 	ADDL	R1,R0			;COMPUTE STARTING LBN
+                                     00E0 21500  
+                                     00E0 21600 ;
+                                     00E0 21700 ; IF THE NEXT RETRIEVAL POINTER IS CONTIGUOUS WITH THE ONE FOUND, ADD
+                                     00E0 21800 ; IN ITS COUNT TO HANDLE THE CASE WHERE A TRANSFER SPANS TWO POINTERS.
+                                     00E0 21900 ; NOTE THAT THE GREATEST NUMBER OF CONTIGUOUS POINTERS A TRANSFER CAN
+                                     00E0 22000 ; SPAN IS TWO.
+                                     00E0 22100 ;
+                                     00E0 22200  
+                          53     D7  00E0 22300 	DECL	R3			;SEE IF THERE IS ANOTHER POINTER
+                          0B     15  00E2 22400 	BLEQ	60$			;BRANCH IF NONE
+            53            84     3C  00E4 22500 	MOVZWL	(R4)+,R3		;GET COUNT OF NEXT RETRIEVAL POINTER
+            64            51     D1  00E7 22600 	CMPL	R1,(R4)			;SEE IF THE NEXT POINTER IS CONTIGUOUS
+                          03     12  00EA 22700 	BNEQ	60$			;BRANCH IF NOT
+            6E            53     C2  00EC 22800 	SUBL	R3,(SP)			;ADD TO # BLOCKS MAPPED (NEGATIVE)
+                                     00EF 22900  
+                                     00EF 23000 ;
+                                     00EF 23100 ; EXTRACT THE LBN AND RVN COMPONENTS OF THE STARTING "LBN" AND SWITCH
+                                     00EF 23200 ; TO THE RIGHT UCB IF THIS IS A MULTI-VOLUME SET.
+                                     00EF 23300 ;
+                                     00EF 23400  
+            18            00     EF  00EF 23500 60$:	EXTZV	#0,#24,R0,R1		;EXTRACT LBN PART
+            51            50         00F2       
+            08            18     EF  00F4 23600 	EXTZV	#24,#8,R0,R0		;EXTRACT RVN
+            50            50         00F7       
+                          09     13  00F9 23700 	BEQL	70$			;BRANCH IF NOT VOLUME SET
+            52         1C A2     D0  00FB 23800 	MOVL	WCB$L_RVT(R2),R2	;GET RELATIVE VOLUME TABLE ADDR
+            55         08 A240   D0  00FF 23900 	MOVL	RVT$L_UCBLST-4(R2)[R0],R5 ;GET THE RIGHT UCB ADDRESS
+                                     0104 24000  
+                                     0104 24100 ;
+                                     0104 24200 ; SEE IF THE ENTIRE TRANSFER IS MAPPED CONTIGUOUSLY.
+                                     0104 24300 ;
+                                     0104 24400  
+            6E            09     78  0104 24500 70$:	ASHL	#9,(SP),(SP)		;CONVERT TO # BYTES MAPPED
+                          6E         0107       
+            6E            8E     C0  0108 24600 	ADDL	(SP)+,(SP)		;SUBTRACT FROM BYTES DESIRED
+                          02     18  010B 24700 	BGEQ	90$			;BRANCH IF NOT TOTAL MAP
+                          6E     D4  010D 24800 80$:	CLRL	(SP)			;ZERO INDICATES COMPLETE MAP
+            50   00000000'8F     D0  010F 24900 90$:	MOVL	#SS$_NORMAL,R0		;INDICATE SUCCESS
+                          1C     BA  0116 25000 100$:	POPR	#^M<R2,R3,R4>		;RESTORE REGISTERS
+                                     0118 25100 	ENBINT				;ALLOW INTERRUPTS
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   7
+01              MAP VIRTUAL TO LOGICAL BLOCK                                                                                     (1)
+
+                                 05  011B 25200 	RSB				;
+                                     011C 25300 110$:	BUG_CHECK STRNOTWCB,FATAL	;STRUCTURE IS NOT A WINDOW BLOCK
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   8
+01              UPDATE TRANSFER PARAMETERS                                                                                       (1)
+
+                                     0120 25500 	.SBTTL	UPDATE TRANSFER PARAMETERS
+                                     0120 25600 ;+
+                                     0120 25700 ; IOC$UPDATRANSP - UPDATE TRANSFER PARAMETERS
+                                     0120 25800 ;
+                                     0120 25900 ; THIS ROUTINE IS CALLED TO UPDATE THE TRANSFER PARAMETERS AFTER A DISK ERROR
+                                     0120 26000 ; HAS BEEN DISCOVERED BUT GOOD DATA WAS TRANSFERED.
+                                     0120 26100 ;
+                                     0120 26200 ; INPUTS:
+                                     0120 26300 ;
+                                     0120 26400 ;	R0 = NUMBER OF BYTES OF DATA THAT WERE TRANSFERED (MUST BE A MULTIPLE
+                                     0120 26500 ;		OF 512 BYTES).
+                                     0120 26600 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     0120 26700 ;
+                                     0120 26800 ;	UCB$W_BCNT(R5) = LENGTH OF TRANSFER IN BYTES.
+                                     0120 26900 ;	UCB$W_DA(R5) = CURRENT SECTOR AND TRACK ADDRESS.
+                                     0120 27000 ;	UCB$W_DC(R5) = CURRENT CYLINDER ADDRESS.
+                                     0120 27100 ;	UCB$L_SVAPTE(R5) = SYSTEM VIRTUAL ADDRESS OF PAGE TABLE THAT MAPS
+                                     0120 27200 ;		THE TRANSFER.
+                                     0120 27300 ;
+                                     0120 27400 ; OUTPUTS:
+                                     0120 27500 ;
+                                     0120 27600 ;	THE NUMBER OF BYTES REMAINING TO BE TRANSFERED, THE SYSTEM VIRTUAL
+                                     0120 27700 ;	ADDRESS OF THE NEXT PTE, AND THE CURRENT DISK ADDRESS OF THE TRANSFER
+                                     0120 27800 ;	ARE UPDATED.
+                                     0120 27900 ;
+                                     0120 28000 ;	R3 IS PRESERVED ACROSS CALL.
+                                     0120 28100 ;-
+                                     0120 28200  
+                                     0120 28300 IOC$UPDATRANSP::			;UPDATE TRANSFER PARAMETERS
+         6E A5            50     A2  0120 28400 	SUBW	R0,UCB$W_BCNT(R5)	;CALCULATE REMAINING BYTES TO TRANSFER
+            50         F9 8F     78  0124 28500 	ASHL	#-7,R0,R0		;CALCULATE PTE LONGWORDS TO SKIP OVER
+                          50         0128       
+         68 A5            50     C0  0129 28600 	ADDL	R0,UCB$L_SVAPTE(R5)	;UPDATE SYSTEM VIRTUAL ADDRESS OF NEXT PTE
+            50            04     C6  012D 28700 	DIVL	#4,R0			;CALCULATE NUMBER OF SECTORS TRANSFERED
+       0088 C5            50     80  0130 28800 	ADDB	R0,UCB$W_DA(R5)		;UPDATE SECTOR ADDRESS
+                                     0135 28900  
+                                     0135 29000 ;
+                                     0135 29100 ; RIPPLE CARRY FROM SECTOR TO TRACK AND FROM TRACK TO CYLINDER
+                                     0135 29200 ;
+                                     0135 29300  
+       0088 C5         3C A5     91  0135 29400 10$:	CMPB	UCB$L_DEVDEPEND(R5),UCB$W_DA(R5) ;SECTOR OVERFLOW?
+                          1E     1A  013B 29500 	BGTRU	20$			;IF GTRU NO
+       0088 C5         3C A5     82  013D 29600 	SUBB	UCB$L_DEVDEPEND(R5),UCB$W_DA(R5) ;SUBTRACT OUT A TRACK
+                     0089 C5     96  0143 29700 	INCB	UCB$W_DA+1(R5)		;INCREMENT TRACK ADDRESS
+       0089 C5         3D A5     91  0147 29800 	CMPB	UCB$L_DEVDEPEND+1(R5),UCB$W_DA+1(R5) ;TRACK OVERFLOW?
+                          E6     1A  014D 29900 	BGTRU	10$			;IF GTRU NO
+       0089 C5         3D A5     82  014F 30000 	SUBB	UCB$L_DEVDEPEND+1(R5),UCB$W_DA+1(R5) ;SUBTRACT OUT A CYLINDER
+                     008A C5     B6  0155 30100 	INCW	UCB$W_DC(R5)		;UPDATE CYLINDER ADDRESS
+                          DA     11  0159 30200 	BRB	10$			;
+                                 05  015B 30300 20$:	RSB				;
+                                     015C 30400  
+                                     015C 30500 	.END
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page   9
+SYMBOL TABLE                                                                                                                     (1)
+
+BIT...         = 0000000B            DYN$C_CEB      = 00000004            IRP$L_ASTPRM     00000014            
+BUG$_STRNOTWCB   ********   X   03   DYN$C_CIR      = 0000001E            IRP$L_DIAGBUF    00000044            
+DEV$M_ALL      = 00800000            DYN$C_CRB      = 00000005            IRP$L_IOQBL      00000004            
+DEV$M_AVL      = 00040000            DYN$C_CXB      = 0000001B            IRP$L_IOQFL      00000000            
+DEV$M_CCL      = 00000002            DYN$C_DDB      = 00000006            IRP$L_IOSB       00000024            
+DEV$M_DIR      = 00000008            DYN$C_FCB      = 00000007            IRP$L_IOST1      00000034            
+DEV$M_DMT      = 00200000            DYN$C_FRK      = 00000008            IRP$L_IOST2      00000038            
+DEV$M_ELG      = 00400000            DYN$C_GSD      = 00000015            IRP$L_MEDIA      00000034            
+DEV$M_FOD      = 00004000            DYN$C_IDB      = 00000009            IRP$L_PID        0000000C            
+DEV$M_FOR      = 01000000            DYN$C_IRP      = 0000000A            IRP$L_SEGVBN     00000040            
+DEV$M_GEN      = 00020000            DYN$C_JPB      = 0000001F            IRP$L_SEQNUM     00000048            
+DEV$M_IDV      = 04000000            DYN$C_KFH      = 00000026            IRP$L_SVAPTE     0000002C            
+DEV$M_MBX      = 00100000            DYN$C_KFI      = 00000018            IRP$L_TT_TERM    00000038            
+DEV$M_MNT      = 00080000            DYN$C_LOG      = 0000000B            IRP$L_UCB        0000001C            
+DEV$M_NET      = 00002000            DYN$C_MTL      = 00000019            IRP$L_WIND       00000018            
+DEV$M_ODV      = 08000000            DYN$C_MVL      = 00000016            IRP$M_BUFIO    = 00000001            
+DEV$M_RCK      = 40000000            DYN$C_NDB      = 0000001C            IRP$M_CHAINED  = 00000020            
+DEV$M_REC      = 00000001            DYN$C_NET      = 00000017            IRP$M_COMPLX   = 00000008            
+DEV$M_RND      = 10000000            DYN$C_PBH      = 00000020            IRP$M_DIAGBUF  = 00000080            
+DEV$M_RTM      = 20000000            DYN$C_PCB      = 0000000C            IRP$M_FUNC     = 00000002            
+DEV$M_SDI      = 00000010            DYN$C_PDB      = 00000021            IRP$M_PAGIO    = 00000004            
+DEV$M_SHR      = 00010000            DYN$C_PFL      = 00000023            IRP$M_PHYSIO   = 00000100            
+DEV$M_SPL      = 00000040            DYN$C_PIB      = 00000022            IRP$M_PRIVIO   = 00000200            
+DEV$M_SQD      = 00000020            DYN$C_PQB      = 0000000D            IRP$M_SWAPIO   = 00000040            
+DEV$M_SWL      = 02000000            DYN$C_PTR      = 00000025            IRP$M_VIRTUAL  = 00000010            
+DEV$M_TRM      = 00000004            DYN$C_RVT      = 0000000E            IRP$S_FCODE    = 00000006            
+DEV$M_WCK      = 80000000            DYN$C_SFT      = 00000024            IRP$S_FMOD     = 0000000A            
+DEV$V_ALL      = 00000017            DYN$C_SSB      = 0000001D            IRP$S_MODE     = 00000002            
+DEV$V_AVL      = 00000012            DYN$C_TQE      = 0000000F            IRP$V_BUFIO    = 00000000            
+DEV$V_CCL      = 00000001            DYN$C_TYPAHD   = 00000014            IRP$V_CHAINED  = 00000005            
+DEV$V_DIR      = 00000003            DYN$C_UCB      = 00000010            IRP$V_COMPLX   = 00000003            
+DEV$V_DMT      = 00000015            DYN$C_VCB      = 00000011            IRP$V_DIAGBUF  = 00000007            
+DEV$V_ELG      = 00000016            DYN$C_WCB      = 00000012            IRP$V_FCODE    = 00000000            
+DEV$V_FOD      = 0000000E            GBL...         = 00000000            IRP$V_FMOD     = 00000006            
+DEV$V_FOR      = 00000018            IOC$APPLYECC     00000000 RG    03   IRP$V_FUNC     = 00000001            
+DEV$V_GEN      = 00000011            IOC$CVTLOGPHY    00000074 RG    03   IRP$V_MODE     = 00000000            
+DEV$V_IDV      = 0000001A            IOC$MAPVBLK      0000009F RG    03   IRP$V_PAGIO    = 00000002            
+DEV$V_MBX      = 00000014            IOC$MAPVBLK1     0000009B RG    03   IRP$V_PHYSIO   = 00000008            
+DEV$V_MNT      = 00000013            IOC$PTETOPFN     ********   X   03   IRP$V_PRIVIO   = 00000009            
+DEV$V_NET      = 0000000D            IOC$UPDATRANSP   00000120 RG    03   IRP$V_SWAPIO   = 00000006            
+DEV$V_ODV      = 0000001B            IPL$_ASTDEL    = 00000002            IRP$V_VIRTUAL  = 00000004            
+DEV$V_RCK      = 0000001E            IPL$_HWCLK     = 00000018            IRP$W_ABCNT      0000003C            
+DEV$V_REC      = 00000000            IPL$_IOPOST    = 00000004            IRP$W_BCNT       00000032            
+DEV$V_RND      = 0000001C            IPL$_MAILBOX   = 0000000B            IRP$W_BOFF       00000030            
+DEV$V_RTM      = 0000001D            IPL$_POWER     = 0000001F            IRP$W_CHAN       00000028            
+DEV$V_SDI      = 00000004            IPL$_QUEUEAST  = 00000006            IRP$W_FUNC       00000020            
+DEV$V_SHR      = 00000010            IPL$_SCHED     = 00000003            IRP$W_OBCNT      0000003E            
+DEV$V_SPL      = 00000006            IPL$_SYNCH     = 00000007            IRP$W_SIZE       00000008            
+DEV$V_SQD      = 00000005            IPL$_TIMER     = 00000007            IRP$W_STS        0000002A            
+DEV$V_SWL      = 00000019            IRP$B_CARCON     00000038            IRP$W_TT_PRMPT   0000003C            
+DEV$V_TRM      = 00000002            IRP$B_EFN        00000022            MMG$GL_SPTBASE   ********   X   03   
+DEV$V_WCK      = 0000001F            IRP$B_PRI        00000023            PR$_ACCR       = 00000029            
+DYN$C_ACB      = 00000002            IRP$B_RMOD       0000000B            PR$_ACCS       = 00000028            
+DYN$C_ADP      = 00000001            IRP$B_TYPE       0000000A            PR$_ASTLVL     = 00000013            
+DYN$C_AQB      = 00000003            IRP$C_LENGTH     0000004C            PR$_ESP        = 00000001            
+DYN$C_BRDCST   = 0000001A            IRP$K_LENGTH     0000004C            PR$_ICCS       = 00000018            
+DYN$C_BUFIO    = 00000013            IRP$L_AST        00000010            PR$_ICR        = 0000001A            
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page  10
+SYMBOL TABLE                                                                                                                     (1)
+
+PR$_IPL        = 00000012            PTE$M_OWN      = 01800000            UCB$B_TYPE       0000000A            
+PR$_ISP        = 00000004            PTE$M_PFN      = 001FFFFF            UCB$B_VERTSZ     0000003F            
+PR$_KSP        = 00000000            PTE$M_PGFLVB   = 003FFFFF            UCB$C_LENGTH     00000074            
+PR$_MAPEN      = 00000038            PTE$M_PROT     = 78000000            UCB$C_LOGLNK   = 00000001            
+PR$_NICR       = 00000019            PTE$M_TYP0     = 00400000            UCB$K_LENGTH     00000074            
+PR$_P0BR       = 00000008            PTE$M_TYP1     = 04000000            UCB$L_AMB        00000054            
+PR$_P0LR       = 00000009            PTE$M_VALID    = 80000000            UCB$L_ASTQBL     00000010            
+PR$_P1BR       = 0000000A            PTE$M_WRT      = 00040000            UCB$L_ASTQFL     0000000C            
+PR$_P1LR       = 0000000B            PTE$S_GPTX     = 00000016            UCB$L_CPID       0000005C            
+PR$_PCBB       = 00000010            PTE$S_OWN      = 00000002            UCB$L_CRB        00000020            
+PR$_RXCS       = 00000020            PTE$S_PFN      = 00000015            UCB$L_DDB        00000024            
+PR$_RXDB       = 00000021            PTE$S_PGFLVB   = 00000016            UCB$L_DEVCHAR    00000034            
+PR$_SBIER      = 00000034            PTE$S_PROT     = 00000004            UCB$L_DEVDEPEND  0000003C            
+PR$_SBIFS      = 00000030            PTE$S_STX      = 00000010            UCB$L_DPC        0000007C            
+PR$_SBIMT      = 00000033            PTE$V_CRF      = 00000010            UCB$L_DUETIM     0000005C            
+PR$_SBIQC      = 00000036            PTE$V_DZRO     = 00000011            UCB$L_DX_BFPNT   FFFFFFF4            
+PR$_SBIS       = 00000031            PTE$V_GPTX     = 00000000            UCB$L_DX_BUF     FFFFFFF0            
+PR$_SBISC      = 00000032            PTE$V_MODIFY   = 0000001A            UCB$L_DX_RXDB    FFFFFFF8            
+PR$_SBITA      = 00000035            PTE$V_OWN      = 00000017            UCB$L_EMB        00000078            
+PR$_SBR        = 0000000C            PTE$V_PFN      = 00000000            UCB$L_FIRST      00000014            
+PR$_SCBB       = 00000011            PTE$V_PGFLVB   = 00000000            UCB$L_FPC        0000000C            
+PR$_SID        = 0000003E            PTE$V_PROT     = 0000001B            UCB$L_FQBL       00000004            
+PR$_SIRR       = 00000014            PTE$V_STX      = 00000000            UCB$L_FQFL       00000000            
+PR$_SISR       = 00000015            PTE$V_TYP0     = 00000016            UCB$L_FR3        00000010            
+PR$_SLR        = 0000000D            PTE$V_TYP1     = 0000001A            UCB$L_FR4        00000014            
+PR$_SSP        = 00000002            PTE$V_VALID    = 0000001F            UCB$L_IOQBL      00000044            
+PR$_TBIA       = 00000039            PTE$V_WRT      = 00000012            UCB$L_IOQFL      00000040            
+PR$_TBIS       = 0000003A            RVT$B_NVOLS      0000000B            UCB$L_IRP        0000004C            
+PR$_TODR       = 0000001B            RVT$B_TYPE       0000000A            UCB$L_LINK       0000002C            
+PR$_TXCS       = 00000022            RVT$C_LENGTH     00000010            UCB$L_LOGADR     00000064            
+PR$_TXDB       = 00000023            RVT$K_LENGTH     00000010            UCB$L_MAXBLOCK   00000080            
+PR$_USP        = 00000003            RVT$L_UCBLST     0000000C            UCB$L_MEDIA      00000088            
+PR$_WCSA       = 0000002C            RVT$W_SIZE       00000008            UCB$L_NT_DATSSB  00000074            
+PR$_WCSD       = 0000002D            SS$_NORMAL       ********   X   03   UCB$L_NT_INTSSB  00000078            
+PTE$C_EOWN     = 00800000            UCB$B_AMOD       00000053            UCB$L_OPCNT      00000060            
+PTE$C_ER       = 38000000            UCB$B_CEX        00000077            UCB$L_OWNUIC     0000001C            
+PTE$C_ERKW     = 30000000            UCB$B_CM1        0000004A            UCB$L_PID        00000028            
+PTE$C_EW       = 28000000            UCB$B_CM2        0000004B            UCB$L_RQBL       00000004            
+PTE$C_KOWN     = 00000000            UCB$B_DEVCLASS   00000038            UCB$L_RQFL       00000000            
+PTE$C_KR       = 18000000            UCB$B_DEVTYPE    00000039            UCB$L_SVAPTE     00000068            
+PTE$C_KW       = 10000000            UCB$B_DIPL       00000052            UCB$L_SVPN       00000064            
+PTE$C_NA       = 00000000            UCB$B_DX_SCTCNT  FFFFFFFE            UCB$L_TTCHAR     0000003C            
+PTE$C_SOWN     = 01000000            UCB$B_DX_SPARE   FFFFFFFF            UCB$L_VCB        00000030            
+PTE$C_SR       = 58000000            UCB$B_ERTCNT     00000070            UCB$M_BSY      = 00000100            
+PTE$C_SREW     = 48000000            UCB$B_ERTMAX     00000071            UCB$M_CANCEL   = 00000008            
+PTE$C_SRKW     = 50000000            UCB$B_ESCAPE     0000004B            UCB$M_DEADMO   = 00000400            
+PTE$C_SW       = 40000000            UCB$B_FEX        00000076            UCB$M_DELMBX   = 00000002            
+PTE$C_UOWN     = 01800000            UCB$B_FIPL       0000000B            UCB$M_DIAGBUF  = 00000002            
+PTE$C_UR       = 78000000            UCB$B_LOCSRV     0000003C            UCB$M_DX_WRITE = 00000008            
+PTE$C_UREW     = 68000000            UCB$B_OFFNDX     00000090            UCB$M_ECC      = 00000001            
+PTE$C_URKW     = 70000000            UCB$B_OFFRTC     00000091            UCB$M_ERLOGIP  = 00000004            
+PTE$C_URSW     = 60000000            UCB$B_REMSRV     0000003D            UCB$M_INT      = 00000002            
+PTE$C_UW       = 20000000            UCB$B_SECTORS    0000003C            UCB$M_INTTYPE  = 00000080            
+PTE$M_CRF      = 00010000            UCB$B_SLAVE      00000074            UCB$M_JOB      = 00000001            
+PTE$M_DZRO     = 00020000            UCB$B_SPR        00000075            UCB$M_MOUNTING = 00000200            
+PTE$M_GPTX     = 003FFFFF            UCB$B_STATE      00000052            UCB$M_NOCNVRT  = 00000004            
+PTE$M_MODIFY   = 04000000            UCB$B_TRACKS     0000003D            UCB$M_NT_BFROVF= 00000004            
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page  11
+SYMBOL TABLE                                                                                                                     (1)
+
+UCB$M_NT_BREAK = 00000020            UCB$W_DEVSTS     0000005A            WCB$V_SPOOL    = 00000004            
+UCB$M_NT_NAME  = 00000010            UCB$W_DSTADDR    00000018            WCB$V_WRITE    = 00000001            
+UCB$M_NT_NONTR = 00000040            UCB$W_DX_BCR     FFFFFFFC            WCB$V_WRITEAC  = 00000008            
+UCB$M_NT_SDP   = 00000008            UCB$W_EC1        0000008C            WCB$V_WRITECK  = 00000005            
+UCB$M_ONLINE   = 00000010            UCB$W_EC2        0000008E            WCB$W_ACON       00000014            
+UCB$M_POWER    = 00000020            UCB$W_ERRCNT     00000072            WCB$W_COUNT      00000000            
+UCB$M_PRMMBX   = 00000001            UCB$W_FUNC       00000084            WCB$W_NMAP       00000016            
+UCB$M_TIM      = 00000001            UCB$W_MB_SEED    FFFFFFFC            WCB$W_P1_COUNT   00000024            
+UCB$M_TIMOUT   = 00000040            UCB$W_MSGCNT     00000016            WCB$W_P2_COUNT   0000002A            
+UCB$M_TT_NOTIF = 00000004            UCB$W_MSGMAX     00000014            WCB$W_PREVCOUNT  FFFFFFFA            
+UCB$M_TT_TIMO  = 00000002            UCB$W_NT_CHAN    0000007C            WCB$W_REFCNT     0000000E            
+UCB$M_VALID    = 00000800            UCB$W_OFFSET     00000086            WCB$W_SIZE       00000008            
+UCB$S_LNKPRI   = 00000002            UCB$W_REFC       00000050            
+UCB$S_LTYPE    = 00000002            UCB$W_SIZE       00000008            
+UCB$T_PARTNER    0000000C            UCB$W_SRCADDR    0000001A            
+UCB$V_BACKP    = 00000005            UCB$W_STS        00000058            
+UCB$V_BSY      = 00000008            UCB$W_UNIT       00000048            
+UCB$V_CANCEL   = 00000003            UCB$W_VPROT      0000001A            
+UCB$V_DEADMO   = 0000000A            VA$M_BYTE      = 000001FF            
+UCB$V_DELMBX   = 00000001            VA$M_P1        = 40000000            
+UCB$V_DIAGBUF  = 00000001            VA$M_SYSTEM    = 80000000            
+UCB$V_DX_WRITE = 00000003            VA$M_VPN       = 3FFFFE00            
+UCB$V_ECC      = 00000000            VA$S_BYTE      = 00000009            
+UCB$V_ERLOGIP  = 00000002            VA$S_VPN       = 00000015            
+UCB$V_INT      = 00000001            VA$V_BYTE      = 00000000            
+UCB$V_INTTYPE  = 00000007            VA$V_P1        = 0000001E            
+UCB$V_JOB      = 00000000            VA$V_SYSTEM    = 0000001F            
+UCB$V_LNKPRI   = 00000006            VA$V_VPN       = 00000009            
+UCB$V_LTYPE    = 00000000            WCB$B_ACCESS     0000000B            
+UCB$V_MOUNTING = 00000009            WCB$B_TYPE       0000000A            
+UCB$V_MSGACK   = 00000004            WCB$C_LENGTH     00000024            
+UCB$V_MSGFLO   = 00000003            WCB$C_MAP        00000024            
+UCB$V_NOCNVRT  = 00000002            WCB$K_LENGTH     00000024            
+UCB$V_NT_BFROVF= 00000002            WCB$K_MAP        00000024            
+UCB$V_NT_BREAK = 00000005            WCB$L_FCB        00000018            
+UCB$V_NT_NAME  = 00000004            WCB$L_LBN        00000002            
+UCB$V_NT_NONTR = 00000006            WCB$L_ORGUCB     00000010            
+UCB$V_NT_SDP   = 00000003            WCB$L_P1_LBN     00000026            
+UCB$V_ONLINE   = 00000004            WCB$L_P2_LBN     0000002C            
+UCB$V_POWER    = 00000005            WCB$L_PID        0000000C            
+UCB$V_PRMMBX   = 00000000            WCB$L_PREVLBN    FFFFFFFC            
+UCB$V_SEGFLO   = 00000002            WCB$L_RVT        0000001C            
+UCB$V_TIM      = 00000000            WCB$L_STVBN      00000020            
+UCB$V_TIMOUT   = 00000006            WCB$L_WLBL       00000004            
+UCB$V_TT_NOTIF = 00000002            WCB$L_WLFL       00000000            
+UCB$V_TT_TIMO  = 00000001            WCB$M_NOTFCP   = 00000004            
+UCB$V_VALID    = 0000000B            WCB$M_READ     = 00000001            
+UCB$W_BCNT       0000006E            WCB$M_SHRWCB   = 00000008            
+UCB$W_BCR        00000092            WCB$M_WRITE    = 00000002            
+UCB$W_BOFF       0000006C            WCB$V_DLOCK    = 00000001            
+UCB$W_BUFQUO     00000018            WCB$V_NOREAD   = 0000000A            
+UCB$W_BYTESTOGO  0000003E            WCB$V_NOTFCP   = 00000002            
+UCB$W_CHARGE     0000004A            WCB$V_NOWRITE  = 00000000            
+UCB$W_CYLINDERS  0000003E            WCB$V_READ     = 00000000            
+UCB$W_DA         00000088            WCB$V_READCK   = 00000009            
+UCB$W_DC         0000008A            WCB$V_SEQONLY  = 00000006            
+UCB$W_DEVBUFSIZ  0000003A            WCB$V_SHRWCB   = 00000003            
+IOSUBRAMS       - NONPAGED RANDOM ACCESS MASS STORAGE I/O RELAT  21-AUG-1978 23:28:54   VAX-11 MACRO X0.3-11               Page  12
+PROGRAM SECTION SYNOPSIS                                                                                                         (1)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFF      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+WIONONPAGED      0000015C      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+12326. BYTES LEFT IN FREE MEMORY POOL.
+3574. BYTES OF RECLAIMED MEMORY.
+OBJ$:IOSUBRAMS,LIS$:IOSUBRAMS/-SP=LIB$:LIB/ML,SRC$:IOSUBRAMS
+9 MLB DIR RDS - 729 GETS TO DEFINE 23 MACROS. 56 INTER. FILE WRITES. 

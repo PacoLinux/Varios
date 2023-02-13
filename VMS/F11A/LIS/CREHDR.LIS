@@ -1,0 +1,672 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 1
+;
+;	0001	MODULE CREHDR (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0006'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine creates a new file ID by allocating a file number from the
+;	0033	!	index file bitmap. It returns an empty file header, verified for use.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  28-Mar-1977  13:49
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 4-Apr-1977  16:41
+;	0048	!   X0002 - Rename UPDATE_IBVBN for external use
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 14-Apr-1977  13:53
+;	0051	!   X0003 - Add index file extension logic
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 12-Dec-1977  14:47
+;	0054	!   X0004 - Rename from CREATE_FID, add header creation logic
+;	0055	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 1-1
+;
+;	0056	!   Andrew C. Goldstein, 16-Dec-1977  11:04
+;	0057	!   X0005 - Add header block error recovery
+;	0058	!
+;	0059	!   Andrew C. Goldstein, 17-Feb-1978  14:09
+;	0060	!   X0006 - Use new bug check
+;	0061	!
+;	0062	!**
+;	0063	
+;	0064	
+;	0065	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0066	REQUIRE 'SRC$:FCPDEF.B32';
+;	0385	
+;	0386	
+;	0387	FORWARD ROUTINE
+;	0388		CREATE_HEADER,			! create file ID and header
+;	0389		UPDATE_IBVBN	: NOVALUE,	! update index bitmap scan start
+;	0390		READ_NEW_HEADER,		! read new file header block
+;	0391		HANDLER;			! local condition handler
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 2
+;
+;	0392	GLOBAL ROUTINE CREATE_HEADER =
+;	0393	
+;	0394	!++
+;	0395	!
+;	0396	! FUNCTIONAL DESCRIPTION:
+;	0397	!
+;	0398	!	This routine creates a new file ID by searching the volume's index
+;	0399	!	file bitmap for the first free file number. It also checks that a header
+;	0400	!	for the file number is present in the index file. It reads the old
+;	0401	!	header and establishes the file sequence number for the new one.
+;	0402	!
+;	0403	! CALLING SEQUENCE:
+;	0404	!	CREATE_HEADER ()
+;	0405	!
+;	0406	! INPUT PARAMETERS:
+;	0407	!	NONE
+;	0408	!
+;	0409	! IMPLICIT INPUTS:
+;	0410	!	CURRENT_VCB: address of volume's VCB
+;	0411	!
+;	0412	! OUTPUT PARAMETERS:
+;	0413	!	NONE
+;	0414	!
+;	0415	! IMPLICIT OUTPUTS:
+;	0416	!	NONE
+;	0417	!
+;	0418	! ROUTINE VALUE:
+;	0419	!	address of buffer containing new header
+;	0420	!
+;	0421	! SIDE EFFECTS:
+;	0422	!	VCB and index file bitmap altered, header block read
+;	0423	!
+;	0424	!--
+;	0425	
+;	0426	BEGIN
+;	0427	
+;	0428	LOCAL
+;	0429		VCB		: REF BBLOCK,	! local copy of VCB address
+;	0430		VBN,				! relative block number in bitmap
+;	0431		BUFFER		: REF BITVECTOR, ! address of index file bitmap buffer
+;	0432		ADDRESS		: REF BITVECTOR, ! address of byte in buffer
+;	0433		BITPOS,				! bit positon of free bit within byte
+;	0434		FILE_NUMBER,			! file number allocated
+;	0435		IDX_FCB		: REF BBLOCK,	! FCB of index file
+;	0436		LBN,				! LBN of new file header
+;	0437		HEADER		: REF BBLOCK,	! address of header buffer
+;	0438		SAVE_STATUS;			! save I/O status during CHECK_HEADER call
+;	0439	
+;	0440	EXTERNAL
+;	0441		CURRENT_VCB	: REF BBLOCK,	! VCB of volume
+;	0442		NEW_FID,			! pending file ID
+;	0443		HEADER_LBN,			! LBN of created file header
+;	0444		USER_STATUS	: VECTOR;	! I/O status block of user
+;	0445	
+;	0446	EXTERNAL ROUTINE
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 2-1
+;
+;	0447		READ_BLOCK,			! read block from disk
+;	0448		WRITE_BLOCK,			! write block to disk
+;	0449		EXTEND_INDEX,			! extend the index file
+;	0450		MAP_VBN,			! map virtual to logical block
+;	0451		CHECK_HEADER;			! verify file header
+;	0452	
+;	0453	
+;	0454	! The outer loop performs retries if blocks in the index file are bad.
+;	0455	! Bad header blocks are simply left marked in use in the index file bitmap;
+;	0456	! they will show up in a verify but are otherwise harmless.
+;	0457	!
+;	0458	
+;	0459	VCB = .CURRENT_VCB;
+;	0460	WHILE 1 DO
+;	0461	    BEGIN
+;	0462	
+;	0463	! We scan the index file bitmap for the first free (zero) bit. This is done
+;	0464	! by starting with the block recorded in the VCB and looking at each block
+;	0465	! with a character scan.
+;	0466	!
+;	0467	
+;	0468	    VBN = .VCB[VCB$B_IBMAPVBN];
+;	0469	
+;	0470	    IF
+;	0471		BEGIN
+;	0472		UNTIL .VBN GEQ .VCB[VCB$B_IBMAPSIZE] DO
+;	0473		    BEGIN
+;	0474		    BUFFER = READ_BLOCK (.VBN + .VCB[VCB$L_IBMAPLBN], 1, INDEX_TYPE);
+;	0475		    IF NOT CH$FAIL (ADDRESS = CH$FIND_NOT_CH (512, .BUFFER, 255))
+;	0476		    THEN EXITLOOP 0;
+;	0477		    VBN = .VBN + 1;
+;	0478		    END
+;	0479		END
+;	0480	
+;	0481	! If we fall through the loop, the entire bitmap is full.
+;	0482	!
+;	0483	
+;	0484		THEN ERR_EXIT (SS$_IDXFILEFULL);
+;	0485	
+;	0486	! Having found a byte containing a zero bit, scan for the bit.
+;	0487	!
+;	0488	
+;	0489	    FFC (%REF (0), %REF (8), .ADDRESS, BITPOS);
+;	0490	
+;	0491	! Compute the file number and check it against the maximum files allowed
+;	0492	! on the volume. Also check if the corresponding file header is present in
+;	0493	! the index file. If not, extend the index file and re-read the bitmap
+;	0494	! block, which may have been kicked out in the process.
+;	0495	!
+;	0496	
+;	0497	    FILE_NUMBER = .VBN*4096 + (.ADDRESS-.BUFFER)*8 + .BITPOS + 1;
+;	0498	
+;	0499	    IF .FILE_NUMBER GTR .VCB[VCB$L_MAXFILES]
+;	0500	    THEN ERR_EXIT (SS$_IDXFILEFULL);
+;	0501	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 2-2
+;
+;	0502	    IDX_FCB = .VCB[VCB$L_FCBFL];
+;	0503	    IF .FILE_NUMBER + .VCB[VCB$B_IBMAPSIZE] + 2 GTR .IDX_FCB[FCB$L_FILESIZE]
+;	0504	    THEN
+;	0505		BEGIN
+;	0506		ADDRESS = .ADDRESS - .BUFFER;
+;	0507		EXTEND_INDEX (.FILE_NUMBER);
+;	0508		BUFFER = READ_BLOCK (.VBN + .VCB[VCB$L_IBMAPLBN], 1, INDEX_TYPE);
+;	0509		ADDRESS = .ADDRESS + .BUFFER;
+;	0510		END;
+;	0511	
+;	0512	! All is in order. Set the bit and rewrite the block. Also update the
+;	0513	! scan point in the VCB for the next create. Note that if the file number was
+;	0514	! from the last bit in the block, we will start the scan at the next block to
+;	0515	! avoid wasting a read.
+;	0516	!
+;	0517	
+;	0518	    ADDRESS[.BITPOS] = 1;
+;	0519	    WRITE_BLOCK (.BUFFER);
+;	0520	
+;	0521	    IF .FILE_NUMBER<0,12> EQL 0
+;	0522	    THEN VBN = .VBN + 1;
+;	0523	    KERNEL_CALL (UPDATE_IBVBN, .VBN);
+;	0524	    NEW_FID = .FILE_NUMBER;		! record file ID for cleanup
+;	0525	
+;	0526	! Now read the old file header. If the block contained an old file header,
+;	0527	! bump the file sequence number; else assign 1.
+;	0528	!
+;	0529	
+;	0530	    VBN = .FILE_NUMBER + .VCB[VCB$B_IBMAPSIZE] + 2;
+;	0531	    IDX_FCB = .VCB[VCB$L_FCBFL];
+;	0532	    LBN = MAP_VBN (.VBN, .IDX_FCB[FCB$L_WLFL]);
+;	0533	    IF .LBN EQL -1 THEN BUG_CHECK (HDRNOTMAP, FATAL, 'Allocated file header not mapped');
+;	0534	    HEADER = READ_NEW_HEADER (.LBN);
+;	0535	    IF .HEADER NEQ 0 THEN EXITLOOP;
+;	0536	    END;				! end of file number allocation loop
+;	0537	
+;	0538	HEADER_LBN = .LBN;			! record LBN of new header
+;	0539	
+;	0540	SAVE_STATUS = .USER_STATUS[0];
+;	0541	IF CHECK_HEADER (.HEADER, UPLIT WORD (0, 0, 0)) NEQ 0
+;	0542	THEN HEADER[FH1$W_FID_SEQ] = .HEADER[FH1$W_FID_SEQ] + 1
+;	0543	ELSE HEADER[FH1$W_FID_SEQ] = 1;
+;	0544	HEADER[FH1$W_FID_NUM] = .FILE_NUMBER;
+;	0545	USER_STATUS[0] = .SAVE_STATUS;		! restore status, bashed by CHECK_HEADER
+;	0546	
+;	0547	RETURN .HEADER;
+;	0548	
+;	0549	END;					! end of routine CREATE_HEADER
+
+
+							    .TITLE  CREHDR
+							    .IDENT  \A0006\
+
+							    .PSECT  $CODE$,NOWRT,2
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 2-3
+;
+			    0000  0000  0000  00000 P.AAB:  .WORD   0, 0, 0						      ;
+					      00006	    .BLKB   2
+
+							    .PSECT  $LOCKEDC2$,NOWRT,2
+
+				  FEFF  0000  00000 P.AAA:  .WORD   0, -257						      ;
+					0000* 00004 	    .WORD   <BUG$_HDRNOTMAP!4>					      ;
+					      00006	    .BLKB   2
+
+							    .EXTRN  CURRENT_VCB, NEW_FID, HEADER_LBN, USER_STATUS
+							    .EXTRN  READ_BLOCK, WRITE_BLOCK, EXTEND_INDEX, MAP_VBN
+							    .EXTRN  CHECK_HEADER, SYS$CMKRNL, BUG$_HDRNOTMAP
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00008 	    .ENTRY  CREATE_HEADER, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11       ; 0392
+		         5E 	       04  C2 0000A 	    SUBL2   #4, SP						      ;
+		         52 	0000G  CF  D0 0000D 	    MOVL    CURRENT_VCB, VCB					      ; 0459
+		         5A 	  38   A2  9E 00012 	    MOVAB   56(R2), R10						      ; 0472
+		         54 	  3A   A2  9A 00016 1$:     MOVZBL  58(VCB), VBN					      ; 0468
+	   6A 	         08 	       00  ED 0001A 2$:     CMPZV   #0, #8, (R10), VBN					      ; 0472
+				       54     0001E									      ;
+				       24  15 0001F 	    BLEQ    4$							      ;
+				       03  DD 00021 	    PUSHL   #3							      ; 0474
+				       01  DD 00023 	    PUSHL   #1							      ;
+				  30 B244  9F 00025 	    PUSHAB  @48(VCB)[VBN]					      ;
+		  0000G  CF	       03  FB 00029 	    CALLS   #3, READ_BLOCK					      ;
+		         58 	       50  D0 0002E 	    MOVL    R0, BUFFER						      ;
+	   68 	  0200   8F	  FF   8F  3B 00031 	    SKPC    #255, #512, (BUFFER)				      ; 0475
+				       02  12 00038 	    BNEQ    3$							      ;
+				       51  D4 0003A 	    CLRL    R1							      ;
+		         59 	       51  D0 0003C 3$:     MOVL    R1, ADDRESS						      ;
+				       08  12 0003F 	    BNEQ    5$							      ;
+				       54  D6 00041 	    INCL    VBN							      ; 0477
+				       D5  11 00043 	    BRB     2$							      ; 0472
+				08D0   8F  BF 00045 4$:     CHMU    #2256						      ; 0484
+	   69 	         08 	       00  EB 00049 5$:     FFC     #0, #8, (ADDRESS), BITPOS				      ; 0489
+				       5B     0004D									      ;
+	   51 	         54 	       0C  78 0004E 	    ASHL    #12, VBN, R1					      ; 0497
+	   50 	         59 	       58  C3 00052 	    SUBL3   BUFFER, ADDRESS, R0					      ;
+		         50 	     6140  7E 00056 	    MOVAQ   (R1)[R0], R0					      ;
+		         55 	  01 AB40  9E 0005A 	    MOVAB   1(BITPOS)[R0], FILE_NUMBER				      ;
+		    44   A2	       55  D1 0005F 	    CMPL    FILE_NUMBER, 68(VCB)				      ; 0499
+				       04  15 00063 	    BLEQ    6$							      ;
+				08D0   8F  BF 00065 	    CHMU    #2256						      ; 0500
+		         56 	       62  D0 00069 6$:     MOVL    (VCB), IDX_FCB					      ; 0502
+		         5A 	  38   A2  9E 0006C 	    MOVAB   56(R2), R10						      ; 0503
+		         50 	       6A  9A 00070 	    MOVZBL  (R10), R0						      ;
+		         57 	  02 A045  9E 00073 	    MOVAB   2(R0)[FILE_NUMBER], R7				      ;
+		    34   A6	       57  D1 00078 	    CMPL    R7, 52(IDX_FCB)					      ;
+				       1D  15 0007C 	    BLEQ    7$							      ;
+		         59 	       58  C2 0007E 	    SUBL2   BUFFER, ADDRESS					      ; 0506
+				       55  DD 00081 	    PUSHL   FILE_NUMBER						      ; 0507
+		  0000G  CF	       01  FB 00083 	    CALLS   #1, EXTEND_INDEX					      ;
+				       03  DD 00088 	    PUSHL   #3							      ; 0508
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 2-4
+;
+				       01  DD 0008A 	    PUSHL   #1							      ;
+				  30 B244  9F 0008C 	    PUSHAB  @48(VCB)[VBN]					      ;
+		  0000G  CF	       03  FB 00090 	    CALLS   #3, READ_BLOCK					      ;
+		         58 	       50  D0 00095 	    MOVL    R0, BUFFER						      ;
+		         59 	       58  C0 00098 	    ADDL2   BUFFER, ADDRESS					      ; 0509
+	   00 	         69 	       5B  E2 0009B 7$:     BBSS    BITPOS, (ADDRESS), 8$				      ; 0518
+				       58  DD 0009F 8$:     PUSHL   BUFFER						      ; 0519
+		  0000G  CF	       01  FB 000A1 	    CALLS   #1, WRITE_BLOCK					      ;
+		  0FFF   8F	       55  B3 000A6 	    BITW    FILE_NUMBER, #4095					      ; 0521
+				       02  12 000AB 	    BNEQ    9$							      ;
+				       54  D6 000AD 	    INCL    VBN							      ; 0522
+				       54  DD 000AF 9$:     PUSHL   VBN							      ; 0523
+				       01  DD 000B1 	    PUSHL   #1							      ;
+				       5E  DD 000B3 	    PUSHL   SP							      ;
+				0000V  CF  9F 000B5 	    PUSHAB  UPDATE_IBVBN					      ;
+	      00000000G  9F	       04  FB 000B9 	    CALLS   #4, @#SYS$CMKRNL					      ;
+		  0000G  CF	       55  D0 000C0 	    MOVL    FILE_NUMBER, NEW_FID				      ; 0524
+		         54 	       57  D0 000C5 	    MOVL    R7, VBN						      ; 0530
+		         56 	       62  D0 000C8 	    MOVL    (VCB), IDX_FCB					      ; 0531
+				  10   A6  DD 000CB 	    PUSHL   16(IDX_FCB)						      ; 0532
+				       54  DD 000CE 	    PUSHL   VBN							      ;
+		  0000G  CF	       02  FB 000D0 	    CALLS   #2, MAP_VBN						      ;
+		         6E 	       50  D0 000D5 	    MOVL    R0, LBN						      ;
+	      FFFFFFFF   8F	       6E  D1 000D8 	    CMPL    LBN, #-1						      ; 0533
+				       05  12 000DF 	    BNEQ    10$							      ;
+		  0000'  CF	       00  FB 000E1 	    CALLS   #0, P.AAA						      ;
+				       6E  DD 000E6 10$:    PUSHL   LBN							      ; 0534
+		  0000V  CF	       01  FB 000E8 	    CALLS   #1, READ_NEW_HEADER					      ;
+		         53 	       50  D0 000ED 	    MOVL    R0, HEADER						      ;
+				       03  12 000F0 	    BNEQ    11$							      ; 0535
+				     FF21  31 000F2 	    BRW     1$							      ;
+		  0000G  CF	       6E  D0 000F5 11$:    MOVL    LBN, HEADER_LBN					      ; 0538
+		         52 	0000G  CF  D0 000FA 	    MOVL    USER_STATUS, SAVE_STATUS				      ; 0540
+				FEFD   CF  9F 000FF 	    PUSHAB  P.AAB						      ; 0541
+				       53  DD 00103 	    PUSHL   HEADER						      ;
+		  0000G  CF	       02  FB 00105 	    CALLS   #2, CHECK_HEADER					      ;
+				       50  D5 0010A 	    TSTL    R0							      ;
+				       05  13 0010C 	    BEQL    12$							      ;
+				  04   A3  B6 0010E 	    INCW    4(HEADER)						      ; 0542
+				       04  11 00111 	    BRB     13$							      ; 0541
+		    04   A3	       01  B0 00113 12$:    MOVW    #1, 4(HEADER)					      ; 0543
+		    02   A3	       55  B0 00117 13$:    MOVW    FILE_NUMBER, 2(HEADER)				      ; 0544
+		  0000G  CF	       52  D0 0011B 	    MOVL    SAVE_STATUS, USER_STATUS				      ; 0545
+		         50 	       53  D0 00120 	    MOVL    HEADER, R0						      ; 0547
+					   04 00123 	    RET     							      ; 0392
+
+; Routine Size:  284 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 3
+;
+;	0550	GLOBAL ROUTINE UPDATE_IBVBN (VBN) : NOVALUE =
+;	0551	
+;	0552	!++
+;	0553	!
+;	0554	! FUNCTIONAL DESCRIPTION:
+;	0555	!
+;	0556	!	This routine writes back the starting VBN for the index file bitmap
+;	0557	!	scan into the vcb. This routine must be called in kernel mode.
+;	0558	!
+;	0559	! CALLING SEQUENCE:
+;	0560	!	UPDATE_VBN (ARG1)
+;	0561	!
+;	0562	! INPUT PARAMETERS:
+;	0563	!	ARG1: new start VBN
+;	0564	!
+;	0565	! IMPLICIT INPUTS:
+;	0566	!	CURRENT_VCB: VCB of volume
+;	0567	!
+;	0568	! OUTPUT PARAMETERS:
+;	0569	!	NONE
+;	0570	!
+;	0571	! IMPLICIT OUTPUTS:
+;	0572	!	NONE
+;	0573	!
+;	0574	! ROUTINE VALUE:
+;	0575	!	NONE
+;	0576	!
+;	0577	! SIDE EFFECTS:
+;	0578	!	VBN written into VCB
+;	0579	!
+;	0580	!--
+;	0581	
+;	0582	BEGIN
+;	0583	
+;	0584	EXTERNAL
+;	0585		CURRENT_VCB	: REF BBLOCK;	! VCB of volume
+;	0586	
+;	0587	CURRENT_VCB[VCB$B_IBMAPVBN] = .VBN;
+;	0588	
+;	0589	END;					! end of routine UPDATE_VBN
+
+
+
+
+
+					 0000 00124 	    .ENTRY  UPDATE_IBVBN, Save nothing				      ; 0550
+		         50 	0000G  CF  D0 00126 	    MOVL    CURRENT_VCB, R0					      ; 0587
+		    3A   A0	  04   AC  90 0012B 	    MOVB    VBN, 58(R0)						      ;
+					   04 00130 	    RET     							      ; 0550
+
+; Routine Size:  13 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 4
+;
+;	0590	ROUTINE READ_NEW_HEADER (LBN) =
+;	0591	
+;	0592	!++
+;	0593	!
+;	0594	! FUNCTIONAL DESCRIPTION:
+;	0595	!
+;	0596	!	This routine reads the block about to be used for a new file header.
+;	0597	!	It uses a local condition handler to fix up errors.
+;	0598	!
+;	0599	!
+;	0600	! CALLING SEQUENCE:
+;	0601	!	READ_NEW_HEADER (ARG1)
+;	0602	!
+;	0603	! INPUT PARAMETERS:
+;	0604	!	ARG1: LBN of block to read
+;	0605	!
+;	0606	! IMPLICIT INPUTS:
+;	0607	!	NONE
+;	0608	!
+;	0609	! OUTPUT PARAMETERS:
+;	0610	!	NONE
+;	0611	!
+;	0612	! IMPLICIT OUTPUTS:
+;	0613	!	NONE
+;	0614	!
+;	0615	! ROUTINE VALUE:
+;	0616	!	address of buffer containing block or 0 if bad
+;	0617	!
+;	0618	! SIDE EFFECTS:
+;	0619	!	block read and/or written
+;	0620	!
+;	0621	!--
+;	0622	
+;	0623	BEGIN
+;	0624	
+;	0625	LOCAL
+;	0626		HEADER		: REF BBLOCK;	! address of block read
+;	0627	
+;	0628	EXTERNAL ROUTINE
+;	0629		READ_BLOCK,			! read a block
+;	0630		WRITE_BLOCK,			! write a block
+;	0631		INVALIDATE,			! invalidate a buffer
+;	0632		CREATE_BLOCK;			! create a new block buffer
+;	0633	
+;	0634	! Under control of the condition handler, we read the block. If the read
+;	0635	! fails, we attempt to rewrite the block and then read it again. If either
+;	0636	! of the latter fails, we return failure.
+;	0637	!
+;	0638	
+;	0639	ENABLE HANDLER;
+;	0640	
+;	0641	HEADER = READ_BLOCK (.LBN, 1, HEADER_TYPE);
+;	0642	
+;	0643	IF .HEADER EQL 0
+;	0644	THEN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 4-1
+;
+;	0645	    BEGIN
+;	0646	    HEADER = CREATE_BLOCK (.LBN, 1, HEADER_TYPE);
+;	0647	    WRITE_BLOCK (.HEADER);
+;	0648	    INVALIDATE (.HEADER);
+;	0649	    HEADER = READ_BLOCK (.LBN, 1, HEADER_TYPE);
+;	0650	    END;
+;	0651	
+;	0652	RETURN .HEADER;
+;	0653	
+;	0654	END;					! end of routine READ_NEW_HEADER
+
+
+
+							    .EXTRN  INVALIDATE, CREATE_BLOCK
+
+					 0004 00131 READ_NEW_HEADER:
+							    .WORD   Save R2						      ; 0590
+		         6D 0000003F   EF  DE 00133 	    MOVAL   2$, (FP)						      ; 0623
+		         7E 	       01  7D 0013A 	    MOVQ    #1, -(SP)						      ; 0641
+				  04   AC  DD 0013D 	    PUSHL   LBN							      ;
+		  0000G  CF	       03  FB 00140 	    CALLS   #3, READ_BLOCK					      ;
+		         52 	       50  D0 00145 	    MOVL    R0, HEADER						      ;
+				       2A  12 00148 	    BNEQ    1$							      ; 0643
+		         7E 	       01  7D 0014A 	    MOVQ    #1, -(SP)						      ; 0646
+				  04   AC  DD 0014D 	    PUSHL   LBN							      ;
+		  0000G  CF	       03  FB 00150 	    CALLS   #3, CREATE_BLOCK					      ;
+		         52 	       50  D0 00155 	    MOVL    R0, HEADER						      ;
+				       52  DD 00158 	    PUSHL   HEADER						      ; 0647
+		  0000G  CF	       01  FB 0015A 	    CALLS   #1, WRITE_BLOCK					      ;
+				       52  DD 0015F 	    PUSHL   HEADER						      ; 0648
+		  0000G  CF	       01  FB 00161 	    CALLS   #1, INVALIDATE					      ;
+		         7E 	       01  7D 00166 	    MOVQ    #1, -(SP)						      ; 0649
+				  04   AC  DD 00169 	    PUSHL   LBN							      ;
+		  0000G  CF	       03  FB 0016C 	    CALLS   #3, READ_BLOCK					      ;
+		         52 	       50  D0 00171 	    MOVL    R0, HEADER						      ;
+		         50 	       52  D0 00174 1$:     MOVL    HEADER, R0						      ; 0652
+					   04 00177 	    RET     							      ; 0590
+					 0000 00178 2$:     .WORD   Save nothing					      ; 0623
+				       7E  D4 0017A 	    CLRL    -(SP)						      ;
+				       5E  DD 0017C 	    PUSHL   SP							      ;
+		         7E 	  04   AC  7D 0017E 	    MOVQ    4(AP), -(SP)					      ;
+		  0000V  CF	       03  FB 00182 	    CALLS   #3, HANDLER						      ;
+					   04 00187 	    RET     							      ;
+
+; Routine Size:  87 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 5
+;
+;	0655	ROUTINE HANDLER (SIGNAL, MECHANISM) =
+;	0656	
+;	0657	!++
+;	0658	!
+;	0659	! FUNCTIONAL DESCRIPTION:
+;	0660	!
+;	0661	!	This routine is the condition handler for the initial header read.
+;	0662	!	On a read error, it unwinds and causes the read call to return 0
+;	0663	!	to the caller (the establisher frame). On write errors which are
+;	0664	!	not hard drive errors, it unwinds and causes the establisher to
+;	0665	!	return 0 to its caller (the CREATE_HEADER routine).
+;	0666	!
+;	0667	! CALLING SEQUENCE:
+;	0668	!	HANDLER (ARG1, ARG2)
+;	0669	!
+;	0670	! INPUT PARAMETERS:
+;	0671	!	ARG1: address of signal array
+;	0672	!	ARG2: address of mechanism array
+;	0673	!
+;	0674	! IMPLICIT INPUTS:
+;	0675	!	NONE
+;	0676	!
+;	0677	! OUTPUT PARAMETERS:
+;	0678	!	NONE
+;	0679	!
+;	0680	! IMPLICIT OUTPUTS:
+;	0681	!	NONE
+;	0682	!
+;	0683	! ROUTINE VALUE:
+;	0684	!	SS$_RESIGNAL or none if unwind
+;	0685	!
+;	0686	! SIDE EFFECTS:
+;	0687	!	NONE
+;	0688	!
+;	0689	!--
+;	0690	
+;	0691	
+;	0692	BEGIN
+;	0693	
+;	0694	MAP
+;	0695		SIGNAL		: REF BBLOCK,	! signal arg array
+;	0696		MECHANISM	: REF BBLOCK;	! mechanism arg array
+;	0697	
+;	0698	EXTERNAL
+;	0699		IO_STATUS	: VECTOR;	! I/O status block of last operation
+;	0700	
+;	0701	
+;	0702	! If the condition is change mode to user (error exit) and the status is
+;	0703	! read error, zero the return R0 and unwind to the the establisher. On
+;	0704	! most write errors, zero the return R0 and unwind to the caller.
+;	0705	! Otherwise, just resignal the condition.
+;	0706	!
+;	0707	
+;	0708	IF .SIGNAL[CHF$L_SIG_NAME] EQL SS$_CMODUSER
+;	0709	THEN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 5-1
+;
+;	0710	    BEGIN
+;	0711	    MECHANISM[CHF$L_MCH_SAVR0] = 0;
+;	0712	
+;	0713	    IF .SIGNAL[CHF$L_SIG_ARG1] EQL SS$_FCPREADERR
+;	0714	    THEN
+;	0715		$UNWIND (DEPADR = MECHANISM[CHF$L_MCH_DEPTH])
+;	0716	    ELSE IF .SIGNAL[CHF$L_SIG_ARG1] EQL SS$_FCPWRITERR
+;	0717	    AND (.IO_STATUS<0,16> EQL SS$_PARITY
+;	0718		OR .IO_STATUS<0,16> EQL SS$_DATACHECK)
+;	0719	    THEN
+;	0720		$UNWIND ();
+;	0721	    END;
+;	0722	
+;	0723	RETURN SS$_RESIGNAL;			! status is irrelevant if unwinding
+;	0724	
+;	0725	END;					! end of routine HANDLER
+
+
+
+							    .EXTRN  IO_STATUS, SYS$UNWIND
+
+					 0000 00188 HANDLER:.WORD   Save nothing					      ; 0655
+		         50 	  04   AC  D0 0018A 	    MOVL    SIGNAL, R0						      ; 0708
+	      00000424   8F	  04   A0  D1 0018E 	    CMPL    4(R0), #1060					      ;
+				       3D  12 00196 	    BNEQ    4$							      ;
+		         51 	  08   AC  D0 00198 	    MOVL    MECHANISM, R1					      ; 0711
+				  0C   A1  D4 0019C 	    CLRL    12(R1)						      ;
+	      00000888   8F	  08   A0  D1 0019F 	    CMPL    8(R0), #2184					      ; 0713
+				       07  12 001A7 	    BNEQ    1$							      ;
+				       7E  D4 001A9 	    CLRL    -(SP)						      ; 0715
+				  08   A1  9F 001AB 	    PUSHAB  8(R1)						      ;
+				       1E  11 001AE 	    BRB     3$							      ;
+	      000008A0   8F	  08   A0  D1 001B0 1$:     CMPL    8(R0), #2208					      ; 0716
+				       1B  12 001B8 	    BNEQ    4$							      ;
+		  01F4   8F	0000G  CF  B1 001BA 	    CMPW    IO_STATUS, #500					      ; 0717
+				       09  13 001C1 	    BEQL    2$							      ;
+		  005C   8F	0000G  CF  B1 001C3 	    CMPW    IO_STATUS, #92					      ; 0718
+				       09  12 001CA 	    BNEQ    4$							      ;
+				       7E  7C 001CC 2$:     CLRQ    -(SP)						      ; 0720
+	      00000000G  9F	       02  FB 001CE 3$:     CALLS   #2, @#SYS$UNWIND					      ;
+		         50 	0918   8F  3C 001D5 4$:     MOVZWL  #2328, R0						      ; 0723
+					   04 001DA 	    RET     							      ; 0655
+
+; Routine Size:  83 bytes
+
+
+;	0726	
+;	0727	END
+;	0728	ELUDOM
+
+
+
+
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:52:24	DBB3:[F11A.SRC]CREHDR.B32;8					Page 5-2
+;
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDC2$     	     8  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   475  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        22         0       239
+
+
+
+
+
+; Size:		467 code + 16 data bytes
+; Run Time:	00:10.4
+; Elapsed Time:	00:18.9
+; Memory Used:	329 pages
+; Compilation Complete

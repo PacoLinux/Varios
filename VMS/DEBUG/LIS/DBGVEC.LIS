@@ -1,0 +1,619 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGVEC (	ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000036') =
+;	0003	BEGIN
+;	0004	
+;	0005	!			  COPYRIGHT (c) 1977 BY
+;	0006	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0007	!
+;	0008	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0009	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0010	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0011	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0012	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0013	! TRANSFERRED.
+;	0014	!
+;	0015	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0016	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0017	! CORPORATION.
+;	0018	!
+;	0019	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0020	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0021	!
+;	0022	
+;	0023	!++
+;	0024	! FACILITY:
+;	0025	!	DEBUG
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	Handle so-called 'vector storage' in conjunction
+;	0029	!	with the RST build and rebuild modules.
+;	0030	!
+;	0031	! ENVIRONMENT:
+;	0032	!	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0033	!
+;	0034	! Author:
+;	0035	!	Kevin Pammett, August 12, 1977.
+;	0036	!
+;	0037	! Version:	36
+;	0038	!
+;	0039	! MODIFIED BY:
+;	0040	!		Dale Roedger, 27 April 1978:	36
+;	0041	!
+;	0042	!  35	9-DEC-77	KGP	-BROKE THIS MODULE INTO DBGVEC.B32, DBGREB.B32,
+;	0043	!				 AND DBGBLD.B32
+;	0044	!  36	27-APR-78	DAR	Modified the require and library directives
+;	0045	!				for the native build.
+;	0046	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0047	! TABLE OF CONTENTS:
+;	0048	!
+;	0049	
+;	0050	FORWARD ROUTINE
+;	0051		DBG$VS_INIT : NOVALUE,		! Initialize a vector storage area.
+;	0052		DBG$VS_GET,			! Allocate records from a so-called
+;	0053						!  "vector storage" vector.
+;	0054		DBG$VS_FREE : NOVALUE,		! Release vector storage.
+;	0055		DBG$VS_SHRINK : NOVALUE;	! Free up unused vector storage.
+;	0056	
+;	0057	!
+;	0058	! INCLUDE FILES:
+;	0059	!
+;	0060	%IF %VARIANT		! True for TEN.
+;     L 0061	%THEN
+;     U 0062	LIBRARY 'NEW:STARLE';
+;     U 0063	
+;     U 0064	REQUIRE 'DBGPCT.REQ';
+;     U 0065	REQUIRE 'VXSMAC.REQ';
+;     U 0066	REQUIRE 'DBGRST.REQ';
+;     U 0067	REQUIRE 'SYSSER.REQ';
+;     U 0068	%ELSE
+;	0069	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0070	
+;	0071	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0083	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0123	REQUIRE 'SRC$:DBGRST.REQ';
+;	1270	REQUIRE 'SRC$:SYSSER.REQ';
+;      R1273	SWITCHES LIST (SOURCE);
+;      R1274	
+;      R1275	EXTERNAL ROUTINE
+;      R1276		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R1277	
+;      R1278	SWITCHES LIST (NOSOURCE);
+;	1323	%FI
+;	1324	
+;	1325	!
+;	1326	! MACROS:
+;	1327	!
+;	1328	
+;	1329	!
+;	1330	! EQUATED SYMBOLS:
+;	1331	!		diagnostic control switches
+;	1332	
+;	1333	LITERAL
+;	1334		DBG_VEC5	= 0;		! storage (de)allocation
+;	1335	
+;	1336	!
+;	1337	! EXTERNAL REFERENCES:
+;	1338	!
+;	1339	
+;	1340	EXTERNAL ROUTINE
+;	1341		DBG$RST_FREEZ,		! Allocate and zero RST-pointer storage.
+;	1342		DBG$RST_RELEASE;	! Free up RST-pointer storage.
+;	1343	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 2-1
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	1344	GLOBAL ROUTINE DBG$VS_INIT( STORE_DESC_ADDR, NUM_ELEMENTS, ELEMENT_SIZE ) : NOVALUE =
+;	1345	
+;	1346	!++
+;	1347	! Functional Description:
+;	1348	!
+;	1349	!	Initialize storage for a so-called "storage vector".
+;	1350	!	See DBGRST.BEG for a description of these structures.
+;	1351	!
+;	1352	! Formal Parameters:
+;	1353	!
+;	1354	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1355	!			 which this routine is to initialize.
+;	1356	!	NUM_ELEMENTS	-The maximum number of elements which will
+;	1357	!			 ever be allocated from this vector.
+;	1358	!	ELEMENT_SIZE	-The maximum size, in bytes, of each element.
+;	1359	!
+;	1360	! Implicit Inputs:
+;	1361	!
+;	1362	!	Since we assume that records are fixed-length,
+;	1363	!	we actually allocate more storage than
+;	1364	!	we will really need.  This will be fixed up when we 
+;	1365	!	can 'shrink' RST storage.
+;	1366	!
+;	1367	! Routine Value:
+;	1368	!
+;	1369	!	NOVALUE - because if we run out of storage (the only
+;	1370	!		  thing which can go wrong), we don't get
+;	1371	!		  control back anyways.
+;	1372	!
+;	1373	! Side Effects:
+;	1374	!
+;	1375	!	The storage descriptor is initialized in such
+;	1376	!	a way that GET_VEC_STORAGE can do its thing.
+;	1377	!
+;	1378	!	RST storage is allocated.
+;	1379	!--
+;	1380	
+;	1381	BEGIN
+;	1382		MAP
+;	1383					! We get passed a pointer to the storage
+;	1384					! descriptor for the module we are
+;	1385					! initializing vector storage for.
+;	1386			STORE_DESC_ADDR : REF VECT_STORE_DESC;
+;	1387		LOCAL
+;	1388					! Pointer to the actual storage
+;	1389					! we allocate.
+;	1390			STORAGE : REF MC_RECORD;
+;	1391	
+;	1392	%IF DBG_VEC5
+;     L 1393	%THEN
+;     U 1394		$FAO_TT_OUT('init_vec_store: desc is at !XL, elements=!XL, size=!XL',
+;     U 1395			.STORE_DESC_ADDR,.NUM_ELEMENTS,.ELEMENT_SIZE);
+;     U 1396	%FI
+;	1397	
+;	1398		! Ask for the necessary RST storage.  
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+;	1399		! Note that we don't get control back
+;	1400		! if the requisition is denied.
+;	1401	
+;	1402		STORAGE = DBG$RST_FREEZ( RST_UNITS(.ELEMENT_SIZE * .NUM_ELEMENTS));
+;	1403	
+;	1404		! Initialize the vector storage descriptor.
+;	1405		! The 'marker' starts out being
+;	1406		! the same as the beginning address since initially
+;	1407		! the entire vector is available for re-allocation.
+;	1408	
+;	1409		STORE_DESC_ADDR[ STOR_BEGIN_RST ] = .STORAGE;
+;	1410		STORE_DESC_ADDR[ STOR_MARKER ] = .STORAGE;
+;	1411	
+;	1412		! The end RST address is calculated by taking
+;	1413		! into account that the standard DEBUG storage
+;	1414		! manager works in LONGWORDs and rounds up.
+;	1415	
+;	1416		STORE_DESC_ADDR[ STOR_END_RST ] = .STORAGE
+;	1417				+ (RST_UNITS(.ELEMENT_SIZE*.NUM_ELEMENTS) * %UPVAL);
+;	1418	
+;	1419	%IF DBG_VEC5
+;     L 1420	%THEN
+;     U 1421		$FAO_TT_OUT('storage begins at !XL, ends at !XL',
+;     U 1422			.STORE_DESC_ADDR[ STOR_BEGIN_RST ], 
+;     U 1423			.STORE_DESC_ADDR[ STOR_END_RST ]); 
+;     U 1424	%FI
+;	1425	
+;	1426	END;
+
+
+							    .TITLE  DBGVEC
+							    .IDENT  \000036\
+
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$RST_FREEZ, DBG$RST_RELEASE
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 000C 00000 	    .ENTRY  DBG$VS_INIT, Save R2,R3				      ; 1344
+	   52	    0C   AC	  08   AC  C5 00002 	    MULL3   NUM_ELEMENTS, ELEMENT_SIZE, R2			      ; 1402
+		         52	       03  C0 00008 	    ADDL2   #3, R2						      ;
+		         52	       04  C6 0000B 	    DIVL2   #4, R2						      ;
+				       52  DD 0000E 	    PUSHL   R2							      ;
+	      00000000G  EF	       01  FB 00010 	    CALLS   #1, DBG$RST_FREEZ					      ;
+		         51	       50  D0 00017 	    MOVL    R0, STORAGE						      ;
+		         50	  04   AC  D0 0001A 	    MOVL    STORE_DESC_ADDR, R0					      ; 1409
+		    01   A0	       51  B0 0001E 	    MOVW    STORAGE, 1(R0)					      ;
+		    05   A0	       51  B0 00022 	    MOVW    STORAGE, 5(R0)					      ; 1410
+		         53	     6142  DE 00026 	    MOVAL   (STORAGE)[R2], R3					      ; 1417
+		    03   A0	       53  B0 0002A 	    MOVW    R3, 3(R0)						      ;
+					   04 0002E 	    RET     							      ; 1344
+
+; Routine Size:  47 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	1427	GLOBAL ROUTINE DBG$VS_FREE( STORE_DESC_ADDR ) : NOVALUE =
+;	1428	
+;	1429	!++
+;	1430	! Functional Description:
+;	1431	!
+;	1432	!	Release storage for a so-called "storage vector".
+;	1433	!	See DBGRST.BEG for a description of these structures.
+;	1434	!
+;	1435	! Formal Parameters:
+;	1436	!
+;	1437	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1438	!			 which completely describes this storage.
+;	1439	!
+;	1440	! Implicit Inputs:
+;	1441	!
+;	1442	!	We assume that subtracting two RST pointers
+;	1443	!	("end-begin") gives the number of bytes between them.
+;	1444	!
+;	1445	! Routine Value:
+;	1446	!
+;	1447	!	NOVALUE - because if there is a free storage error (the only
+;	1448	!		  thing which can go wrong), we don't get
+;	1449	!		  control back anyways.
+;	1450	!
+;	1451	! Side Effects:
+;	1452	!
+;	1453	!	RST storage is released and the 'begin' pointer field of
+;	1454	!	the corresponding storage descriptor is zeroed out.
+;	1455	!--
+;	1456	
+;	1457	BEGIN
+;	1458		MAP
+;	1459					! We get passed a pointer to the storage
+;	1460					! descriptor for the module we are
+;	1461					! releasing vector storage for.
+;	1462	
+;	1463			STORE_DESC_ADDR : REF VECT_STORE_DESC;
+;	1464		LOCAL
+;	1465			VECT_SIZE;	! Pointer to the actual storage
+;	1466					! we allocate.
+;	1467	
+;	1468	%IF DBG_VEC5
+;     L 1469	%THEN
+;     U 1470		$FAO_TT_OUT('dbg_vs_free: desc at !XL begins at !XL, ends at !XL',
+;     U 1471			.store_desc_addr,
+;     U 1472			.STORE_DESC_ADDR[ STOR_BEGIN_RST ], 
+;     U 1473			.STORE_DESC_ADDR[ STOR_END_RST ]); 
+;     U 1474	%FI
+;	1475	
+;	1476		! Don't try to free storage which is not allocated.
+;	1477	
+;	1478		IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL 0 )
+;	1479		THEN
+;	1480			RETURN;
+;	1481	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+;	1482		! Pick up the size of the vector, in bytes.
+;	1483	
+;	1484		VECT_SIZE = .STORE_DESC_ADDR[ STOR_END_RST ] - .STORE_DESC_ADDR[ STOR_BEGIN_RST ];
+;	1485	
+;	1486	%IF DBG_VEC5
+;     L 1487	%THEN
+;     U 1488		$FAO_TT_OUT('storage vect is !XL bytes long.',.vect_size);
+;     U 1489	%FI
+;	1490	
+;	1491		! Release the storage.
+;	1492	
+;	1493		DBG$RST_RELEASE( .STORE_DESC_ADDR[ STOR_BEGIN_RST ], RST_UNITS(.VECT_SIZE));
+;	1494	
+;	1495		! Zero out the vector storage descriptor's 'begin' field.
+;	1496		! Routines OK_TO_ADD (etc.) check this field and assume that
+;	1497		! if it is non-zero then storage is still allocated
+;	1498		! for this module.
+;	1499	
+;	1500		STORE_DESC_ADDR[ STOR_BEGIN_RST ] = 0;
+;	1501	END;
+
+
+
+
+
+					 0004 0002F 	    .ENTRY  DBG$VS_FREE, Save R2				      ; 1427
+		         52	  04   AC  D0 00031 	    MOVL    STORE_DESC_ADDR, R2					      ; 1478
+				  01   A2  B5 00035 	    TSTW    1(R2)						      ;
+				       20  13 00038 	    BEQL    1$							      ;
+		         50	  03   A2  3C 0003A 	    MOVZWL  3(R2), VECT_SIZE					      ; 1484
+		         51	  01   A2  3C 0003E 	    MOVZWL  1(R2), R1						      ;
+		         50	       51  C2 00042 	    SUBL2   R1, VECT_SIZE					      ;
+		         50	       03  C0 00045 	    ADDL2   #3, R0						      ; 1493
+	   7E	         50	       04  C7 00048 	    DIVL3   #4, R0, -(SP)					      ;
+		         7E	  01   A2  3C 0004C 	    MOVZWL  1(R2), -(SP)					      ;
+	      00000000G  EF	       02  FB 00050 	    CALLS   #2, DBG$RST_RELEASE					      ;
+				  01   A2  B4 00057 	    CLRW    1(R2)						      ; 1500
+					   04 0005A 1$:     RET     							      ; 1427
+
+; Routine Size:  44 bytes
+
+
+;	1502	GLOBAL ROUTINE DBG$VS_SHRINK( STORE_DESC_ADDR ) : NOVALUE =
+;	1503	
+;	1504	!++
+;	1505	! Functional Description:
+;	1506	!
+;	1507	!	Free up the unused portion of the indicated vector storage.
+;	1508	!
+;	1509	! Formal Parameters:
+;	1510	!
+;	1511	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1512	!			 which completely describes this storage.
+;	1513	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 4-2
+; Digital Equipment Corporation
+;
+;	1514	! Implicit Inputs:
+;	1515	!
+;	1516	!	If the STOR_BEGIN_RST is the same as STOR_MARKER then
+;	1517	!	no vector storage was actually allocated.  So far this
+;	1518	!	is the only case we handle - we free up the entire
+;	1519	!	vector.
+;	1520	!
+;	1521	! Routine Value:
+;	1522	!
+;	1523	!	NOVALUE - because if there is a free storage error (the only
+;	1524	!		  thing which can go wrong), we don't get
+;	1525	!		  control back anyways.
+;	1526	!
+;	1527	! Side Effects:
+;	1528	!
+;	1529	!	RST storage may be released and the 'begin' pointer field of
+;	1530	!	the corresponding storage descriptor is zeroed out.
+;	1531	!--
+;	1532	
+;	1533	BEGIN
+;	1534		MAP
+;	1535					! We get passed a pointer to the storage
+;	1536					! descriptor for the module we are
+;	1537					! releasing vector storage for.
+;	1538	
+;	1539			STORE_DESC_ADDR : REF VECT_STORE_DESC;
+;	1540		LOCAL
+;	1541			VECT_SIZE;	! Pointer to the actual storage
+;	1542					! we allocate.
+;	1543	
+;	1544	%IF DBG_VEC5
+;     L 1545	%THEN
+;     U 1546		$FAO_TT_OUT('shrink: desc at !XL begin=!XL, end=!XL, mark=!XL',
+;     U 1547			.store_desc_addr
+;     U 1548			.STORE_DESC_ADDR[ STOR_BEGIN_RST ], 
+;     U 1549			.STORE_DESC_ADDR[ STOR_END_RST ], 
+;     U 1550			.STORE_DESC_ADDR[ STOR_MARKER ]); 
+;     U 1551	%FI
+;	1552	
+;	1553		! Don't try to free storage which is not allocated.
+;	1554	
+;	1555		IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL 0 )
+;	1556		THEN
+;	1557			RETURN;
+;	1558	
+;	1559		! If storage has been allocated but no records
+;	1560		! therein, we can free up the whole thing.
+;	1561	
+;	1562		IF( .STORE_DESC_ADDR[ STOR_BEGIN_RST ] EQL .STORE_DESC_ADDR[ STOR_MARKER ] )
+;	1563		THEN
+;	1564			DBG$VS_FREE(.STORE_DESC_ADDR);
+;	1565	END;
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 4-3
+; Digital Equipment Corporation
+;
+
+
+					 0000 0005B 	    .ENTRY  DBG$VS_SHRINK, Save nothing				      ; 1502
+		         50	  04   AC  D0 0005D 	    MOVL    STORE_DESC_ADDR, R0					      ; 1555
+				  01   A0  B5 00061 	    TSTW    1(R0)						      ;
+				       0D  13 00064 	    BEQL    1$							      ;
+		    05   A0	  01   A0  B1 00066 	    CMPW    1(R0), 5(R0)					      ; 1562
+				       06  12 0006B 	    BNEQ    1$							      ;
+				       50  DD 0006D 	    PUSHL   R0							      ; 1564
+		    BC   AF	       01  FB 0006F 	    CALLS   #1, DBG$VS_FREE					      ;
+					   04 00073 1$:     RET     							      ; 1502
+
+; Routine Size:  25 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	1566	GLOBAL ROUTINE DBG$VS_GET( STORE_DESC_ADDR, RECORD_SIZE ) =
+;	1567	
+;	1568	!++
+;	1569	! Functional Description:
+;	1570	!
+;	1571	!	Allocate a given-length record from so-called "vector storage"
+;	1572	!	given a pointer to the associated vector storage descriptor.
+;	1573	!
+;	1574	! Formal Parameters:
+;	1575	!
+;	1576	!	STORE_DESC_ADDR	-The address of the storage vector descriptor
+;	1577	!			 which this routine works from.
+;	1578	!	RECORD_SIZE	-The number of bytes required for
+;	1579	!			 the new record.
+;	1580	!
+;	1581	! Implicit Inputs:
+;	1582	!
+;	1583	!	This routine builds in how to translate RST-pointers
+;	1584	!	to longword pointers.
+;	1585	!
+;	1586	!	We also build in how one deals with storage vector descriptors.
+;	1587	!	This includes the fact that we look at the pointer-type
+;	1588	!	field in the storage descriptor to determine whether we 
+;	1589	!	should return an RST-pointer or a 'longword' pointer.
+;	1590	!	(See DBGRST.BEG)
+;	1591	!
+;	1592	! Routine Value:
+;	1593	!
+;	1594	!	A pointer to the allocated storage, 0 when there is none left.
+;	1595	!
+;	1596	!	The pointer type (RST or 'longword') is determined
+;	1597	!	by looking at the STOR_LONG_PTRS field of the given
+;	1598	!	storage descriptor.
+;	1599	!
+;	1600	! Side Effects:
+;	1601	!
+;	1602	!	The storage vector descriptor fields
+;	1603	! are altered to reflect the allocation
+;	1604	! of another record.
+;	1605	!--
+;	1606	
+;	1607	BEGIN
+;	1608		EXTERNAL LITERAL
+;	1609	
+;	1610				! We build-in how to convert RST-pointers
+;	1611				!  to longword pointers.
+;	1612			DBG$_RST_BEGIN;
+;	1613		MAP
+;	1614					! We get passed a pointer to the descriptor
+;	1615					! for the storage we are allocating from.
+;	1616			STORE_DESC_ADDR : REF VECT_STORE_DESC;
+;	1617		LOCAL
+;	1618					! An RST-pointer to the actual storage
+;	1619					! we will allocate.
+;	1620			STORAGE : REF RST_POINTER,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 5-1
+; Digital Equipment Corporation
+;
+;	1621	
+;	1622					! How far along this allocation will
+;	1623					! move the current marker.
+;	1624			NEW_MARKER : REF RST_POINTER;
+;	1625	
+;	1626		! If we get to allocate the requested storage,
+;	1627		! it will be from where the current marker
+;	1628		! says we should get it.
+;	1629	
+;	1630		STORAGE = .STORE_DESC_ADDR[ STOR_MARKER ];
+;	1631	
+;	1632	%IF DBG_VEC5
+;     L 1633	%THEN
+;     U 1634		$FAO_TT_OUT('!/vec_store: size = !XL, marker = !XL',
+;     U 1635			.record_size,.storage);
+;     U 1636	%FI
+;	1637	
+;	1638		! See if taking the necessary storage from
+;	1639		! the indicated vector would overflow it.
+;	1640	
+;	1641		NEW_MARKER = .STORAGE + .RECORD_SIZE;
+;	1642	
+;	1643		IF( .NEW_MARKER GTRA .STORE_DESC_ADDR[ STOR_END_RST ] )
+;	1644		THEN
+;	1645			! No more storage left.
+;	1646	
+;	1647			RETURN(FALSE);
+;	1648	
+;	1649	%IF DBG_VEC5
+;     L 1650	%THEN
+;     U 1651		$FAO_TT_OUT(' allocated at !XL',.storage);
+;     U 1652	%FI
+;	1653	
+;	1654		! Update the storage descriptor to reflect the allocation
+;	1655		! of this new record.
+;	1656	
+;	1657		STORE_DESC_ADDR[ STOR_MARKER ] = .NEW_MARKER;
+;	1658	
+;	1659		! We return an RST-pointer or a longword
+;	1660		! pointer, depending on a field in the storage
+;	1661		! descriptor.  This field is initialized in build_module().
+;	1662	
+;	1663		IF( .STORE_DESC_ADDR[ STOR_LONG_PTRS ] )
+;	1664		THEN
+;	1665			! Make an RST-pointer into a longword pointer.
+;	1666	
+;	1667			STORAGE = .STORAGE OR DBG$_RST_BEGIN;
+;	1668	
+;	1669		RETURN( .STORAGE );
+;	1670	END;
+
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07	DBB3:[DEBUG.SRC]DBGVEC.B32;5					Page 5-2
+; Digital Equipment Corporation
+;
+					 0004 00074 	    .ENTRY  DBG$VS_GET, Save R2					      ; 1566
+		         50	  04   AC  D0 00076 	    MOVL    STORE_DESC_ADDR, R0					      ; 1630
+		         52	  05   A0  3C 0007A 	    MOVZWL  5(R0), STORAGE					      ;
+	   51	         52	  08   AC  C1 0007E 	    ADDL3   RECORD_SIZE, STORAGE, NEW_MARKER			      ; 1641
+      03   A0	         10	       00  ED 00083 	    CMPZV   #0, #16, 3(R0), NEW_MARKER				      ; 1643
+				       51     00088									      ;
+				       12  1F 00089 	    BLSSU   2$							      ;
+		    05   A0	       51  B0 0008B 	    MOVW    NEW_MARKER, 5(R0)					      ; 1657
+		         07	       60  E9 0008F 	    BLBC    (R0), 1$						      ; 1663
+		         52 00000000G  8F  C8 00092 	    BISL2   #DBG$_RST_BEGIN, STORAGE				      ; 1667
+		         50	       52  D0 00099 1$:     MOVL    STORAGE, R0						      ; 1669
+					   04 0009C 	    RET     							      ;
+				       50  D4 0009D 2$:     CLRL    R0							      ; 1566
+					   04 0009F 	    RET     							      ;
+
+; Routine Size:  44 bytes
+
+
+;	1671	END				!End of module
+;	1672	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	   160  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         0         0       107
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      244	00:06.9		00:08.8
+;	FLOWAN	       23	00:00.3		00:00.3
+;	DELAY	       25	00:00.3		00:00.3
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:36:07									Page 5-3
+; Digital Equipment Corporation
+;
+;	TNBIND	       27	00:00.2		00:00.2
+;	CODE	       43	00:00.4		00:00.4
+;	FINAL	       75	00:00.8		00:00.9
+;	Total	      437	00:08.9		00:10.8
+
+; Size:		160 code + 0 data bytes
+; Run Time:	00:09.1
+; Elapsed Time:	00:11.2
+; Memory Used:	154 pages
+; Compilation Complete

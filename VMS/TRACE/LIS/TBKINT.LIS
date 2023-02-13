@@ -1,0 +1,886 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE TBKINT (	IDENT = '000009' ) =
+;	0002	BEGIN
+;	0003	
+;	0004	!
+;	0005	!			  COPYRIGHT (c) 1978 BY
+;	0006	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0007	!
+;	0008	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0009	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0010	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0011	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0012	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0013	! TRANSFERRED.
+;	0014	!
+;	0015	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0016	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0017	! CORPORATION.
+;	0018	!
+;	0019	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0020	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0021	!
+;	0022	
+;	0023	!++
+;	0024	! FACILITY:
+;	0025	!	DEBUG (DBG)
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	This module opens the image file, maps the DST (if
+;	0029	!	any) into P0 space, and supplies routines to read sequentially
+;	0030	!	through the DST.
+;	0031	!
+;	0032	! Version	09
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0036	!
+;	0037	! Author:	Carol Peters,	Creation Date:	11 January 1978
+;	0038	!
+;	0039	! MODIFIED BY:
+;	0040	!		Dale Roedger, 15 June 1978: Version 09
+;	0041	!
+;	0042	! Revision History:
+;	0043	!
+;	0044	!	02	18-jan-78	KGP	-Changed POSITON_DST to allow
+;	0045	!					 an arg of 0 to imply rewind.
+;	0046	!	03	25-jan-78	KGP	-More detailed error reporting
+;	0047	!	04	28-feb-78	KGP	-POSITION_DST now knows about
+;	0048	!					 whether the DST actually got
+;	0049	!					 mapped or not (so that even when 
+;	0050	!					 we can't map the DST we can still
+;	0051	!					 produce a TRACEback).
+;	0052	!					-FIND_DST finds the DST where it mapped
+;	0053	!					 the first time, on subsequent TRACEs.
+;	0054	!	05	01-mar-78	KGP	-FIND_DST is now NOVALUE - it either
+;	0055	!					 does its thing or leaves things so
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					 that a non-symbolic TRACE is done.
+;	0057	!	06	8-mar-78	KGP	-Beefed up FIND_DST to return a
+;	0058	!					 symbolic indication, and to print
+;	0059	!					 proper error messages.
+;	0060	!					-Completed the separation of TRACE
+;	0061	!					 and DEBUG - even the REQUIRE files
+;	0062	!					 and P-SECT names are now separate.
+;	0063	!	07	27-mar-78	KGP	-Renamed TBK$PUTMSG to TBK$FAKE_MSG
+;	0064	!	08	26-APR-78	DAR	Modified require and library directives
+;	0065	!					for native build.
+;	0066	!	09	15-JUN-78	DAR	Changed all DBG$ symbols to TBK$.
+;	0067	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 2
+; Digital Equipment Corporation
+;
+;	0068	! Table of contents:
+;	0069	!
+;	0070	FORWARD ROUTINE
+;	0071		tbk$find_dst,			! Find the DST and make it available.
+;	0072		tbk$get_dst_rec,		! Make a certain DST record available.
+;	0073		tbk$get_nxt_dst,		! Make the next DST record available.
+;	0074		tbk$positon_dst;		! Make a certain DST record available
+;	0075						!   and set up for tbk$get_nxt_dst
+;	0076	
+;	0077	!
+;	0078	! INCLUDE FILES:
+;	0079	!
+;	0080	
+;	0081	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0082	
+;	0083	REQUIRE 'SRC$:TBKPCT.REQ';
+;	0095	REQUIRE 'SRC$:TBKGEN.REQ';
+;	0162	REQUIRE 'SRC$:TBKRST.REQ';
+;	1251	REQUIRE 'SRC$:TBKSER.REQ';
+;	1311	REQUIRE 'LIB$:TRACEMSG.REQ';
+;	1489	
+;	1490	!
+;	1491	! MACROS:
+;	1492	!
+;	1493	
+;	1494	!
+;	1495	! EQUATED SYMBOLS:
+;	1496	!
+;	1497	LITERAL
+;	1498		TBK_INT1	= 0;	! Diagnostic variable for mapping the DST in.
+;	1499	
+;	1500	
+;	1501	!
+;	1502	! OWN STORAGE:
+;	1503	!
+;	1504	
+;	1505	OWN
+;	1506		dst_begin_addr : INITIAL(1),		! virtual address where DST begins.
+;	1507							! 1 => the DST did not get mapped.
+;	1508		dst_end_addr,				! virtual address of last byte in DST.
+;	1509		dst_next_addr,				! virtual address where 'next' DST record begins.
+;	1510		exe_file : $FAB (FAC = GET),
+;	1511	
+;	1512		exe_input : $RAB (USZ = 512);
+;	1513	
+;	1514	!
+;	1515	! EXTERNAL REFERENCES:
+;	1516	!
+;	1517	EXTERNAL ROUTINE
+;	1518		tbk$fake_msg : novalue,			! print TRACEback messages.
+;	1519		lib$_cremapsec;				! creates and maps a global section
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3
+; Digital Equipment Corporation
+;
+;	1520	GLOBAL ROUTINE tbk$find_dst (file_name, img_header_blk, symtab_sec_bnds) =
+;	1521	
+;	1522	!++
+;	1523	! Functional description:
+;	1524	!	If a DST exists for the specified image, open the image file,
+;	1525	!	map in the DST, and set it up for get_nxt_dst,
+;	1526	!	get_dst_rec, and positon_dst.
+;	1527	!
+;	1528	!	If the DST cannot be mapped, for any reason, things are
+;	1529	!	left so that a non-symbolic TRACE happens along with the
+;	1530	!	appropriate (warning) error message.
+;	1531	!
+;	1532	! Formal parameters:
+;	1533	!	file_name	- a counted string to the file specification of
+;	1534	!			  the image file.
+;	1535	!	img_header_blk	- the address of a byte block that contains the
+;	1536	!			  image header data needed to locate the DST.
+;	1537	!	symtab_sec_bnds	-The address of a 2-longword vector where the
+;	1538	!			 beginning and end of where the DST was mapped to
+;	1539	!			 can be stored across TRACE invocations.
+;	1540	!
+;	1541	! Implicit inputs:
+;	1542	!	The image activator has read in the image file header.
+;	1543	!
+;	1544	! Output parameters:
+;	1545	!	none
+;	1546	!
+;	1547	! Implicit outputs:
+;	1548	!	Three own variables are set up after the DST is mapped in.
+;	1549	!		dst_begin_addr	- beginning of the DST
+;	1550	!		dst_end_addr	- end of the DST
+;	1551	!		dst_next_addr	- address of next DST record
+;	1552	!
+;	1553	! Routine value:
+;	1554	!	TRUE, if we expect the TRACEback will be symbolic,
+;	1555	!	FALSE, otherwise.
+;	1556	!
+;	1557	! Side effects:
+;	1558	!	The image file is opened and closed. The DST is mapped into the
+;	1559	!	top of P0 space.  When this is done, the beginning and ending
+;	1560	!	addresses are 'stuffed' back into the 2-longword vector
+;	1561	!	we are passed a pointer to (symtab_sec_bnds).
+;	1562	!
+;	1563	!--
+;	1564	
+;	1565		BEGIN
+;	1566	
+;	1567		MAP
+;	1568			symtab_sec_bnds : ref vector[,long],
+;	1569			file_name	: REF VECTOR [, BYTE],
+;	1570			img_header_blk	: REF BLOCK [, BYTE];
+;	1571	
+;	1572		BIND
+;	1573			sym_tbl_data	= .img_header_blk + .img_header_blk [ihd$w_symdbgoff] : BLOCK [, BYTE],
+;	1574			exesecnam	= UPLIT BYTE (%ASCIC 'DST');
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-1
+; Digital Equipment Corporation
+;
+;	1575	
+;	1576		LITERAL
+;	1577			dst_end_address	= 1;
+;	1578	
+;	1579		LOCAL
+;	1580			local_buffer	: VECTOR [10],
+;	1581			exe_sec_bounds	: VECTOR [2],
+;	1582			exesecnam_desc	: VECTOR [2],
+;	1583			exefilnam_desc	: VECTOR [2],
+;	1584			status;
+;	1585	
+;	1586	%if tbk_int1
+;     L 1587	%then
+;     U 1588		$fao_tt_out('!/symtab sec bnds vector is at !XL, begin = !XL',
+;     U 1589			.symtab_sec_bnds,.symtab_sec_bnds[0]);
+;     U 1590	%FI
+;	1591		! See if this is a second (or greater) invocation of
+;	1592		! TRACE so that we can just reuse the DST we mapped last time.
+;	1593	
+;	1594		IF( .SYMTAB_SEC_BNDS[0] NEQ 0 )
+;	1595		THEN
+;	1596			BEGIN
+;	1597	
+;	1598			! Set up to use the DST in the same way as we used
+;	1599			! it during the first invocation of TRACE.
+;	1600	
+;	1601			dst_begin_addr = .symtab_sec_bnds [0];
+;	1602			dst_end_addr = .symtab_sec_bnds [1];
+;	1603			dst_next_addr = .dst_begin_addr;
+;	1604	
+;	1605	%IF TBK_INT1
+;     L 1606	%THEN
+;     U 1607			$fao_tt_out('!/DST exists at !XL and ends at !XL',
+;     U 1608				.dst_begin_addr,.dst_end_addr);
+;     U 1609	%FI
+;	1610			! The traceback will be symbolic.
+;	1611	
+;	1612			return(TRUE);
+;	1613			END;
+;	1614	
+;	1615		!++
+;	1616		! First invocation - try to map in the DST.
+;	1617		! See whether the image header has valid data in it.
+;	1618		!--
+;	1619	
+;	1620	%if tbk_int1
+;     L 1621	%then
+;     U 1622		$fao_tt_out('!/symdbgoff is !XL',.img_header_blk[ihd$w_symdbgoff]);
+;     U 1623	%FI
+;	1624		IF .img_header_blk [ihd$w_symdbgoff] EQL 0 
+;	1625		then
+;	1626			begin
+;	1627			TBK$fake_MSG(TBK$_BADHDR,0);
+;	1628		
+;	1629			! traceback will be non-symbolic.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-2
+; Digital Equipment Corporation
+;
+;	1630	
+;	1631			return(false);
+;	1632			END;
+;	1633	
+;	1634		!++
+;	1635		! Now that the image header seems to be a valid one, see whether
+;	1636		! it included DST data.
+;	1637		!--
+;	1638	%if tbk_int1
+;     L 1639	%then
+;     U 1640		$fao_tt_out('!/dstblks = !XL, dstvbn = !XL',
+;     U 1641			.sym_tbl_data[ ihs$w_dstblks ],
+;     U 1642			.sym_tbl_data[ ihs$l_dstvbn ]);
+;     U 1643	%FI
+;	1644		IF .sym_tbl_data[ ihs$w_dstblks ] EQL 0
+;	1645		then
+;	1646			begin
+;	1647			TBK$fake_MSG(TBK$_BADDST,0);
+;	1648	
+;	1649			! traceback will be non-symbolic
+;	1650		
+;	1651			return(false);
+;	1652			end;
+;	1653		!++
+;	1654		! There appears to be a DST. Do one more consistency
+;	1655		! check.
+;	1656		!--
+;	1657		IF NOT (.sym_tbl_data [ihs$l_dstvbn] GTR 2) 
+;	1658		then
+;	1659			begin
+;	1660			TBK$fake_MSG(TBK$_BADDSTVBN,.SYM_TBL_DATA[IHS$L_DSTVBN]);
+;	1661	
+;	1662			! TRACEback will be non-symbolic.
+;	1663	
+;	1664			return(false);
+;	1665			end;
+;	1666	
+;	1667		!++
+;	1668		! Open and connect to a RAB the image file.
+;	1669		!--
+;	1670		exe_file [fab$l_fna] = file_name [1];
+;	1671		exe_file [fab$b_fns] = .file_name [0];
+;	1672		status = $OPEN (FAB = exe_file);
+;	1673		IF NOT .status
+;	1674		THEN
+;	1675			begin
+;	1676			TBK$fake_MSG(TBK$_BADEXE,.file_name);
+;	1677	
+;	1678			! TRACEback will be non-symbolic.
+;	1679			return(false);
+;	1680			end;
+;	1681		exe_input [rab$l_ubf] = local_buffer;
+;	1682		exe_input [rab$l_fab] = exe_file;
+;	1683		status = $CONNECT (RAB = exe_input);
+;	1684		IF NOT .status
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-3
+; Digital Equipment Corporation
+;
+;	1685		THEN
+;	1686			begin
+;	1687			TBK$fake_MSG(TBK$_BADEXERAB,.file_name);
+;	1688	
+;	1689			! TRACEback will be non-symbolic.
+;	1690			return(false);
+;	1691			end;
+;	1692	
+;	1693		!++
+;	1694		! Locate the end of P0 address space in order to map
+;	1695		! the DST starting at the location.
+;	1696		!--
+;	1697		status = $EXPREG (pagcnt = 1, retadr = exe_sec_bounds);
+;	1698		IF NOT .status
+;	1699		THEN
+;	1700			begin
+;	1701			TBK$fake_MSG(TBK$_NOSPACE,.status);
+;	1702	
+;	1703			! TRACEback will be non-symbolic.
+;	1704			return(false);
+;	1705			end;
+;	1706	
+;	1707		!++
+;	1708		! Map the DST into P0 space.
+;	1709		!--
+;	1710		exe_sec_bounds [dst_end_address] = 1 ^ 30;
+;	1711		exesecnam_desc [0] = 3;
+;	1712		exesecnam_desc [1] = exesecnam;
+;	1713		exefilnam_desc [0] = .file_name [0];
+;	1714		exefilnam_desc [1] = file_name[1];
+;	1715		status = lib$_cremapsec (exe_sec_bounds
+;	1716					, exe_sec_bounds
+;	1717					, 0
+;	1718					, exesecnam_desc
+;	1719					, 0
+;	1720					, exefilnam_desc
+;	1721					, .sym_tbl_data [ihs$w_dstblks]
+;	1722					, .sym_tbl_data [ihs$l_dstvbn]
+;	1723					);
+;	1724		IF NOT .status
+;	1725		THEN
+;	1726			begin
+;	1727			TBK$fake_MSG(TBK$_BADDSTMAP,.status);
+;	1728	
+;	1729			! TRACEback will be non-symbolic.
+;	1730			return(false);
+;	1731			end;
+;	1732	
+;	1733		!++
+;	1734		! Now load up the addresses of the beginning and end of the DST.
+;	1735		!--
+;	1736		dst_begin_addr = .exe_sec_bounds [0];
+;	1737		dst_end_addr = .exe_sec_bounds [1];
+;	1738		dst_next_addr = .dst_begin_addr;
+;	1739	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-4
+; Digital Equipment Corporation
+;
+;	1740	%IF TBK_INT1
+;     L 1741	%THEN
+;     U 1742		$fao_tt_out('!/DST mapped to begin at !XL and end at !XL',
+;     U 1743			.dst_begin_addr,.dst_end_addr);
+;     U 1744	%FI
+;	1745		! Save the mapped-to addresses so that if TRACE
+;	1746		! is invoked a second time we don't have to redo
+;	1747		! this mapping.
+;	1748	
+;	1749		symtab_sec_bnds[0] = .dst_begin_addr;
+;	1750		symtab_sec_bnds[1] = .dst_end_addr;
+;	1751	
+;	1752		!++
+;	1753		! Now close the EXE file and leave.
+;	1754		!--
+;	1755		status = $CLOSE (FAB = exe_file);
+;	1756		IF NOT .status
+;	1757		THEN
+;	1758			begin
+;	1759			TBK$fake_MSG(TBK$_BADEXECLO,.file_name);
+;	1760	
+;	1761			! TRACEback will be symbolic in any case.
+;	1762			end;
+;	1763	
+;	1764		RETURN(true);
+;	1765		END;
+
+
+							    .TITLE  TBKINT
+							    .IDENT  \000009\
+
+							    .PSECT  TBK$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .ASCII  <3>\DST\						      ;
+
+							    .PSECT  TBK$OWN,NOEXE,  PIC,2
+
+					      00000 DST_BEGIN_ADDR:
+							    .LONG   1							      ;
+					      00004 DST_END_ADDR:
+							    .BLKB   4
+					      00008 DST_NEXT_ADDR:
+							    .BLKB   4
+					      0000C EXE_FILE:
+							    .BYTE   3							      ;
+					      0000D 	    .BYTE   80							      ;
+					      0000E 	    .WORD   0							      ;
+					      00010 	    .LONG   0							      ;
+					      00014 	    .LONG   0							      ;
+					      00018 	    .LONG   0							      ;
+					      0001C 	    .LONG   0							      ;
+					      00020 	    .WORD   0							      ;
+					      00022 	    .BYTE   2							      ;
+					      00023 	    .BYTE   0							      ;
+					      00024 	    .LONG   0							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-5
+; Digital Equipment Corporation
+;
+					      00028 	    .BYTE   0							      ;
+					      00029 	    .BYTE   0							      ;
+					      0002A 	    .BYTE   0							      ;
+					      0002B 	    .BYTE   2							      ;
+					      0002C 	    .LONG   0							      ;
+					      00030 	    .LONG   0							      ;
+					      00034 	    .LONG   0							      ;
+					      00038 	    .LONG   0							      ;
+					      0003C 	    .LONG   0							      ;
+					      00040 	    .BYTE   0							      ;
+					      00041 	    .BYTE   0							      ;
+					      00042 	    .WORD   0							      ;
+					      00044 	    .LONG   0							      ;
+					      00048 	    .WORD   0							      ;
+					      0004A 	    .BYTE   0							      ;
+					      0004B 	    .BYTE   0							      ;
+					      0004C 	    .LONG   0							      ;
+					      00050 	    .LONG   0							      ;
+					      00054 	    .LONG   0, 0						      ;
+					      0005C EXE_INPUT:
+							    .BYTE   1							      ;
+					      0005D 	    .BYTE   68							      ;
+					      0005E 	    .WORD   0							      ;
+					      00060 	    .LONG   0							      ;
+					      00064 	    .LONG   0							      ;
+					      00068 	    .LONG   0							      ;
+					      0006C 	    .WORD   0, 0, 0						      ;
+					      00072 	    .WORD   0							      ;
+					      00074 	    .LONG   0							      ;
+					      00078 	    .WORD   0							      ;
+					      0007A 	    .BYTE   0							      ;
+					      0007B 	    .BYTE   0							      ;
+					      0007C 	    .WORD   512							      ;
+					      0007E 	    .WORD   0							      ;
+					      00080 	    .LONG   0							      ;
+					      00084 	    .LONG   0							      ;
+					      00088 	    .LONG   0							      ;
+					      0008C 	    .LONG   0							      ;
+					      00090 	    .BYTE   0							      ;
+					      00091 	    .BYTE   0							      ;
+					      00092 	    .BYTE   0							      ;
+					      00093 	    .BYTE   0							      ;
+					      00094 	    .LONG   0							      ;
+					      00098 	    .LONG   0							      ;
+					      0009C 	    .LONG   0							      ;
+
+						    EXESECNAM=		P.AAA
+							    .GLOBL  TBK$_RST_BEGIN, TBK$FAO_OUT, TBK$FAKE_MSG, LIB$_CREMAPSEC
+							    .GLOBL  SYS$OPEN, SYS$CONNECT, SYS$EXPREG, SYS$CLOSE
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 087C 00000 	    .ENTRY  TBK$FIND_DST, Save R2,R3,R4,R5,R6,R11		      ; 1520
+		         5B	0000'  CF  9E 00002 	    MOVAB   DST_BEGIN_ADDR, R11					      ;
+		         5E	  C0   AE  9E 00007 	    MOVAB   -64(SP), SP						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-6
+; Digital Equipment Corporation
+;
+		         50	  08   AC  D0 0000B 	    MOVL    IMG_HEADER_BLK, R0					      ; 1573
+		         53	  04   A0  3C 0000F 	    MOVZWL  4(R0), R3						      ;
+		         53	       50  C0 00013 	    ADDL2   R0, R3						      ;
+		         54	  0C   AC  D0 00016 	    MOVL    SYMTAB_SEC_BNDS, R4					      ; 1594
+				       64  D5 0001A 	    TSTL    (R4)						      ;
+				       0F  13 0001C 	    BEQL    1$							      ;
+		         6B	       64  D0 0001E 	    MOVL    (R4), DST_BEGIN_ADDR				      ; 1601
+		    04   AB	  04   A4  D0 00021 	    MOVL    4(R4), DST_END_ADDR					      ; 1602
+		    08   AB	       6B  D0 00026 	    MOVL    DST_BEGIN_ADDR, DST_NEXT_ADDR			      ; 1603
+				     0111  31 0002A 	    BRW     12$							      ; 1612
+				  04   A0  B5 0002D 1$:     TSTW    4(R0)						      ; 1624
+				       0A  12 00030 	    BNEQ    2$							      ;
+				       7E  D4 00032 	    CLRL    -(SP)						      ; 1627
+			    00098023   8F  DD 00034 	    PUSHL   #622627						      ;
+				       6C  11 0003A 	    BRB     6$							      ;
+				  08   A3  B5 0003C 2$:     TSTW    8(R3)						      ; 1644
+				       0A  12 0003F 	    BNEQ    3$							      ;
+				       7E  D4 00041 	    CLRL    -(SP)						      ; 1647
+			    0009800B   8F  DD 00043 	    PUSHL   #622603						      ;
+				       7B  11 00049 	    BRB     8$							      ;
+		         02	       63  D1 0004B 3$:     CMPL    (R3), #2						      ; 1657
+				       0A  14 0004E 	    BGTR    4$							      ;
+				       63  DD 00050 	    PUSHL   (R3)						      ; 1660
+			    00098013   8F  DD 00052 	    PUSHL   #622611						      ;
+				       6C  11 00058 	    BRB     8$							      ;
+		         55	  04   AC  D0 0005A 4$:     MOVL    FILE_NAME, R5					      ; 1670
+	   56	         55	       01  C1 0005E 	    ADDL3   #1, R5, R6						      ;
+		    38   AB	       56  D0 00062 	    MOVL    R6, EXE_FILE+44					      ;
+		    40   AB	       65  90 00066 	    MOVB    (R5), EXE_FILE+52					      ; 1671
+				  0C   AB  9F 0006A 	    PUSHAB  EXE_FILE						      ; 1672
+	      00000000G  9F	       01  FB 0006D 	    CALLS   #1, @#SYS$OPEN					      ;
+		         52	       50  D0 00074 	    MOVL    R0, STATUS						      ;
+		         0A	       52  E8 00077 	    BLBS    STATUS, 5$						      ; 1673
+				       55  DD 0007A 	    PUSHL   R5							      ; 1676
+			    00098322   8F  DD 0007C 	    PUSHL   #623394						      ;
+				       42  11 00082 	    BRB     8$							      ;
+		  0080   CB	  18   AE  9E 00084 5$:     MOVAB   LOCAL_BUFFER, EXE_INPUT+36				      ; 1681
+		  0098   CB	  0C   AB  9E 0008A 	    MOVAB   EXE_FILE, EXE_INPUT+60				      ; 1682
+				  5C   AB  9F 00090 	    PUSHAB  EXE_INPUT						      ; 1683
+	      00000000G  9F	       01  FB 00093 	    CALLS   #1, @#SYS$CONNECT					      ;
+		         52	       50  D0 0009A 	    MOVL    R0, STATUS						      ;
+		         0A	       52  E8 0009D 	    BLBS    STATUS, 7$						      ; 1684
+				       55  DD 000A0 	    PUSHL   R5							      ; 1687
+			    0009832A   8F  DD 000A2 	    PUSHL   #623402						      ;
+				       60  11 000A8 6$:     BRB     10$							      ;
+				       7E  7C 000AA 7$:     CLRQ    -(SP)						      ; 1697
+				  18   AE  9F 000AC 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				       01  DD 000AF 	    PUSHL   #1							      ;
+	      00000000G  9F	       04  FB 000B1 	    CALLS   #4, @#SYS$EXPREG					      ;
+		         52	       50  D0 000B8 	    MOVL    R0, STATUS						      ;
+		         0A	       52  E8 000BB 	    BLBS    STATUS, 9$						      ; 1698
+				       52  DD 000BE 	    PUSHL   STATUS						      ; 1701
+			    000981A8   8F  DD 000C0 	    PUSHL   #623016						      ;
+				       42  11 000C6 8$:     BRB     10$							      ;
+		    14   AE 40000000   8F  D0 000C8 9$:     MOVL    #1073741824, EXE_SEC_BOUNDS+4			      ; 1710
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 3-7
+; Digital Equipment Corporation
+;
+		    08   AE	       03  D0 000D0 	    MOVL    #3, EXESECNAM_DESC					      ; 1711
+		    0C   AE	0000'  CF  9E 000D4 	    MOVAB   EXESECNAM, EXESECNAM_DESC+4				      ; 1520
+		         6E	       65  9A 000DA 	    MOVZBL  (R5), EXEFILNAM_DESC				      ; 1713
+		    04   AE	       56  D0 000DD 	    MOVL    R6, EXEFILNAM_DESC+4				      ; 1714
+				       63  DD 000E1 	    PUSHL   (R3)						      ; 1715
+		         7E	  08   A3  3C 000E3 	    MOVZWL  8(R3), -(SP)					      ;
+				  08   AE  9F 000E7 	    PUSHAB  EXEFILNAM_DESC					      ;
+				       7E  D4 000EA 	    CLRL    -(SP)						      ;
+				  18   AE  9F 000EC 	    PUSHAB  EXESECNAM_DESC					      ;
+				       7E  D4 000EF 	    CLRL    -(SP)						      ;
+				  28   AE  9F 000F1 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				  2C   AE  9F 000F4 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+		  0000G  CF	       08  FB 000F7 	    CALLS   #8, LIB$_CREMAPSEC					      ;
+		         52	       50  D0 000FC 	    MOVL    R0, STATUS						      ;
+		         0F	       52  E8 000FF 	    BLBS    STATUS, 11$						      ; 1724
+				       52  DD 00102 	    PUSHL   STATUS						      ; 1727
+			    000981B0   8F  DD 00104 	    PUSHL   #623024						      ;
+		  0000G  CF	       02  FB 0010A 10$:    CALLS   #2, TBK$FAKE_MSG					      ;
+				       31  11 0010F 	    BRB     13$							      ; 1730
+		         6B	  10   AE  7D 00111 11$:    MOVQ    EXE_SEC_BOUNDS, DST_BEGIN_ADDR			      ; 1736
+		    08   AB	       6B  D0 00115 	    MOVL    DST_BEGIN_ADDR, DST_NEXT_ADDR			      ; 1738
+		         64	       6B  D0 00119 	    MOVL    DST_BEGIN_ADDR, (R4)				      ; 1749
+		    04   A4	  04   AB  D0 0011C 	    MOVL    DST_END_ADDR, 4(R4)					      ; 1750
+				  0C   AB  9F 00121 	    PUSHAB  EXE_FILE						      ; 1755
+	      00000000G  9F	       01  FB 00124 	    CALLS   #1, @#SYS$CLOSE					      ;
+		         52	       50  D0 0012B 	    MOVL    R0, STATUS						      ;
+		         0D	       52  E8 0012E 	    BLBS    STATUS, 12$						      ; 1756
+				       55  DD 00131 	    PUSHL   R5							      ; 1759
+			    0009801B   8F  DD 00133 	    PUSHL   #622619						      ;
+		  0000G  CF	       02  FB 00139 	    CALLS   #2, TBK$FAKE_MSG					      ;
+		         50	       01  D0 0013E 12$:    MOVL    #1, R0						      ; 1764
+					   04 00141 	    RET     							      ;
+				       50  D4 00142 13$:    CLRL    R0							      ; 1520
+					   04 00144 	    RET     							      ;
+
+; Routine Size:  325 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 4
+; Digital Equipment Corporation
+;
+;	1766	GLOBAL ROUTINE tbk$get_dst_rec (rec_id) =
+;	1767	
+;	1768	!++
+;	1769	! Functional description:
+;	1770	!	Make the indicated DST record available.
+;	1771	!
+;	1772	! Input parameters:
+;	1773	!	rec_id	- The ID of the record to be fetched.
+;	1774	!		  This ID must be one that was previously returned
+;	1775	!		  by a call to tbk$get_nxt_dst.
+;	1776	!
+;	1777	! Implicit inputs:
+;	1778	!	none
+;	1779	!
+;	1780	! Output parameters:
+;	1781	!	none
+;	1782	!
+;	1783	! Implicit outputs:
+;	1784	!	none
+;	1785	!
+;	1786	! Routine value:
+;	1787	!	0, if the indicated record does not exist;
+;	1788	!	the address of where it can now be referenced, otherwise.
+;	1789	!
+;	1790	! Side effects:
+;	1791	!	The DST record is made available.
+;	1792	!
+;	1793	!--
+;	1794	
+;	1795		BEGIN
+;	1796	
+;	1797		BIND
+;	1798			dst_recrd = .rec_id : dst_record;
+;	1799	
+;	1800		!++
+;	1801		! The record ID is the same as the virtual address at which it
+;	1802		! can be referenced. The next record, then, is simply the one that
+;	1803		! is virtually contiguous to this one, except for the last record.
+;	1804		! In that case, the convention is that the DST ended properly
+;	1805		! if a record is requested past the end marker, or if the count
+;	1806		! field for the supposed "next" record is 0.
+;	1807		!--
+;	1808		IF .rec_id EQL .dst_end_addr + 1
+;	1809		THEN RETURN 0;
+;	1810	
+;	1811		!++
+;	1812		! Now that it is safe, check for zero length records.
+;	1813		!--
+;	1814		IF .dst_recrd [dstr_size] EQL 0
+;	1815		THEN RETURN 0;
+;	1816	
+;	1817		!++
+;	1818		! Check that the ID is valid.  
+;	1819		!--
+;	1820		IF .rec_id LSSA .dst_begin_addr OR .rec_id GTRA .dst_end_addr
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 4-1
+; Digital Equipment Corporation
+;
+;	1821		THEN RETURN 0
+;	1822		ELSE RETURN .rec_id 
+;	1823		END;
+
+
+
+
+
+					 0004 00145 	    .ENTRY  TBK$GET_DST_REC, Save R2				      ; 1766
+		         51	  04   AC  D0 00147 	    MOVL    REC_ID, R1						      ; 1798
+		         52	       51  D0 0014B 	    MOVL    R1, R2						      ; 1795
+	   50	  0000'  CF	       01  C1 0014E 	    ADDL3   #1, DST_END_ADDR, R0				      ; 1808
+		         50	       51  D1 00154 	    CMPL    R1, R0						      ;
+				       16  13 00157 	    BEQL    1$							      ;
+				       62  95 00159 	    TSTB    (R2)						      ; 1814
+				       12  13 0015B 	    BEQL    1$							      ;
+		  0000'  CF	       51  D1 0015D 	    CMPL    R1, DST_BEGIN_ADDR					      ; 1820
+				       0B  1F 00162 	    BLSSU   1$							      ;
+		  0000'  CF	       51  D1 00164 	    CMPL    R1, DST_END_ADDR					      ;
+				       04  1A 00169 	    BGTRU   1$							      ;
+		         50	       51  D0 0016B 	    MOVL    R1, R0						      ; 1822
+					   04 0016E 	    RET     							      ;
+				       50  D4 0016F 1$:     CLRL    R0							      ; 1820
+					   04 00171 	    RET     							      ; 1766
+
+; Routine Size:  45 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 5
+; Digital Equipment Corporation
+;
+;	1824	GLOBAL ROUTINE tbk$get_nxt_dst (rec_id_ptr) =
+;	1825	
+;	1826	!++
+;	1827	! Functional description:
+;	1828	!	Make the next DST record available. Return a pointer by which it
+;	1829	!	can be referenced, as well as an identifying code for it.
+;	1830	!
+;	1831	! Input parameters:
+;	1832	!	none
+;	1833	!
+;	1834	! Implicit inputs:
+;	1835	!	Current values of dst_begin_addr, dst_end_addr, and dst_next_addr.
+;	1836	!
+;	1837	! Output parameters:
+;	1838	!	rec_id_ptr	- the identifier found for the DST record.
+;	1839	!
+;	1840	! Implicit outputs:
+;	1841	!	dst_next_addr is advanced by one DST record.
+;	1842	!
+;	1843	! Routine value:
+;	1844	!	0, if the indicated record does not exist; otherwise, the
+;	1845	!	address of the record.
+;	1846	!
+;	1847	! Side effects:
+;	1848	!	none
+;	1849	!
+;	1850	!--
+;	1851	
+;	1852		BEGIN
+;	1853	
+;	1854		MAP
+;	1855			rec_id_ptr : REF VECTOR [,LONG];
+;	1856	
+;	1857		!++
+;	1858		! Since record IDs are the same as their virtual addresses, the
+;	1859		! next can be obtained in the same way than ANY one can be
+;	1860		! obtained. The only detail to fill in is passing back the ID
+;	1861		! for this next one.
+;	1862		!--
+;	1863		RETURN (rec_id_ptr [0] = tbk$positon_dst (.dst_next_addr));
+;	1864		END;
+
+
+
+
+
+					 0000 00172 	    .ENTRY  TBK$GET_NXT_DST, Save nothing			      ; 1824
+				0000'  CF  DD 00174 	    PUSHL   DST_NEXT_ADDR					      ; 1863
+		  0000V  CF	       01  FB 00178 	    CALLS   #1, TBK$POSITON_DST					      ;
+		    04   BC	       50  D0 0017D 	    MOVL    R0, @REC_ID_PTR					      ;
+					   04 00181 	    RET     							      ; 1824
+
+; Routine Size:  16 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 5-1
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 6
+; Digital Equipment Corporation
+;
+;	1865	GLOBAL ROUTINE tbk$positon_dst (rec_id) =
+;	1866	
+;	1867	!++
+;	1868	! Functional description:
+;	1869	!	Position dst_next_addr to point to the DST record following the
+;	1870	!	record whose DST identifying code is passed to this routine as
+;	1871	!	an argument.
+;	1872	!
+;	1873	! Input parameters:
+;	1874	!	rec_id	- the identifying code of the DST record.
+;	1875	!		- 0 => position DST to the beginning.
+;	1876	!
+;	1877	! Implicit inputs:
+;	1878	!	dst_begin_addr and dst_end_addr
+;	1879	!
+;	1880	! Output parameters:
+;	1881	!	none
+;	1882	!
+;	1883	! Implicit outputs:
+;	1884	!	dst_next_addr is set to point to the DST record following the
+;	1885	!	record whose identifying code is passed as an argument.
+;	1886	!
+;	1887	! Routine value:
+;	1888	!	FALSE - if the DST didn't get mapped.
+;	1889	!
+;	1890	!	0, if the indicated record does not exist; otherwise,
+;	1891	!	the address of the DST record.
+;	1892	!
+;	1893	! Side effects:
+;	1894	!	"next" record is changed.
+;	1895	!
+;	1896	!--
+;	1897	
+;	1898		BEGIN
+;	1899	
+;	1900		LOCAL
+;	1901			rec_addr : REF dst_record;
+;	1902	
+;	1903		!+
+;	1904		! Check for a 'rewind' command.
+;	1905		!-
+;	1906	
+;	1907		IF( .REC_ID EQL 0 )
+;	1908		THEN
+;	1909			BEGIN
+;	1910			
+;	1911			! Reposition the 'dst' to the beginning.
+;	1912			! Note special return for when the
+;	1913			! DST didn't get mapped.
+;	1914	
+;	1915			IF( (DST_NEXT_ADDR = .DST_BEGIN_ADDR) EQL 1 )
+;	1916			THEN
+;	1917				RETURN(FALSE);
+;	1918			RETURN(TRUE);
+;	1919			END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 6-1
+; Digital Equipment Corporation
+;
+;	1920	
+;	1921		!++
+;	1922		! get_dst_rec does most of the work - this routine just
+;	1923		! includes the side effect described above.
+;	1924		!--
+;	1925		rec_addr = tbk$get_dst_rec (.rec_id);
+;	1926		IF .rec_addr EQL 0
+;	1927		THEN RETURN 0;
+;	1928	
+;	1929		!++
+;	1930		! Re-initialize the notion of 'next' DST record.
+;	1931		!--
+;	1932		dst_next_addr = .rec_addr + .rec_addr [dstr_size] + 1;
+;	1933		RETURN .rec_addr
+;	1934		END;
+
+
+
+
+
+					 0000 00182 	    .ENTRY  TBK$POSITON_DST, Save nothing			      ; 1865
+				  04   AC  D5 00184 	    TSTL    REC_ID						      ; 1907
+				       13  12 00187 	    BNEQ    1$							      ;
+		         50	0000'  CF  D0 00189 	    MOVL    DST_BEGIN_ADDR, R0					      ; 1915
+		  0000'  CF	       50  D0 0018E 	    MOVL    R0, DST_NEXT_ADDR					      ;
+		         01	       50  D1 00193 	    CMPL    R0, #1						      ;
+				       20  13 00196 	    BEQL    2$							      ;
+		         50	       01  D0 00198 	    MOVL    #1, R0						      ; 1918
+					   04 0019B 	    RET     							      ;
+				  04   AC  DD 0019C 1$:     PUSHL   REC_ID						      ; 1925
+		    A2   AF	       01  FB 0019F 	    CALLS   #1, TBK$GET_DST_REC					      ;
+		         51	       50  D0 001A3 	    MOVL    R0, REC_ADDR					      ;
+				       10  13 001A6 	    BEQL    2$							      ; 1926
+		         50	       61  9A 001A8 	    MOVZBL  (REC_ADDR), R0					      ; 1932
+		         50	       51  C0 001AB 	    ADDL2   REC_ADDR, R0					      ;
+    0000'  CF	         50	       01  C1 001AE 	    ADDL3   #1, R0, DST_NEXT_ADDR				      ;
+		         50	       51  D0 001B4 	    MOVL    REC_ADDR, R0					      ; 1933
+					   04 001B7 	    RET     							      ;
+				       50  D4 001B8 2$:     CLRL    R0							      ; 1865
+					   04 001BA 	    RET     							      ;
+
+; Routine Size:  57 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:38:47	DBB3:[TRACE.SRC]TBKINT.B32;3					Page 7
+; Digital Equipment Corporation
+;
+;	1935	END				!End of module
+;	1936	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  TBK$OWN        	   160    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  TBK$PLIT       	     4  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  TBK$CODE       	   443  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        32         0       252
+
+
+
+
+
+; Size:		443 code + 164 data bytes
+; Run Time:	00:20.6
+; Elapsed Time:	00:25.1
+; Memory Used:	365 pages
+; Compilation Complete

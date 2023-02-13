@@ -1,0 +1,682 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE TBKSYM (	IDENT = '000009' ) =
+;	0002	BEGIN
+;	0003	
+;	0004	!
+;	0005	!			  COPYRIGHT (c) 1978 BY
+;	0006	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0007	!
+;	0008	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0009	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0010	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0011	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0012	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0013	! TRANSFERRED.
+;	0014	!
+;	0015	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0016	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0017	! CORPORATION.
+;	0018	!
+;	0019	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0020	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0021	!
+;	0022	
+;	0023	!++
+;	0024	! FACILITY:
+;	0025	!	TRACEBACK
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	This module contains all routines used by
+;	0029	!	traceback which actually look at the DST.
+;	0030	!	These routines interface to reality via
+;	0031	!	those in TBKINT.B32
+;	0032	!
+;	0033	! Version	09
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!	This module runs on VAX under VAX/VMS, user mode, non-AST level.
+;	0037	!
+;	0038	! Author:
+;	0039	!	Kevin Pammett, Creation Date: 18-jan-78.
+;	0040	!
+;	0041	! MODIFIED BY:
+;	0042	!		Dale Roedger, 15 June 1978: Version 09
+;	0043	!
+;	0044	! Revision History:
+;	0045	!
+;	0046	!	02	24-feb-78	KGP	-EXC_TYPE has to be an OWN so that
+;	0047	!					 we only initialize it once.
+;	0048	!	03	28-FEB-78	KGP	-SYMBOLIZE is now truly NOVALUE and
+;	0049	!					 it works OK if the DST doesn't exist.
+;	0050	!	04	2-mar-78	KGP	-Beginning exception_type for
+;	0051	!					 FTN PC correlation is now decided
+;	0052	!					 in BAS (is no longer local to DPC)
+;	0053	!					-We reject a symbolization for which
+;	0054	!					 the relative PC == absolute PC
+;	0055	!					 i.e. symbols whose value is 0.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!	05	8-MAR-78	KGP	-NEW REQUIRE FILE NAMES
+;	0057	!	06	10-mar-78	KGP	-SYMBOLIZE now knows about end-of-RTN
+;	0058	!					 entries and uses this to know about
+;	0059	!					 the length of ROUTINES.
+;	0060	!	07	14-mar-78	KGP	-Call to PC_TO_LINE now has
+;	0061	!					 one less parameter.
+;	0062	!	08	26-APR-78	DAR	Modified require and library directives
+;	0063	!					for native build.
+;	0064	!	09	15-JUN-78	DAR	Changed all DBG$ symbols to TBK$.
+;	0065	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 2
+; Digital Equipment Corporation
+;
+;	0066	! Table of contents:
+;	0067	!
+;	0068	FORWARD ROUTINE
+;	0069		TBK$SYMBOLIZE : NOVALUE;
+;	0070	
+;	0071	!
+;	0072	! INCLUDE FILES:
+;	0073	!
+;	0074	
+;	0075	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0076	
+;	0077	REQUIRE 'SRC$:TBKPCT.REQ';
+;	0089	REQUIRE 'SRC$:TBKGEN.REQ';
+;	0156	REQUIRE 'SRC$:TBKRST.REQ';
+;	1245	REQUIRE 'SRC$:TBKSER.REQ';
+;	1305	
+;	1306	!
+;	1307	! MACROS:
+;	1308	!
+;	1309	
+;	1310	!
+;	1311	! EQUATED SYMBOLS:
+;	1312	!
+;	1313	LITERAL
+;	1314		TBK_ANY		= 0,	! Turn on if any diagnostics are on.
+;	1315		TBK_SYM1	= 0,	! Specific output in TBK$SYMBOLIZE
+;	1316		TBK_SYM2	= 0,	! List DSTs in TBK$SYMBOLIZE
+;	1317		TBK_SYM3	= 0;	! How to symbolize.
+;	1318	
+;	1319	%IF TBK_ANY
+;     L 1320	%THEN
+;     U 1321	FORWARD ROUTINE
+;     U 1322		PR_CS : NOVALUE;		! Routine to print diagnostics during
+;     U 1323						! debug of traceback
+;     U 1324	%FI
+;	1325	
+;	1326	!
+;	1327	! OWN STORAGE:
+;	1328	!
+;	1329	
+;	1330	
+;	1331	!
+;	1332	! EXTERNAL REFERENCES:
+;	1333	!
+;	1334	EXTERNAL ROUTINE
+;	1335		tbk$pc_to_line,			! FORTRAN PC-to-line_number correlation.
+;	1336		tbk$get_dst_rec,		! Make a certain DST record available.
+;	1337		tbk$get_nxt_dst,		! Make the next DST record available.
+;	1338		tbk$positon_dst,		! Make a certain DST record available
+;	1339						!   and set up for tbk$get_nxt_dst
+;	1340		lib$_cremapsec;			! creates and maps a global section
+;	1341	
+;	1342	
+;	1343	EXTERNAL
+;	1344		TBK$GL_EXC_TYPE,		! Initial FAULT/TRAP type for PC
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 2-1
+; Digital Equipment Corporation
+;
+;	1345						! correlation.
+;	1346		TBK$MODULE_CS : CS_POINTER,
+;	1347		TBK$ROUTINE_CS : CS_POINTER,
+;	1348		TBK$GL_LINE,
+;	1349		TBK$REL_PC,
+;	1350	
+;	1351		TBK$MODULE_DST : REF DST_RECORD;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3
+; Digital Equipment Corporation
+;
+;	1352	GLOBAL ROUTINE tbk$symbolize(value) : NOVALUE =
+;	1353	
+;	1354	!++
+;	1355	! Functional Specification:
+;	1356	!
+;	1357	!	Given a (supposed) PC value, look thru the
+;	1358	!	entire DST (of TBT records only) and find the best
+;	1359	!	possible symbolization for it.
+;	1360	!
+;	1361	! Routine Value:
+;	1362	!	NOVALUE
+;	1363	!
+;	1364	! Side Effects:
+;	1365	!
+;	1366	!	The entire DST is scanned.
+;	1367	!	GLOBAL variables are used for communication with
+;	1368	!	other traceback routines.
+;	1369	!--
+;	1370	BEGIN
+;	1371		LOCAL
+;	1372			current_rtn : ref dst_record,
+;	1373			IN_MODULE : REF DST_RECORD,
+;	1374			BEST_VALUE,
+;	1375			BEST_DST : REF DST_RECORD,
+;	1376			BEST_MODULE : REF DST_RECORD,
+;	1377			nt_count,
+;	1378			DST_REC_ID,
+;	1379			DST_RECRD : REF DST_RECORD;
+;	1380	
+;	1381	%IF TBK_SYM3
+;     L 1382	%THEN
+;     U 1383		$FAO_TT_OUT('symbolize !XL as ',.value);
+;     U 1384	%FI
+;	1385		! Assume that no symbolization can be found.
+;	1386		! Also, explicitly remove all previous
+;	1387		! symbolizations so that what is left set after
+;	1388		! this one definately referrs to this symbolization.
+;	1389	
+;	1390		BEST_MODULE = 0;
+;	1391		BEST_VALUE = 0;
+;	1392		current_rtn = 0;
+;	1393		TBK$MODULE_CS = 0;
+;	1394		TBK$ROUTINE_CS = 0;
+;	1395		TBK$GL_LINE = 0;
+;	1396		TBK$REL_PC = .value;
+;	1397		TBK$MODULE_DST = 0;
+;	1398	
+;	1399		! Position the DST to the beginning.
+;	1400	
+;	1401		IF( NOT TBK$POSITON_DST(0) )
+;	1402		THEN
+;	1403			RETURN;
+;	1404	
+;	1405		WHILE( (DST_RECRD = TBK$GET_NXT_DST( DST_REC_ID )) NEQ 0 )
+;	1406			DO
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-1
+; Digital Equipment Corporation
+;
+;	1407			BEGIN
+;	1408	
+;	1409			! Process each record depending on its DST type.
+;	1410	%IF TBK_SYM2
+;     L 1411	%THEN
+;     U 1412			! For diagnostic purposes we list out the entire record.
+;     U 1413	
+;     U 1414			IF( .DST_RECRD[DSTR_TYPE] EQL DSC$K_DTYPE_MOD)
+;     U 1415			THEN
+;     U 1416				BEGIN
+;     U 1417				$FAO_TT_OUT('MC for module ');
+;     U 1418				pr_cs(dst_recrd[dstr_name]);
+;     U 1419				end;
+;     U 1420			$FAO_TT_OUT( 'DST Rec Id=!XL, is at !XL, for !UD bytes.',
+;     U 1421				.DST_REC_ID, .DST_RECRD, .DST_RECRD[ DSTR_SIZE ] );
+;     U 1422	
+;     U 1423			! Dump the record in bytes.
+;     U 1424	
+;     U 1425			INCR I FROM 0 TO .DST_RECRD[ DSTR_SIZE ]
+;     U 1426				DO
+;     U 1427				$FAO_TT_OUT('!XB ',.DST_RECRD[ .I, 0, 8, 0 ] );
+;     U 1428	
+;     U 1429	%FI
+;	1430	
+;	1431			CASE .DST_RECRD[ DSTR_TYPE ] FROM DST_DST_LOWEST TO DST_DST_HIGHEST OF
+;	1432	
+;	1433			    SET
+;	1434	
+;	1435			    [DSC$K_DTYPE_MOD]:	! Module Begin Record.
+;	1436	
+;	1437				BEGIN
+;	1438				IN_MODULE = .DST_RECRD;
+;	1439				END;
+;	1440	
+;	1441			    [DSC$K_DTYPE_EOM]:	! Module End Record.
+;	1442	
+;	1443				BEGIN
+;	1444				IN_MODULE = 0;
+;	1445				END;
+;	1446	
+;	1447			    [DSC$K_DTYPE_RTN]:		! Routine DSTs.
+;	1448	
+;	1449				BEGIN
+;	1450				LOCAL
+;	1451					RBEGIN;	! Address where routine begins.
+;	1452	
+;	1453				current_rtn = .dst_recrd;
+;	1454				RBEGIN = .DST_RECRD[ DSTR_VALUE ];
+;	1455	%IF TBK_SYM1
+;     L 1456	%THEN
+;     U 1457				$FAO_TT_OUT('routine begins: !XL',.RBEGIN);
+;     U 1458	%FI
+;	1459				! See if this routine is a better candidate
+;	1460				! than one we may already have.
+;	1461	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-2
+; Digital Equipment Corporation
+;
+;	1462				IF( .RBEGIN LEQA .VALUE
+;	1463				   AND
+;	1464				    .RBEGIN GEQA .BEST_VALUE
+;	1465				  )
+;	1466				THEN
+;	1467					BEGIN
+;	1468			
+;	1469					! This routine is better so adopt it.
+;	1470	
+;	1471					BEST_MODULE = .IN_MODULE;
+;	1472					BEST_VALUE = .RBEGIN;
+;	1473					BEST_DST = .DST_RECRD;
+;	1474					END;
+;	1475				END;
+;	1476	
+;	1477			    [DSC$K_DTYPE_LBL,	! label or literal (MARS only).
+;	1478			     DSC$K_DTYPE_SLB,	! FORTRAN labels.
+;	1479			     DSC$K_DTYPE_DPC,	! FORTRAN delta-PC tables.
+;	1480			     DSC$K_DTYPE_FLD]:	! BLISS-only FIELD records.
+;	1481	
+;	1482				! We can safely ignore these for now.
+;	1483				;
+;	1484	
+;	1485			    [DSC$K_DTYPE_EOR]:		! End of Routine
+;	1486							!  (BLISS and FORTRAN only).
+;	1487				BEGIN
+;	1488	%IF TBK_SYM1
+;     L 1489	%THEN
+;     U 1490				IF( .CURRENT_RTN NEQ 0 )
+;     U 1491				THEN
+;     U 1492					$FAO_TT_OUT('routine ends at !XL',
+;     U 1493						.dst_recrd[ dstr_value ] + .current_rtn[ dstr_value ]);
+;     U 1494	%FI
+;	1495				! See if we have been fooled into thinking that
+;	1496				! just because the VALUE was GTRA than the beginning
+;	1497				! of the last routine encountered, that VALUE
+;	1498				! actually lies within that routine.  Now we
+;	1499				! know the length of the last routine-begin DST
+;	1500				! encountered.
+;	1501	
+;	1502				IF( .BEST_DST NEQ 0 AND .BEST_DST EQL .CURRENT_RTN )
+;	1503				THEN
+;	1504					! See where the current routine ends 
+;	1505					! and check for VALUE being in range.
+;	1506	
+;	1507					IF( NOT .value LEQA .best_dst[ dstr_value ]
+;	1508							  + .dst_recrd[ dstr_value ] )
+;	1509					THEN
+;	1510						BEGIN
+;	1511	
+;	1512						! Rroutine ends before .VALUE
+;	1513	
+;	1514						best_value = 0;
+;	1515						best_dst = 0;
+;	1516						best_module = 0;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-3
+; Digital Equipment Corporation
+;
+;	1517						END;
+;	1518			
+;	1519				! In any case, we're not in the old routine anymore.
+;	1520	
+;	1521				current_rtn = 0;
+;	1522				END;
+;	1523	
+;	1524			    [DSC$K_DTYPE_PCT]:	! Psect DSTs.
+;	1525				BEGIN
+;	1526				LOCAL
+;	1527					PBEGIN,
+;	1528					PEND;
+;	1529				BIND
+;	1530				    PSECT_LENGTH
+;	1531						=	! Pick up the field length, which
+;	1532							! is after the NAME so must be
+;	1533							! dynamically located.
+;	1534	
+;	1535						(.DST_RECRD[ DSTR_NAME ]	! The symbol-name count,
+;	1536						+ DST_RECRD[ DSTR_NAME ]	!  plus its address,
+;	1537						+ 1 ) : LONG;			!  addresses the LENGTH.
+;	1538	
+;	1539				PBEGIN = .DST_RECRD[ DSTR_VALUE ];
+;	1540				PEND = .DST_RECRD[ DSTR_VALUE ] + .PSECT_LENGTH +1;
+;	1541	%IF TBK_SYM1
+;     L 1542	%THEN
+;     U 1543				$FAO_TT_OUT('PSECT begins: !XL, ends !XL',
+;     U 1544					.PBEGIN,.PEND);
+;     U 1545	%FI
+;	1546				IF( (.PBEGIN LEQA .VALUE)
+;	1547				   AND
+;	1548				    (.PEND GEQA .VALUE)
+;	1549				   AND
+;	1550				    (.pbegin GTRA 0 )
+;	1551				  )
+;	1552				THEN
+;	1553					! Adopt the new one only if it is
+;	1554					! better than a previous match.
+;	1555	
+;	1556					IF( .PBEGIN GEQA .BEST_VALUE )
+;	1557					THEN
+;	1558						BEGIN
+;	1559			
+;	1560						! This P-sect is better so adopt it.
+;	1561	
+;	1562						BEST_MODULE = .IN_MODULE;
+;	1563						BEST_VALUE = .PBEGIN;
+;	1564						BEST_DST = .DST_RECRD;
+;	1565						END;
+;	1566				END;
+;	1567		
+;	1568			    [INRANGE, OUTRANGE]:
+;	1569	
+;	1570				BEGIN
+;	1571	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-4
+; Digital Equipment Corporation
+;
+;	1572				! The only reason for not making the "SRM types"
+;	1573				! part of the above CASE is because of the huge
+;	1574				! case table which gets generated otherwise.
+;	1575	
+;	1576				IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	1577				THEN
+;	1578					BEGIN
+;	1579	
+;	1580					! BLISS type ZERO records.
+;	1581	%IF TBK_SYM1
+;     L 1582	%then
+;     U 1583					$FAO_TT_OUT('ignoring Z record');
+;     U 1584	%FI
+;	1585					! Whatever symbol this is, it contributes
+;	1586					! a name, for sure, and either a literal
+;	1587					! or a static.  We assume the worst!
+;	1588	
+;	1589					NT_COUNT = .NT_COUNT +1;
+;	1590					END
+;	1591				ELSE
+;	1592				IF( .DST_RECRD[ DSTR_TYPE ] LEQ DST_TYP_HIGHEST )
+;	1593				THEN
+;	1594					BEGIN
+;	1595	
+;	1596					! These types are candidates for
+;	1597					! the LVT and NT tables only.
+;	1598	
+;	1599					NT_COUNT = .NT_COUNT +1;
+;	1600					END
+;	1601				ELSE
+;	1602					BEGIN
+;	1603	
+;	1604					! Probably an error in the DST data.
+;	1605					$FAO_TT_OUT('Unknown DST record type: !XB',
+;     P 1606						.DST_RECRD[ DSTR_TYPE ] );
+;	1607					END;
+;	1608	
+;	1609				END;
+;	1610			    TES;
+;	1611	
+;	1612			! Go back and process the next DST record.
+;	1613	
+;	1614			END;
+;	1615	
+;	1616	%IF TBK_SYM3
+;     L 1617	%THEN
+;     U 1618		IF( .BEST_MODULE NEQ 0 )
+;     U 1619		THEN
+;     U 1620			$FAO_TT_OUT(' module !AC, symbol !AC, + !XL',
+;     U 1621				best_module[DSTR_NAME],
+;     U 1622				best_dst[ dstr_name ],
+;     U 1623				.value - .best_value)
+;     U 1624		ELSE
+;     U 1625			$FAO_TT_OUT('*****');
+;     U 1626	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-5
+; Digital Equipment Corporation
+;
+;	1627		! Pass back info via the TBK globals.
+;	1628	
+;	1629		IF( .BEST_MODULE NEQ 0 )
+;	1630		THEN
+;	1631			BEGIN
+;	1632			TBK$MODULE_DST = .BEST_MODULE;
+;	1633	
+;	1634			! Special line-number processing for FORTRAN modules.
+;	1635	
+;	1636			IF( .BEST_MODULE[ DSTR_VALUE ] EQL FORTRAN_MODULE )
+;	1637			THEN
+;	1638				BEGIN
+;	1639	
+;	1640				! Try to translate this PC into its 
+;	1641				! corresponding FORTRAN %line number.
+;	1642	
+;	1643				IF( NOT TBK$PC_TO_LINE( .VALUE,
+;	1644							.BEST_DST,
+;	1645							TBK$GL_EXC_TYPE,
+;	1646							TBK$GL_LINE
+;	1647						      )
+;	1648				  )
+;	1649				THEN
+;	1650					! Make sure we don't print a meaningless
+;	1651					! line number later on.
+;	1652	
+;	1653					tbk$gl_line = 0;
+;	1654				END
+;	1655			ELSE
+;	1656				TBK$MODULE_CS = BEST_MODULE[ DSTR_NAME ];
+;	1657	
+;	1658			TBK$ROUTINE_CS = BEST_DST[ DSTR_NAME ];
+;	1659			TBK$REL_PC = .VALUE - .BEST_VALUE;
+;	1660			END;
+;	1661	
+;	1662		! This rouine is NOVALUE but there are lots
+;	1663		! of values returned via globals.
+;	1664	
+;	1665		RETURN;
+;	1666	END;
+
+
+							    .TITLE  TBKSYM
+							    .IDENT  \000009\
+
+							    .PSECT  TBK$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   28							      ;
+					      00001 	    .ASCII  \Unknown DST record type: !XB\			      ;
+					      0001D	    .BLKB   3
+
+							    .GLOBL  TBK$_RST_BEGIN, TBK$FAO_OUT, TBK$PC_TO_LINE, TBK$GET_DST_REC
+							    .GLOBL  TBK$GET_NXT_DST, TBK$POSITON_DST, LIB$_CREMAPSEC
+							    .GLOBL  TBK$GL_EXC_TYPE, TBK$MODULE_CS, TBK$ROUTINE_CS
+							    .GLOBL  TBK$GL_LINE, TBK$REL_PC, TBK$MODULE_DST
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-6
+; Digital Equipment Corporation
+;
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 00000 	    .ENTRY  TBK$SYMBOLIZE, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11       ; 1352
+		         5B	0000G  CF  9E 00002 	    MOVAB   TBK$GL_LINE, R11					      ;
+		         5E	       04  C2 00007 	    SUBL2   #4, SP						      ;
+				       54  D4 0000A 	    CLRL    BEST_MODULE						      ; 1390
+				       58  7C 0000C 	    CLRQ    BEST_VALUE						      ; 1391
+				0000G  CF  D4 0000E 	    CLRL    TBK$MODULE_CS					      ; 1393
+				0000G  CF  D4 00012 	    CLRL    TBK$ROUTINE_CS					      ; 1394
+				       6B  D4 00016 	    CLRL    TBK$GL_LINE						      ; 1395
+		         56	  04   AC  D0 00018 	    MOVL    VALUE, R6						      ; 1396
+		  0000G  CF	       56  D0 0001C 	    MOVL    R6, TBK$REL_PC					      ;
+				0000G  CF  D4 00021 	    CLRL    TBK$MODULE_DST					      ; 1397
+				       7E  D4 00025 	    CLRL    -(SP)						      ; 1401
+		  0000G  CF	       01  FB 00027 	    CALLS   #1, TBK$POSITON_DST					      ;
+		         01	       50  E8 0002C 	    BLBS    R0, 1$						      ;
+					   04 0002F 	    RET     							      ;
+				       5E  DD 00030 1$:     PUSHL   SP							      ; 1405
+		  0000G  CF	       01  FB 00032 	    CALLS   #1, TBK$GET_NXT_DST					      ;
+		         52	       50  D0 00037 	    MOVL    R0, DST_RECRD					      ;
+				       03  12 0003A 	    BNEQ    2$							      ;
+				     00A9  31 0003C 	    BRW     15$							      ;
+	   08	    B7   8F	  01   A2  8F 0003F 2$:     CASEB   1(DST_RECRD), #183, #8				      ; 1431
+	 FFEB	       006E	     FFEB     00045 3$:     .WORD   1$-3$,-						      ;
+	 0030	       FFEB	     FFEB     0004B		    13$-3$,-						      ;
+	 0052	       0039	     0035     00051		    1$-3$,-						      ;
+								    1$-3$,-						      ;
+								    1$-3$,-						      ;
+								    8$-3$,-						      ;
+								    9$-3$,-						      ;
+								    10$-3$,-						      ;
+								    11$-3$						      ;
+				  01   A2  95 00057 	    TSTB    1(DST_RECRD)					      ; 1576
+				       06  13 0005A 	    BEQL    4$							      ;
+		         17	  01   A2  91 0005C 	    CMPB    1(DST_RECRD), #23					      ; 1592
+				       04  1A 00060 	    BGTRU   6$							      ;
+				       5A  D6 00062 4$:     INCL    NT_COUNT						      ; 1599
+				       CA  11 00064 5$:     BRB     1$							      ; 1592
+		         7E	  01   A2  9A 00066 6$:     MOVZBL  1(DST_RECRD), -(SP)					      ; 1606
+				0000'  CF  9F 0006A 	    PUSHAB  P.AAA						      ;
+		  0000G  CF	       02  FB 0006E 	    CALLS   #2, TBK$FAO_OUT					      ;
+				       BB  11 00073 7$:     BRB     1$							      ; 1431
+		         55	       52  D0 00075 8$:     MOVL    DST_RECRD, IN_MODULE				      ; 1438
+				       B6  11 00078 	    BRB     1$							      ; 1431
+				       55  D4 0007A 9$:     CLRL    IN_MODULE						      ; 1444
+				       B2  11 0007C 	    BRB     1$							      ; 1431
+		         59	       52  D0 0007E 10$:    MOVL    DST_RECRD, CURRENT_RTN				      ; 1453
+		         50	  03   A2  D0 00081 	    MOVL    3(DST_RECRD), RBEGIN				      ; 1454
+		         56	       50  D1 00085 	    CMPL    RBEGIN, R6						      ; 1462
+				       A6  1A 00088 	    BGTRU   1$							      ;
+		         58	       50  D1 0008A 	    CMPL    RBEGIN, BEST_VALUE					      ; 1464
+				       A1  1F 0008D 	    BLSSU   1$							      ;
+		         54	       55  D0 0008F 	    MOVL    IN_MODULE, BEST_MODULE				      ; 1471
+		         58	       50  D0 00092 	    MOVL    RBEGIN, BEST_VALUE					      ; 1472
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 3-7
+; Digital Equipment Corporation
+;
+				       4C  11 00095 	    BRB     14$							      ; 1473
+				       53  D5 00097 11$:    TSTL    BEST_DST						      ; 1502
+				       14  13 00099 	    BEQL    12$							      ;
+		         59	       53  D1 0009B 	    CMPL    BEST_DST, CURRENT_RTN				      ;
+				       0F  12 0009E 	    BNEQ    12$							      ;
+	   50	    03   A3	  03   A2  C1 000A0 	    ADDL3   3(DST_RECRD), 3(BEST_DST), R0			      ; 1508
+		         50	       56  D1 000A6 	    CMPL    R6, R0						      ; 1507
+				       04  1B 000A9 	    BLEQU   12$							      ;
+				       58  D4 000AB 	    CLRL    BEST_VALUE						      ; 1514
+				       53  7C 000AD 	    CLRQ    BEST_DST						      ; 1515
+				       59  D4 000AF 12$:    CLRL    CURRENT_RTN						      ; 1521
+				       B1  11 000B1 	    BRB     5$							      ; 1431
+		         50	  07   A2  9E 000B3 13$:    MOVAB   7(DST_RECRD), R0					      ; 1535
+		         51	       60  9A 000B7 	    MOVZBL  (R0), R1						      ; 1536
+		         50	       51  C0 000BA 	    ADDL2   R1, R0						      ;
+				       50  D6 000BD 	    INCL    R0							      ; 1535
+		         57	  03   A2  D0 000BF 	    MOVL    3(DST_RECRD), PBEGIN				      ; 1539
+	   51	    03   A2	       60  C1 000C3 	    ADDL3   (R0), 3(DST_RECRD), R1				      ; 1540
+				       51  D6 000C8 	    INCL    PEND						      ;
+		         56	       57  D1 000CA 	    CMPL    PBEGIN, R6						      ; 1546
+				       95  1A 000CD 	    BGTRU   5$							      ;
+		         56	       51  D1 000CF 	    CMPL    PEND, R6						      ; 1548
+				       90  1F 000D2 	    BLSSU   5$							      ;
+				       57  D5 000D4 	    TSTL    PBEGIN						      ; 1550
+				       8C  1B 000D6 	    BLEQU   5$							      ;
+		         58	       57  D1 000D8 	    CMPL    PBEGIN, BEST_VALUE					      ; 1556
+				       87  1F 000DB 	    BLSSU   5$							      ;
+		         54	       55  D0 000DD 	    MOVL    IN_MODULE, BEST_MODULE				      ; 1562
+		         58	       57  D0 000E0 	    MOVL    PBEGIN, BEST_VALUE					      ; 1563
+		         53	       52  D0 000E3 14$:    MOVL    DST_RECRD, BEST_DST					      ; 1564
+				       8B  11 000E6 	    BRB     7$							      ; 1405
+				       54  D5 000E8 15$:    TSTL    BEST_MODULE						      ; 1629
+				       33  13 000EA 	    BEQL    18$							      ;
+		  0000G  CF	       54  D0 000EC 	    MOVL    BEST_MODULE, TBK$MODULE_DST				      ; 1632
+		         01	  03   A4  D1 000F1 	    CMPL    3(BEST_MODULE), #1					      ; 1636
+				       16  12 000F5 	    BNEQ    16$							      ;
+				       5B  DD 000F7 	    PUSHL   R11							      ; 1643
+				0000G  CF  9F 000F9 	    PUSHAB  TBK$GL_EXC_TYPE					      ;
+				       53  DD 000FD 	    PUSHL   BEST_DST						      ;
+				       56  DD 000FF 	    PUSHL   R6							      ;
+		  0000G  CF	       04  FB 00101 	    CALLS   #4, TBK$PC_TO_LINE					      ;
+		         0A	       50  E8 00106 	    BLBS    R0, 17$						      ;
+				       6B  D4 00109 	    CLRL    TBK$GL_LINE						      ; 1653
+				       06  11 0010B 	    BRB     17$							      ; 1636
+    0000G  CF	         54	       07  C1 0010D 16$:    ADDL3   #7, BEST_MODULE, TBK$MODULE_CS			      ; 1656
+    0000G  CF	         53	       07  C1 00113 17$:    ADDL3   #7, BEST_DST, TBK$ROUTINE_CS			      ; 1658
+    0000G  CF	         56	       58  C3 00119 	    SUBL3   BEST_VALUE, R6, TBK$REL_PC				      ; 1659
+					   04 0011F 18$:    RET     							      ; 1352
+
+; Routine Size:  288 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 4
+; Digital Equipment Corporation
+;
+;	1667	%IF TBK_ANY
+;     L 1668	%THEN
+;     U 1669		! This routine is only used by DEBUGging output routines.
+;     U 1670	
+;     U 1671	ROUTINE PR_CS( ADDR )  : NOVALUE =
+;     U 1672	
+;     U 1673	
+;     U 1674	!++
+;     U 1675	! Functional Description:
+;     U 1676	!	Print out a counted string in an
+;     U 1677	!	unambiguous way for debugging purposes.
+;     U 1678	!--
+;     U 1679	
+;     U 1680	BEGIN
+;     U 1681		MAP
+;     U 1682			ADDR : REF VECTOR[,BYTE];
+;     U 1683	
+;     U 1684		! Don't get fooled!
+;     U 1685	
+;     U 1686		IF( .ADDR EQL 0 )
+;     U 1687		THEN
+;     U 1688			$FAO_TT_OUT( '**** PR_CS AT 0 **** ' )
+;     U 1689		ELSE
+;     U 1690			$FAO_TT_OUT( 'Name(!UB.): "!AC".  ' , .ADDR[0], ADDR[0] );
+;     U 1691	END;
+;     U 1692	
+;     U 1693	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:42	DBB3:[TRACE.SRC]TBKSYM.B32;3					Page 5
+; Digital Equipment Corporation
+;
+;	1694	END				!End of module
+;	1695	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  TBK$PLIT       	    32  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  TBK$CODE       	   288  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        10         0       225
+
+
+
+
+
+; Size:		288 code + 32 data bytes
+; Run Time:	00:12.6
+; Elapsed Time:	00:16.5
+; Memory Used:	321 pages
+; Compilation Complete

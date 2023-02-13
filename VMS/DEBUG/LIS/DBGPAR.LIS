@@ -1,0 +1,4147 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGPAR (	ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000083') =
+;	0003	BEGIN
+;	0004	
+;	0005	! Copyright (C) 1976
+;	0006	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0007	!
+;	0008	! This software is furnished under a license for use only on a
+;	0009	! single computer system and may be copied only with the inclusion
+;	0010	! of the above copyright notice. This software, or any
+;	0011	! other copies thereof, may not be provided or otherwise made
+;	0012	! available to any other person except for use on such system
+;	0013	! and to one who agrees to these license terms. Title to and
+;	0014	! ownership of the software shall at all times remain in DEC.
+;	0015	!
+;	0016	! The information in this software is subject to change without
+;	0017	! notice and should not be construed as a commitment by Digital
+;	0018	! Equipment Corporation.
+;	0019	!
+;	0020	! DEC assumes no responsibility for the use or reliability of
+;	0021	! its software on equipment which is not supplied by DEC.
+;	0022	!
+;	0023	! FACILITY:	DEBUG
+;	0024	!
+;	0025	!++
+;	0026	! FUNCTIONAL DESCRIPTION:
+;	0027	!	Parser for MARS DEBUG syntax
+;	0028	!
+;	0029	! Version:	83
+;	0030	!
+;	0031	! History:
+;	0032	!	Author:
+;	0033	!		Carol Peters, 03 Jul 1976: Version 01
+;	0034	!
+;	0035	!	Modified by:
+;	0036	!		Dale Roedger, 27 July 1978:	83
+;	0037	!
+;	0038	! Revision history:
+;	0039	!	20	29-03-77	CP	for action routines that consist of
+;	0040	!					only one line of code, call a macro
+;	0041	!					in the case statement instead of
+;	0042	!					calling a global routine.
+;	0043	!					remove action routine case label LSTECOM.
+;	0044	!					change stack_ptr from BYTE to LONG.
+;	0045	!	21	30-03-77	CP	add case label LPOSEXP for unary
+;	0046	!					plus operator. new grammar is GRAM06,
+;	0047	!					uses MARS expression syntax, GO instead
+;	0048	!					of START.
+;	0049	!	22	31-03-77	CP	handle setting of local or override
+;	0050	!					modes directly in the parser through
+;	0051	!					macro calls. deleted ASETDEF call.
+;	0052	!					deleted DBG$NONE call.
+;	0053	!	23	09-04-77	CP	In macro BPT_WITH_ACTS,
+;	0054	!					get address of BPT actions from
+;	0055	!					SEMSP + 4 because of DO keyword
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					that now precedes the parens.
+;	0057	!					Add macros GET_FILE_SPEC and
+;	0058	!					quoted string handler. These
+;	0059	!					functions break the parsing
+;	0060	!					out the table based function
+;	0061	!					for a limited time.
+;	0062	!	24	11-04-77	CP	Make AQUANAM a macro, QUALIFY_NAME.
+;	0063	!	25	20-04-77	CP	Change VAXDEB.BEG to be named
+;	0064	!					DBGGEN.BEG. Also add DBGPCT.BEG
+;	0065	!					for PSECT declarations.
+;	0066	!	26	22-04-77	CP	Move definitions of token names
+;	0067	!					into MARTOK.BEG. Also, change the
+;	0068	!					parse logic to handle the case
+;	0069	!					of a symbol being the
+;	0070	!					same as a keyword.
+;	0071	!	27	25-04-77	CP	Add diagnostics for token
+;	0072	!					replacement of name_token for
+;	0073	!					keyword. Remove macro NULL_TOKEN
+;	0074	!					and the test on the outcome of
+;	0075	!					GET_A_TOKEN. Add another argument
+;	0076	!					to INIT_MODES call.
+;	0077	!	28	29-04-77	CP	Change DBG$GB_PARS_MOR to a
+;	0078	!					local declared in the parser.
+;	0079	!					Change calls to DBG$ABREACE,
+;	0080	!					dbg$perform_cmd, and DBG$AUQUNAM to
+;	0081	!					be hidden in macros so that the
+;	0082	!					values returned by these
+;	0083	!					routines can affect whether the
+;	0084	!					parse continues or quits.
+;	0085	!	29	04-05-77	CP	Remove INCR loop from macro
+;	0086	!					GET_QUOTED_STG, and replace it
+;	0087	!					with a REPEAT loop.
+;	0088	!					Recode the INCR loops in GET_FILE_SPEC
+;	0089	!					to be REPEAT loops with two
+;	0090	!					exit paths.
+;	0091	!	30	23-06-77	CP	Bug in INDIRECTION macro. Must
+;	0092	!					do read protection check before
+;	0093	!					indirecting through the value.
+;	0094	!					Add call to DBG$READ_ACCESS.
+;	0095	!	31	14-07-77	CP	Add macro get_bpt_acts. This
+;	0096	!					is called when the opening
+;	0097	!					parenthesis of a set of break-
+;	0098	!					point actions is seen. The macro
+;	0099	!					scans the input line until it finds
+;	0100	!					the matching closing parenthesis.
+;	0101	!					It stores the collected string
+;	0102	!					in a buffer of dynamic storage,
+;	0103	!					writes a carriage return and a
+;	0104	!					space at the end of the buffer,
+;	0105	!					and puts the address of the buffer
+;	0106	!					on the top of the parse stack.
+;	0107	!					This macro replaces abreacb and
+;	0108	!					abreace. The processing is simpler.
+;	0109	!					No particular lexical scanning
+;	0110	!					is done until the string is
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!					executed. Also, comment out all
+;	0112	!					references to dbg$gl_lex_ptr,
+;	0113	!					save_cmd_buf, and save_lexeme
+;	0114	!					since these are not needed for
+;	0115	!					breakpoint actions any longer.
+;	0116	!					In fact, comment out the entire
+;	0117	!					save_lexeme routine.
+;	0118	!					Change all calls to
+;	0119	!					dbg$end_of_line to dbg$end_of_cmd.
+;	0120	!		18-07-77	CP	Change to use string descriptors
+;	0121	!					in all macros and pars_a_line.
+;	0122	!					Delete unused macros LINK_NAME,
+;	0123	!					SET_LOCAL_MODE, QUALIFY_NAME, and
+;	0124	!					END_BPT_ACTS. Add LSAVPAT and
+;	0125	!					LTRNNAM for translating and
+;	0126	!					collecting pathnames.
+;	0127	!					Add another lexeme buffer and
+;	0128	!					string descriptor to hold the string
+;	0129	!					found as a lexeme for a single
+;	0130	!					lookahead situation.
+;	0131	!		12-08-77	CP	Add action routine LSAVSCO for
+;	0132	!					scope saving. All it does is set
+;	0133	!					a context bit. The actual scope
+;	0134	!					setting occurs in dbg$perform_cmd.
+;	0135	!					Add an equals sign in the DEFINE
+;	0136	!					command. Delete the case label
+;	0137	!					for the READ command. This is now
+;	0138	!					done during initialization and the
+;	0139	!					file name obtained from the image
+;	0140	!					header information.
+;	0141	!	32	12-09-77	CP	Add two action cases, LSETLAN
+;	0142	!					and LSETMOD. The SETLAN sets a
+;	0143	!					context bit and puts an argument
+;	0144	!					in the command argument list. The
+;	0145	!					SETMOD just sets a context bit.
+;	0146	!					Also, declare a new external,
+;	0147	!					DBG$GL_PARTBPTR, the address of
+;	0148	!					a vector of five longwords that
+;	0149	!					contains the current addresses of
+;	0150	!					the parsing tables. At the beginning
+;	0151	!					of PARS_A_LINE, dynamically bind
+;	0152	!					these addresses to STATE_TABLES,
+;	0153	!					ACTION_TABLE, etc. This makes
+;	0154	!					switching parse tables possible.
+;	0155	!	33	15-09-77	CP	The logical_and macro was adding
+;	0156	!					the first and second items instead
+;	0157	!					the first and third items. Fix it.
+;	0158	!	34	21-09-77	CP	Rename acomlin to dbg$perform_cmd.
+;	0159	!					Add action routine forsetloc for
+;	0160	!					FORTRAN %LINE, %LABEL, and
+;	0161	!					%ADDRESS concepts. These require
+;	0162	!					the macros set_local_mode and
+;	0163	!					qualify_name and action routine
+;	0164	!					forquanam for FORTRAN processing.
+;	0165	!	35	26-09-77	CP	When calling an action routine
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	!					for a reduction, only go through
+;	0167	!					MARS and FORTRAN SELECT labels
+;	0168	!					if that language is current.
+;	0169	!	36	26-09-77	CP	Add reduce_label macro to handle
+;	0170	!					%LABEL path_name.
+;	0171	!	37	27-09-77	CP	Fix resetting of modes bug in
+;	0172	!					macros reduce_label and
+;	0173	!					qualify_name.
+;	0174	!	38	28-09-77	CP	Add CASE labels FORCALSUB
+;	0175	!					and MARCALSUB for the CALL
+;	0176	!					command. Replace calls to
+;	0177	!					error_reprt with SIGNALs.
+;	0178	!	39	11-10-77	CP	Rename auqunam to trans_name.
+;	0179	!					Also asetbre to break_setup.
+;	0180	!					Remove forquanam. Add fordimone,
+;	0181	!					fordimadd, and forrefarr.
+;	0182	!	40	18-10-77	CP	Add MARS position size macros
+;	0183	!					extract_bits and set_dec_overs.
+;	0184	!					Add case labels marsetdec and
+;	0185	!					marextbit.
+;	0186	!	41	27-10-77	CP	Remove external declaration of
+;	0187	!					dbg$end_of_cmd.
+;	0188	!	42	28-10-77	CP	In macro get_quoted_stg, don't
+;	0189	!					accept input unless either
+;	0190	!					instruction mode or ASCII mode
+;	0191	!					is set.
+;	0192	!	43	07-11-77	CP	Change names of context bits.
+;	0193	!	44	10-11-77	CP	Add SET and CANCEL module.
+;	0194	!	45	14-11-77	CP	Change FORTRAN name translation.
+;	0195	!	46	22-11-77	CP	Don't allow division by zero.
+;	0196	!	47	29-11-77	CP	Change reduction for %LINE in
+;	0197	!					FORTRAN from forsetloc to
+;	0198	!					forsetlin. Set both line mode
+;	0199	!					and decimal mode. Change macro
+;	0200	!					reduce_pathname to simply call
+;	0201	!					dbg$trans_name if line_mode is set.
+;	0202	!					Zero lookahead lexeme buffer
+;	0203	!					before loading a lexeme into it.
+;	0204	!					In macro reduce_label, only call
+;	0205	!					build_path if the %??? was a label
+;	0206	!					as opposed to a %line.
+;	0207	!	48	08-12-77	CP	Change each element of the parse
+;	0208	!					stacks to be n longwords long, where
+;	0209	!					n is dbg$k_stelmsize. Change
+;	0210	!					FORTRAN arithmetic actions to
+;	0211	!					call integer and floating routines
+;	0212	!					written in MARS. When putting
+;	0213	!					an expression in the command
+;	0214	!					argument list, put in its type
+;	0215	!					as well.
+;	0216	!	49	28-12-77	CP	For FORTRAN, implement EV/ADDRESS
+;	0217	!					and EQV and XOR operators.
+;	0218	!					Have a final call to build_path
+;	0219	!					always followed by setting of
+;	0220	!					seman2 position to integer type.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-4
+; Digital Equipment Corporation
+;
+;	0221	!	50	04-JAN-78	DAR	Changed require file MARTOK.BEG to
+;	0222	!					COMTER.BEG, also changed token names
+;	0223	!					to be consistent with the names in
+;	0224	!					COMTER.BEG. Removed COMACT.BEG.
+;	0225	!	51	11-JAN-78	DAR	Changed macro  get_quoted_stg  to match
+;	0226	!					the first character of the string instead
+;	0227	!					of the constant ASC_QUOTE.
+;	0228	!	52	18-JAN-78	DAR	Added macro GET_STEP_COUNT to pickup the
+;	0229	!					binary value of the step count.
+;	0230	!					Modified conditional compilation logic to
+;	0231	!					allow specific sets of languages or all.
+;	0232	!	53	6-mar-78	KGP	-Change to get_bpt_acts macro to stop
+;	0233	!					 it from writing into the supposed command
+;	0234	!					 line buffer when it extracts the bpt
+;	0235	!					 action buffer.  This caused a problem with
+;	0236	!					 actions with "SET B ... DO (...)" in them.
+;	0237	!	54	17-MAR-78	KGP	-TOOK [] off all REQUIREs, deleted the
+;	0238	!					 require for DSCDEF, and changed the
+;	0239	!					 LIBRARY STARDE to SYSDEF.
+;	0240	!	55	21-MAR-78	DAR	Initialized the temporary "value" in the
+;	0241	!					macro get_quoted_stg.
+;	0242	!					Also only pass on the number of characters
+;	0243	!					specified by DBG$GB_MOD_PTR[mode_length].
+;	0244	!	56	23-mar-78	KGP	-Changed macros reduce_pathname and redu_path_addr
+;	0245	!					 now that BUILD_PATH is the final word
+;	0246	!					 on whether a symbol exists or not.
+;	0247	!	57	04-APR-78	DAR	Modified the reduction routines to
+;	0248	!					work with the new grammar.
+;	0249	!	58	04-apr-78	KGP	-Calculating array dimensions now 
+;	0250	!					 includes conversion to INTEGER if necessary.
+;	0251	!					-Saving the previous value of MODE_IMMEDIATE
+;	0252	!					 is now done in the upper (unused)
+;	0253	!					 word of SEMAN2, instead of using the old
+;	0254	!					 OWN (prev_immed_mode) so that we can
+;	0255	!					 handle array elements being used as subscripts.
+;	0256	!	59	06-APR-78	DAR	Renamed "dbg$k_set_resig" to "dbg$k_resignal"
+;	0257	!					and "dbg$k_set_scope" to "dbg$k_scope".
+;	0258	!	60	10-APR-78	DAR	Set up action to get the after count for
+;	0259	!					the set break command.
+;	0260	!					Changed calls to DBG$SET_OVERS to pass
+;	0261	!					value to set instead of stack pointer.
+;	0262	!	61	13-APR-78	DAR	Made require and library file names
+;	0263	!					uppercase.
+;	0264	!	62	14-APR-78	DAR	Removed (.stack_ptr) from macro call
+;	0265	!					"set_dec_overs" since the macro has no
+;	0266	!					formal argument any more.
+;	0267	!	63	18-APR-78	DAR	Macro "set_dec_overs" sets override_mode
+;	0268	!					before setting decimal_token.  Macro
+;	0269	!					"get_step_count" sets override_mode after
+;	0270	!					picking up the digit string.
+;	0271	!	64	27-APR-78	DAR	Modified require and library directives
+;	0272	!					for the native build.
+;	0273	!	65	02-MAY-78	DAR	Redefined macro "save_lang_name" to pass
+;	0274	!					the string descriptor to the new language
+;	0275	!					name.  It now invokes macro "save_name".
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-5
+; Digital Equipment Corporation
+;
+;	0276	!	66	09-may-78	DAR	Re-ordered the macros, took out unnecessary
+;	0277	!					conditionals, and added XXX_stg_desc
+;	0278	!					parameters to macros: add_module, save_name,
+;	0279	!					get_quoted_stg, get_step_count, get_bpt_acts,
+;	0280	!					translate_name, save_lang_name, reduce_pathname,
+;	0281	!					reduce_label.
+;	0282	!	67	12-MAY-78	MCC	Changed 'unknown lexeme' error msg to
+;	0283	!					'invalid syntax' in dbg$pars_a_line.
+;	0284	!					Also added set_overr_step macro to set
+;	0285	!					override values for STEP
+;	0286	!	68	19-may-78	KGP	-macro reduce_label now lets build_path
+;	0287	!					 do all the work for %line AND %label
+;	0288	!	69	22-may-78	KGP	-New calling sequence for BUILD_PATH
+;	0289	!					 which now returns more information.
+;	0290	!	70	23-may-78	KGP	-The ftn_indirection macro now adjusts 
+;	0291	!					 the stack properly depending on whether
+;	0292	!					 or not the indirection was done.
+;	0293	!					-Changes some build_path calls to be
+;	0294	!					 calls to the new path_to_val
+;	0295	!	71	25-may-78	KGP	-The new TYPE1 field in the command arg
+;	0296	!					 list is now incorporated into various
+;	0297	!					 arg_list-manipulation macros.
+;	0298	!	72	30-may-78	KGP	-Deposit now passes on the type/nt_ptr
+;	0299	!					 info in macro link_dep_loc
+;	0300	!					-Each PUSH onto the SEMAN1/2 stack is
+;	0301	!					 now immediately followed by a 'clear'
+;	0302	!					 of these now-valid locations.
+;	0303	!	73	31-may-78	KGP	-New action especially for SHOW CALLS
+;	0304	!					 because the old one broke as soon as we
+;	0305	!					 cleared the stack (see above) on a READ
+;	0306	!					-Error handling in parse_a_line now
+;	0307	!					 gets it right if the error string
+;	0308	!					 was digit_token
+;	0309	!					-old get_quoted_stg macro is now
+;	0310	!					 a routine (extract_string)
+;	0311	!	74	01-jun-78	KGP	-New calling sequence for FIND_MODULE
+;	0312	!					 (a retrofit of what Dale did)
+;	0313	!	75	05-jun-78	KGP	-New error messages, NEEDMORE, and
+;	0314	!					 NOEND (for incomplete commands and
+;	0315	!					 non-terminated strings, resp.)
+;	0316	!	76	8-jun-78	KGP	-Made get_bpt_acts into a routine
+;	0317	!	77	09-jun-78	KGP	-extract_string now handles ASCII
+;	0318	!					 and instruction strings the same way
+;	0319	!	78	12-jun-78	KGP	-new commang arg entry, STORE, is used
+;	0320	!					 to pass on (to FREE_ARG) the address
+;	0321	!					 of any dynamic storage allocated in
+;	0322	!					 conjunction with the arg.
+;	0323	!					-old give_error macro deleted as it was
+;	0324	!					 no longer used.
+;	0325	!	79	15-jun-78	KGP	-character sub-string references are
+;	0326	!					 now part of the DEBUG FORTRAN language
+;	0327	!	80	19-jun-78	KGP	-substring (from:to) now works even if
+;	0328	!					 'from' or 'to' are non-INTEGER
+;	0329	!	81	20-jun-78	KGP	-reduce_pathname now check its NT_PTR
+;	0330	!					 for non-zero before using it
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 1-6
+; Digital Equipment Corporation
+;
+;	0331	!	82	14-JUL-78	DAR	Added use of variable dbg$gl_asci_len
+;	0332	!					for ascii variables.
+;	0333	!					The indirection macro now sets
+;	0334	!					mode_immediate false.
+;	0335	!	83	27-JUL-78	DAR	Removed all reduction actions to their
+;	0336	!					respective reduction routines.
+;	0337	!					The indirection macro does not set
+;	0338	!					mode_immediate false, since this causes
+;	0339	!					an extra level of indirection once '@'
+;	0340	!					is first seen.
+;	0341	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 2
+; Digital Equipment Corporation
+;
+;	0342	! The following literals control conditional compilation.
+;	0343	!--
+;	0344	LITERAL
+;	0345		macro_syntax	= 1,		! if true, MACRO syntax
+;	0346		fortran_syntax	= 1,		! if true, FORTRAN syntax
+;	0347		bliss_syntax	= 0;		! if true, BLISS syntax
+;	0348	
+;	0349	FORWARD ROUTINE
+;	0350	
+;	0351	%IF  fortran_syntax
+;     L 0352	%THEN
+;	0353		dbg$for_reductn,			! FORTRAN action routines
+;	0354	%FI
+;	0355	
+;	0356	%IF  macro_syntax
+;     L 0357	%THEN
+;	0358		dbg$mar_reductn,			! macro action routines
+;	0359	%FI
+;	0360	
+;	0361	%IF  bliss_syntax
+;     L 0362	%THEN
+;     U 0363		dbg$bli_reductn,			! BLISS action routines
+;     U 0364	%FI
+;	0365	
+;	0366		extract_string,				! Pick up deilimited strings.
+;	0367		get_bpt_actions,			! Pick up breakpoint action string.
+;	0368		dbg$pars_a_line : NOVALUE;		! Parse an input (command) line
+;	0369	
+;	0370	!
+;	0371	! REQUIRE FILES:
+;	0372	!
+;	0373	%IF %VARIANT		! True for TEN.
+;     L 0374	%THEN
+;     U 0375	LIBRARY 'NEW:LIB';
+;     U 0376	
+;     U 0377	REQUIRE 'DBGPCT.REQ';
+;     U 0378	REQUIRE 'VXSMAC.REQ';
+;     U 0379	REQUIRE 'DBGMSG.REQ';
+;     U 0380	REQUIRE 'DBGGEN.REQ';
+;     U 0381	REQUIRE 'COMTER.REQ';
+;     U 0382	REQUIRE 'BSTRUC.REQ';
+;     U 0383	REQUIRE 'LISTEL.REQ';
+;     U 0384	REQUIRE 'VXPALT.REQ';
+;     U 0385	REQUIRE 'DBGRST.REQ';
+;     U 0386	REQUIRE 'MARACT.REQ';	! Case labels for MACRO
+;     U 0387	REQUIRE	'FORACT.REQ';	! Case labels for FORTRAN
+;     U 0388	REQUIRE	'BLIACT.REQ';	! Case labels for BLISS
+;     U 0389	REQUIRE 'SYSLIT.REQ';
+;     U 0390	REQUIRE 'SYSSER.REQ';
+;     U 0391	%ELSE
+;	0392	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0393	
+;	0394	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0406	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0446	REQUIRE 'LIB$:DBGMSG.REQ';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 2-1
+; Digital Equipment Corporation
+;
+;	0725	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0975	REQUIRE 'SRC$:COMTER.REQ';
+;	1067	REQUIRE 'SRC$:BSTRUC.REQ';
+;	1118	REQUIRE 'SRC$:LISTEL.REQ';
+;	1152	REQUIRE 'SRC$:VXPALT.REQ';
+;	1176	REQUIRE 'SRC$:DBGRST.REQ';
+;	2323	REQUIRE 'SRC$:MARACT.REQ';	! Case labels for MACRO
+;	2378	REQUIRE	'SRC$:FORACT.REQ';	! Case labels for FORTRAN
+;	2446	REQUIRE	'SRC$:BLIACT.REQ';	! Case labels for BLISS
+;	2465	REQUIRE 'SRC$:SYSLIT.REQ';
+;	2488	REQUIRE 'SRC$:SYSSER.REQ';
+;      R2491	SWITCHES LIST (SOURCE);
+;      R2492	
+;      R2493	EXTERNAL ROUTINE
+;      R2494		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2495	
+;      R2496	SWITCHES LIST (NOSOURCE);
+;	2541	%FI
+;	2542	
+;	2543	EXTERNAL ROUTINE
+;	2544		dbg$get_bounds : novalue,		! calculate array bounds
+;	2545		dbg$add_arg,				! ROUTINE TO ADD ARGUMENTS TO THE COMMAND ARGUMENT LIST
+;	2546		dbg$break_setup,			! collects arguments for breakpoint setting
+;	2547		dbg$build_path,				! routine to build a path name
+;	2548		dbg$path_to_val,			! evaluate pathnames
+;	2549		dbg$cancel_parm,			! arguments to a CANCEL command
+;	2550		dbg$find_module,			! finds the RST address of a module
+;	2551		dbg$for_add,				! does a FORTRAN add
+;	2552		dbg$for_div,				! does a FORTRAN divide
+;	2553		dbg$for_mul,				! does a FORTRAN multiply
+;	2554		dbg$for_neg,				! does a FORTRAN negate
+;	2555		dbg$for_sub,				! does a FORTRAN subtract
+;	2556		dbg$freez,				! allocate a block of free storage
+;	2557	
+;	2558	%IF fortran_syntax
+;     L 2559	%THEN
+;	2560		dbg$getarrayadr,			! gets the absolute address of an array element
+;	2561		dbg$cnv_d_to_l,				! Convert DOUBLE to LONG
+;	2562		dbg$cnv_f_to_l,				! Convert FLOATING to LONG
+;	2563	%FI
+;	2564	
+;	2565		dbg$get_a_token,			! get a single token from input buffer
+;	2566		dbg$init_modes,				! initializes input and output modes
+;	2567		dbg$perform_cmd,			! executes a complete command
+;	2568		dbg$read_access,			! routine to check read access to a page
+;	2569		dbg$set_mod_lvl,			! resets modes to a certain level
+;	2570		dbg$set_new_mod,			! sets a mode setting in current level
+;	2571		dbg$set_overs,				! routine to set override or local modes
+;	2572		dbg$show_param,				! collects arguments to SHOW command
+;	2573		dbg$trans_name,				! translates a name into a binary value
+;	2574		dbg$set_stp_lvl,			! sets level of STEP
+;	2575		dbg$set_new_stp;			! sets a new STEP value
+;	2576	
+;	2577	EXTERNAL
+;	2578		dbg$gb_mod_ptr : REF VECTOR [, BYTE],	! current mode
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 2-2
+; Digital Equipment Corporation
+;
+;	2579		dbg$gl_context: BITVECTOR,		! context word
+;	2580	
+;	2581	%IF fortran_syntax
+;     L 2582	%THEN
+;	2583		dbg$gl_dimenlst : VECTOR,		! holds dimension elements for array
+;	2584	%FI
+;	2585	
+;	2586		dbg$gl_asci_len,			! Holds length of ascii variables
+;	2587		dbg$gl_head_lst,			! head of the command argument list.
+;	2588		dbg$gl_list: VECTOR,			! holds breakpoint arguments
+;	2589		dbg$gl_partbptr: VECTOR,		! list of parse table addresses
+;	2590		dbg$gl_reduc_rt,			! holds name of reduction routine
+;	2591		dbg$gl_seman1: VECTOR,			! semantic stack for tokens
+;	2592		dbg$gl_seman2: VECTOR;			! semantic stack for string pointers
+;	2593	
+;	2594	LITERAL
+;	2595		dbg_par		= 0,		! for debugging
+;	2596		dbg_par1	= 0,		! DBG$PARS_A_LINE
+;	2597		dbg_par2	= 0,		! collecting breakpoint actions
+;	2598		dbg_par3	= 0,		! manipulating array references
+;	2599		dbg_par4	= 0,		! extract bits
+;	2600		dbg_par5	= 0,		! ditto
+;	2601		dbg_par6	= 0,		! automatic indirection in fortran
+;	2602		dbg_par7	= 0,		! FORTRAN arithmetic routines
+;	2603		dbg_par8	= 0,		! Print out command string before
+;	2604						!   each call to get_a_token
+;	2605		dbg_par_act	= 0,		! print action index and current token
+;	2606		dbg_par_for	= 0,		! fortran reduction routine
+;	2607		dbg_par_mar	= 0,		! macro reduction routine
+;	2608		dbg_par_bli	= 1;		! bliss reduction routine
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 3
+; Digital Equipment Corporation
+;
+;	2609	! MACROS
+;	2610	!
+;	2611	!++
+;	2612	! The following macros are simple actions to perform with reductions to
+;	2613	! the grammar. Instead of calling global routines, these macros are
+;	2614	! simply expanded in line.
+;	2615	!--
+;	2616	MACRO
+;	2617	
+;	2618		!++
+;	2619		! The addition macro adds the value at the top of the stack
+;	2620		! to the value at the third position in the stack and places
+;	2621		! the result at the top of the stack.
+;	2622		!--
+;	2623	addition (semsp) =
+;     M 2624			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] + .dbg$gl_seman1 [semsp + dbg$k_spos_two]%,
+;	2625	
+;	2626		!++
+;	2627		! The subtraction macro subtracts the value found in the third
+;	2628		! position on the stack from the value at the top of the stack
+;	2629		! and places the result on the top of the stack.
+;	2630		!--
+;	2631	subtraction (semsp) =
+;     M 2632			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] - .dbg$gl_seman1 [semsp + dbg$k_spos_two]%,
+;	2633	
+;	2634		!++
+;	2635		! The multiplication macro multiplies the value at the top of
+;	2636		! the stack to the value at the third position on the stack
+;	2637		! and places the result at the top of the stack.
+;	2638		!--
+;	2639	multiplication (semsp) =
+;     M 2640			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] * .dbg$gl_seman1 [semsp + dbg$k_spos_two]%,
+;	2641	
+;	2642		!++
+;	2643		! The division macro divides the value at the top of the stack
+;	2644		! by the value at the third position in the stack and places
+;	2645		! the result at the top of the stack.
+;	2646		!--
+;	2647	division (semsp) =
+;     M 2648			BEGIN
+;     M 2649			IF .dbg$gl_seman1 [semsp + dbg$k_spos_two] EQL 0
+;     M 2650			THEN SIGNAL (dbg$_divbyzero);
+;     M 2651			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] / .dbg$gl_seman1 [semsp + dbg$k_spos_two];
+;     M 2652			END%,
+;	2653	
+;	2654		!++
+;	2655		! The arith_shift macro shifts the value at the top of the
+;	2656		! stack by the value found in the third position on the stack
+;	2657		! and places the result on the top of the stack.
+;	2658		!--
+;	2659	arith_shift (semsp) =
+;     M 2660			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] ^ .dbg$gl_seman1 [semsp + dbg$k_spos_two]%,
+;	2661	
+;	2662		!++
+;	2663		! The logical_or macro applies the OR operator to the values found
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 3-1
+; Digital Equipment Corporation
+;
+;	2664		! in the first and third position on the stack and places the
+;	2665		! result on the top of the stack.
+;	2666		!--
+;	2667	logical_or (semsp) =
+;     M 2668			BEGIN
+;     M 2669	
+;     M 2670			IF (.dbg$gl_seman2 [semsp] EQL dsc$k_dtype_l) AND
+;     M 2671				(.dbg$gl_seman2 [semsp + dbg$k_spos_two] EQL dsc$k_dtype_l)
+;     M 2672			THEN
+;     M 2673				dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] OR .dbg$gl_seman1 [semsp + dbg$k_spos_two]
+;     M 2674			ELSE SIGNAL (dbg$_integer);
+;     M 2675	
+;     M 2676			END%,
+;	2677	
+;	2678		!++
+;	2679		! The logical_and macro applies the AND operator to the values
+;	2680		! found in the first and third position on the stack and places
+;	2681		! the result on the top of the stack.
+;	2682		!--
+;	2683	logical_and (semsp) =
+;     M 2684			BEGIN
+;     M 2685	
+;     M 2686			IF (.dbg$gl_seman2 [semsp] EQL dsc$k_dtype_l) AND
+;     M 2687				(.dbg$gl_seman2 [semsp + dbg$k_spos_two] EQL dsc$k_dtype_l)
+;     M 2688			THEN
+;     M 2689				dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] AND .dbg$gl_seman1 [semsp + dbg$k_spos_two]
+;     M 2690			ELSE SIGNAL (dbg$_integer);
+;     M 2691	
+;     M 2692			END%,
+;	2693	
+;	2694		!++
+;	2695		! The exclusive or macro performs an exclusive or operation on
+;	2696		! the values found in the first and third positions on the stack,
+;	2697		! and puts the result on the top of the stack.o
+;	2698		!--
+;	2699	exclusive_or (semsp) =
+;     M 2700			BEGIN
+;     M 2701	
+;     M 2702			IF (.dbg$gl_seman2 [semsp] EQL dsc$k_dtype_l) AND
+;     M 2703				(.dbg$gl_seman2 [semsp + dbg$k_spos_two] EQL dsc$k_dtype_l)
+;     M 2704			THEN
+;     M 2705				dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] XOR .dbg$gl_seman1 [semsp + dbg$k_spos_two]
+;     M 2706			ELSE SIGNAL (dbg$_integer);
+;     M 2707	
+;     M 2708			END%,
+;	2709	
+;	2710		!++
+;	2711		! The negation macro negates the value found in the second
+;	2712		! position on the stack and places the result on the top of
+;	2713		! the stack.
+;	2714		!--
+;	2715	negation (semsp) =
+;     M 2716			BEGIN
+;     M 2717			dbg$gl_seman1 [semsp] = - .dbg$gl_seman1 [semsp + dbg$k_spos_one];
+;     M 2718	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 3-2
+; Digital Equipment Corporation
+;
+;     M 2719		%IF fortran_syntax
+;     M 2720		%THEN
+;     M 2721			dbg$gl_seman2 [semsp] = .dbg$gl_seman2 [semsp + dbg$k_spos_one];
+;     M 2722		%FI
+;     M 2723	
+;     M 2724			END%,
+;	2725	
+;	2726		!++
+;	2727		! The complement macro applies the NOT operator to the value
+;	2728		! found in the second position on the stack and places the
+;	2729		! result on the top of the stack.
+;	2730		!--
+;	2731	complement (semsp) =
+;     M 2732			BEGIN
+;     M 2733	
+;     M 2734			dbg$gl_seman2 [semsp] = .dbg$gl_seman2 [semsp + dbg$k_spos_one];
+;     M 2735			IF .dbg$gl_seman2 [semsp + dbg$k_spos_one] EQL dsc$k_dtype_l
+;     M 2736			THEN
+;     M 2737				dbg$gl_seman1 [semsp] = NOT .dbg$gl_seman1 [semsp + dbg$k_spos_one]
+;     M 2738			ELSE SIGNAL (dbg$_integer);
+;     M 2739	
+;     M 2740			END%,
+;	2741	
+;	2742		!++
+;	2743		! The positive macro takes the value found in the second
+;	2744		! position on the stack and places it on the top of the stack.
+;	2745		!--
+;	2746	positive (semsp) =
+;     M 2747			BEGIN
+;     M 2748			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp + dbg$k_spos_one];
+;     M 2749	
+;     M 2750		%IF fortran_syntax
+;     M 2751		%THEN
+;     M 2752			dbg$gl_seman2 [semsp] = .dbg$gl_seman2 [semsp + dbg$k_spos_one];
+;     M 2753		%FI
+;     M 2754	
+;     M 2755			END%,
+;	2756	
+;	2757		!++
+;	2758		! The remove_parens macro takes the value found in the second
+;	2759		! position on the stack and places it on the top of the stack.
+;	2760		!--
+;	2761	remove_parens (semsp) =
+;     M 2762			BEGIN
+;     M 2763			dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp + dbg$k_spos_one];
+;     M 2764	
+;     M 2765		%IF fortran_syntax
+;     M 2766		%THEN
+;     M 2767			dbg$gl_seman2 [semsp] = .dbg$gl_seman2 [semsp + dbg$k_spos_one];
+;     M 2768		%FI
+;     M 2769	
+;     M 2770			END%,
+;	2771	
+;	2772		!++
+;	2773		! The indirection macro considers the value at the second position
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 3-3
+; Digital Equipment Corporation
+;
+;	2774		! in the stack to be an address. It takes the contents of that
+;	2775		! address and places it on the top of the stack.
+;	2776		! It moves the data type of the item to the top of the second
+;	2777		! stack.
+;	2778		!--
+;	2779	indirection (semsp) =
+;     M 2780			BEGIN
+;     M 2781	
+;     M 2782		%IF dbg_par6
+;     M 2783		%THEN
+;     M 2784			$fao_tt_out ('indirecting through !XL', .dbg$gl_seman1 [semsp + dbg$k_spos_one]);
+;     M 2785		%FI
+;     M 2786	
+;     M 2787	! can't do this	set_over_noadr;			! This is not an address.
+;     M 2788			dbg$read_access (.dbg$gl_seman1 [semsp + dbg$k_spos_one], %UPVAL);
+;     M 2789			dbg$gl_seman1 [semsp] = ..dbg$gl_seman1 [semsp + dbg$k_spos_one];
+;     M 2790	
+;     M 2791		%IF fortran_syntax
+;     M 2792		%THEN
+;     M 2793			dbg$gl_seman2 [semsp] = .dbg$gl_seman2 [semsp + dbg$k_spos_one];
+;     M 2794		%FI
+;     M 2795	
+;     M 2796			END%,
+;	2797	
+;	2798		!++
+;	2799		! The ftn_indirection macro considers the value at the top of
+;	2800		! the stack to be an address.  If the mode is set to indicate
+;	2801		! that indirection is desired, the macro takes the contents of that
+;	2802		! address and replaces it on the top of the stack.  Note that if
+;	2803		! the indirection is NOT done, the SEMAN2 type still reflects
+;	2804		! the rvalue (on SEMAN1), not the lvalue.  This is necessary 
+;	2805		! because DEPOSIT does not want the indirection, but does want
+;	2806		! the type to be set (left) as though it did.
+;	2807		!--
+;	2808	ftn_indirection (semsp) =
+;     M 2809			BEGIN
+;     M 2810	
+;     M 2811			!+
+;     M 2812			! Indirection is not performed if "mode_immediate" is false
+;     M 2813			! as in "EVALUATE/ADDR X".
+;     M 2814			!-
+;     M 2815			IF NOT .dbg$gb_mod_ptr[mode_immediate]
+;     M 2816			THEN
+;     M 2817				BEGIN
+;     M 2818		%IF dbg_par6
+;     M 2819		%THEN
+;     M 2820				$fao_tt_out ('ftn-indirecting through !XL', .dbg$gl_seman1 [semsp]);
+;     M 2821		%FI
+;     M 2822				! Be sure not to fault if the
+;     M 2823				! indirection would fail.
+;     M 2824	
+;     M 2825				dbg$read_access (.dbg$gl_seman1 [semsp], %UPVAL);
+;     M 2826				dbg$gl_seman1 [semsp] = ..dbg$gl_seman1 [semsp];
+;     M 2827				END;
+;     M 2828			END%,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 3-4
+; Digital Equipment Corporation
+;
+;	2829	
+;	2830		!++
+;	2831		! The equivalence macro applies the EQV operator to the values found
+;	2832		! in the first and third position on the stack and places the
+;	2833		! result on the top of the stack.
+;	2834		!--
+;	2835	equivalence (semsp) =
+;     M 2836			BEGIN
+;     M 2837	
+;     M 2838			IF (.dbg$gl_seman2 [semsp] EQL dsc$k_dtype_l) AND
+;     M 2839				(.dbg$gl_seman2 [semsp + dbg$k_spos_two] EQL dsc$k_dtype_l)
+;     M 2840			THEN
+;     M 2841				dbg$gl_seman1 [semsp] = .dbg$gl_seman1 [semsp] EQV .dbg$gl_seman1 [semsp + dbg$k_spos_two]
+;     M 2842			ELSE SIGNAL (dbg$_integer);
+;     M 2843	
+;     M 2844			END%,
+;	2845	
+;	2846		!++
+;	2847		! The extract_bits macro extracts a bit field from the value
+;	2848		! on the top of the stack and places that bit field on the
+;	2849		! top of the stack. The starting bit number of the bit field
+;	2850		! is in the fifth position on the stack. The end position
+;	2851		! of the bit field is in the third position. After the value
+;	2852		! is extracted, the mode is reset to override level.
+;	2853		!--
+;	2854	extract_bits (semsp) =
+;     M 2855			BEGIN
+;     M 2856	
+;     M 2857			LOCAL
+;     M 2858				value : BLOCK [4, BYTE];
+;     M 2859	
+;     M 2860		%IF dbg_par4
+;     M 2861		%THEN
+;     M 2862			$fao_tt_out ('value is !XL, bounds are !SL and !SL',
+;     M 2863				.dbg$gl_seman1 [semsp], .dbg$gl_seman1 [semsp + dbg$k_spos_two],
+;     M 2864				.dbg$gl_seman1 [semsp + dbg$k_spos_four]);
+;     M 2865		%FI
+;     M 2866	
+;     M 2867			value = .dbg$gl_seman1 [semsp];
+;     M 2868			IF (.dbg$gl_seman1 [semsp + dbg$k_spos_two] GTR 31) OR (.dbg$gl_seman1 [semsp + dbg$k_spos_four] GTR 31)
+;     M 2869				OR (.dbg$gl_seman1 [semsp + dbg$k_spos_four] GTR .dbg$gl_seman1 [semsp + dbg$k_spos_two])
+;     M 2870			THEN SIGNAL (dbg$_bitrange);
+;     M 2871			dbg$gl_seman1 [semsp] = .value [0, .dbg$gl_seman1 [semsp + dbg$k_spos_four],
+;     M 2872				.dbg$gl_seman1 [semsp + dbg$k_spos_two] - .dbg$gl_seman1 [semsp + dbg$k_spos_four] + 1, 0];
+;     M 2873	
+;     M 2874		%IF dbg_par4
+;     M 2875		%THEN
+;     M 2876			$fao_tt_out ('bit value is !XL', .dbg$gl_seman1 [semsp]);
+;     M 2877		%FI
+;     M 2878	
+;     M 2879			dbg$init_modes (local_mode, override_mode);
+;     M 2880			dbg$set_mod_lvl (override_mode);
+;     M 2881			END%,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 4
+; Digital Equipment Corporation
+;
+;	2882	!++
+;	2883	! The next few macros put items into linked lists.
+;	2884	!--
+;	2885	
+;	2886		!++
+;	2887		! The link_arg_pair macro calls the routine dbg$add_arg to place
+;	2888		! the value at the top of the stack as a new link in the command
+;	2889		! argument list.  If the new link is created successfully, then
+;	2890		! the value found at the third position on the stack is placed
+;	2891		! in the new link as well, at the position called LINK_ELEM_EXP2.
+;	2892		!--
+;	2893	link_arg_pair (semsp) =
+;     M 2894			BEGIN
+;     M 2895	
+;     M 2896			LOCAL
+;     M 2897				pointer;
+;     M 2898	
+;     M 2899			pointer = dbg$add_arg (.dbg$gl_seman1 [semsp]);
+;     M 2900			list_elem_exp2 (.pointer) = .dbg$gl_seman1 [semsp + dbg$k_spos_two];
+;     M 2901	
+;     M 2902		%IF dbg_par
+;     M 2903		%THEN
+;     M 2904			$fao_tt_out ('argument pair is !XL : !XL',
+;     M 2905			.dbg$gl_seman1[semsp], .dbg$gl_seman1[semsp + dbg$k_spos_two]);
+;     M 2906		%FI
+;     M 2907	
+;     M 2908			END%,
+;	2909	
+;	2910		!++
+;	2911		! The link_arg macro calls the routine dbg$add_arg to create
+;	2912		! a new link in the command argument list, and to insert in that
+;	2913		! link the value found at the top of the stack.
+;	2914		!
+;	2915		! If the value at the top of the stack is a double precision
+;	2916		! value, then the second half of the value is also moved into
+;	2917		! the new link in the command argument list (exp2).  Otherwise
+;	2918		! the second half of the SEMAN1 stack is assumed to be
+;	2919		! the address of auxiliary storage associated with the
+;	2920		! command arg record so it gets moved into a different field.
+;	2921		!
+;	2922		! Type information (from SEMAN2) is also loaded into
+;	2923		! the command arg list.
+;	2924		!--
+;	2925	link_arg (semsp) =
+;     M 2926			BEGIN
+;     M 2927	
+;     M 2928			LOCAL
+;     M 2929				pointer;
+;     M 2930	
+;     M 2931			pointer = dbg$add_arg (.dbg$gl_seman1 [semsp]);
+;     M 2932	
+;     M 2933			! Either move in the second half of a double precision
+;     M 2934			! variable, or the pointer associated with this arg
+;     M 2935			! record which indicates auxiliary storage
+;     M 2936			! which has to be freed up when the arg record is.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 4-1
+; Digital Equipment Corporation
+;
+;     M 2937			! This is for AScii/INstruction string storage.
+;     M 2938	
+;     M 2939			IF .dbg$gl_seman2 [semsp] EQL dsc$k_dtype_d
+;     M 2940			THEN list_elem_exp2 (.pointer) = .dbg$gl_seman1 [semsp + 1]
+;     M 2941			else list_elem_store(.pointer) = .dbg$gl_seman1 [semsp + 1];
+;     M 2942	
+;     M 2943			list_elem_type (.pointer) = .dbg$gl_seman2 [semsp];
+;     M 2944			list_elem_type1(.pointer) = .dbg$gl_seman2 [semsp + 1];
+;     M 2945	
+;     M 2946		%IF dbg_par7
+;     M 2947		%THEN
+;     M 2948			$fao_tt_out ('in link_arg, expression is !XL!XL, type is !XL !XL',
+;     M 2949				.dbg$gl_seman1[semsp+1], .dbg$gl_seman1[semsp],
+;     M 2950				.dbg$gl_seman2[semsp+1], .dbg$gl_seman2[semsp]);
+;     M 2951		%FI
+;     M 2952	
+;     M 2953			END%,
+;	2954	
+;	2955		!++
+;	2956		! The link_exp_name macro calls the routine dbg$add_arg to create
+;	2957		! a new link in the command argument list and to place in that
+;	2958		! link the address value found at the top of the second parse
+;	2959		! stack. This address is the address of a string descriptor.
+;	2960		! If the new link is created successfully, the value found at
+;	2961		! the third position on the first parse stack is placed in the
+;	2962		! link in the position called list_elem_exp2.
+;	2963		!--
+;	2964	link_exp_name (semsp) =
+;     M 2965			BEGIN
+;     M 2966	
+;     M 2967			LOCAL
+;     M 2968				descriptor : REF BLOCK [, BYTE],
+;     M 2969				pointer;
+;     M 2970	
+;     M 2971		%IF dbg_par5
+;     M 2972		%THEN
+;     M 2973			descriptor = .dbg$gl_seman2 [semsp];
+;     M 2974			$fao_tt_out ('name is !AD, value is !XL', .descriptor [dsc$w_length],
+;     M 2975				.descriptor [dsc$a_pointer], .dbg$gl_seman1 [semsp + dbg$k_spos_two]);
+;     M 2976		%FI
+;     M 2977	
+;     M 2978			pointer = dbg$add_arg (.dbg$gl_seman2 [semsp]);
+;     M 2979			IF .pointer NEQ 0
+;     M 2980			THEN list_elem_exp2 (.pointer) = .dbg$gl_seman1 [semsp + dbg$k_spos_two];
+;     M 2981			END%,
+;	2982	
+;	2983		!++
+;	2984		! The link_dep_loc macro is for FORTRAN processing. It
+;	2985		! places the address of a location whose contents is to be
+;	2986		! changed into the command argument list.  Likewise the
+;	2987		! NT_PTR field is moved from the SEMAN2 stack to the
+;	2988		! command argument list.   Then the mode_immediate
+;	2989		! setting is changed so that the values to be deposited are
+;	2990		! interpreted as contents of symbols (where symbols are given)
+;	2991		! instead of addresses of symbols.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 4-2
+; Digital Equipment Corporation
+;
+;	2992		!--
+;	2993	link_dep_loc (semsp) =
+;     M 2994			BEGIN
+;     M 2995			BIND
+;     M 2996					! The upper longword on the SEMAN2 stack
+;     M 2997					! is used to store (stack) the immediate_mode
+;     M 2998					! flag AND pass on the NT_PTR associated
+;     M 2999					! with the symbol being deposited into.
+;     M 3000				nt_and_flag_ptr = dbg$gl_seman2[ semsp +1 ]
+;     M 3001						: vector[2,word];
+;     M 3002			LOCAL
+;     M 3003				pointer;
+;     M 3004			pointer = dbg$add_arg (.dbg$gl_seman1 [semsp]);
+;     M 3005			list_elem_type1(.pointer) = .nt_and_flag_ptr[0];
+;     M 3006			set_over_noadr;
+;     M 3007			END%,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 5
+; Digital Equipment Corporation
+;
+;	3008		!++
+;	3009		! The add_module macro translates the ASCII name of a module into
+;	3010		! the address of that module's record in the RST, and puts that
+;	3011		! address onto the top of the parse stack.  IF this translation
+;	3012		! fails, a message is produced and an UNWIND is done.
+;	3013		!--
+;	3014	add_module (semsp, lex_stg_desc) =
+;     M 3015			BEGIN
+;     M 3016			dbg$gl_seman1 [semsp] = dbg$find_module(lex_stg_desc,TRUE);
+;     M 3017	
+;     M 3018		%IF dbg_par
+;     M 3019		%THEN
+;     M 3020			$fao_tt_out ('in add_module, top of stack is !XL, module name is !AS',
+;     M 3021				.dbg$gl_seman1[semsp], lex_stg_desc);
+;     M 3022		%FI
+;     M 3023			END%,
+;	3024	
+;	3025		%IF fortran_syntax
+;     L 3026		%THEN
+;	3027		!++
+;	3028		! The add_dimension macro adds a dimension value to the
+;	3029		! list of dimension values that will be applied to a single
+;	3030		! array reference. If the value is the eighth dimension to be
+;	3031		! applied to the same array, a SIGNAL is generated, and this
+;	3032		! command is aborted.  If the type associated with the
+;	3033		! supposed subscript is DOUBLE or FLOAT, it is converted to INTEGER.
+;	3034		!--
+;	3035	add_dimension (semsp) =
+;     M 3036			BEGIN
+;     M 3037		%IF dbg_par3
+;     M 3038		%THEN
+;     M 3039			$fao_tt_out ('add_dimension: token is !SL, seman2 = !SL',
+;     M 3040				.dbg$gl_seman1 [semsp], .dbg$gl_seman2 [semsp]);
+;     M 3041		%FI
+;     M 3042			IF .dbg$gl_dimenlst [0] EQL 7
+;     M 3043			THEN
+;     M 3044				! Max number of dimensions in FORTRAN is 7
+;     M 3045	
+;     M 3046				SIGNAL( DBG$_MAXDIMSN, 1, 7);
+;     M 3047				! no return
+;     M 3048	
+;     M 3049			! See if conversion to integer is necessary.
+;     M 3050			! Note: we only handle double and floating.
+;     M 3051	
+;     M 3052			IF( .DBG$GL_SEMAN2[ SEMSP ] EQL DSC$K_DTYPE_F )
+;     M 3053			THEN
+;     M 3054				BEGIN
+;     M 3055				DBG$CNV_F_TO_L( dbg$gl_seman1 [ semsp ] );
+;     M 3056				dbg$gl_seman2 [ semsp ] = dsc$k_dtype_l;
+;     M 3057				END
+;     M 3058			ELSE
+;     M 3059			IF( .DBG$GL_SEMAN2 [ SEMSP ] EQL DSC$K_DTYPE_D )
+;     M 3060			THEN
+;     M 3061				BEGIN
+;     M 3062				DBG$CNV_D_TO_L( dbg$gl_seman1 [ semsp ] );
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 5-1
+; Digital Equipment Corporation
+;
+;     M 3063				dbg$gl_seman2 [ semsp ] = dsc$k_dtype_l;
+;     M 3064				END;
+;     M 3065		%IF dbg_par3
+;     M 3066		%THEN
+;     M 3067			$fao_tt_out ('add_dimension: token is !SL, seman2 = !SL',
+;     M 3068				.dbg$gl_seman1 [semsp], .dbg$gl_seman2 [semsp]);
+;     M 3069		%FI
+;     M 3070			dbg$gl_dimenlst [0] = .dbg$gl_dimenlst [0] + 1;
+;     M 3071			dbg$gl_dimenlst [.dbg$gl_dimenlst [0]] = .dbg$gl_seman1 [semsp];
+;     M 3072			END%,
+;	3073	
+;	3074		!++
+;	3075		! The char_substring macro handles the symbolic reference
+;	3076		! typified by "DBG>EXamine char(from:to)".  The "char" reference
+;	3077		! has already been reduced - this macro handles the 'from' and 
+;	3078		! 'to' references by stashing away the indicated values, having
+;	3079		! converted them to INTEGER if necessary.  All further handling
+;	3080		! of these numbers is done in ARI's dbg$getarrayadr()
+;	3081		!--
+;	3082	char_substring(semsp) =
+;     M 3083			BEGIN
+;     M 3084		%IF dbg_par7
+;     M 3085		%THEN
+;     M 3086			$fao_tt_out ('char_substring: token is !SL, seman2 = !SL',
+;     M 3087				.dbg$gl_seman1 [semsp + dbg$k_spos_ONE],
+;     M 3088				.dbg$gl_seman2 [semsp + dbg$k_spos_ONE]);
+;     M 3089			$fao_tt_out ('char_substring: 2nd token is !SL, seman2 = !SL',
+;     M 3090				.dbg$gl_seman1 [semsp + dbg$k_spos_THRE],
+;     M 3091				.dbg$gl_seman2 [semsp + dbg$k_spos_THRE]);
+;     M 3092		%FI
+;     M 3093	
+;     M 3094			! See if conversion of 'from character' to integer is necessary.
+;     M 3095			! Note: we only handle double and floating.
+;     M 3096	
+;     M 3097			IF( .DBG$GL_SEMAN2[ semsp+DBG$K_SPOS_ONE ] EQL DSC$K_DTYPE_F )
+;     M 3098			THEN
+;     M 3099				BEGIN
+;     M 3100				DBG$CNV_F_TO_L( dbg$gl_seman1 [ semsp+DBG$K_SPOS_ONE ] );
+;     M 3101				dbg$gl_seman2 [ semsp+DBG$K_SPOS_ONE ] = dsc$k_dtype_l;
+;     M 3102				END
+;     M 3103			ELSE
+;     M 3104			IF( .DBG$GL_SEMAN2 [ semsp+DBG$K_SPOS_ONE ] EQL DSC$K_DTYPE_D )
+;     M 3105			THEN
+;     M 3106				BEGIN
+;     M 3107				DBG$CNV_D_TO_L( dbg$gl_seman1 [ semsp+DBG$K_SPOS_ONE ] );
+;     M 3108				dbg$gl_seman2 [ semsp ] = dsc$k_dtype_l;
+;     M 3109				END;
+;     M 3110	
+;     M 3111			! See if conversion of 'to character' to integer is necessary.
+;     M 3112			! Note: we only handle double and floating.
+;     M 3113	
+;     M 3114			IF( .DBG$GL_SEMAN2[ semsp+DBG$K_SPOS_THRE ] EQL DSC$K_DTYPE_F )
+;     M 3115			THEN
+;     M 3116				BEGIN
+;     M 3117				DBG$CNV_F_TO_L( dbg$gl_seman1 [ semsp+DBG$K_SPOS_THRE ] );
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 5-2
+; Digital Equipment Corporation
+;
+;     M 3118				dbg$gl_seman2 [ semsp+DBG$K_SPOS_THRE ] = dsc$k_dtype_l;
+;     M 3119				END
+;     M 3120			ELSE
+;     M 3121			IF( .DBG$GL_SEMAN2 [ semsp+DBG$K_SPOS_THRE ] EQL DSC$K_DTYPE_D )
+;     M 3122			THEN
+;     M 3123				BEGIN
+;     M 3124				DBG$CNV_D_TO_L( dbg$gl_seman1 [ semsp+DBG$K_SPOS_THRE ] );
+;     M 3125				dbg$gl_seman2 [ semsp+DBG$K_SPOS_THRE ] = dsc$k_dtype_l;
+;     M 3126				END;
+;     M 3127	
+;     M 3128			! The 'from' and 'to' character position fields are now
+;     M 3129			! converted and in their proper places on the stack.
+;     M 3130			! Now we put them were ARI's dbg$getarrayadr expects
+;     M 3131			! them to be - namely, the 'from' number goes in the
+;     M 3132			! last entry in dbg$gl_dimen_lst, and the 'to' number
+;     M 3133			! gets stuffed into the current LENGTH MODE field.
+;     M 3134	
+;     M 3135		%IF dbg_par7
+;     M 3136		%THEN
+;     M 3137			$fao_tt_out ('char_substring: token is !SL, seman2 = !SL',
+;     M 3138				.dbg$gl_seman1 [semsp + dbg$k_spos_ONE],
+;     M 3139				.dbg$gl_seman2 [semsp + dbg$k_spos_ONE]);
+;     M 3140			$fao_tt_out ('char_substring: 2nd token is !SL, seman2 = !SL',
+;     M 3141				.dbg$gl_seman1 [semsp + dbg$k_spos_THRE],
+;     M 3142				.dbg$gl_seman2 [semsp + dbg$k_spos_THRE]);
+;     M 3143		%FI
+;     M 3144			dbg$gl_dimenlst[8] = .dbg$gl_seman1[semsp + dbg$k_spos_one];
+;     M 3145			dbg$gl_asci_len = .dbg$gl_seman1[semsp + dbg$k_spos_thre] -
+;     M 3146					  .dbg$gl_seman1[semsp + dbg$k_spos_one] +1;
+;     M 3147			IF .dbg$gl_asci_len GTR TTY_ASCII_LEN
+;     M 3148			THEN
+;     M 3149			    dbg$gl_asci_len = TTY_ASCII_LEN;	! Truncate to fit on one line
+;     M 3150	
+;     M 3151			! Set a flag to indicate that a substring modifier was given
+;     M 3152			! along with the symbol.  This is needed because there is
+;     M 3153			! no other way to determine if we should take the default.
+;     M 3154	
+;     M 3155			dbg$gl_dimenlst[9] = TRUE;
+;     M 3156			END%,
+;	3157		%FI
+;	3158		!++
+;	3159		! The SAVE_NAME macro allocates an area of free storage to hold
+;	3160		! the name of a symbol and a string descriptor to that symbol.
+;	3161		! This macro is called when a name occurs in a DEFINE command,
+;	3162		! and the name stored in free storage is used by dbg$define_sym.
+;	3163		! The storage is freed by dbg$perform_cmd.
+;	3164		!--
+;	3165	save_name (semsp, lex_stg_desc) =
+;     M 3166			BEGIN
+;     M 3167	
+;     M 3168			LOCAL
+;     M 3169				pointer : REF VECTOR;
+;     M 3170	
+;     M 3171		%IF dbg_par5
+;     M 3172		%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 5-3
+; Digital Equipment Corporation
+;
+;     M 3173			$fao_tt_out ('string is !AS, length is !SL', lex_stg_desc,
+;     M 3174				lex_stg_desc [dsc$w_length]);
+;     M 3175		%FI
+;     M 3176	
+;     M 3177			pointer = dbg$freez (((lex_stg_desc [dsc$w_length] + 3) / %UPVAL) + 2);
+;     M 3178			ch$move (lex_stg_desc [dsc$w_length], lex_stg_desc [dsc$a_pointer],
+;     M 3179					pointer [2]);
+;     M 3180			pointer [0] = lex_stg_desc [dsc$w_length];
+;     M 3181			pointer [1] = pointer [2];
+;     M 3182			dbg$gl_seman2 [semsp] = .pointer;
+;     M 3183			END%,
+;	3184	
+;	3185		!++
+;	3186		! The bpt_with_acts macro calls the routine dbg$break_setup to set
+;	3187		! context bits, and to put the address of the breakpoint into
+;	3188		! the variable dbg$gl_list[0]. The address of the breakpoint actions
+;	3189		! has already been stored in dbg$gl_list[2] by get_bpt_actions.
+;	3190		!--
+;	3191	bpt_with_acts (semsp) =
+;     M 3192			BEGIN
+;     M 3193			dbg$break_setup (semsp);
+;     M 3194			END%,
+;	3195		!++
+;	3196		! The set_overr_step macro calls the appropriate routines to set the
+;	3197		! STEP pointer to override level and the STEP value according to the
+;	3198		! token found at the top of the stack.
+;	3199		!--
+;	3200	  
+;	3201	set_overr_step(semsp) =
+;     M 3202			BEGIN
+;     M 3203			dbg$set_stp_lvl (override_step);
+;     M 3204			dbg$set_new_stp (.dbg$gl_seman1[semsp]);
+;     M 3205			END%,
+;	3206	
+;	3207	!++
+;	3208	! The next set of macros manipulates mode settings.
+;	3209	!--
+;	3210	
+;	3211		!++
+;	3212		! The set_overr_mode macro calls the routine dbg$set_overs to
+;	3213		! set the mode pointer to OVERRIDE level, and to set the mode
+;	3214		! according to the token found at the top of the stack.
+;	3215		!--
+;	3216	set_overr_mode (semsp) =
+;     M 3217			dbg$set_overs (override_mode, .dbg$gl_seman1[semsp])%,
+;	3218	
+;	3219		!++
+;	3220		! The set_dec_overs macro calls the routine dbg$set_overs to
+;	3221		! set the mode pointer to LOCAL level, and to set the mode
+;	3222		! to decimal.
+;	3223		!--
+;	3224	set_dec_overs =
+;     M 3225			BEGIN
+;     M 3226			dbg$set_mod_lvl (override_mode);
+;     M 3227			dbg$set_overs (local_mode, decimal_token);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 5-4
+; Digital Equipment Corporation
+;
+;     M 3228			END%,
+;	3229	
+;	3230		!++
+;	3231		! The set_line_dec macro sets the current mode level to local
+;	3232		! mode. Then it sets the fortran_mode to %LINE and
+;	3233		! the radix to decimal.
+;	3234		!--
+;	3235	set_line_dec (semsp) =
+;     M 3236			BEGIN
+;     M 3237			dbg$set_mod_lvl (local_mode);
+;     M 3238			dbg$set_new_mod (.dbg$gl_seman1 [semsp]);
+;     M 3239			dbg$set_new_mod (decimal_token);
+;     M 3240			END%,
+;	3241	
+;	3242		!++
+;	3243		! The set_mode_bit macro turns on the default bit in the
+;	3244		! DEBUG context word.
+;	3245		!--
+;	3246	set_mode_bit =
+;     M 3247			dbg$gl_context [dbg$k_mode] = TRUE%,
+;	3248	
+;	3249		!++
+;	3250		! The set_local_mode macro calls the routine dbg$set_overs to
+;	3251		! set the mode pointer to LOCAL level, and to set the mode
+;	3252		! according to the token found at the top of the stack.
+;	3253		!--
+;	3254	set_local_mode (semsp) =
+;     M 3255			dbg$set_overs (local_mode, .dbg$gl_seman1[semsp])%,
+;	3256	
+;	3257		!++
+;	3258		! The set_over_noadr macro sets the current mode level to
+;	3259		! the override level, and turns the mode_immediate
+;	3260		! to "off", so that symbols are translated to their contents
+;	3261		! instead of to their addresses.
+;	3262		!--
+;	3263	set_over_noadr =
+;     M 3264			dbg$set_overs (override_mode, noimmed_n_token)%,
+;	3265	
+;	3266		!++
+;	3267		! The set_over_adr macro sets the current mode level to
+;	3268		! the override level, and turns the mode_immediate
+;	3269		! to "on", so that symbols are translated to their addresses
+;	3270		! instead of to their contents.
+;	3271		!--
+;	3272	set_over_adr =
+;     M 3273			dbg$set_overs (override_mode, immed_nam_token)%,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 6
+; Digital Equipment Corporation
+;
+;	3274	%IF 0
+;     L 3275	%THEN
+;     U 3276	!	This macro is not currently used but may be useful in implementing
+;     U 3277	!	the command file capability.
+;     U 3278	!++
+;     U 3279	! This macro collects a file specification.
+;     U 3280	!--
+;     U 3281	
+;     U 3282		!++
+;     U 3283		! The get_file_spec macro reads from the input string starting
+;     U 3284		! at the character after the keyword READ until a character is
+;     U 3285		! found that is not a space, tab, or a zero. If such a character
+;     U 3286		! is found before the end of line is reached, then the position
+;     U 3287		! of the character before is noted for storage of the length of
+;     U 3288		! the file spec string. Then the string is read until a zero 
+;     U 3289		! or carriage return character is encountered. The length
+;     U 3290		! of the string is stored in the previously saved position.
+;     U 3291		! Finally, the address of the file specification is placed in 
+;     U 3292		! a new link of the command argument list by a call to the
+;     U 3293		! routine dbg$add_arg. This address is the address of a counted
+;     U 3294		! string.
+;     U 3295		!--
+;     U 3296	get_file_spec =
+;     U 3297	
+;     U 3298			BEGIN
+;     U 3299	
+;     U 3300			MAP
+;     U 3301				parse_stg_desc : REF BLOCK [, BYTE];
+;     U 3302	
+;     U 3303			LOCAL 
+;     U 3304				char,
+;     U 3305				count,
+;     U 3306				input_ptr,
+;     U 3307				temp_ptr;
+;     U 3308	
+;     U 3309			input_ptr = ch$ptr (.parse_stg_desc [dsc$a_pointer]);
+;     U 3310			char = ch$rchar (.input_ptr);
+;     U 3311	
+;     U 3312		%IF dbg_par
+;     U 3313		%THEN
+;     U 3314			$fao_tt_out ('delimiter character is "!AD"', 1, char);
+;     U 3315		%FI
+;     U 3316	
+;     U 3317			!++
+;     U 3318			! This loop skips spaces and tabs that delimit the READ
+;     U 3319			! verb and precede the file specification. At the end of
+;     U 3320			! this loop, the character pointer input_ptr is pointing
+;     U 3321			! to the first character of the file specification.
+;     U 3322			!--
+;     U 3323			count = 0;
+;     U 3324			REPEAT
+;     U 3325				BEGIN
+;     U 3326	
+;     U 3327				!++
+;     U 3328				! The character we recognize as the beginning
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 6-1
+; Digital Equipment Corporation
+;
+;     U 3329				! of the file specification is the first
+;     U 3330				! character after the delimiter of the READ verb.
+;     U 3331				!--
+;     U 3332				IF .char NEQ asc_space AND .char NEQ asc_tab
+;     U 3333				THEN EXITLOOP
+;     U 3334				ELSE
+;     U 3335					BEGIN
+;     U 3336					count = .count + 1;
+;     U 3337					char = ch$a_rchar (input_ptr);
+;     U 3338					END;
+;     U 3339				END;
+;     U 3340	
+;     U 3341		%IF dbg_par
+;     U 3342		%THEN
+;     U 3343			$fao_tt_out ('first file spec character is "!AD"', 1, char);
+;     U 3344		%FI
+;     U 3345	
+;     U 3346			!++
+;     U 3347			! The beginning of the file specification has been
+;     U 3348			! found. If the delimiter was non-null, then
+;     U 3349			! collect the rest of the string.
+;     U 3350			!--
+;     U 3351			IF .count LEQ 0
+;     U 3352			THEN
+;     U 3353				BEGIN
+;     U 3354	
+;     U 3355		%IF dbg_par
+;     U 3356		%THEN
+;     U 3357				$fao_tt_out ('no separator after READ verb');
+;     U 3358		%FI
+;     U 3359	
+;     U 3360				SIGNAL (dbg$_XXXXXXX);
+;     U 3361				END;
+;     U 3362	
+;     U 3363			parse_stg_desc [dsc$w_length] = .parse_stg_desc [dsc$w_length] - .count;
+;     U 3364			temp_ptr = ch$plus (.input_ptr, -1);
+;     U 3365			count = 0;
+;     U 3366			REPEAT
+;     U 3367				BEGIN
+;     U 3368				IF .char EQL 0 
+;     U 3369	!				OR .char EQL carriage_ret		!***line always ends in zero***
+;     U 3370				THEN
+;     U 3371					BEGIN
+;     U 3372	
+;     U 3373					!++
+;     U 3374					! Found the end of the file specification.
+;     U 3375					! Exit this loop after setting the count
+;     U 3376					! byte of this counted string.
+;     U 3377					!--
+;     U 3378					IF .count LEQ 0
+;     U 3379					THEN
+;     U 3380						BEGIN
+;     U 3381	
+;     U 3382		%IF dbg_par
+;     U 3383		%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 6-2
+; Digital Equipment Corporation
+;
+;     U 3384						$fao_tt_out ('zero length file spec');
+;     U 3385		%FI
+;     U 3386	
+;     U 3387						SIGNAL (dbg$_XXXXXXX);
+;     U 3388						END;
+;     U 3389					ch$wchar (.count, .temp_ptr);
+;     U 3390					EXITLOOP
+;     U 3391					END
+;     U 3392				ELSE
+;     U 3393					BEGIN
+;     U 3394					count = .count + 1;
+;     U 3395					char = ch$a_rchar (input_ptr);
+;     U 3396					END;
+;     U 3397				END;
+;     U 3398	
+;     U 3399		%IF dbg_par
+;     U 3400		%THEN
+;     U 3401			$fao_tt_out ('character after file spec is "!AD"', 1, char);
+;     U 3402			$fao_tt_out ('total file spec count is !SL', .count);
+;     U 3403		%FI
+;     U 3404	
+;     U 3405			!++
+;     U 3406			! Now put the address of the file specification into
+;     U 3407			! a new link in the command argument list.
+;     U 3408			! Also, increment the address of the parse string in
+;     U 3409			! the parse string descriptor to address the delimiting
+;     U 3410			! carriage return or null byte.
+;     U 3411			!--
+;     U 3412			dbg$add_arg (.temp_ptr);
+;     U 3413			parse_stg_desc [dsc$a_pointer] = .input_ptr;
+;     U 3414			parse_stg_desc [dsc$w_length] = .parse_stg_desc [dsc$w_length] - .count;
+;     U 3415	
+;     U 3416		%IF dbg_par
+;     U 3417		%THEN
+;     U 3418			$fao_tt_out ('last character is "!AD"',
+;     U 3419				1, .parse_stg_desc [dsc$a_pointer] - 1);
+;     U 3420		%FI
+;     U 3421	
+;     U 3422			END%,
+;     U 3423	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7
+; Digital Equipment Corporation
+;
+;	3424	!++
+;	3425	! The next macro is used to translate the step count into a binary value
+;	3426	! and add that value to the top of the stack.  It calls DBG$TRANS_NAME and
+;	3427	! then calls DBG$ADD_ARG to put the count on the command argument list.
+;	3428	! The mode level is then returned the "override_mode" in case other parameters
+;	3429	! are needed in the command.
+;	3430	! The macro is also used to pick up the N  in "SHOW CALLS N".
+;	3431	!--
+;	3432	get_step_count (semsp, lex_stg_desc) =
+;     M 3433			BEGIN
+;     M 3434			dbg$trans_name (semsp, lex_stg_desc);
+;     M 3435			dbg$add_arg (.dbg$gl_seman1[semsp]);
+;     M 3436			dbg$set_mod_lvl (override_mode);
+;     M 3437			END%,
+;	3438	
+;	3439	
+;	3440	!++
+;	3441	! The macros below manipulate names of data specified in commands.
+;	3442	!--
+;	3443	
+;	3444		!++
+;	3445		! The translate_name macro calls the routine dbg$trans_name to
+;	3446		! translate a token into a binary value. If the routine fails in
+;	3447		! the translation, a signal and unwind occurs.
+;	3448		!--
+;	3449	translate_name (semsp, lex_stg_desc) =
+;     M 3450			BEGIN
+;     M 3451	
+;     M 3452		%IF dbg_par3
+;     M 3453		%THEN
+;     M 3454			$fao_tt_out ('in FORUQUNAM, token is !SL', .dbg$gl_seman1 [semsp]);
+;     M 3455		%FI
+;     M 3456	
+;     M 3457			dbg$trans_name (semsp, lex_stg_desc);
+;     M 3458			END%,
+;	3459	
+;	3460		%IF fortran_syntax
+;     L 3461		%THEN
+;	3462		!++
+;	3463		! The reduce_array macro reduces an array reference (with
+;	3464		! specified dimension values) to an absolute address that
+;	3465		! matches the element specified. The address is put on the
+;	3466		! top of stack.  When we 'restore' the MODE_IMMEDIATE value,
+;	3467		! we take it from the upper word of the SEMAN2 stack.
+;	3468		! (See macro REDU_PATH_ADDR).
+;	3469		! We pass on the type of the array in the proper
+;	3470		! place of the SEMAN2 stack.
+;	3471		!--
+;	3472	reduce_array (semsp) =
+;     M 3473			BEGIN
+;     M 3474			local
+;     M 3475				type;
+;     M 3476			BIND
+;     M 3477					! The upper longword on the SEMAN2 stack
+;     M 3478					! is used to store (stack) the immediate_mode
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-1
+; Digital Equipment Corporation
+;
+;     M 3479					! flag AND pass on the NT_PTR associated
+;     M 3480					! with the symbol
+;     M 3481				nt_and_flag_ptr = dbg$gl_seman2[ semsp +1 ]
+;     M 3482						: vector[2,word];
+;     M 3483		%IF dbg_par3
+;     M 3484		%THEN
+;     M 3485			$fao_tt_out ('in FORREFARR, descriptor value is !SL', .dbg$gl_seman1 [semsp]);
+;     M 3486			$fao_tt_out ('!SL dimensions are !SL, !SL, !SL, !SL, !SL, !SL, !SL,',
+;     M 3487					.dbg$gl_dimenlst [0], .dbg$gl_dimenlst [1],
+;     M 3488					.dbg$gl_dimenlst [2], .dbg$gl_dimenlst [3], .dbg$gl_dimenlst [4],
+;     M 3489					.dbg$gl_dimenlst [5], .dbg$gl_dimenlst [6], .dbg$gl_dimenlst [7]);
+;     M 3490		%FI
+;     M 3491			type = dbg$getarrayadr (.dbg$gl_seman1 [semsp], dbg$gl_dimenlst, dbg$gl_seman1 [semsp]);
+;     M 3492			zerocor (dbg$gl_dimenlst, 8);
+;     M 3493			dbg$gb_mod_ptr [mode_immediate] = .nt_and_flag_ptr[1];
+;     M 3494			dbg$gl_seman2 [semsp] = .type;
+;     M 3495		 	ftn_indirection (semsp);
+;     M 3496			END%,
+;	3497		%FI
+;	3498	
+;	3499	!++
+;	3500	! The next macro is called when a complete command has been collected.
+;	3501	!--
+;	3502	
+;	3503		!++
+;	3504		! The execute_cmd macro calls dbg$perform_cmd and returns
+;	3505		! from PARSE_A_LINE if that routine returns a false value.
+;	3506		!--
+;	3507	execute_cmd (semsp) =
+;     M 3508			IF NOT dbg$perform_cmd (semsp)
+;     M 3509			THEN RETURN%,
+;	3510	
+;	3511	!++
+;	3512	! The macro below is for setting DEBUG syntax.
+;	3513	!--
+;	3514	
+;	3515		!++
+;	3516		! The save_lang_name macro invokes the macro "save_name", which
+;	3517		! collects a name, builds a string descriptor for it and passes
+;	3518		! the address of the string descriptor on dbg$gl_seman2.
+;	3519		! This macro also turns on the context bit for LANGUAGE
+;	3520		! so that in dbg$perform_cmd, dbg$set_lang will be called.
+;	3521		!--
+;	3522	save_lang_name (semsp, lex_stg_desc) =
+;     M 3523			BEGIN
+;     M 3524			save_name (semsp, lex_stg_desc);
+;     M 3525			dbg$gl_context [dbg$k_language] = TRUE;
+;     M 3526			END%,
+;	3527	
+;	3528	!++
+;	3529	! The next macros manipulate scope and pathnames.
+;	3530	!--
+;	3531	
+;	3532		%IF fortran_syntax
+;     L 3533		%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-2
+; Digital Equipment Corporation
+;
+;	3534		!++
+;	3535		! The reduce_pathname macro calls dbg$path_to_val to convert a
+;	3536		! pathname into an equivalent value.  If the conversion fails,
+;	3537		! then the symbol does not exist, a message is produced, and
+;	3538		! an UNWIND is done.  Otherwise the corresponding value
+;	3539		! replaces the token on top of the SEMAN1 stack.  Correspondingly,
+;	3540		! the associated TYPE is placed onto the SEMAN2 stack.
+;	3541		!--
+;	3542	reduce_pathname (semsp, lahead_stg_desc) =
+;     M 3543			BEGIN
+;     M 3544			BIND
+;     M 3545					! The upper longword on the SEMAN2 stack
+;     M 3546					! is used to store (stack) the immediate_mode
+;     M 3547					! flag AND pass on the NT_PTR associated
+;     M 3548					! with the symbol
+;     M 3549				nt_and_flag_ptr = dbg$gl_seman2[ semsp +1 ]
+;     M 3550						: vector[2,word];
+;     M 3551			LOCAL
+;     M 3552					! Needed to interface with DBG$PATH_TO_VAL
+;     M 3553				temp_nt_ptr : ref NT_RECORD,
+;     M 3554				temp_valu_desc : VALU_DESCRIPTOR;
+;     M 3555	
+;     M 3556		%IF dbg_par3
+;     M 3557		%THEN
+;     M 3558			$fao_tt_out ('in FORTRNNAM, token is !SL', .dbg$gl_seman1 [semsp]);
+;     M 3559		%FI
+;     M 3560	
+;     M 3561			DBG$PATH_TO_VAL(temp_valu_desc);
+;     M 3562	
+;     M 3563		%IF dbg_par3
+;     M 3564		%THEN
+;     M 3565			$fao_tt_out ('in FORTRNNAM: value = !XL, nt_ptr = !XW',
+;     M 3566				.temp_valu_desc[VALU_VALUE],.temp_valu_desc[VALU_NT_PTR]);
+;     M 3567		%FI
+;     M 3568			! Pick up the returned NT pointer and extract the
+;     M 3569			! type info so that it can be placed on the SEMAN2 stack.
+;     M 3570			! Assume a default type for symbols NOT from the RST.
+;     M 3571	
+;     M 3572			dbg$gl_seman2 [semsp] = DSC$K_DTYPE_L;
+;     M 3573			IF( (temp_nt_ptr = .temp_valu_desc[ VALU_NT_PTR ] ) NEQA 0 )
+;     M 3574			THEN
+;     M 3575				dbg$gl_seman2 [semsp] = .temp_nt_ptr[ NT_TYPE ];
+;     M 3576	
+;     M 3577			! The value bound to the symbol name, above, may be
+;     M 3578			! the symbol's address, or the address of the descriptor
+;     M 3579			! for that symbol.  If the latter is the case, we
+;     M 3580			! go ahead and further reduce this address to that of
+;     M 3581			! the first element in the array.  The reason that we
+;     M 3582			! get away with this is that this macro is called ONLY
+;     M 3583			! when we know that a 'real' array reference (i.e. one
+;     M 3584			! with parenthesis) is NOT going to be made.
+;     M 3585	
+;     M 3586			dbg$gl_seman1 [semsp] = .temp_valu_desc[VALU_VALUE];
+;     M 3587			nt_and_flag_ptr[0] = .temp_nt_ptr;
+;     M 3588	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-3
+; Digital Equipment Corporation
+;
+;     M 3589			IF( .temp_nt_ptr NEQ 0 )
+;     M 3590			THEN
+;     M 3591			    IF( .temp_nt_ptr[ NT_UP_SCOPE ] neq 0 )
+;     M 3592			    then
+;     M 3593				begin
+;     M 3594				LOCAL
+;     M 3595					dst_recrd : ref DST_RECORD;
+;     M 3596	
+;     M 3597				dst_recrd = .temp_nt_ptr[ NT_DST_PTR ];
+;     M 3598	
+;     M 3599				IF( .dst_recrd[ DSTR_ACCES_TYPE ] EQL ACCS_DESCRIPTOR )
+;     M 3600				THEN
+;     M 3601					BEGIN
+;     M 3602					LOCAL
+;     M 3603							descrip_block : REF block[,byte],
+;     M 3604							bounds : ARRAY_BNDS_DESC;
+;     M 3605	
+;     M 3606					! The symbol is bound to its array descriptor
+;     M 3607					! address.  Get the bounds and bind the symbol
+;     M 3608					! to the beginning element of the array.
+;     M 3609	
+;     M 3610					descrip_block = .temp_valu_desc[VALU_VALUE];
+;     M 3611					dbg$get_bounds(.temp_valu_desc[VALU_VALUE], bounds );
+;     M 3612					dbg$gl_seman1[semsp] = .bounds[ ARRAY_ADDRESS ];
+;     M 3613	%if dbg_par7
+;     M 3614	%then
+;     M 3615					$fao_tt_out('array name bound to element = !XL, type=!SB.',
+;     M 3616						.bounds[ ARRAY_ADDRESS ],.temp_nt_ptr[NT_TYPE]);
+;     M 3617	%FI
+;     M 3618					! IF, further, the array is an array of
+;     M 3619					! type CHARACTER, then we also pick up the
+;     M 3620					! string's length and store that in MODE.
+;     M 3621	
+;     M 3622					IF .temp_nt_ptr[NT_TYPE] EQL DSC$K_DTYPE_T
+;     M 3623					THEN
+;     M 3624						BEGIN
+;     M 3625	%if dbg_par7
+;     M 3626	%then
+;     M 3627						$fao_tt_out('array type is ascii, length = !SL',
+;     M 3628							.descrip_block[DSC$W_LENGTH]);
+;     M 3629	%fi
+;     M 3630						dbg$gl_asci_len = .descrip_block[DSC$W_LENGTH];
+;     M 3631						IF .dbg$gl_asci_len GTR TTY_ASCII_LEN
+;     M 3632						THEN
+;     M 3633						    dbg$gl_asci_len = TTY_ASCII_LEN;	! Truncate to fit on one line
+;     M 3634						END;
+;     M 3635					END;
+;     M 3636				END;
+;     M 3637	
+;     M 3638			! Perform indirection if required.
+;     M 3639	
+;     M 3640			ftn_indirection (semsp);
+;     M 3641		%IF dbg_par7
+;     M 3642		%THEN
+;     M 3643			$fao_tt_out ('end of FORTRNNAM: nt_ptr=!XW, seman2=!XL',
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-4
+; Digital Equipment Corporation
+;
+;     M 3644				.temp_nt_ptr,.dbg$gl_seman2 [semsp]);
+;     M 3645		%FI
+;     M 3646			END%,
+;	3647	
+;	3648		!++
+;	3649		! The redu_path_addr macro saves the current setting of the
+;	3650		! FORTRAN mode_immediate, turns mode_immediate on, and
+;	3651		! reduces the name of an array. Then address mode is turned off
+;	3652		! so that the array dimensions are taken as contents of symbols
+;	3653		! instead of addresses of symbols.  The saving of this
+;	3654		! MODE_IMMEDIATE value is done in the upper word of the
+;	3655		! current SEMAN2 stack entry, so that we can handle array
+;	3656		! elements being used as subscripts.
+;	3657		!--
+;	3658	redu_path_addr (semsp) =
+;     M 3659			BEGIN
+;     M 3660			BIND
+;     M 3661					! The upper longword on the SEMAN2 stack
+;     M 3662					! is used to store (stack) the immediate_mode
+;     M 3663					! flag AND pass on the NT_PTR associated
+;     M 3664					! with the symbol
+;     M 3665				nt_and_flag_ptr = dbg$gl_seman2[ semsp +1 ]
+;     M 3666						: vector[2,word];
+;     M 3667			LOCAL
+;     M 3668					! Needed to interface with DBG$PATH_TO_VAL
+;     M 3669				temp_nt_ptr : ref NT_RECORD,
+;     M 3670				temp_valu_desc : VALU_DESCRIPTOR;
+;     M 3671		%IF dbg_par3
+;     M 3672		%THEN
+;     M 3673			$fao_tt_out('redu_path: mode=!XB, prev=!XB',
+;     M 3674				.dbg$gb_mod_ptr[ mode_immediate ],.dbg$gl_seman2 [semsp+1] );
+;     M 3675		%FI
+;     M 3676			nt_and_flag_ptr[1] = .dbg$gb_mod_ptr [mode_immediate ];
+;     M 3677			set_over_adr;
+;     M 3678	
+;     M 3679			! If DBG$PATH_TO_VAL fails for anticipated reasons,
+;     M 3680			! a proper message is produced and an UNWIND is done.
+;     M 3681	
+;     M 3682			DBG$PATH_TO_VAL(temp_valu_desc);
+;     M 3683	
+;     M 3684		%IF dbg_par3
+;     M 3685		%THEN
+;     M 3686			$fao_tt_out('redu_path_addr: value = !XL, nt_ptr = !XW',
+;     M 3687				.temp_valu_desc[VALU_VALUE],.temp_valu_desc[VALU_NT_PTR]);
+;     M 3688		%FI
+;     M 3689			! Pick up the returned NT pointer and extract the
+;     M 3690			! type info so that it can be placed on the SEMAN2 stack.
+;     M 3691			! Assume a default type for symbols NOT from the RST.
+;     M 3692			! Likewise pass on the symbol's value and NT_PTR.
+;     M 3693	
+;     M 3694			dbg$gl_seman2 [semsp] = DSC$K_DTYPE_L;
+;     M 3695			IF( (temp_nt_ptr = .temp_valu_desc[ VALU_NT_PTR ] ) NEQA 0 )
+;     M 3696			THEN
+;     M 3697				dbg$gl_seman2 [semsp] = .temp_nt_ptr[ NT_TYPE ];
+;     M 3698			dbg$gl_seman1 [semsp] = .temp_valu_desc[VALU_VALUE];
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-5
+; Digital Equipment Corporation
+;
+;     M 3699			nt_and_flag_ptr[0] = .temp_nt_ptr;
+;     M 3700			set_over_noadr;
+;     M 3701			END%,
+;	3702	
+;	3703		!++
+;	3704		! The reduce_label macro is similar to reduce_pathname
+;	3705		! except that the pathname is in the second position on the
+;	3706		! stack, and must be raised to the first position if the
+;	3707		! translation is successful.
+;	3708		!--
+;	3709	reduce_label (semsp, lahead_stg_desc) =
+;     M 3710			BEGIN
+;     M 3711			BIND
+;     M 3712					! The upper longword on the SEMAN2 stack
+;     M 3713					! is used to store (stack) the immediate_mode
+;     M 3714					! flag AND pass on the NT_PTR associated
+;     M 3715					! with the symbol
+;     M 3716				nt_and_flag_ptr = dbg$gl_seman2[ semsp +1 ]
+;     M 3717						: vector[2,word];
+;     M 3718			LOCAL
+;     M 3719					! Needed to interface with DBG$PATH_TO_VAL
+;     M 3720				temp_nt_ptr : ref NT_RECORD,
+;     M 3721				temp_valu_desc : VALU_DESCRIPTOR;
+;     M 3722		%IF dbg_par3
+;     M 3723		%THEN
+;     M 3724			$fao_tt_out ('in FORTRNLAB, token is !SL', .dbg$gl_seman1 [semsp + dbg$k_spos_one]);
+;     M 3725		%FI
+;     M 3726			! Let DBG$PATH_TO_VAL do all the work.  For this call, we don't
+;     M 3727			! care what the returned value is - it is sufficient
+;     M 3728			! to know that if the routine returns at all (i.e. does NOT
+;     M 3729			! SIGNAL its way out), then the evaluation went ok.
+;     M 3730	
+;     M 3731			dbg$PATH_TO_VAL( temp_valu_desc );
+;     M 3732			dbg$init_modes (local_mode, override_mode);
+;     M 3733			dbg$set_mod_lvl (override_mode);
+;     M 3734	
+;     M 3735			! Assume a default type for symbols NOT from the RST.
+;     M 3736	
+;     M 3737			dbg$gl_seman2 [semsp] = DSC$K_DTYPE_L;
+;     M 3738			IF( (temp_nt_ptr = .temp_valu_desc[ VALU_NT_PTR ] ) NEQA 0 )
+;     M 3739			THEN
+;     M 3740				dbg$gl_seman2 [semsp] = .temp_nt_ptr[ NT_TYPE ];
+;     M 3741			dbg$gl_seman1 [semsp] = .temp_valu_desc[ VALU_VALUE ];
+;     M 3742	
+;     M 3743			! Pass on the NT pointer only for %LABEL, this way
+;     M 3744			! we will beable to distinguish labels from lines.
+;     M 3745	
+;     M 3746			IF ( .dbg$gb_mod_ptr[ MODE_FORTRAN ] NEQ LINE_MODE )
+;     M 3747			THEN
+;     M 3748				nt_and_flag_ptr[0] = .temp_nt_ptr;
+;     M 3749			ftn_indirection (semsp);
+;     M 3750			END%,
+;	3751		%FI
+;	3752	
+;	3753		!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 7-6
+; Digital Equipment Corporation
+;
+;	3754		! The macro set_scope_bit turns on the appropriate context
+;	3755		! bit so that a path name will be saved.
+;	3756		!--
+;	3757	set_scope_bit =
+;     M 3758			dbg$gl_context [dbg$k_scope] = TRUE%,
+;	3759	
+;	3760		!++
+;	3761		! The macro set_module_bit turns on the appropriate context
+;	3762		! bit so that modules will have their symbols set up.
+;	3763		!--
+;	3764	set_module_bit =
+;     M 3765			dbg$gl_context [dbg$k_module] = TRUE%;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8
+; Digital Equipment Corporation
+;
+;	3766	GLOBAL ROUTINE dbg$pars_a_line (parse_stg_desc) : NOVALUE =
+;	3767	!++
+;	3768	! FUNCTIONAL DESCRIPTION:
+;	3769	!	PARSES A LINE OF DEBUG COMMANDS AND PERFORMS ASSOCIATED
+;	3770	!	ACTION ROUTINES.
+;	3771	!
+;	3772	! FORMAL PARAMETERS:
+;	3773	!	parse_stg_desc	- string descriptor of the buffer that holds
+;	3774	!			  the input string.
+;	3775	!
+;	3776	! IMPLICIT INPUTS:
+;	3777	!	The parsing tables whose base addresses are stored in the vector
+;	3778	!	DBG$GL_PARTBPTR.
+;	3779	!	The address of the reduction routine stored in DBG$GL_REDUC_RT.
+;	3780	!
+;	3781	! OUTPUTS:
+;	3782	!	OUTPUTS ARE THE EFFECTS OF THE ACTION ROUTINES CALLED.
+;	3783	!
+;	3784	! IMPLICIT OUTPUTS:
+;	3785	!	none
+;	3786	!
+;	3787	! ROUTINE VALUE:
+;	3788	!	NOVALUE
+;	3789	!
+;	3790	! SIDE EFFECTS:
+;	3791	!	none
+;	3792	!--
+;	3793	
+;	3794	    BEGIN
+;	3795	
+;	3796		LITERAL
+;	3797			!++
+;	3798			! These are the offsets to each of the parse table
+;	3799			! addresses.
+;	3800			!--
+;	3801			state_tbl_addr	= 0,	! address of transition state tables
+;	3802			act_tbl_addr	= 1,	! address of action tables
+;	3803			pop_tbl_addr	= 2,	! address of pops per reduction tables
+;	3804			lhs_tbl_addr	= 3,	! address of left hand side identifier tables
+;	3805			sem_tbl_addr	= 4;	! address of semantic action tables
+;	3806	
+;	3807		BIND
+;	3808			!++
+;	3809			! These binds substitute simple names for the addresses
+;	3810			! of each of the parsing tables.
+;	3811			!--
+;	3812			state_tables	= .dbg$gl_partbptr [state_tbl_addr] : VECTOR [, WORD],
+;	3813			action_table	= .dbg$gl_partbptr [act_tbl_addr] : VECTOR [, WORD, SIGNED],
+;	3814			pop_table	= .dbg$gl_partbptr [pop_tbl_addr] : VECTOR [, BYTE],
+;	3815			left_h_side_tbl	= .dbg$gl_partbptr [lhs_tbl_addr] : VECTOR [, BYTE],
+;	3816			semantics_table	= .dbg$gl_partbptr [sem_tbl_addr] : VECTOR [, BYTE],
+;	3817	
+;	3818			!++
+;	3819			! This bind names the appropriate reduction routine
+;	3820			! for the current language.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-1
+; Digital Equipment Corporation
+;
+;	3821			!--
+;	3822			reduction = .dbg$gl_reduc_rt;
+;	3823	
+;	3824		LOCAL
+;	3825			action_to_take,					! ACTION FROM action_table
+;	3826			cur_parse_state,				! THE STATE OF THE PARSE MACHINE
+;	3827			j,						! CONTROL VARIABLE
+;	3828			lexeme_addr: VECTOR [chs_per_lexeme, BYTE],	! BUFFER FOR STRING LEXEME
+;	3829			lahead_addr: VECTOR [chs_per_lexeme, BYTE],	! buffer for a lookahead
+;	3830			lex_stg_desc: BLOCK [12, BYTE],			! string descriptor for lexemes
+;	3831			lahead_stg_desc: BLOCK [12, BYTE],		! lookahead for one lexeme
+;	3832			last_stg_desc: BLOCK [8, BYTE],		! previous place in parse_stg_desc
+;	3833			match_transit,					! BOOLEAN, TRUE IF MATCHING TRANSITION IS FOUND
+;	3834			next_token,					! SAVES NEXT token
+;	3835			old_j,						! saves state 
+;	3836			old_token,					! saved token
+;	3837			parse_more,					! boolean, says whether to parse more
+;	3838			parse_stack: VECTOR [max_stack_ptr * dbg$k_stelmsize, WORD],	! PARSE STATE STACK
+;	3839			reduce_was_last,				! TRUE IF REDUCTION WAS LAST ACTION
+;	3840			scan_next_sym,					! BOOLEAN, TRUE IF NEXT SYMBOL NEEDS TO BE SCANNED
+;	3841			stack_ptr,					! STACK INDEX
+;	3842			token,						! HOLDS LATEST token
+;	3843			transit_code;					! TRANSITION CODE FROM state_tables
+;	3844	
+;	3845		MAP
+;	3846			parse_stg_desc	: REF BLOCK [, BYTE];
+;	3847	
+;	3848		LABEL
+;	3849			match_loop;
+;	3850	
+;	3851		!++
+;	3852		! INITIALIZE CONTROL VARIABLES. GET A token FROM THE INPUT STRING.
+;	3853		!--
+;	3854		old_token = 0;
+;	3855		reduce_was_last = FALSE;
+;	3856		stack_ptr = 0;
+;	3857	
+;	3858		lex_stg_desc [dsc$w_length] = 0;
+;	3859		lex_stg_desc [dsc$w_maxlen] = chs_per_lexeme;
+;	3860		lex_stg_desc [dsc$a_pointer] = lexeme_addr;
+;	3861		lahead_stg_desc [dsc$a_pointer] = lahead_addr;
+;	3862		lahead_stg_desc [dsc$w_maxlen] = chs_per_lexeme;
+;	3863	
+;	3864		! We maintain a 'last' string descriptor which is always
+;	3865		! what 'parse_stg_desc' was before the last time it was changed.
+;	3866	
+;	3867		last_stg_desc[ DSC$W_LENGTH ] = .parse_stg_desc[ DSC$W_LENGTH ];
+;	3868		last_stg_desc[ DSC$A_POINTER ] = .parse_stg_desc[ DSC$A_POINTER ];
+;	3869	
+;	3870	%IF dbg_par1
+;     L 3871	%THEN
+;     U 3872		$fao_tt_out ('in parse: input string is !AS', .parse_stg_desc);
+;     U 3873	%FI
+;	3874	%IF dbg_par8
+;     L 3875	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-2
+; Digital Equipment Corporation
+;
+;     U 3876		$fao_tt_out('before get_a_tok: string "!AS"',last_stg_desc);
+;     U 3877	%FI
+;	3878	
+;	3879		!+
+;	3880		! Pick up the first token in the command string.
+;	3881		!-
+;	3882	
+;	3883		token = dbg$get_a_token (.parse_stg_desc, lex_stg_desc);
+;	3884	
+;	3885	%IF dbg_par1
+;     L 3886	%THEN
+;     U 3887		$fao_tt_out ('first token is !SL', .token);
+;     U 3888	%FI
+;	3889	
+;	3890		cur_parse_state = 0;
+;	3891		scan_next_sym = TRUE;
+;	3892		parse_more = TRUE;
+;	3893		match_transit = FALSE;
+;	3894	
+;	3895		! THIS IS THE MAIN LOOP OF THE PARSER. IT CONTINUES
+;	3896		! UNTIL THE VARIABLE "parse_more" HAS A VALUE OF FALSE.
+;	3897		!
+;	3898		DO
+;	3899		    BEGIN
+;	3900		    j = .cur_parse_state;
+;	3901		    ! THE FOLLOWING LOOP SEARCHES FOR A MATCHING token
+;	3902		    ! AND EXITS WHEN A MATCH IS FOUND.
+;	3903		    !
+;	3904		    DO
+;	3905	match_loop:	BEGIN
+;	3906			match_transit = FALSE;
+;	3907			transit_code = .state_tables [.j];
+;	3908	
+;	3909			!+
+;	3910			! See whether this transit code is an else code,
+;	3911			! and at the same time the token is a keyword
+;	3912			! token. In these circumstances, try passing
+;	3913			! through the loop again with the pretense
+;	3914			! that the token is a alpha_str_token. The current
+;	3915			! token and state must be saved so that
+;	3916			! if alpha_str_token does not make a valid sentence,
+;	3917			! then the effect of the else code can be
+;	3918			! reestablished.
+;	3919			!-
+;	3920			IF (.transit_code EQL else_code) AND (.token LEQ keyword_range)
+;	3921			THEN
+;	3922			    BEGIN
+;	3923			    old_token = .token;
+;	3924			    old_j = .j;
+;	3925			    j = .cur_parse_state;
+;	3926	%IF dbg_par1
+;     L 3927	%THEN
+;     U 3928			    $fao_tt_out ('retrying token !SL as name token', .token);
+;     U 3929	%FI
+;	3930			    token = alpha_str_token;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-3
+; Digital Equipment Corporation
+;
+;	3931			    LEAVE match_loop;
+;	3932			    END;
+;	3933	
+;	3934			!+
+;	3935			! Now allow for restoring the original token
+;	3936			! in the case that the newly inserted alpha_str_token
+;	3937			! brought no better results.
+;	3938			!-
+;	3939			IF (.transit_code EQL else_code) AND (.token EQL alpha_str_token)
+;	3940					AND (.old_token NEQ 0)
+;	3941			THEN
+;	3942			    BEGIN
+;	3943			    token = .old_token;
+;	3944			    j = .old_j;
+;	3945			    old_token = 0;
+;	3946	%IF dbg_par1
+;     L 3947	%THEN
+;     U 3948			    $fao_tt_out ('restoring token !SL and state !SL', .token, .j);
+;     U 3949	%FI
+;	3950			    END;
+;	3951	
+;	3952			!+
+;	3953			! No special handling here. Just compare the
+;	3954			! token and the transit code.
+;	3955			!-
+;	3956			IF (.transit_code EQL .token) OR (.transit_code EQL else_code)
+;	3957			THEN
+;	3958	
+;	3959			    !+
+;	3960			    ! A MATCH HAS BEEN FOUND, SO THE LEXICAL STRING CAN BE
+;	3961			    ! READ OR REDUCED.
+;	3962			    !-
+;	3963			    BEGIN
+;	3964			    match_transit = TRUE;
+;	3965			    action_to_take = .action_table [.j];
+;	3966	%IF dbg_par1
+;     L 3967	%THEN
+;     U 3968			    $fao_tt_out ('match is !SL, action is !SL',
+;     U 3969						.transit_code, .action_to_take);
+;     U 3970	%FI
+;	3971			    IF .action_to_take NEQ error_code
+;	3972			    THEN
+;	3973	
+;	3974				BEGIN
+;	3975				IF .action_to_take GTR - scan_code
+;	3976				THEN
+;	3977	
+;	3978				    !+
+;	3979				    ! NOTHING ELSE TO SCAN. PERFORM THE ASSOCIATED ACTION ROUTINE
+;	3980				    ! FOR THIS LEXICAL ENTITY.
+;	3981				    !-
+;	3982				    BEGIN
+;	3983				    parse_stack [.stack_ptr] = .cur_parse_state;
+;	3984	
+;	3985				    !+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-4
+; Digital Equipment Corporation
+;
+;	3986				    ! Put the token on the top of the parse stack
+;	3987				    !-
+;	3988				    IF NOT .reduce_was_last
+;	3989				    THEN dbg$gl_seman1 [.stack_ptr] = .token;
+;	3990				    END;
+;	3991					
+;	3992				IF .action_to_take GEQ 0
+;	3993				THEN
+;	3994	
+;	3995				    ! THIS IS A READ STATE
+;	3996				    !
+;	3997				    BEGIN
+;	3998				    cur_parse_state = .action_to_take;
+;	3999				    reduce_was_last = FALSE;
+;	4000				    IF .stack_ptr GEQ (max_stack_ptr * dbg$k_stelmsize)
+;	4001				    THEN
+;	4002					! Stack overflow error
+;	4003					SIGNAL(dbg$_parstkovr)
+;	4004					! no return
+;	4005				    ELSE
+;	4006					BEGIN
+;	4007	
+;	4008					! Decrement the stack pointer and clear out
+;	4009					! the new top-of-stack so that there is no info
+;	4010					! 'left around' therein which may cause later
+;	4011					! confusion.
+;	4012	
+;	4013					stack_ptr = .stack_ptr + dbg$k_spos_one;
+;	4014					dbg$gl_seman1[.stack_ptr] = 0;
+;	4015					dbg$gl_seman1[.stack_ptr+1] = 0;
+;	4016					dbg$gl_seman2[.stack_ptr] = 0;
+;	4017					dbg$gl_seman2[.stack_ptr+1] = 0;
+;	4018					END;
+;	4019	
+;	4020				    ! NOW INPUT THE NEXT token IF MORE READING IS NECESSARY.
+;	4021				    !
+;	4022				    IF .scan_next_sym
+;	4023				    THEN 
+;	4024					BEGIN
+;	4025					zerocor (.lahead_stg_desc [dsc$a_pointer],
+;     P 4026						(.lahead_stg_desc [dsc$w_maxlen] / 4));
+;	4027					lahead_stg_desc [dsc$w_length] =
+;	4028						.lex_stg_desc [dsc$w_length];
+;	4029					ch$move (.lex_stg_desc [dsc$w_length],
+;	4030						.lex_stg_desc [dsc$a_pointer],
+;	4031						.lahead_stg_desc [dsc$a_pointer]);
+;	4032					last_stg_desc[ DSC$W_LENGTH ] = .parse_stg_desc[ DSC$W_LENGTH ];
+;	4033					last_stg_desc[ DSC$A_POINTER ] = .parse_stg_desc[ DSC$A_POINTER ];
+;	4034	%IF dbg_par8
+;     L 4035	%THEN
+;     U 4036					$fao_tt_out('before get_a_tok: string "!AS"',last_stg_desc);
+;     U 4037	%FI
+;	4038					token = dbg$get_a_token (.parse_stg_desc, lex_stg_desc);
+;	4039	%IF dbg_par1
+;     L 4040	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-5
+; Digital Equipment Corporation
+;
+;     U 4041					$fao_tt_out ('token is !SL', .token);
+;     U 4042	%FI
+;	4043					END
+;	4044	
+;	4045				    ELSE
+;	4046	
+;	4047					! IF NO MORE SCANNING IS NEEDED, PUT THE NEXT token IN
+;	4048					! THE VARIABLE "token".
+;	4049					BEGIN
+;	4050					scan_next_sym = TRUE;
+;	4051					token = .next_token;
+;	4052					END;
+;	4053	
+;	4054				    ! THIS IS THE END OF THE READ.
+;	4055				    !
+;	4056				    END
+;	4057	
+;	4058				ELSE
+;	4059	
+;	4060				    ! THIS IS A REDUCTION.
+;	4061				    !
+;	4062				    BEGIN
+;	4063				    IF .action_to_take LEQ - scan_code
+;	4064				    THEN
+;	4065					! THIS IS A NOSCAN REDUCTION, WHICH TAKES AN
+;	4066					! EXTRA STACK POP.
+;	4067					!
+;	4068					BEGIN
+;	4069					action_to_take = .action_to_take + scan_code;
+;	4070					scan_next_sym = FALSE;
+;	4071					stack_ptr = .stack_ptr - dbg$k_spos_one;
+;	4072					next_token = .token;
+;	4073					END;
+;	4074	
+;	4075				    action_to_take = - .action_to_take;
+;	4076				    stack_ptr = .stack_ptr -
+;	4077							(.pop_table [.action_to_take] * dbg$k_stelmsize);
+;	4078				    cur_parse_state = .parse_stack [.stack_ptr];
+;	4079				    token = .left_h_side_tbl [.action_to_take];
+;	4080				    reduce_was_last = TRUE;
+;	4081	
+;	4082				    ! IN HERE GO THE SEMANTIC ACTIONS FOR EACH REDUCTION.
+;	4083				    !
+;	4084	%IF dbg_par_act
+;     L 4085	%THEN
+;     U 4086				    $fao_tt_out ('action index = !SB, token = !SL',
+;     U 4087						.semantics_table[.action_to_take], .token);
+;     U 4088	%FI
+;	4089				    IF NOT reduction (.semantics_table[.action_to_take],
+;	4090					.stack_ptr, lex_stg_desc, lahead_stg_desc, .parse_stg_desc)
+;	4091				    THEN
+;	4092					RETURN;
+;	4093	%IF dbg_par1
+;     L 4094	%THEN
+;     U 4095				    $fao_tt_out ('semsp is !SL', .stack_ptr);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-6
+; Digital Equipment Corporation
+;
+;     U 4096	%FI
+;	4097				    END;
+;	4098	
+;	4099				END
+;	4100	
+;	4101			    !+
+;	4102			    ! This is the error_code processing.  We attempt to 
+;	4103			    ! give some indication of where we were when the
+;	4104			    ! error was detected.  This is difficult only for
+;	4105			    ! numbers.
+;	4106			    !-
+;	4107			    ELSE
+;	4108				BEGIN
+;	4109				IF( .token EQL EOL_TOKEN )
+;	4110				THEN
+;	4111					begin
+;	4112					signal(dbg$_needmore);
+;	4113					! no return
+;	4114					end
+;	4115				ELSE
+;	4116				IF( .token EQL DIGIT_STR_TOKEN )
+;	4117				THEN
+;	4118					BEGIN
+;	4119	
+;	4120					! Truncate the string to 10 characters
+;	4121					! unless it is already smaller than that.
+;	4122					
+;	4123					IF( .last_stg_desc[ DSC$W_LENGTH ] GTR 10 )
+;	4124					THEN
+;	4125						last_stg_desc[ DSC$W_LENGTH ] = 10;
+;	4126					signal( DBG$_SYNTAX, 1, last_stg_desc )
+;	4127					! no return
+;	4128					END
+;	4129				ELSE
+;	4130					BEGIN
+;	4131	
+;	4132					! The lex string buffer contains the token
+;	4133					! which caused the command to be rejected.
+;	4134	
+;	4135					SIGNAL (dbg$_syntax, 1, lex_stg_desc);
+;	4136					! no return
+;	4137					END;
+;	4138				END
+;	4139			    END
+;	4140	
+;	4141			ELSE
+;	4142	
+;	4143			    IF .transit_code EQL cont_code
+;	4144			    THEN j = .action_table [.j]
+;	4145			    ELSE j = .j + 1;
+;	4146	
+;	4147			END
+;	4148	
+;	4149		    UNTIL .match_transit
+;	4150		    END
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-7
+; Digital Equipment Corporation
+;
+;	4151	
+;	4152		WHILE .parse_more;
+;	4153	    END;
+
+
+							    .TITLE  DBGPAR
+							    .IDENT  \000083\
+
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$GET_BOUNDS, DBG$ADD_ARG
+							    .GLOBL  DBG$BREAK_SETUP, DBG$BUILD_PATH, DBG$PATH_TO_VAL
+							    .GLOBL  DBG$CANCEL_PARM, DBG$FIND_MODULE, DBG$FOR_ADD
+							    .GLOBL  DBG$FOR_DIV, DBG$FOR_MUL, DBG$FOR_NEG, DBG$FOR_SUB
+							    .GLOBL  DBG$FREEZ, DBG$GETARRAYADR, DBG$CNV_D_TO_L, DBG$CNV_F_TO_L
+							    .GLOBL  DBG$GET_A_TOKEN, DBG$INIT_MODES, DBG$PERFORM_CMD
+							    .GLOBL  DBG$READ_ACCESS, DBG$SET_MOD_LVL, DBG$SET_NEW_MOD
+							    .GLOBL  DBG$SET_OVERS, DBG$SHOW_PARAM, DBG$TRANS_NAME
+							    .GLOBL  DBG$SET_STP_LVL, DBG$SET_NEW_STP, DBG$GB_MOD_PTR
+							    .GLOBL  DBG$GL_CONTEXT, DBG$GL_DIMENLST, DBG$GL_ASCI_LEN
+							    .GLOBL  DBG$GL_HEAD_LST, DBG$GL_LIST, DBG$GL_PARTBPTR
+							    .GLOBL  DBG$GL_REDUC_RT, DBG$GL_SEMAN1, DBG$GL_SEMAN2
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 00000 	    .ENTRY  DBG$PARS_A_LINE, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 3766
+		         5E	FF30   CE  9E 00002 	    MOVAB   -208(SP), SP					      ;
+		    2C   AE 00000000G  EF  D0 00007 	    MOVL    DBG$GL_PARTBPTR, 44(SP)				      ; 3794
+		    1C   AE 00000000G  EF  D0 0000F 	    MOVL    DBG$GL_PARTBPTR+4, 28(SP)				      ;
+		         5A 00000000G  EF  7D 00017 	    MOVQ    DBG$GL_PARTBPTR+8, R10				      ;
+			    00000000G  EF  DD 0001E 	    PUSHL   DBG$GL_PARTBPTR+16					      ;
+		    2C   AE 00000000G  EF  D0 00024 	    MOVL    DBG$GL_REDUC_RT, 44(SP)				      ;
+				  08   AE  D4 0002C 	    CLRL    OLD_TOKEN						      ; 3854
+				  14   AE  D4 0002F 	    CLRL    REDUCE_WAS_LAST					      ; 3855
+				       56  D4 00032 	    CLRL    STACK_PTR						      ; 3856
+				  C4   AD  B4 00034 	    CLRW    LEX_STG_DESC					      ; 3858
+		    CC   AD	       18  B0 00037 	    MOVW    #24, LEX_STG_DESC+8					      ; 3859
+		    C8   AD	  E8   AD  9E 0003B 	    MOVAB   LEXEME_ADDR, LEX_STG_DESC+4				      ; 3860
+		    BC   AD	  D0   AD  9E 00040 	    MOVAB   LAHEAD_ADDR, LAHEAD_STG_DESC+4			      ; 3861
+		    C0   AD	       18  B0 00045 	    MOVW    #24, LAHEAD_STG_DESC+8				      ; 3862
+		         50	  04   AC  D0 00049 	    MOVL    PARSE_STG_DESC, R0					      ; 3867
+		    B0   AD	       60  B0 0004D 	    MOVW    (R0), LAST_STG_DESC					      ;
+		    B4   AD	  04   A0  D0 00051 	    MOVL    4(R0), LAST_STG_DESC+4				      ; 3868
+				  C4   AD  9F 00056 	    PUSHAB  LEX_STG_DESC					      ; 3883
+				       50  DD 00059 	    PUSHL   R0							      ;
+	      00000000G  EF	       02  FB 0005B 	    CALLS   #2, DBG$GET_A_TOKEN					      ;
+		         58	       50  D0 00062 	    MOVL    R0, TOKEN						      ;
+				  04   AE  D4 00065 	    CLRL    CUR_PARSE_STATE					      ; 3890
+		    10   AE	       01  D0 00068 	    MOVL    #1, SCAN_NEXT_SYM					      ; 3891
+		    1C   AE	       01  D0 0006C 	    MOVL    #1, PARSE_MORE					      ; 3892
+				  0C   AE  D4 00070 	    CLRL    MATCH_TRANSIT					      ; 3893
+		         57	  04   AE  D0 00073 1$:     MOVL    CUR_PARSE_STATE, J					      ; 3900
+				  0C   AE  D4 00077 2$:     CLRL    MATCH_TRANSIT					      ; 3906
+		    18   AE	  30 BE47  3C 0007A 	    MOVZWL  @48(SP)[J], TRANSIT_CODE				      ; 3907
+				       50  D4 00080 	    CLRL    R0							      ; 3920
+	      0000270D   8F	  18   AE  D1 00082 	    CMPL    TRANSIT_CODE, #9997					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-8
+; Digital Equipment Corporation
+;
+				       1A  12 0008A 	    BNEQ    3$							      ;
+				       50  D6 0008C 	    INCL    R0							      ;
+		         36	       58  D1 0008E 	    CMPL    TOKEN, #54						      ;
+				       13  14 00091 	    BGTR    3$							      ;
+		    08   AE	       58  D0 00093 	    MOVL    TOKEN, OLD_TOKEN					      ; 3923
+		    28   AE	       57  D0 00097 	    MOVL    J, OLD_J						      ; 3924
+		         57	  04   AE  D0 0009B 	    MOVL    CUR_PARSE_STATE, J					      ; 3925
+		         58	  49   8F  9A 0009F 	    MOVZBL  #73, TOKEN						      ; 3930
+				     0188  31 000A3 	    BRW     22$							      ; 3931
+		         19	       50  E9 000A6 3$:     BLBC    R0, 4$						      ; 3939
+	      00000049   8F	       58  D1 000A9 	    CMPL    TOKEN, #73						      ;
+				       10  12 000B0 	    BNEQ    4$							      ;
+				  08   AE  D5 000B2 	    TSTL    OLD_TOKEN						      ; 3940
+				       0B  13 000B5 	    BEQL    4$							      ;
+		         58	  08   AE  D0 000B7 	    MOVL    OLD_TOKEN, TOKEN					      ; 3943
+		         57	  28   AE  D0 000BB 	    MOVL    OLD_J, J						      ; 3944
+				  08   AE  D4 000BF 	    CLRL    OLD_TOKEN						      ; 3945
+		         58	  18   AE  D1 000C2 4$:     CMPL    TRANSIT_CODE, TOKEN					      ; 3956
+				       06  13 000C6 	    BEQL    5$							      ;
+		         03	       50  E8 000C8 	    BLBS    R0, 5$						      ;
+				     014D  31 000CB 	    BRW     20$							      ;
+		    0C   AE	       01  D0 000CE 5$:     MOVL    #1, MATCH_TRANSIT					      ; 3964
+		         59	  20 BE47  32 000D2 	    CVTWL   @32(SP)[J], ACTION_TO_TAKE				      ; 3965
+	      0000270F   8F	       59  D1 000D7 	    CMPL    ACTION_TO_TAKE, #9999				      ; 3971
+				       03  12 000DE 	    BNEQ    6$							      ;
+				     00F4  31 000E0 	    BRW     14$							      ;
+	      FFFFD8F2   8F	       59  D1 000E3 6$:     CMPL    ACTION_TO_TAKE, #-9998				      ; 3975
+				       12  15 000EA 	    BLEQ    7$							      ;
+		    34 AE46	  04   AE  B0 000EC 	    MOVW    CUR_PARSE_STATE, PARSE_STACK[STACK_PTR]		      ; 3983
+		         08	  14   AE  E8 000F2 	    BLBS    REDUCE_WAS_LAST, 7$					      ; 3988
+	      00000000GEF46	       58  D0 000F6 	    MOVL    TOKEN, DBG$GL_SEMAN1[STACK_PTR]			      ; 3989
+				       59  D5 000FE 7$:     TSTL    ACTION_TO_TAKE					      ; 3992
+				       03  18 00100 	    BGEQ    8$							      ;
+				     0083  31 00102 	    BRW     12$							      ;
+		    04   AE	       59  D0 00105 8$:     MOVL    ACTION_TO_TAKE, CUR_PARSE_STATE			      ; 3998
+				  14   AE  D4 00109 	    CLRL    REDUCE_WAS_LAST					      ; 3999
+		         28	       56  D1 0010C 	    CMPL    STACK_PTR, #40					      ; 4000
+				       0F  19 0010F 	    BLSS    9$							      ;
+			    00028118   8F  DD 00111 	    PUSHL   #164120						      ; 4003
+	      00000000G  00	       01  FB 00117 	    CALLS   #1, LIB$SIGNAL					      ;
+				       1F  11 0011E 	    BRB     10$							      ; 4000
+		         56	       02  C0 00120 9$:     ADDL2   #2, STACK_PTR					      ; 4013
+			    00000000GEF46  D4 00123 	    CLRL    DBG$GL_SEMAN1[STACK_PTR]				      ; 4014
+			    00000000GEF46  D4 0012A 	    CLRL    DBG$GL_SEMAN1+4[STACK_PTR]				      ; 4015
+			    00000000GEF46  D4 00131 	    CLRL    DBG$GL_SEMAN2[STACK_PTR]				      ; 4016
+			    00000000GEF46  D4 00138 	    CLRL    DBG$GL_SEMAN2+4[STACK_PTR]				      ; 4017
+		         3B	  10   AE  E9 0013F 10$:    BLBC    SCAN_NEXT_SYM, 11$					      ; 4022
+		         50	  C0   AD  3C 00143 	    MOVZWL  LAHEAD_STG_DESC+8, R0				      ; 4026
+		         50	       04  C6 00147 	    DIVL2   #4, R0						      ;
+		         50	       04  C4 0014A 	    MULL2   #4, R0						      ;
+	   00	         6E	       00  2C 0014D 	    MOVC5   #0, (SP), #0, R0, @LAHEAD_STG_DESC+4		      ;
+		    BC   BD	       50     00151									      ;
+		    B8   AD	  C4   AD  B0 00154 	    MOVW    LEX_STG_DESC, LAHEAD_STG_DESC			      ; 4027
+      BC   BD	    C8   BD	  C4   AD  28 00159 	    MOVC3   LEX_STG_DESC, @LEX_STG_DESC+4, @LAHEAD_STG_DESC+4	      ; 4029
+		         50	  04   AC  D0 00160 	    MOVL    PARSE_STG_DESC, R0					      ; 4032
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-9
+; Digital Equipment Corporation
+;
+		    B0   AD	       60  B0 00164 	    MOVW    (R0), LAST_STG_DESC					      ;
+		    B4   AD	  04   A0  D0 00168 	    MOVL    4(R0), LAST_STG_DESC+4				      ; 4033
+				  C4   AD  9F 0016D 	    PUSHAB  LEX_STG_DESC					      ; 4038
+				       50  DD 00170 	    PUSHL   R0							      ;
+	      00000000G  EF	       02  FB 00172 	    CALLS   #2, DBG$GET_A_TOKEN					      ;
+		         58	       50  D0 00179 	    MOVL    R0, TOKEN						      ;
+				       6F  11 0017C 	    BRB     15$							      ; 4022
+		    10   AE	       01  D0 0017E 11$:    MOVL    #1, SCAN_NEXT_SYM					      ; 4050
+		         58	  24   AE  D0 00182 	    MOVL    NEXT_TOKEN, TOKEN					      ; 4051
+				       65  11 00186 	    BRB     15$							      ; 3992
+	      FFFFD8F2   8F	       59  D1 00188 12$:    CMPL    ACTION_TO_TAKE, #-9998				      ; 4063
+				       0F  14 0018F 	    BGTR    13$							      ;
+		         59	270E   C9  9E 00191 	    MOVAB   9998(R9), ACTION_TO_TAKE				      ; 4069
+				  10   AE  D4 00196 	    CLRL    SCAN_NEXT_SYM					      ; 4070
+		         56	       02  C2 00199 	    SUBL2   #2, STACK_PTR					      ; 4071
+		    24   AE	       58  D0 0019C 	    MOVL    TOKEN, NEXT_TOKEN					      ; 4072
+		         59	       59  CE 001A0 13$:    MNEGL   ACTION_TO_TAKE, ACTION_TO_TAKE			      ; 4075
+		         50	     694A  9A 001A3 	    MOVZBL  (ACTION_TO_TAKE)[R10], R0				      ; 4077
+		         50	       02  C4 001A7 	    MULL2   #2, R0						      ;
+		         56	       50  C2 001AA 	    SUBL2   R0, STACK_PTR					      ; 4076
+		    04   AE	  34 AE46  3C 001AD 	    MOVZWL  PARSE_STACK[STACK_PTR], CUR_PARSE_STATE		      ; 4078
+		         58	     694B  9A 001B3 	    MOVZBL  (ACTION_TO_TAKE)[R11], TOKEN			      ; 4079
+		    14   AE	       01  D0 001B7 	    MOVL    #1, REDUCE_WAS_LAST					      ; 4080
+				  04   AC  DD 001BB 	    PUSHL   PARSE_STG_DESC					      ; 4089
+				  B8   AD  9F 001BE 	    PUSHAB  LAHEAD_STG_DESC					      ;
+				  C4   AD  9F 001C1 	    PUSHAB  LEX_STG_DESC					      ;
+				       56  DD 001C4 	    PUSHL   STACK_PTR						      ;
+		         50	  10   AE  D0 001C6 	    MOVL    16(SP), R0						      ;
+		         7E	     6940  9A 001CA 	    MOVZBL  (ACTION_TO_TAKE)[R0], -(SP)				      ;
+		    40   BE	       05  FB 001CE 	    CALLS   #5, @64(SP)						      ;
+		         67	       50  E9 001D2 	    BLBC    R0, 24$						      ;
+				       57  11 001D5 	    BRB     22$							      ;
+	      00000063   8F	       58  D1 001D7 14$:    CMPL    TOKEN, #99						      ; 4109
+				       0F  12 001DE 	    BNEQ    16$							      ;
+			    00028108   8F  DD 001E0 	    PUSHL   #164104						      ; 4112
+	      00000000G  00	       01  FB 001E6 	    CALLS   #1, LIB$SIGNAL					      ;
+				       3F  11 001ED 15$:    BRB     22$							      ; 4109
+	      0000004B   8F	       58  D1 001EF 16$:    CMPL    TOKEN, #75						      ; 4116
+				       0F  12 001F6 	    BNEQ    18$							      ;
+		         0A	  B0   AD  B1 001F8 	    CMPW    LAST_STG_DESC, #10					      ; 4123
+				       04  1B 001FC 	    BLEQU   17$							      ;
+		    B0   AD	       0A  B0 001FE 	    MOVW    #10, LAST_STG_DESC					      ; 4125
+				  B0   AD  9F 00202 17$:    PUSHAB  LAST_STG_DESC					      ; 4126
+				       03  11 00205 	    BRB     19$							      ;
+				  C4   AD  9F 00207 18$:    PUSHAB  LEX_STG_DESC					      ; 4135
+				       01  DD 0020A 19$:    PUSHL   #1							      ;
+			    000282E8   8F  DD 0020C 	    PUSHL   #164584						      ;
+	      00000000G  00	       03  FB 00212 	    CALLS   #3, LIB$SIGNAL					      ;
+				       13  11 00219 	    BRB     22$							      ; 3956
+	      0000270C   8F	  18   AE  D1 0021B 20$:    CMPL    TRANSIT_CODE, #9996					      ; 4143
+				       07  12 00223 	    BNEQ    21$							      ;
+		         57	  20 BE47  32 00225 	    CVTWL   @32(SP)[J], J					      ; 4144
+				       02  11 0022A 	    BRB     22$							      ; 4143
+				       57  D6 0022C 21$:    INCL    J							      ; 4145
+		         03	  0C   AE  E8 0022E 22$:    BLBS    MATCH_TRANSIT, 23$					      ; 4149
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 8-10
+; Digital Equipment Corporation
+;
+				     FE42  31 00232 	    BRW     2$							      ;
+		         03	  1C   AE  E9 00235 23$:    BLBC    PARSE_MORE, 24$					      ; 4152
+				     FE37  31 00239 	    BRW     1$							      ;
+					   04 0023C 24$:    RET     							      ; 3766
+
+; Routine Size:  573 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9
+; Digital Equipment Corporation
+;
+;	4154	ROUTINE get_bpt_actions( parse_stg_desc ) =
+;	4155	!++
+;	4156	! Functional Description:
+;	4157	!
+;	4158	!	This routine is essentially like extract_string()
+;	4159	! except that the bounding characters are "(" and ")" instead
+;	4160	! of "'", and nesting of parentheses is allowed.  This routine
+;	4161	! is called when the opening parenthesis of a list of breakpoint
+;	4162	! actions is encountered.  The breakpoint actions are collected
+;	4163	! but not lexically or semantically scanned.  Storage is reserved 
+;	4164	! for the new string, and a pointer to this storage is returned.
+;	4165	!
+;	4166	!	A further complication for this routine but not for
+;	4167	! exact_string, is that we can't just go blindly charging on
+;	4168	! looking for matching parenthesis.  i.e. we can't get 
+;	4169	! fooled by:
+;	4170	!
+;	4171	!	DBG>set b X do (d/as .=')'; etc)
+;	4172	!
+;	4173	! We resolve this problem by NOT paying any attention to characters
+;	4174	! inside quoted strings within the DO action string.
+;	4175	!
+;	4176	! Routine Value
+;	4177	!
+;	4178	!	A pointer to the action string.
+;	4179	!
+;	4180	! Side Effects:
+;	4181	!
+;	4182	!	Storage may be allocated to contain the string.
+;	4183	!
+;	4184	!	If an error is encountered, a SIGNAL/UNWIND is generated
+;	4185	! and the associated error message is output.
+;	4186	!--
+;	4187	BEGIN
+;	4188		MAP
+;	4189			parse_stg_desc : REF BLOCK [, BYTE];
+;	4190	
+;	4191		LOCAL
+;	4192			pointer: REF VECTOR [, BYTE],	! holds address of dynamic storage for
+;	4193							! action string when collected
+;	4194			paren_count,			! count of paren levels
+;	4195			char,				! holds a single character
+;	4196			count,				! character count
+;	4197			input_ptr,			! current pointer to input string
+;	4198			in_string,			! 0 => we are not currently within
+;	4199							! an embedded quoted string.  Otherwise
+;	4200							! we are, and .in_string is the
+;	4201							! string delimiter (' or ").
+;	4202			temp_ptr : BLOCK[8,byte];	! string descriptor for
+;	4203							! embedded quoted strings.
+;	4204	
+;	4205	%if dbg_par2
+;     L 4206	%then
+;     U 4207		$fao_tt_out('action string is "!AS".',.parse_stg_desc);
+;     U 4208	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9-1
+; Digital Equipment Corporation
+;
+;	4209		input_ptr = ch$ptr (.parse_stg_desc [dsc$a_pointer]);
+;	4210		count = 0;
+;	4211		in_string = 0;
+;	4212		temp_ptr[DSC$A_POINTER] = 0;
+;	4213		paren_count = 1;
+;	4214	
+;	4215		REPEAT
+;	4216			BEGIN
+;	4217	
+;	4218			! Pick up the next character and see if we
+;	4219			! have run off the end of the string.
+;	4220	
+;	4221			char = ch$rchar (.input_ptr);
+;	4222			IF .char EQL 0
+;	4223			THEN
+;	4224				BEGIN
+;	4225				LOCAL
+;	4226					delimiter;
+;	4227	
+;	4228				! The string we complain about not begin delimited
+;	4229				! is either the supposed break action string, or
+;	4230				! a non-terminated embedded quoted string.
+;	4231	
+;	4232				IF( .temp_ptr[ DSC$A_POINTER ] NEQ 0 )
+;	4233				THEN
+;	4234					BEGIN
+;	4235	
+;	4236					! We didn't find the ending ')' for the break
+;	4237					! action string because an embedded ascii 
+;	4238					! string was not properly terminated.
+;	4239	
+;	4240					parse_stg_desc[DSC$A_POINTER] = .temp_ptr[DSC$A_POINTER];
+;	4241					parse_stg_desc[DSC$W_LENGTH] = .temp_ptr[DSC$W_LENGTH];
+;	4242					delimiter = .in_string;
+;	4243					END
+;	4244				ELSE
+;	4245					BEGIN
+;	4246	
+;	4247					! The action string itself was not terminated.
+;	4248	
+;	4249					delimiter = %C')';
+;	4250	
+;	4251					! Adjust the string descriptor so that the
+;	4252					! beginning delimiter is seen since this
+;	4253					! gives the user more info about what we
+;	4254					! were looking for.
+;	4255	
+;	4256					parse_stg_desc[DSC$A_POINTER] = .parse_stg_desc[DSC$A_POINTER] -1;
+;	4257					parse_stg_desc[DSC$W_LENGTH] = .parse_stg_desc[DSC$W_LENGTH] +1;
+;	4258					END;
+;	4259	
+;	4260				! Truncate the string to 10 characters
+;	4261				! unless it is already smaller than that.
+;	4262					
+;	4263				IF( .parse_stg_desc[ DSC$W_LENGTH ] GTR 10 )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9-2
+; Digital Equipment Corporation
+;
+;	4264				THEN
+;	4265					parse_stg_desc[ DSC$W_LENGTH ] = 10;
+;	4266	
+;	4267				signal(dbg$_noend, 3, .parse_stg_desc, 1, delimiter);
+;	4268				! no return
+;	4269				END;
+;	4270	
+;	4271			! If we are not already in an embedded quoted string,
+;	4272			! then this may be the beginning of one.  If we are,
+;	4273			! then this may be the end of it.
+;	4274	
+;	4275			IF( .char EQL %C'''' OR .char EQL %C'"' )
+;	4276			THEN
+;	4277				BEGIN
+;	4278	
+;	4279				! in_string tells not only whether or not we
+;	4280				! are in a quoted string, but what that
+;	4281				! string is delimited by.
+;	4282	
+;	4283				IF( .in_string EQL 0 )
+;	4284				THEN
+;	4285					BEGIN
+;	4286	
+;	4287					! Now we are within a string.  Save the
+;	4288					! delimiter so we can find the end of it.
+;	4289	
+;	4290					in_string = .char;
+;	4291	
+;	4292					! Also save a string descriptor for this string
+;	4293					! as we may need it for later error processing.
+;	4294					! This string descriptor includes the supposed
+;	4295					! delimiting character.
+;	4296	
+;	4297					temp_ptr[DSC$A_POINTER] = .input_ptr;
+;	4298					temp_ptr[DSC$W_LENGTH] = .parse_stg_desc[DSC$W_LENGTH ] - .count;
+;	4299					END
+;	4300				ELSE
+;	4301					! See if this quote ends the string we
+;	4302					! were already in.
+;	4303	
+;	4304					IF( .in_string EQL .char )
+;	4305					THEN
+;	4306						BEGIN
+;	4307	
+;	4308						! End the string we were in.
+;	4309	
+;	4310						in_string = 0;
+;	4311						temp_ptr[DSC$A_POINTER] = 0;
+;	4312						END;
+;	4313				END
+;	4314			ELSE
+;	4315	
+;	4316			! If we are already in an embedded string, and there
+;	4317			! is no chance that it is ending, then we don't care
+;	4318			! what the current character is.  Otherwise we
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9-3
+; Digital Equipment Corporation
+;
+;	4319			! have to look for parenthesis.
+;	4320	
+;	4321			IF( .in_string EQL 0 )
+;	4322			THEN
+;	4323				! We are not in an embedded string.
+;	4324				! Now we sort out the parenthesis matching.
+;	4325		
+;	4326				IF( .char EQL %C')' )
+;	4327				THEN
+;	4328					BEGIN
+;	4329		
+;	4330					!+
+;	4331					! Found a closing parenthesis. See
+;	4332					! whether this one matches the opening
+;	4333					! breakpoint action parenthesis, and
+;	4334					! if it does, then exit from this loop,
+;	4335					! and thus from the macro.
+;	4336					!-
+;	4337					paren_count = .paren_count - 1;
+;	4338					IF .paren_count LEQ 0
+;	4339					THEN
+;	4340						BEGIN
+;	4341						EXITLOOP
+;	4342						END;
+;	4343					END
+;	4344				ELSE
+;	4345					IF( .char EQL %C'(' )
+;	4346					THEN
+;	4347						paren_count = .paren_count + 1;
+;	4348	
+;	4349			! Increment the character counter, update the pointer
+;	4350			! so that we are looking at the next character,
+;	4351			! and loop back to do so.
+;	4352	
+;	4353			count = .count + 1;
+;	4354			input_ptr = ch$plus (.input_ptr, 1);
+;	4355			END;
+;	4356	
+;	4357		!+
+;	4358		! The breakpoint action string has been isolated.
+;	4359		!-
+;	4360	%IF dbg_par2
+;     L 4361	%THEN
+;     U 4362		$fao_tt_out('action string of length !UL = "!AD".',
+;     U 4363			.count,.count,.parse_stg_desc[DSC$A_POINTER]);
+;     U 4364	%FI
+;	4365		!+
+;	4366		! We want the string address to be the address of a buffer in
+;	4367		! dynamic memory.  If such a buffer cannot be allocated,
+;	4368		! a SIGNAL is generated and an UNWIND is done.  The number
+;	4369		! of bytes we need to allocate is the action string size +1
+;	4370		! because we need 1 more byte to hold the count.
+;	4371		!-
+;	4372	
+;	4373		count = .count +1;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9-4
+; Digital Equipment Corporation
+;
+;	4374		pointer = dbg$freez ((.count + 1) / %UPVAL + 1);
+;	4375	
+;	4376		!+
+;	4377		! Copy the action string from the input
+;	4378		! buffer, and then overwrite the character before
+;	4379		! the string begins so that is becomes a counted string
+;	4380		! action buffer.  We also ensure that there is a 0
+;	4381		! character at the end of the buffer to ensure proper
+;	4382		! termination of parsing it when the break happens.
+;	4383		!--
+;	4384	
+;	4385		ch$move (.count, .parse_stg_desc[DSC$A_POINTER]-1, pointer [0]);
+;	4386		pointer [0] = .count;
+;	4387		pointer[.count] = 0;
+;	4388	
+;	4389		!+
+;	4390		! Now update the parse string descriptor to address
+;	4391		! the character after the closing parenthesis.
+;	4392		!-
+;	4393	
+;	4394		parse_stg_desc [dsc$a_pointer] = ch$plus (.input_ptr, 1);
+;	4395	
+;	4396		! Return a pointer to the saved-away action buffer.
+;	4397	
+;	4398		RETURN(.pointer);
+;	4399	END;
+
+
+
+
+
+					 03FC 0023D GET_BPT_ACTIONS:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9			      ; 4154
+		         5E	       0C  C2 0023F 	    SUBL2   #12, SP						      ;
+		         52	  04   AC  D0 00242 	    MOVL    PARSE_STG_DESC, R2					      ; 4209
+		         57	  04   A2  9E 00246 	    MOVAB   4(R2), R7						      ;
+		         59	       67  D0 0024A 	    MOVL    (R7), INPUT_PTR					      ;
+				       58  D4 0024D 	    CLRL    COUNT						      ; 4210
+				       54  D4 0024F 	    CLRL    IN_STRING						      ; 4211
+				  08   AE  D4 00251 	    CLRL    TEMP_PTR+4						      ; 4212
+		         55	       01  D0 00254 	    MOVL    #1, PAREN_COUNT					      ; 4213
+		         53	       69  9A 00257 1$:     MOVZBL  (INPUT_PTR), CHAR					      ; 4221
+				       36  12 0025A 	    BNEQ    5$							      ; 4222
+		         50	  08   AE  D0 0025C 	    MOVL    TEMP_PTR+4, R0					      ; 4232
+				       0C  13 00260 	    BEQL    2$							      ;
+		         67	       50  D0 00262 	    MOVL    R0, (R7)						      ; 4240
+		         62	  04   AE  B0 00265 	    MOVW    TEMP_PTR, (R2)					      ; 4241
+		         6E	       54  D0 00269 	    MOVL    IN_STRING, DELIMITER				      ; 4242
+				       07  11 0026C 	    BRB     3$							      ; 4232
+		         6E	       29  D0 0026E 2$:     MOVL    #41, DELIMITER					      ; 4249
+				       67  D7 00271 	    DECL    (R7)						      ; 4256
+				       62  B6 00273 	    INCW    (R2)						      ; 4257
+		         0A	       62  B1 00275 3$:     CMPW    (R2), #10						      ; 4263
+				       03  1B 00278 	    BLEQU   4$							      ;
+		         62	       0A  B0 0027A 	    MOVW    #10, (R2)						      ; 4265
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 9-5
+; Digital Equipment Corporation
+;
+				       5E  DD 0027D 4$:     PUSHL   SP							      ; 4267
+				       01  DD 0027F 	    PUSHL   #1							      ;
+				       52  DD 00281 	    PUSHL   R2							      ;
+				       03  DD 00283 	    PUSHL   #3							      ;
+			    000281F8   8F  DD 00285 	    PUSHL   #164344						      ;
+	      00000000G  00	       05  FB 0028B 	    CALLS   #5, LIB$SIGNAL					      ;
+		         27	       53  D1 00292 5$:     CMPL    CHAR, #39						      ; 4275
+				       05  13 00295 	    BEQL    6$							      ;
+		         22	       53  D1 00297 	    CMPL    CHAR, #34						      ;
+				       1E  12 0029A 	    BNEQ    8$							      ;
+				       54  D5 0029C 6$:     TSTL    IN_STRING						      ; 4283
+				       0E  12 0029E 	    BNEQ    7$							      ;
+		         54	       53  D0 002A0 	    MOVL    CHAR, IN_STRING					      ; 4290
+		    08   AE	       59  D0 002A3 	    MOVL    INPUT_PTR, TEMP_PTR+4				      ; 4297
+      04   AE	         62	       58  A3 002A7 	    SUBW3   COUNT, (R2), TEMP_PTR				      ; 4298
+				       22  11 002AC 	    BRB     10$							      ; 4283
+		         53	       54  D1 002AE 7$:     CMPL    IN_STRING, CHAR					      ; 4304
+				       1D  12 002B1 	    BNEQ    10$							      ;
+				       54  D4 002B3 	    CLRL    IN_STRING						      ; 4310
+				  08   AE  D4 002B5 	    CLRL    TEMP_PTR+4						      ; 4311
+				       16  11 002B8 	    BRB     10$							      ; 4275
+				       54  D5 002BA 8$:     TSTL    IN_STRING						      ; 4321
+				       12  12 002BC 	    BNEQ    10$							      ;
+		         29	       53  D1 002BE 	    CMPL    CHAR, #41						      ; 4326
+				       06  12 002C1 	    BNEQ    9$							      ;
+				       55  D7 002C3 	    DECL    PAREN_COUNT						      ; 4337
+				       09  14 002C5 	    BGTR    10$							      ; 4338
+				       0D  11 002C7 	    BRB     11$							      ; 4340
+		         28	       53  D1 002C9 9$:     CMPL    CHAR, #40						      ; 4345
+				       02  12 002CC 	    BNEQ    10$							      ;
+				       55  D6 002CE 	    INCL    PAREN_COUNT						      ; 4347
+				       58  D6 002D0 10$:    INCL    COUNT						      ; 4353
+				       59  D6 002D2 	    INCL    INPUT_PTR						      ; 4354
+				       81  11 002D4 	    BRB     1$							      ; 4213
+				       58  D6 002D6 11$:    INCL    COUNT						      ; 4373
+	   50	         58	       01  C1 002D8 	    ADDL3   #1, COUNT, R0					      ; 4374
+		         50	       04  C6 002DC 	    DIVL2   #4, R0						      ;
+				  01   A0  9F 002DF 	    PUSHAB  1(R0)						      ;
+	      00000000G  EF	       01  FB 002E2 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 002E9 	    MOVL    R0, POINTER						      ;
+		         50	       67  D0 002EC 	    MOVL    (R7), R0						      ; 4385
+	   66	    FF   A0	       58  28 002EF 	    MOVC3   COUNT, -1(R0), (POINTER)				      ;
+		         66	       58  90 002F4 	    MOVB    COUNT, (POINTER)					      ; 4386
+				     6846  94 002F7 	    CLRB    (COUNT)[POINTER]					      ; 4387
+	   67	         59	       01  C1 002FA 	    ADDL3   #1, INPUT_PTR, (R7)					      ; 4394
+		         50	       56  D0 002FE 	    MOVL    POINTER, R0						      ; 4398
+					   04 00301 	    RET     							      ; 4154
+
+; Routine Size:  197 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 10
+; Digital Equipment Corporation
+;
+;	4400	ROUTINE extract_string (parse_stg_desc) =
+;	4401	!++
+;	4402	! Functional Description:
+;	4403	! 	This routine reads characters from the input string,
+;	4404	! picks up the delimiting character ( ' or " ), and reads until
+;	4405	! the next occurance of that character is found.  If none
+;	4406	! is found, the invalid string message is output, and end of
+;	4407	! line processing is done.  Otherwise, dynamic storage is
+;	4408	! allocated for the string, which is then transformed into a
+;	4409	! counted string.  The address of this new storage is returned
+;	4410	! as the value of the function.
+;	4411	!
+;	4412	! Formal Parameters:
+;	4413	!
+;	4414	!	parse_stg_desc	-the address of the string descriptor which
+;	4415	!			 is where the parser is at (i.e. where the
+;	4416	!			 supposed string begins).
+;	4417	!
+;	4418	! Implicit Inputs:
+;	4419	!
+;	4420	!	The delimiting character is exactly 1 character before the
+;	4421	! given string.
+;	4422	!
+;	4423	! Routine Value:
+;	4424	!	The address of dynamic storage we allocated for the string.
+;	4425	!
+;	4426	! Side Effects:
+;	4427	!	Dynamic storage is allocated for the string.  Later, (in link_arg),
+;	4428	! the address of this storage is passed on via the command arg
+;	4429	! list's STORE field, so that FREE_ARG (dbglst.b32) can free it up.
+;	4430	!
+;	4431	!	The given (formal parameter) string descriptor is updated
+;	4432	! to reflect the extraction of the quoted string from the input
+;	4433	! command line.  Parsing resumes from this position.
+;	4434	!--
+;	4435	BEGIN
+;	4436		MAP
+;	4437				! The input parameter is a pointers to string
+;	4438				! descriptor.
+;	4439			parse_stg_desc : REF BLOCK [, BYTE];
+;	4440	
+;	4441		LOCAL
+;	4442			char,
+;	4443			count,
+;	4444			delimiter,
+;	4445			input_ptr,
+;	4446			temp_ptr : ref vector[,byte];
+;	4447	
+;	4448		! Pick up a pointer to the supposed ASCII or INSTRUCTION string.
+;	4449	
+;	4450		input_ptr = ch$ptr (.parse_stg_desc [dsc$a_pointer]);
+;	4451	
+;	4452		! The string delimiter is assumed to be the character
+;	4453		! immediately BEFORE where the indicated string begins.
+;	4454	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 10-1
+; Digital Equipment Corporation
+;
+;	4455		input_ptr = ch$plus (.input_ptr, -1);
+;	4456		temp_ptr = .input_ptr;
+;	4457		delimiter = ch$rchar_a (input_ptr);
+;	4458	
+;	4459	%IF dbg_par
+;     L 4460	%THEN
+;     U 4461		$fao_tt_out ('string delimiter is "!AD"', 1, delimiter);
+;     U 4462	%FI
+;	4463	
+;	4464		count = 0;
+;	4465		REPEAT
+;	4466			BEGIN
+;	4467			char = ch$rchar_a (input_ptr);
+;	4468			IF .char EQL 0
+;	4469			THEN
+;	4470				BEGIN
+;	4471	
+;	4472				! Adjust the string descriptor so that the
+;	4473				! beginning delimiter is seen since this
+;	4474				! gives the user more info about what we
+;	4475				! were looking for.
+;	4476	
+;	4477				parse_stg_desc[DSC$A_POINTER]= .parse_stg_desc[DSC$A_POINTER] -1;
+;	4478				parse_stg_desc[DSC$W_LENGTH]= .parse_stg_desc[DSC$W_LENGTH] +1;
+;	4479	
+;	4480				! Truncate the string to 10 characters
+;	4481				! unless it is already smaller than that.
+;	4482					
+;	4483				IF( .parse_stg_desc[ DSC$W_LENGTH ] GTR 10 )
+;	4484				THEN
+;	4485					parse_stg_desc[ DSC$W_LENGTH ] = 10;
+;	4486	
+;	4487				signal(dbg$_noend, 3, .parse_stg_desc, 1, delimiter);
+;	4488				! no return
+;	4489				END;
+;	4490	
+;	4491			IF( .char EQL .delimiter )
+;	4492			THEN
+;	4493				! Found a closing quote so we're done.
+;	4494				EXITLOOP;
+;	4495	
+;	4496			! Go back to look at the next character in the string.
+;	4497			count = .count + 1;
+;	4498			END;
+;	4499	
+;	4500		!+
+;	4501		! Quoted string found and 'count' gives its size.
+;	4502		!-
+;	4503	
+;	4504	%IF dbg_par
+;     L 4505	%THEN
+;     U 4506		$fao_tt_out('string of length !SL is "!AD".',
+;     U 4507			.count,.count,.temp_ptr+1);
+;     U 4508	%FI
+;	4509		! Reserve dynamic storage for this string plus its count.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 10-2
+; Digital Equipment Corporation
+;
+;	4510		! If there is not enough such storage, the
+;	4511		! following call does NOT return.  If it does, make
+;	4512		! the new storage contain the counted string.
+;	4513	
+;	4514		count = .count + 1;
+;	4515		temp_ptr = dbg$freez( RST_UNITS(.count) );
+;	4516		ch$move(.count, .parse_stg_desc[DSC$A_POINTER]-1, .temp_ptr);
+;	4517		temp_ptr[0] = .count-1;
+;	4518	
+;	4519	%IF dbg_par
+;     L 4520	%THEN
+;     U 4521		$fao_tt_out ('new string is "!AC", length is !SL', .temp_ptr, .count);
+;     U 4522	%FI
+;	4523		!+
+;	4524		! Now update the parse string descriptor so that the
+;	4525		! address of the buffer is the address of the character
+;	4526		! after the closing quote.  Likewise update the length.
+;	4527		!-
+;	4528		parse_stg_desc [dsc$a_pointer] = ch$ptr (.input_ptr);
+;	4529		parse_stg_desc [dsc$w_length] = .parse_stg_desc [dsc$w_length] - .count;
+;	4530	
+;	4531		! Return a pointer to this counted string.
+;	4532	
+;	4533		return(.temp_ptr);
+;	4534	END;
+
+
+
+
+
+					 03FC 00302 EXTRACT_STRING:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9			      ; 4400
+		         56	  04   AC  D0 00304 	    MOVL    PARSE_STG_DESC, R6					      ; 4450
+		         59	  04   A6  D0 00308 	    MOVL    4(R6), INPUT_PTR					      ;
+				       59  D7 0030C 	    DECL    INPUT_PTR						      ; 4455
+		         58	       59  D0 0030E 	    MOVL    INPUT_PTR, TEMP_PTR					      ; 4456
+		         7E	       89  9A 00311 	    MOVZBL  (INPUT_PTR)+, DELIMITER				      ; 4457
+				       57  D4 00314 	    CLRL    COUNT						      ; 4464
+		         52	       89  9A 00316 1$:     MOVZBL  (INPUT_PTR)+, CHAR					      ; 4467
+				       22  12 00319 	    BNEQ    3$							      ; 4468
+				  04   A6  D7 0031B 	    DECL    4(R6)						      ; 4477
+				       66  B6 0031E 	    INCW    (R6)						      ; 4478
+		         0A	       66  B1 00320 	    CMPW    (R6), #10						      ; 4483
+				       03  1B 00323 	    BLEQU   2$							      ;
+		         66	       0A  B0 00325 	    MOVW    #10, (R6)						      ; 4485
+				       5E  DD 00328 2$:     PUSHL   SP							      ; 4487
+				       01  DD 0032A 	    PUSHL   #1							      ;
+				       56  DD 0032C 	    PUSHL   R6							      ;
+				       03  DD 0032E 	    PUSHL   #3							      ;
+			    000281F8   8F  DD 00330 	    PUSHL   #164344						      ;
+	      00000000G  00	       05  FB 00336 	    CALLS   #5, LIB$SIGNAL					      ;
+		         6E	       52  D1 0033D 3$:     CMPL    CHAR, DELIMITER					      ; 4491
+				       04  13 00340 	    BEQL    4$							      ;
+				       57  D6 00342 	    INCL    COUNT						      ; 4497
+				       D0  11 00344 	    BRB     1$							      ; 4464
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 10-3
+; Digital Equipment Corporation
+;
+				       57  D6 00346 4$:     INCL    COUNT						      ; 4514
+	   50	         57	       03  C1 00348 	    ADDL3   #3, COUNT, R0					      ; 4515
+	   7E	         50	       04  C7 0034C 	    DIVL3   #4, R0, -(SP)					      ;
+	      00000000G  EF	       01  FB 00350 	    CALLS   #1, DBG$FREEZ					      ;
+		         58	       50  D0 00357 	    MOVL    R0, TEMP_PTR					      ;
+		         50	  04   A6  D0 0035A 	    MOVL    4(R6), R0						      ; 4516
+	   68	    FF   A0	       57  28 0035E 	    MOVC3   COUNT, -1(R0), (TEMP_PTR)				      ;
+	   68	         57	       01  83 00363 	    SUBB3   #1, COUNT, (TEMP_PTR)				      ; 4517
+		    04   A6	       59  D0 00367 	    MOVL    INPUT_PTR, 4(R6)					      ; 4528
+		         66	       57  A2 0036B 	    SUBW2   COUNT, (R6)						      ; 4529
+		         50	       58  D0 0036E 	    MOVL    TEMP_PTR, R0					      ; 4533
+					   04 00371 	    RET     							      ; 4400
+
+; Routine Size:  112 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11
+; Digital Equipment Corporation
+;
+;	4535	GLOBAL ROUTINE dbg$for_reductn (action_key, stack, lex_stg_desc, lahead_stg_desc, parse_stg_desc) =
+;	4536	!++
+;	4537	! Functional description:
+;	4538	!	Does the action associated with a reduction. The action is chosen
+;	4539	!	based on the action_key, which is the name of an action routine
+;	4540	!	as specified in the semantics table.
+;	4541	!
+;	4542	! Formal Parameters:
+;	4543	!	action_key	- name of the action routine
+;	4544	!	stack		- top of stack in the context of the reduction
+;	4545	!
+;	4546	! Implicit inputs:
+;	4547	!	the names of the two parse stacks, dbg$gl_seman1 and
+;	4548	!	dbg$gl_seman2.
+;	4549	!
+;	4550	! Outputs:
+;	4551	!	none
+;	4552	!
+;	4553	! Routine value:
+;	4554	!	TRUE or FALSE
+;	4555	!
+;	4556	! Side effects:
+;	4557	!	The top of stack is often changed. arguments are put into
+;	4558	!	linked lists, context values are altered.
+;	4559	!--
+;	4560	
+;	4561	    BEGIN
+;	4562	    MAP
+;	4563		lex_stg_desc	: REF BLOCK [ ,BYTE],
+;	4564		lahead_stg_desc	: REF BLOCK [ ,BYTE],
+;	4565		parse_stg_desc	: REF BLOCK [ ,BYTE];
+;	4566	
+;	4567	%IF dbg_par_for
+;     L 4568	%THEN
+;     U 4569		IF .lex_stg_desc[dsc$w_length] GTR 0
+;     U 4570		THEN
+;     U 4571		    $fao_tt_out ('lexeme_stg: !AS', .lex_stg_desc);
+;     U 4572		IF .lahead_stg_desc[dsc$w_length] GTR 0
+;     U 4573		THEN
+;     U 4574		    $fao_tt_out ('lahead_stg: !AS', .lahead_stg_desc);
+;     U 4575		IF .parse_stg_desc[dsc$w_length] LEQU 40
+;     U 4576		THEN
+;     U 4577		    $fao_tt_out ('parse_stg: !AS', .parse_stg_desc);
+;     U 4578		$fao_tt_out('for_reductn: stack = !XL!XL!XL!XL type is !XL !SL',
+;     U 4579			.dbg$gl_seman1[.stack+3], .dbg$gl_seman1[.stack+2],
+;     U 4580			.dbg$gl_seman1[.stack+1], .dbg$gl_seman1[.stack+0],
+;     U 4581			.dbg$gl_seman2[.stack+1], .dbg$gl_seman2[.stack]);
+;     U 4582	%FI
+;	4583	
+;	4584	    CASE .action_key FROM 1 TO fornone OF
+;	4585	
+;	4586		SET
+;	4587	
+;	4588		[foraftcnt]:	get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4589		[forarrnam]:	redu_path_addr (.stack);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-1
+; Digital Equipment Corporation
+;
+;	4590		[forbreacb]:	dbg$gl_list[2] = get_bpt_actions(.parse_stg_desc);
+;	4591		[fordefnam]:	save_name (.stack, .lex_stg_desc);
+;	4592		[forquotec]:	BEGIN
+;	4593				dbg$gl_seman1[.stack] = extract_string (.parse_stg_desc);
+;	4594				dbg$gl_seman1[.stack+1] = .dbg$gl_seman1[.stack];
+;	4595				END;
+;	4596		[forsavmod]:	add_module (.stack, .lex_stg_desc);
+;	4597		[forsavpat]:	dbg$build_path (.lex_stg_desc);
+;	4598		[forsetlan]:	save_lang_name (.stack, .lex_stg_desc);
+;	4599		[forshcall]:	BEGIN
+;	4600				get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4601				dbg$gl_context[dbg$k_traceback] = TRUE;
+;	4602				END;
+;	4603		[forstcoun]:	get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4604		[forstpcnt]:	get_step_count (.stack + dbg$k_spos_two, .lex_stg_desc);
+;	4605		[fortrnlab]:	reduce_label (.stack, .lahead_stg_desc);
+;	4606		[fortrnnam]:	reduce_pathname (.stack, .lahead_stg_desc);
+;	4607		[foruqunam]:	translate_name (.stack, .lex_stg_desc);
+;	4608		[foraddexa]:	link_arg (.stack + dbg$k_spos_two);
+;	4609		[foraddexp]:	dbg$for_add (.stack);
+;	4610		[foraddmod]:	dbg$gl_context[dbg$k_module] = TRUE;
+;	4611		[foraddran]:	link_arg_pair (.stack + dbg$k_spos_two);
+;	4612		[forandopr]:	logical_and (.stack);
+;	4613		[forcalsub]:	link_arg (.stack + dbg$k_spos_one);
+;	4614		[forcanind]:	set_over_adr;
+;	4615		[forchaarg]:	dbg$cancel_parm (.stack);
+;	4616		[forcomlin]:	execute_cmd (.stack);
+;	4617		[fordefarg]:	link_exp_name (.stack);
+;	4618		[fordeflst]:	link_exp_name (.stack + dbg$k_spos_two);
+;	4619		[fordeploc]:	link_dep_loc (.stack);
+;	4620		[fordimadd]:	add_dimension (.stack + dbg$k_spos_two);
+;	4621		[fordimone]:	add_dimension (.stack);
+;	4622		[fordivexp]:	dbg$for_div (.stack);
+;	4623		[foreqvexp]:	equivalence (.stack);
+;	4624		[forexaone]:	link_arg (.stack);
+;	4625		[forexpran]:	link_arg_pair (.stack);
+;	4626		[formulexp]:	dbg$for_mul (.stack);
+;	4627		[fornegexp]:	dbg$for_neg (.stack);
+;	4628		[fornotopr]:	complement (.stack);
+;	4629		[fororoper]:	logical_or (.stack);
+;	4630		[forovropl]:	set_overr_mode (.stack + dbg$k_spos_two);
+;	4631		[forovropt]:	set_overr_mode (.stack + dbg$k_spos_one);
+;	4632		[forovrstl]:	set_overr_step (.stack + dbg$k_spos_two);
+;	4633		[forovrstp]:	set_overr_step (.stack + dbg$k_spos_one);
+;	4634		[forposexp]:	positive (.stack);
+;	4635		[forrefarr]:	reduce_array (.stack);
+;	4636		[forrempar]:	remove_parens (.stack);
+;	4637		[forsavsco]:	dbg$gl_context[dbg$k_scope] = TRUE;
+;	4638		[forsetbra]:	bpt_with_acts (.stack);
+;	4639		[forsetbre]:	dbg$break_setup (.stack);
+;	4640		[forsetdec]:	set_dec_overs ;
+;	4641		[forsetind]:	set_over_noadr;
+;	4642		[forsetlin]:	set_line_dec (.stack);
+;	4643		[forsetloc]:	set_local_mode (.stack);
+;	4644		[forsetmod]:	dbg$gl_context[dbg$k_mode] = TRUE;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-2
+; Digital Equipment Corporation
+;
+;	4645		[forsetstp]:	dbg$gl_context[dbg$k_step] = TRUE;
+;	4646		[forshoarg]:	dbg$show_param (.stack);
+;	4647		[forshocal]:	dbg$gl_context[DBG$K_TRACEBACK] = TRUE;
+;	4648		[forstaloc]:	link_arg (.stack + dbg$k_spos_one);
+;	4649		[forsubexp]:	dbg$for_sub (.stack);
+;	4650		[forsubstr]:	char_substring(.stack);
+;	4651		[forxorexp]:	exclusive_or (.stack);
+;	4652		[fornone]:	0;
+;	4653	
+;	4654		[inrange, outrange]:	RETURN FALSE;
+;	4655	
+;	4656		TES;
+;	4657	
+;	4658	    RETURN TRUE
+;	4659	    END;
+
+
+
+
+
+					 0FFC 00372 	    .ENTRY  DBG$FOR_REDUCTN, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 4535
+		         5A 00000000G  EF  9E 00374 	    MOVAB   DBG$GL_SEMAN2, R10					      ;
+		         5B 00000000G  EF  9E 0037B 	    MOVAB   DBG$GL_SEMAN1, R11					      ;
+		         5E	       10  C2 00382 	    SUBL2   #16, SP						      ;
+	   3A	         01	  04   AC  CF 00385 	    CASEL   ACTION_KEY, #1, #58					      ; 4584
+	 035D	       03C3	     00C2     0038A 1$:     .WORD   4$-1$,-						      ;
+	 031D	       0379	     02DF     00390		    46$-1$,-						      ;
+	 0356	       00D3	     0326     00396		    38$-1$,-						      ;
+	 0178	       03A9	     0311     0039C		    26$-1$,-						      ;
+	 066B	       0662	     05FB     003A2		    41$-1$,-						      ;
+	 019F	       04AB	     0424     003A8		    30$-1$,-						      ;
+	 0581	       05EF	     0079     003AE		    32$-1$,-						      ;
+	 01CF	       0369	     038E     003B4		    5$-1$,-						      ;
+	 05EF	       0656	     0337     003BA		    37$-1$,-						      ;
+	 04FC	       05D4	     066B     003C0		    29$-1$,-						      ;
+	 0631	       013F	     0608     003C6		    45$-1$,-						      ;
+	 04DA	       0643	     011D     003CC		    12$-1$,-						      ;
+	 05E6	       0133	     060F     003D2		    90$-1$,-						      ;
+	 0105	       0481	     0235     003D8		    101$-1$,-						      ;
+	 0521	       069D	     02D2     003DE		    103$-1$,-						      ;
+	 019F	       04F0	     048D     003E4		    52$-1$,-						      ;
+	 0508	       05D4	     01A9     003EA		    61$-1$,-						      ;
+	 064C	       06AA	     053D     003F0		    13$-1$,-						      ;
+	 0547	       0554	     073E     003F6		    2$-1$,-						      ;
+		       0764	     0567     003FC		    88$-1$,-						      ;
+								    84$-1$,-						      ;
+								    42$-1$,-						      ;
+								    40$-1$,-						      ;
+								    17$-1$,-						      ;
+								    33$-1$,-						      ;
+								    100$-1$,-						      ;
+								    88$-1$,-						      ;
+								    103$-1$,-						      ;
+								    86$-1$,-						      ;
+								    68$-1$,-						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-3
+; Digital Equipment Corporation
+;
+								    91$-1$,-						      ;
+								    10$-1$,-						      ;
+								    93$-1$,-						      ;
+								    7$-1$,-						      ;
+								    96$-1$,-						      ;
+								    64$-1$,-						      ;
+								    92$-1$,-						      ;
+								    8$-1$,-						      ;
+								    87$-1$,-						      ;
+								    21$-1$,-						      ;
+								    57$-1$,-						      ;
+								    6$-1$,-						      ;
+								    24$-1$,-						      ;
+								    106$-1$,-						      ;
+								    73$-1$,-						      ;
+								    59$-1$,-						      ;
+								    66$-1$,-						      ;
+								    13$-1$,-						      ;
+								    14$-1$,-						      ;
+								    86$-1$,-						      ;
+								    70$-1$,-						      ;
+								    77$-1$,-						      ;
+								    108$-1$,-						      ;
+								    98$-1$,-						      ;
+								    115$-1$,-						      ;
+								    80$-1$,-						      ;
+								    78$-1$,-						      ;
+								    81$-1$,-						      ;
+								    117$-1$						      ;
+				     06EF  31 00400 	    BRW     118$						      ; 4654
+		         52	  08   AC  D0 00403 2$:     MOVL    STACK, R2						      ; 4589
+		         53	  04 AA42  DE 00407 	    MOVAL   DBG$GL_SEMAN2+4[R2], R3				      ;
+		         50 00000000G  EF  D0 0040C 	    MOVL    DBG$GB_MOD_PTR, R0					      ;
+		    02   A3	  08   A0  9B 00413 	    MOVZBW  8(R0), 2(R3)					      ;
+		         7E	  45   8F  9A 00418 	    MOVZBL  #69, -(SP)						      ;
+				       02  DD 0041C 	    PUSHL   #2							      ;
+	      00000000G  EF	       02  FB 0041E 	    CALLS   #2, DBG$SET_OVERS					      ;
+				  08   AE  9F 00425 	    PUSHAB  TEMP_VALU_DESC					      ;
+	      00000000G  EF	       01  FB 00428 	    CALLS   #1, DBG$PATH_TO_VAL					      ;
+		       6A42	       08  D0 0042F 	    MOVL    #8, DBG$GL_SEMAN2[R2]				      ;
+		         50	  08   AE  3C 00433 	    MOVZWL  TEMP_VALU_DESC, TEMP_NT_PTR				      ;
+				       08  13 00437 	    BEQL    3$							      ;
+		       6A42 00000000G  E0  9A 00439 	    MOVZBL  DBG$_RST_BEGIN+2(TEMP_NT_PTR), DBG$GL_SEMAN2[R2]	      ;
+		       6B42	  0A   AE  D0 00441 3$:     MOVL    TEMP_VALU_DESC+2, DBG$GL_SEMAN1[R2]			      ;
+		         63	       50  B0 00446 	    MOVW    TEMP_NT_PTR, (R3)					      ;
+				     0546  31 00449 	    BRW     91$							      ;
+				  14   AC  DD 0044C 4$:     PUSHL   PARSE_STG_DESC					      ; 4590
+		  FDE9   CF	       01  FB 0044F 	    CALLS   #1, GET_BPT_ACTIONS					      ;
+	      00000000G  EF	       50  D0 00454 	    MOVL    R0, DBG$GL_LIST+8					      ;
+				       6A  11 0045B 	    BRB     9$							      ; 4584
+		         57	  0C   AC  D0 0045D 5$:     MOVL    LEX_STG_DESC, R7					      ; 4591
+		         50	       67  3C 00461 	    MOVZWL  (R7), R0						      ;
+		         50	       03  C0 00464 	    ADDL2   #3, R0						      ;
+		         50	       04  C6 00467 	    DIVL2   #4, R0						      ;
+				  02   A0  9F 0046A 	    PUSHAB  2(R0)						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-4
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       01  FB 0046D 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 00474 	    MOVL    R0, POINTER						      ;
+      08   A6	    04   B7	       67  28 00477 	    MOVC3   (R7), @4(R7), 8(POINTER)				      ;
+		         66	       67  3C 0047D 	    MOVZWL  (R7), (POINTER)					      ;
+		    04   A6	  08   A6  9E 00480 	    MOVAB   8(POINTER), 4(POINTER)				      ;
+		         50	  08   AC  D0 00485 	    MOVL    STACK, R0						      ;
+		       6A40	       56  D0 00489 	    MOVL    POINTER, DBG$GL_SEMAN2[R0]				      ;
+				       71  11 0048D 	    BRB     11$							      ; 4584
+		         52	  08   AC  D0 0048F 6$:     MOVL    STACK, R2						      ; 4593
+				  14   AC  DD 00493 	    PUSHL   PARSE_STG_DESC					      ;
+		  FE67   CF	       01  FB 00496 	    CALLS   #1, EXTRACT_STRING					      ;
+		       6B42	       50  D0 0049B 	    MOVL    R0, DBG$GL_SEMAN1[R2]				      ;
+		    04 AB42	     6B42  D0 0049F 	    MOVL    DBG$GL_SEMAN1[R2], DBG$GL_SEMAN1+4[R2]		      ; 4594
+				       59  11 004A5 	    BRB     11$							      ; 4584
+		         52	  08   AC  D0 004A7 7$:     MOVL    STACK, R2						      ; 4596
+				       01  DD 004AB 	    PUSHL   #1							      ;
+				  0C   AC  DD 004AD 	    PUSHL   LEX_STG_DESC					      ;
+	      00000000G  EF	       02  FB 004B0 	    CALLS   #2, DBG$FIND_MODULE					      ;
+		       6B42	       50  D0 004B7 	    MOVL    R0, DBG$GL_SEMAN1[R2]				      ;
+				       43  11 004BB 	    BRB     11$							      ; 4584
+				  0C   AC  DD 004BD 8$:     PUSHL   LEX_STG_DESC					      ; 4597
+	      00000000G  EF	       01  FB 004C0 	    CALLS   #1, DBG$BUILD_PATH					      ;
+				       37  11 004C7 9$:     BRB     11$							      ; 4584
+		         57	  0C   AC  D0 004C9 10$:    MOVL    LEX_STG_DESC, R7					      ; 4598
+		         50	       67  3C 004CD 	    MOVZWL  (R7), R0						      ;
+		         50	       03  C0 004D0 	    ADDL2   #3, R0						      ;
+		         50	       04  C6 004D3 	    DIVL2   #4, R0						      ;
+				  02   A0  9F 004D6 	    PUSHAB  2(R0)						      ;
+	      00000000G  EF	       01  FB 004D9 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 004E0 	    MOVL    R0, POINTER						      ;
+      08   A6	    04   B7	       67  28 004E3 	    MOVC3   (R7), @4(R7), 8(POINTER)				      ;
+		         66	       67  3C 004E9 	    MOVZWL  (R7), (POINTER)					      ;
+		    04   A6	  08   A6  9E 004EC 	    MOVAB   8(POINTER), 4(POINTER)				      ;
+		         50	  08   AC  D0 004F1 	    MOVL    STACK, R0						      ;
+		       6A40	       56  D0 004F5 	    MOVL    POINTER, DBG$GL_SEMAN2[R0]				      ;
+	      00000000G  EF	       10  88 004F9 	    BISB2   #16, DBG$GL_CONTEXT					      ;
+				       55  11 00500 11$:    BRB     16$							      ; 4584
+				  0C   AC  DD 00502 12$:    PUSHL   LEX_STG_DESC					      ; 4600
+	   52	    08   AC	       02  C1 00505 	    ADDL3   #2, STACK, R2					      ;
+				       52  DD 0050A 	    PUSHL   R2							      ;
+	      00000000G  EF	       02  FB 0050C 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				     6B42  DD 00513 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 00516 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       02  DD 0051D 	    PUSHL   #2							      ;
+	      00000000G  EF	       01  FB 0051F 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				     04C3  31 00526 	    BRW     101$						      ; 4601
+				  0C   AC  DD 00529 13$:    PUSHL   LEX_STG_DESC					      ; 4603
+	   52	    08   AC	       02  C1 0052C 	    ADDL3   #2, STACK, R2					      ;
+				       08  11 00531 	    BRB     15$							      ;
+				  0C   AC  DD 00533 14$:    PUSHL   LEX_STG_DESC					      ; 4604
+	   52	    08   AC	       04  C1 00536 	    ADDL3   #4, STACK, R2					      ;
+				       52  DD 0053B 15$:    PUSHL   R2							      ;
+	      00000000G  EF	       02  FB 0053D 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				     6B42  DD 00544 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 00547 	    CALLS   #1, DBG$ADD_ARG					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-5
+; Digital Equipment Corporation
+;
+				       02  DD 0054E 	    PUSHL   #2							      ;
+	      00000000G  EF	       01  FB 00550 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				       63  11 00557 16$:    BRB     20$							      ; 4584
+		         52	  08   AC  D0 00559 17$:    MOVL    STACK, R2						      ; 4605
+		         53	  04 AA42  DE 0055D 	    MOVAL   DBG$GL_SEMAN2+4[R2], R3				      ;
+				  08   AE  9F 00562 	    PUSHAB  TEMP_VALU_DESC					      ;
+	      00000000G  EF	       01  FB 00565 	    CALLS   #1, DBG$PATH_TO_VAL					      ;
+				       02  DD 0056C 	    PUSHL   #2							      ;
+				       03  DD 0056E 	    PUSHL   #3							      ;
+	      00000000G  EF	       02  FB 00570 	    CALLS   #2, DBG$INIT_MODES					      ;
+				       02  DD 00577 	    PUSHL   #2							      ;
+	      00000000G  EF	       01  FB 00579 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+		       6A42	       08  D0 00580 	    MOVL    #8, DBG$GL_SEMAN2[R2]				      ;
+		         51	  08   AE  3C 00584 	    MOVZWL  TEMP_VALU_DESC, TEMP_NT_PTR				      ;
+				       08  13 00588 	    BEQL    18$							      ;
+		       6A42 00000000G  E1  9A 0058A 	    MOVZBL  DBG$_RST_BEGIN+2(TEMP_NT_PTR), DBG$GL_SEMAN2[R2]	      ;
+		         52	     6B42  DE 00592 18$:    MOVAL   DBG$GL_SEMAN1[R2], R2				      ;
+		         62	  0A   AE  D0 00596 	    MOVL    TEMP_VALU_DESC+2, (R2)				      ;
+		         50 00000000G  EF  D0 0059A 	    MOVL    DBG$GB_MOD_PTR, R0					      ;
+		         02	  07   A0  91 005A1 	    CMPB    7(R0), #2						      ;
+				       03  13 005A5 	    BEQL    19$							      ;
+		         63	       51  B0 005A7 	    MOVW    TEMP_NT_PTR, (R3)					      ;
+		         0E	  08   A0  E8 005AA 19$:    BLBS    8(R0), 20$						      ;
+				       04  DD 005AE 	    PUSHL   #4							      ;
+				       62  DD 005B0 	    PUSHL   (R2)						      ;
+	      00000000G  EF	       02  FB 005B2 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         72	       92  D0 005B9 	    MOVL    @(R2)+, -(R2)					      ;
+				     052F  31 005BC 20$:    BRW     117$						      ; 4584
+		         52	  08   AC  D0 005BF 21$:    MOVL    STACK, R2						      ; 4606
+		         54	  04 AA42  DE 005C3 	    MOVAL   DBG$GL_SEMAN2+4[R2], R4				      ;
+				  08   AE  9F 005C8 	    PUSHAB  TEMP_VALU_DESC					      ;
+	      00000000G  EF	       01  FB 005CB 	    CALLS   #1, DBG$PATH_TO_VAL					      ;
+		       6A42	       08  D0 005D2 	    MOVL    #8, DBG$GL_SEMAN2[R2]				      ;
+		         50	  08   AE  3C 005D6 	    MOVZWL  TEMP_VALU_DESC, TEMP_NT_PTR				      ;
+				       08  13 005DA 	    BEQL    22$							      ;
+		       6A42 00000000G  E0  9A 005DC 	    MOVZBL  DBG$_RST_BEGIN+2(TEMP_NT_PTR), DBG$GL_SEMAN2[R2]	      ;
+		         53	     6B42  DE 005E4 22$:    MOVAL   DBG$GL_SEMAN1[R2], R3				      ;
+		         51	  0A   AE  D0 005E8 	    MOVL    TEMP_VALU_DESC+2, R1				      ;
+		         63	       51  D0 005EC 	    MOVL    R1, (R3)						      ;
+		         64	       50  B0 005EF 	    MOVW    TEMP_NT_PTR, (R4)					      ;
+				       50  D5 005F2 	    TSTL    TEMP_NT_PTR						      ;
+				       4B  13 005F4 	    BEQL    23$							      ;
+		         52 00000000G  E0  9E 005F6 	    MOVAB   DBG$_RST_BEGIN(TEMP_NT_PTR), R2			      ;
+				  08   A2  B5 005FD 	    TSTW    8(R2)						      ;
+				       3F  13 00600 	    BEQL    23$							      ;
+		         50	  04   A2  D0 00602 	    MOVL    4(R2), DST_RECRD					      ;
+      02   A0	         02	       00  ED 00606 	    CMPZV   #0, #2, 2(DST_RECRD), #2				      ;
+				       02     0060B									      ;
+				       33  12 0060C 	    BNEQ    23$							      ;
+		         54	       51  D0 0060E 	    MOVL    R1, DESCRIP_BLOCK					      ;
+				4002   8F  BB 00611 	    PUSHR   #^M<R1,SP>						      ;
+	      00000000G  EF	       02  FB 00615 	    CALLS   #2, DBG$GET_BOUNDS					      ;
+		         63	       6E  D0 0061C 	    MOVL    BOUNDS, (R3)					      ;
+		         0E	  02   A2  91 0061F 	    CMPB    2(R2), #14						      ;
+				       1C  12 00623 	    BNEQ    23$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-6
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       64  3C 00625 	    MOVZWL  (DESCRIP_BLOCK), DBG$GL_ASCI_LEN			      ;
+	      00000050   8F 00000000G  EF  D1 0062C 	    CMPL    DBG$GL_ASCI_LEN, #80				      ;
+				       08  15 00637 	    BLEQ    23$							      ;
+	      00000000G  EF	  50   8F  9A 00639 	    MOVZBL  #80, DBG$GL_ASCI_LEN				      ;
+		         50 00000000G  EF  D0 00641 23$:    MOVL    DBG$GB_MOD_PTR, R0					      ;
+		         62	  08   A0  E8 00648 	    BLBS    8(R0), 31$						      ;
+				       04  DD 0064C 	    PUSHL   #4							      ;
+				       63  DD 0064E 	    PUSHL   (R3)						      ;
+	      00000000G  EF	       02  FB 00650 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         73	       93  D0 00657 	    MOVL    @(R3)+, -(R3)					      ;
+				       0B  11 0065A 	    BRB     25$							      ; 4584
+		         7E	  08   AC  7D 0065C 24$:    MOVQ    STACK, -(SP)					      ; 4607
+	      00000000G  EF	       02  FB 00660 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				       75  11 00667 25$:    BRB     36$							      ; 4584
+		         52	  08   AC  D0 00669 26$:    MOVL    STACK, R2						      ; 4608
+				  10 AB42  DD 0066D 	    PUSHL   DBG$GL_SEMAN1+16[R2]				      ;
+	      00000000G  EF	       01  FB 00671 	    CALLS   #1, DBG$ADD_ARG					      ;
+		         0B	  10 AA42  D1 00678 	    CMPL    DBG$GL_SEMAN2+16[R2], #11				      ;
+				       08  12 0067D 	    BNEQ    27$							      ;
+		    08   A0	  14 AB42  D0 0067F 	    MOVL    DBG$GL_SEMAN1+20[R2], 8(POINTER)			      ;
+				       06  11 00685 	    BRB     28$							      ;
+		    14   A0	  14 AB42  D0 00687 27$:    MOVL    DBG$GL_SEMAN1+20[R2], 20(POINTER)			      ;
+		    0C   A0	  10 AA42  D0 0068D 28$:    MOVL    DBG$GL_SEMAN2+16[R2], 12(POINTER)			      ;
+		    10   A0	  14 AA42  D0 00693 	    MOVL    DBG$GL_SEMAN2+20[R2], 16(POINTER)			      ;
+				       56  11 00699 	    BRB     39$							      ; 4584
+				  08   AC  DD 0069B 29$:    PUSHL   STACK						      ; 4609
+	      00000000G  EF	       01  FB 0069E 	    CALLS   #1, DBG$FOR_ADD					      ;
+				       4A  11 006A5 	    BRB     39$							      ; 4584
+	      00000000G  EF	       10  88 006A7 30$:    BISB2   #16, DBG$GL_CONTEXT+1				      ; 4610
+				       41  11 006AE 31$:    BRB     39$							      ; 4584
+		         52	  08   AC  D0 006B0 32$:    MOVL    STACK, R2						      ; 4611
+				  10 AB42  DD 006B4 	    PUSHL   DBG$GL_SEMAN1+16[R2]				      ;
+	      00000000G  EF	       01  FB 006B8 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       6A  11 006BF 	    BRB     43$							      ;
+		         50	  08   AC  D0 006C1 33$:    MOVL    STACK, R0						      ; 4612
+		         08	     6A40  D1 006C5 	    CMPL    DBG$GL_SEMAN2[R0], #8				      ;
+				       05  12 006C9 	    BNEQ    34$							      ;
+		         08	  10 AA40  D1 006CB 	    CMPL    DBG$GL_SEMAN2+16[R0], #8				      ;
+				       03  13 006D0 34$:    BEQL    35$							      ;
+				     040C  31 006D2 	    BRW     116$						      ;
+		         51	  10 AB40  D2 006D5 35$:    MCOML   DBG$GL_SEMAN1+16[R0], R1				      ;
+		       6B40	       51  CA 006DA 	    BICL2   R1, DBG$GL_SEMAN1[R0]				      ;
+				       51  11 006DE 36$:    BRB     44$							      ;
+		         7E	  45   8F  9A 006E0 37$:    MOVZBL  #69, -(SP)						      ; 4614
+				     01F2  31 006E4 	    BRW     79$							      ;
+				  08   AC  DD 006E7 38$:    PUSHL   STACK						      ; 4615
+	      00000000G  EF	       01  FB 006EA 	    CALLS   #1, DBG$CANCEL_PARM					      ;
+				       3E  11 006F1 39$:    BRB     44$							      ; 4584
+				  08   AC  DD 006F3 40$:    PUSHL   STACK						      ; 4616
+	      00000000G  EF	       01  FB 006F6 	    CALLS   #1, DBG$PERFORM_CMD					      ;
+		         31	       50  E8 006FD 	    BLBS    R0, 44$						      ;
+				     03EF  31 00700 	    BRW     118$						      ;
+		         52	  08   AC  D0 00703 41$:    MOVL    STACK, R2						      ; 4617
+				     6A42  DD 00707 	    PUSHL   DBG$GL_SEMAN2[R2]					      ;
+	      00000000G  EF	       01  FB 0070A 	    CALLS   #1, DBG$ADD_ARG					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-7
+; Digital Equipment Corporation
+;
+				       50  D5 00711 	    TSTL    POINTER						      ;
+				       1C  13 00713 	    BEQL    44$							      ;
+				     015A  31 00715 	    BRW     65$							      ;
+		         52	  08   AC  D0 00718 42$:    MOVL    STACK, R2						      ; 4618
+				  10 AA42  DD 0071C 	    PUSHL   DBG$GL_SEMAN2+16[R2]				      ;
+	      00000000G  EF	       01  FB 00720 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       50  D5 00727 	    TSTL    POINTER						      ;
+				       06  13 00729 	    BEQL    44$							      ;
+		    08   A0	  20 AB42  D0 0072B 43$:    MOVL    DBG$GL_SEMAN1+32[R2], 8(POINTER)			      ;
+				       79  11 00731 44$:    BRB     51$							      ; 4584
+		         50	  08   AC  D0 00733 45$:    MOVL    STACK, R0						      ; 4619
+		         52	  04 AA40  DE 00737 	    MOVAL   DBG$GL_SEMAN2+4[R0], R2				      ;
+				     6B40  DD 0073C 	    PUSHL   DBG$GL_SEMAN1[R0]					      ;
+	      00000000G  EF	       01  FB 0073F 	    CALLS   #1, DBG$ADD_ARG					      ;
+		    10   A0	       62  3C 00746 	    MOVZWL  (R2), 16(POINTER)					      ;
+				     0245  31 0074A 	    BRW     91$							      ;
+		         07 00000000G  EF  D1 0074D 46$:    CMPL    DBG$GL_DIMENLST, #7					      ; 4620
+				       11  12 00754 	    BNEQ    47$							      ;
+				       07  DD 00756 	    PUSHL   #7							      ;
+				       01  DD 00758 	    PUSHL   #1							      ;
+			    00028238   8F  DD 0075A 	    PUSHL   #164408						      ;
+	      00000000G  00	       03  FB 00760 	    CALLS   #3, LIB$SIGNAL					      ;
+		         52	  08   AC  D0 00767 47$:    MOVL    STACK, R2						      ;
+		         53	  10 AA42  DE 0076B 	    MOVAL   DBG$GL_SEMAN2+16[R2], R3				      ;
+		         0A	       63  D1 00770 	    CMPL    (R3), #10						      ;
+				       0D  12 00773 	    BNEQ    48$							      ;
+				  10 AB42  DF 00775 	    PUSHAL  DBG$GL_SEMAN1+16[R2]				      ;
+	      00000000G  EF	       01  FB 00779 	    CALLS   #1, DBG$CNV_F_TO_L					      ;
+				       10  11 00780 	    BRB     49$							      ;
+		         0B	       63  D1 00782 48$:    CMPL    (R3), #11						      ;
+				       0E  12 00785 	    BNEQ    50$							      ;
+				  10 AB42  DF 00787 	    PUSHAL  DBG$GL_SEMAN1+16[R2]				      ;
+	      00000000G  EF	       01  FB 0078B 	    CALLS   #1, DBG$CNV_D_TO_L					      ;
+		         63	       08  D0 00792 49$:    MOVL    #8, (R3)						      ;
+			    00000000G  EF  D6 00795 50$:    INCL    DBG$GL_DIMENLST					      ;
+		         50 00000000G  EF  D0 0079B 	    MOVL    DBG$GL_DIMENLST, R0					      ;
+	      00000000GEF40	  10 AB42  D0 007A2 	    MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_DIMENLST[R0]		      ;
+				       67  11 007AC 51$:    BRB     58$							      ; 4584
+		         07 00000000G  EF  D1 007AE 52$:    CMPL    DBG$GL_DIMENLST, #7					      ; 4621
+				       11  12 007B5 	    BNEQ    53$							      ;
+				       07  DD 007B7 	    PUSHL   #7							      ;
+				       01  DD 007B9 	    PUSHL   #1							      ;
+			    00028238   8F  DD 007BB 	    PUSHL   #164408						      ;
+	      00000000G  00	       03  FB 007C1 	    CALLS   #3, LIB$SIGNAL					      ;
+		         52	  08   AC  D0 007C8 53$:    MOVL    STACK, R2						      ;
+		         53	     6A42  DE 007CC 	    MOVAL   DBG$GL_SEMAN2[R2], R3				      ;
+		         0A	       63  D1 007D0 	    CMPL    (R3), #10						      ;
+				       0C  12 007D3 	    BNEQ    54$							      ;
+				     6B42  DF 007D5 	    PUSHAL  DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 007D8 	    CALLS   #1, DBG$CNV_F_TO_L					      ;
+				       0F  11 007DF 	    BRB     55$							      ;
+		         0B	       63  D1 007E1 54$:    CMPL    (R3), #11						      ;
+				       0D  12 007E4 	    BNEQ    56$							      ;
+				     6B42  DF 007E6 	    PUSHAL  DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 007E9 	    CALLS   #1, DBG$CNV_D_TO_L					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-8
+; Digital Equipment Corporation
+;
+		         63	       08  D0 007F0 55$:    MOVL    #8, (R3)						      ;
+			    00000000G  EF  D6 007F3 56$:    INCL    DBG$GL_DIMENLST					      ;
+		         50 00000000G  EF  D0 007F9 	    MOVL    DBG$GL_DIMENLST, R0					      ;
+	      00000000GEF40	     6B42  D0 00800 	    MOVL    DBG$GL_SEMAN1[R2], DBG$GL_DIMENLST[R0]		      ;
+				       79  11 00809 	    BRB     67$							      ; 4584
+				  08   AC  DD 0080B 57$:    PUSHL   STACK						      ; 4622
+	      00000000G  EF	       01  FB 0080E 	    CALLS   #1, DBG$FOR_DIV					      ;
+				       79  11 00815 58$:    BRB     69$							      ; 4584
+		         50	  08   AC  D0 00817 59$:    MOVL    STACK, R0						      ; 4623
+		         08	     6A40  D1 0081B 	    CMPL    DBG$GL_SEMAN2[R0], #8				      ;
+				       05  12 0081F 	    BNEQ    60$							      ;
+		         08	  10 AA40  D1 00821 	    CMPL    DBG$GL_SEMAN2+16[R0], #8				      ;
+				       79  12 00826 60$:    BNEQ    71$							      ;
+	   51	       6B40	  10 AB40  CD 00828 	    XORL3   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0], R1		      ;
+		       6B40	       51  D2 0082F 	    MCOML   R1, DBG$GL_SEMAN1[R0]				      ;
+				       74  11 00833 	    BRB     72$							      ;
+		         52	  08   AC  D0 00835 61$:    MOVL    STACK, R2						      ; 4624
+				     6B42  DD 00839 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 0083C 	    CALLS   #1, DBG$ADD_ARG					      ;
+		         0B	     6A42  D1 00843 	    CMPL    DBG$GL_SEMAN2[R2], #11				      ;
+				       08  12 00847 	    BNEQ    62$							      ;
+		    08   A0	  04 AB42  D0 00849 	    MOVL    DBG$GL_SEMAN1+4[R2], 8(POINTER)			      ;
+				       06  11 0084F 	    BRB     63$							      ;
+		    14   A0	  04 AB42  D0 00851 62$:    MOVL    DBG$GL_SEMAN1+4[R2], 20(POINTER)			      ;
+		    0C   A0	     6A42  D0 00857 63$:    MOVL    DBG$GL_SEMAN2[R2], 12(POINTER)			      ;
+		    10   A0	  04 AA42  D0 0085C 	    MOVL    DBG$GL_SEMAN2+4[R2], 16(POINTER)			      ;
+				       61  11 00862 	    BRB     76$							      ; 4584
+		         52	  08   AC  D0 00864 64$:    MOVL    STACK, R2						      ; 4625
+				     6B42  DD 00868 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+	      00000000G  EF	       01  FB 0086B 	    CALLS   #1, DBG$ADD_ARG					      ;
+		    08   A0	  10 AB42  D0 00872 65$:    MOVL    DBG$GL_SEMAN1+16[R2], 8(POINTER)			      ;
+				       4B  11 00878 	    BRB     76$							      ; 4584
+				  08   AC  DD 0087A 66$:    PUSHL   STACK						      ; 4626
+	      00000000G  EF	       01  FB 0087D 	    CALLS   #1, DBG$FOR_MUL					      ;
+				       3F  11 00884 67$:    BRB     76$							      ; 4584
+				  08   AC  DD 00886 68$:    PUSHL   STACK						      ; 4627
+	      00000000G  EF	       01  FB 00889 	    CALLS   #1, DBG$FOR_NEG					      ;
+				       77  11 00890 69$:    BRB     83$							      ; 4584
+		         50	  08   AC  D0 00892 70$:    MOVL    STACK, R0						      ; 4628
+		       6A40	  08 AA40  D0 00896 	    MOVL    DBG$GL_SEMAN2+8[R0], DBG$GL_SEMAN2[R0]		      ;
+		         08	  08 AA40  D1 0089C 	    CMPL    DBG$GL_SEMAN2+8[R0], #8				      ;
+				       17  12 008A1 71$:    BNEQ    74$							      ;
+		       6B40	  08 AB40  D2 008A3 	    MCOML   DBG$GL_SEMAN1+8[R0], DBG$GL_SEMAN1[R0]		      ;
+				       5E  11 008A9 72$:    BRB     83$							      ;
+		         50	  08   AC  D0 008AB 73$:    MOVL    STACK, R0						      ; 4629
+		         08	     6A40  D1 008AF 	    CMPL    DBG$GL_SEMAN2[R0], #8				      ;
+				       05  12 008B3 	    BNEQ    74$							      ;
+		         08	  10 AA40  D1 008B5 	    CMPL    DBG$GL_SEMAN2+16[R0], #8				      ;
+				       03  13 008BA 74$:    BEQL    75$							      ;
+				     0222  31 008BC 	    BRW     116$						      ;
+		       6B40	  10 AB40  C8 008BF 75$:    BISL2   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0]		      ;
+				       42  11 008C5 76$:    BRB     83$							      ;
+		         50	  08   AC  D0 008C7 77$:    MOVL    STACK, R0						      ; 4630
+				  10 AB40  DD 008CB 	    PUSHL   DBG$GL_SEMAN1+16[R0]				      ;
+				       08  11 008CF 	    BRB     79$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-9
+; Digital Equipment Corporation
+;
+		         50	  08   AC  D0 008D1 78$:    MOVL    STACK, R0						      ; 4631
+				  08 AB40  DD 008D5 	    PUSHL   DBG$GL_SEMAN1+8[R0]					      ;
+				       02  DD 008D9 79$:    PUSHL   #2							      ;
+				     00E6  31 008DB 	    BRW     95$							      ;
+				       02  DD 008DE 80$:    PUSHL   #2							      ; 4632
+	      00000000G  EF	       01  FB 008E0 	    CALLS   #1, DBG$SET_STP_LVL					      ;
+		         50	  08   AC  D0 008E7 	    MOVL    STACK, R0						      ;
+				  10 AB40  DD 008EB 	    PUSHL   DBG$GL_SEMAN1+16[R0]				      ;
+				       11  11 008EF 	    BRB     82$							      ;
+				       02  DD 008F1 81$:    PUSHL   #2							      ; 4633
+	      00000000G  EF	       01  FB 008F3 	    CALLS   #1, DBG$SET_STP_LVL					      ;
+		         50	  08   AC  D0 008FA 	    MOVL    STACK, R0						      ;
+				  08 AB40  DD 008FE 	    PUSHL   DBG$GL_SEMAN1+8[R0]					      ;
+	      00000000G  EF	       01  FB 00902 82$:    CALLS   #1, DBG$SET_NEW_STP					      ;
+				       78  11 00909 83$:    BRB     89$							      ; 4584
+		         56	  08   AC  D0 0090B 84$:    MOVL    STACK, R6						      ; 4635
+		         58	  04 AA46  DE 0090F 	    MOVAL   DBG$GL_SEMAN2+4[R6], R8				      ;
+		         57	     6B46  DE 00914 	    MOVAL   DBG$GL_SEMAN1[R6], R7				      ;
+				       57  DD 00918 	    PUSHL   R7							      ;
+			    00000000G  EF  9F 0091A 	    PUSHAB  DBG$GL_DIMENLST					      ;
+				       67  DD 00920 	    PUSHL   (R7)						      ;
+	      00000000G  EF	       03  FB 00922 	    CALLS   #3, DBG$GETARRAYADR					      ;
+		         59	       50  D0 00929 	    MOVL    R0, TYPE						      ;
+	   00	         6E	       00  2C 0092C 	    MOVC5   #0, (SP), #0, #32, DBG$GL_DIMENLST			      ;
+	      00000000G  EF	       20     00930									      ;
+		         50 00000000G  EF  D0 00936 	    MOVL    DBG$GB_MOD_PTR, R0					      ;
+		    08   A0	  02   A8  90 0093D 	    MOVB    2(R8), 8(R0)					      ;
+		       6A46	       59  D0 00942 	    MOVL    TYPE, DBG$GL_SEMAN2[R6]				      ;
+		         03	  08   A0  E9 00946 	    BLBC    8(R0), 85$						      ;
+				     0087  31 0094A 	    BRW     97$							      ;
+				       04  DD 0094D 85$:    PUSHL   #4							      ;
+				       67  DD 0094F 	    PUSHL   (R7)						      ;
+	      00000000G  EF	       02  FB 00951 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         77	       97  D0 00958 	    MOVL    @(R7)+, -(R7)					      ;
+				     0080  31 0095B 	    BRW     99$							      ; 4584
+		         50	  08   AC  D0 0095E 86$:    MOVL    STACK, R0						      ; 4636
+		       6B40	  08 AB40  D0 00962 	    MOVL    DBG$GL_SEMAN1+8[R0], DBG$GL_SEMAN1[R0]		      ;
+		       6A40	  08 AA40  D0 00968 	    MOVL    DBG$GL_SEMAN2+8[R0], DBG$GL_SEMAN2[R0]		      ;
+				       13  11 0096E 	    BRB     89$							      ; 4584
+	      00000000G  EF	       08  88 00970 87$:    BISB2   #8, DBG$GL_CONTEXT+1				      ; 4637
+				       7A  11 00977 	    BRB     102$						      ; 4584
+				  08   AC  DD 00979 88$:    PUSHL   STACK						      ; 4639
+	      00000000G  EF	       01  FB 0097C 	    CALLS   #1, DBG$BREAK_SETUP					      ;
+				       6E  11 00983 89$:    BRB     102$						      ; 4584
+				       02  DD 00985 90$:    PUSHL   #2							      ; 4640
+	      00000000G  EF	       01  FB 00987 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				       0B  DD 0098E 	    PUSHL   #11							      ;
+				       30  11 00990 	    BRB     94$							      ;
+		         7E	  4A   8F  9A 00992 91$:    MOVZBL  #74, -(SP)						      ; 4641
+				     FF40  31 00996 	    BRW     79$							      ;
+				       03  DD 00999 92$:    PUSHL   #3							      ; 4642
+	      00000000G  EF	       01  FB 0099B 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+		         50	  08   AC  D0 009A2 	    MOVL    STACK, R0						      ;
+				     6B40  DD 009A6 	    PUSHL   DBG$GL_SEMAN1[R0]					      ;
+	      00000000G  EF	       01  FB 009A9 	    CALLS   #1, DBG$SET_NEW_MOD					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-10
+; Digital Equipment Corporation
+;
+				       0B  DD 009B0 	    PUSHL   #11							      ;
+	      00000000G  EF	       01  FB 009B2 	    CALLS   #1, DBG$SET_NEW_MOD					      ;
+				       76  11 009B9 	    BRB     107$						      ; 4584
+		         50	  08   AC  D0 009BB 93$:    MOVL    STACK, R0						      ; 4643
+				     6B40  DD 009BF 	    PUSHL   DBG$GL_SEMAN1[R0]					      ;
+				       03  DD 009C2 94$:    PUSHL   #3							      ;
+	      00000000G  EF	       02  FB 009C4 95$:    CALLS   #2, DBG$SET_OVERS					      ;
+				       64  11 009CB 	    BRB     107$						      ; 4584
+	      00000000G  EF	       01  88 009CD 96$:    BISB2   #1, DBG$GL_CONTEXT					      ; 4644
+				       5B  11 009D4 97$:    BRB     107$						      ; 4584
+	      00000000G  EF	  80   8F  88 009D6 98$:    BISB2   #128, DBG$GL_CONTEXT+1				      ; 4645
+				       51  11 009DE 99$:    BRB     107$						      ; 4584
+				  08   AC  DD 009E0 100$:   PUSHL   STACK						      ; 4646
+	      00000000G  EF	       01  FB 009E3 	    CALLS   #1, DBG$SHOW_PARAM					      ;
+				       45  11 009EA 	    BRB     107$						      ; 4584
+	      00000000G  EF	       20  88 009EC 101$:   BISB2   #32, DBG$GL_CONTEXT+1				      ; 4647
+				       3C  11 009F3 102$:   BRB     107$						      ; 4584
+		         52	  08   AC  D0 009F5 103$:   MOVL    STACK, R2						      ; 4648
+				  08 AB42  DD 009F9 	    PUSHL   DBG$GL_SEMAN1+8[R2]					      ;
+	      00000000G  EF	       01  FB 009FD 	    CALLS   #1, DBG$ADD_ARG					      ;
+		         0B	  08 AA42  D1 00A04 	    CMPL    DBG$GL_SEMAN2+8[R2], #11				      ;
+				       08  12 00A09 	    BNEQ    104$						      ;
+		    08   A0	  0C AB42  D0 00A0B 	    MOVL    DBG$GL_SEMAN1+12[R2], 8(POINTER)			      ;
+				       06  11 00A11 	    BRB     105$						      ;
+		    14   A0	  0C AB42  D0 00A13 104$:   MOVL    DBG$GL_SEMAN1+12[R2], 20(POINTER)			      ;
+		    0C   A0	  08 AA42  D0 00A19 105$:   MOVL    DBG$GL_SEMAN2+8[R2], 12(POINTER)			      ;
+		    10   A0	  0C AA42  D0 00A1F 	    MOVL    DBG$GL_SEMAN2+12[R2], 16(POINTER)			      ;
+				       0A  11 00A25 	    BRB     107$						      ; 4584
+				  08   AC  DD 00A27 106$:   PUSHL   STACK						      ; 4649
+	      00000000G  EF	       01  FB 00A2A 	    CALLS   #1, DBG$FOR_SUB					      ;
+				     00BA  31 00A31 107$:   BRW     117$						      ; 4584
+		         52	  08   AC  D0 00A34 108$:   MOVL    STACK, R2						      ; 4650
+		         0A	  08 AA42  D1 00A38 	    CMPL    DBG$GL_SEMAN2+8[R2], #10				      ;
+				       12  12 00A3D 	    BNEQ    109$						      ;
+				  08 AB42  DF 00A3F 	    PUSHAL  DBG$GL_SEMAN1+8[R2]					      ;
+	      00000000G  EF	       01  FB 00A43 	    CALLS   #1, DBG$CNV_F_TO_L					      ;
+		    08 AA42	       08  D0 00A4A 	    MOVL    #8, DBG$GL_SEMAN2+8[R2]				      ;
+				       16  11 00A4F 	    BRB     110$						      ;
+		         0B	  08 AA42  D1 00A51 109$:   CMPL    DBG$GL_SEMAN2+8[R2], #11				      ;
+				       0F  12 00A56 	    BNEQ    110$						      ;
+				  08 AB42  DF 00A58 	    PUSHAL  DBG$GL_SEMAN1+8[R2]					      ;
+	      00000000G  EF	       01  FB 00A5C 	    CALLS   #1, DBG$CNV_D_TO_L					      ;
+		       6A42	       08  D0 00A63 	    MOVL    #8, DBG$GL_SEMAN2[R2]				      ;
+		         53	  18 AA42  DE 00A67 110$:   MOVAL   DBG$GL_SEMAN2+24[R2], R3				      ;
+		         0A	       63  D1 00A6C 	    CMPL    (R3), #10						      ;
+				       0D  12 00A6F 	    BNEQ    111$						      ;
+				  18 AB42  DF 00A71 	    PUSHAL  DBG$GL_SEMAN1+24[R2]				      ;
+	      00000000G  EF	       01  FB 00A75 	    CALLS   #1, DBG$CNV_F_TO_L					      ;
+				       10  11 00A7C 	    BRB     112$						      ;
+		         0B	       63  D1 00A7E 111$:   CMPL    (R3), #11						      ;
+				       0E  12 00A81 	    BNEQ    113$						      ;
+				  18 AB42  DF 00A83 	    PUSHAL  DBG$GL_SEMAN1+24[R2]				      ;
+	      00000000G  EF	       01  FB 00A87 	    CALLS   #1, DBG$CNV_D_TO_L					      ;
+		         63	       08  D0 00A8E 112$:   MOVL    #8, (R3)						      ;
+	      00000000G  EF	  08 AB42  D0 00A91 113$:   MOVL    DBG$GL_SEMAN1+8[R2], DBG$GL_DIMENLST+32		      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 11-11
+; Digital Equipment Corporation
+;
+	   50	    18 AB42	  08 AB42  C3 00A9A 	    SUBL3   DBG$GL_SEMAN1+8[R2], DBG$GL_SEMAN1+24[R2], R0	      ;
+00000000G  EF	         50	       01  C1 00AA2 	    ADDL3   #1, R0, DBG$GL_ASCI_LEN				      ;
+	      00000050   8F 00000000G  EF  D1 00AAA 	    CMPL    DBG$GL_ASCI_LEN, #80				      ;
+				       08  15 00AB5 	    BLEQ    114$						      ;
+	      00000000G  EF	  50   8F  9A 00AB7 	    MOVZBL  #80, DBG$GL_ASCI_LEN				      ;
+	      00000000G  EF	       01  D0 00ABF 114$:   MOVL    #1, DBG$GL_DIMENLST+36				      ;
+				       26  11 00AC6 	    BRB     117$						      ; 4584
+		         50	  08   AC  D0 00AC8 115$:   MOVL    STACK, R0						      ; 4651
+		         08	     6A40  D1 00ACC 	    CMPL    DBG$GL_SEMAN2[R0], #8				      ;
+				       0F  12 00AD0 	    BNEQ    116$						      ;
+		         08	  10 AA40  D1 00AD2 	    CMPL    DBG$GL_SEMAN2+16[R0], #8				      ;
+				       08  12 00AD7 	    BNEQ    116$						      ;
+		       6B40	  10 AB40  CC 00AD9 	    XORL2   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0]		      ;
+				       0D  11 00ADF 	    BRB     117$						      ;
+			    00028300   8F  DD 00AE1 116$:   PUSHL   #164608						      ;
+	      00000000G  00	       01  FB 00AE7 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50	       01  D0 00AEE 117$:   MOVL    #1, R0						      ; 4658
+					   04 00AF1 	    RET     							      ;
+				       50  D4 00AF2 118$:   CLRL    R0							      ; 4535
+					   04 00AF4 	    RET     							      ;
+
+; Routine Size:  1923 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12
+; Digital Equipment Corporation
+;
+;	4660	GLOBAL ROUTINE dbg$mar_reductn (action_key, stack, lex_stg_desc, lahead_stg_desc, parse_stg_desc) =
+;	4661	!++
+;	4662	! Functional description:
+;	4663	!	Does the action associated with a reduction. The action is chosen
+;	4664	!	based on the action_key, which is the name of an action routine
+;	4665	!	as specified in the semantics table.
+;	4666	!
+;	4667	! Formal parameters:
+;	4668	!	action_key	- name of the action routine
+;	4669	!	stack	- top of stack in the context of the reduction
+;	4670	!	lex_stg_desc	- string descriptor for lexemes
+;	4671	!	lahead_stg_desc	- string descriptor for look ahead
+;	4672	!	parse_stg_desc	- string descriptor to hold original command line
+;	4673	!
+;	4674	! Implicit inputs:
+;	4675	!	the names of the two parse stacks, dbg$gl_seman1 and
+;	4676	!	dbg$gl_seman2.
+;	4677	!
+;	4678	! Outputs:
+;	4679	!	none
+;	4680	!
+;	4681	! Routine value:
+;	4682	!	TRUE or FALSE
+;	4683	!
+;	4684	! Side effects:
+;	4685	!	The top of stack is often changed. Arguments are put into
+;	4686	!	linked lists, context values are altered.
+;	4687	!--
+;	4688	
+;	4689	    BEGIN
+;	4690	    MAP
+;	4691		lex_stg_desc	: REF BLOCK [ ,BYTE],
+;	4692		lahead_stg_desc	: REF BLOCK [ ,BYTE],
+;	4693		parse_stg_desc	: REF BLOCK [ ,BYTE];
+;	4694	
+;	4695	%IF dbg_par_mar
+;     L 4696	%THEN
+;     U 4697		IF .lex_stg_desc[dsc$w_length] GTR 0
+;     U 4698		THEN
+;     U 4699		    $fao_tt_out ('lexeme_stg: !AS', .lex_stg_desc);
+;     U 4700		IF .lahead_stg_desc[dsc$w_length] GTR 0
+;     U 4701		THEN
+;     U 4702		    $fao_tt_out ('lahead_stg: !AS', .lahead_stg_desc);
+;     U 4703		IF .parse_stg_desc[dsc$w_length] LEQU 40
+;     U 4704		THEN
+;     U 4705		    $fao_tt_out ('parse_stg: !AS', .parse_stg_desc);
+;     U 4706		$fao_tt_out('mar_reductn: stack = !XL!XL!XL!XL type is !XL !SL',
+;     U 4707			.dbg$gl_seman1[.stack+3], .dbg$gl_seman1[.stack+2],
+;     U 4708			.dbg$gl_seman1[.stack+1], .dbg$gl_seman1[.stack+0],
+;     U 4709			.dbg$gl_seman2[.stack+1], .dbg$gl_seman2[.stack]);
+;     U 4710	%FI
+;	4711	
+;	4712	    CASE .action_key FROM 1 TO marnone OF
+;	4713	
+;	4714		SET
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-1
+; Digital Equipment Corporation
+;
+;	4715	
+;	4716		[maraftcnt]:	get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4717		[marbreacb]:	dbg$gl_list[2] = get_bpt_actions(.parse_stg_desc);
+;	4718		[mardefnam]:	save_name (.stack, .lex_stg_desc);
+;	4719		[marquotec]:	BEGIN
+;	4720				dbg$gl_seman1[.stack] = extract_string (.parse_stg_desc);
+;	4721				dbg$gl_seman1[.stack+1] = .dbg$gl_seman1[.stack];
+;	4722				END;
+;	4723		[marsavmod]:	add_module (.stack, .lex_stg_desc);
+;	4724		[marsavpat]:	dbg$build_path (.lex_stg_desc);
+;	4725		[marsetlan]:	save_lang_name (.stack, .lex_stg_desc);
+;	4726		[marshcall]:	BEGIN
+;	4727				get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4728				dbg$gl_context[dbg$k_traceback] = TRUE;
+;	4729				END;
+;	4730		[marstcoun]:	get_step_count (.stack + dbg$k_spos_one, .lex_stg_desc);
+;	4731		[marstpcnt]:	get_step_count (.stack + dbg$k_spos_two, .lex_stg_desc);
+;	4732		[martrnnam]:	reduce_pathname (.stack, .lahead_stg_desc);
+;	4733		[maruqunam]:	translate_name (.stack, .lex_stg_desc);
+;	4734		[maraddexa]:	link_arg (.stack + dbg$k_spos_two);
+;	4735		[maraddexp]:	dbg$gl_seman1[.stack] = .dbg$gl_seman1[.stack] + .dbg$gl_seman1[.stack + dbg$k_spos_two];
+;	4736		[maraddmod]:	dbg$gl_context[dbg$k_module] = TRUE;
+;	4737		[maraddran]:	link_arg_pair (.stack + dbg$k_spos_two);
+;	4738		[marcalsub]:	link_arg (.stack + dbg$k_spos_one);
+;	4739		[marchaarg]:	dbg$cancel_parm (.stack);
+;	4740		[marcomlin]:	execute_cmd (.stack);
+;	4741		[mardefarg]:	link_exp_name (.stack);
+;	4742		[mardeflst]:	link_exp_name (.stack + dbg$k_spos_two);
+;	4743		[mardivexp]:	division (.stack);
+;	4744		[marexaone]:	link_arg (.stack);
+;	4745		[marexpran]:	link_arg_pair (.stack);
+;	4746		[marextbit]:	extract_bits (.stack);
+;	4747		[marindexp]:	indirection (.stack);
+;	4748		[marmulexp]:	dbg$gl_seman1[.stack] = .dbg$gl_seman1[.stack] * .dbg$gl_seman1[.stack + dbg$k_spos_two];
+;	4749		[marnegexp]:	negation (.stack);
+;	4750		[marovropl]:	dbg$set_overs (override_mode, .dbg$gl_seman1[.stack + dbg$k_spos_two]);
+;	4751		[marovropt]:	dbg$set_overs (override_mode, .dbg$gl_seman1[.stack + dbg$k_spos_one]);
+;	4752		[marovrstl]:	set_overr_step (.stack + dbg$k_spos_two);
+;	4753		[marovrstp]:	set_overr_step (.stack + dbg$k_spos_one);
+;	4754		[marposexp]:	positive (.stack);
+;	4755		[marrempar]:	remove_parens (.stack);
+;	4756		[marsavsco]:	dbg$gl_context[dbg$k_scope] = TRUE;
+;	4757		[marsetbra]:	bpt_with_acts (.stack);
+;	4758		[marsetbre]:	dbg$break_setup (.stack);
+;	4759		[marsetdec]:	set_dec_overs ;
+;	4760		[marsetmod]:	dbg$gl_context[dbg$k_mode] = TRUE;
+;	4761		[marsetstp]:	dbg$gl_context[dbg$k_step] = TRUE;
+;	4762		[marshfexp]:	dbg$gl_seman1[.stack] = .dbg$gl_seman1[.stack] ^ .dbg$gl_seman1[.stack + dbg$k_spos_two];
+;	4763		[marshoarg]:	dbg$show_param (.stack);
+;	4764		[marshocal]:	dbg$gl_context[DBG$K_TRACEBACK] = TRUE;
+;	4765		[marstaloc]:	link_arg (.stack + dbg$k_spos_one);
+;	4766		[marsubexp]:	dbg$gl_seman1[.stack] = .dbg$gl_seman1[.stack] - .dbg$gl_seman1[.stack + dbg$k_spos_two];
+;	4767		[marnone]:	0;
+;	4768	
+;	4769		[INRANGE, OUTRANGE]:	RETURN FALSE;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-2
+; Digital Equipment Corporation
+;
+;	4770	
+;	4771		TES;
+;	4772	
+;	4773	    RETURN TRUE
+;	4774	    END;
+
+
+
+
+
+					 0FFC 00AF5 	    .ENTRY  DBG$MAR_REDUCTN, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 4660
+		         58 00000000G  EF  9E 00AF7 	    MOVAB   DBG$GL_CONTEXT, R8					      ;
+		         59 00000000G  EF  9E 00AFE 	    MOVAB   DBG$ADD_ARG, R9					      ;
+		         5A 00000000G  EF  9E 00B05 	    MOVAB   DBG$GL_SEMAN2, R10					      ;
+		         5B 00000000G  EF  9E 00B0C 	    MOVAB   DBG$GL_SEMAN1, R11					      ;
+		         5E	       10  C2 00B13 	    SUBL2   #16, SP						      ;
+	   2D	         01	  04   AC  CF 00B16 	    CASEL   ACTION_KEY, #1, #45					      ; 4712
+	 0203	       0250	     005F     00B1B 1$:     .WORD   2$-1$,-						      ;
+	 0243	       023D	     026C     00B21		    24$-1$,-						      ;
+	 0112	       0231	     0070     00B27		    18$-1$,-						      ;
+	 0429	       0423	     03E5     00B2D		    27$-1$,-						      ;
+	 03D9	       0135	     02B2     00B33		    22$-1$,-						      ;
+	 0417	       025C	     027C     00B39		    23$-1$,-						      ;
+	 03C1	       0429	     03D9     00B3F		    3$-1$,-						      ;
+	 0344	       00DC	     0372     00B45		    21$-1$,-						      ;
+	 0407	       03FB	     00BA     00B4B		    10$-1$,-						      ;
+	 03D3	       00D0	     02DD     00B51		    61$-1$,-						      ;
+	 0293	       02F0	     0159     00B57		    67$-1$,-						      ;
+	 01F6	       0457	     00A2     00B5D		    69$-1$,-						      ;
+	 013F	       0135	     0366     00B63		    33$-1$,-						      ;
+	 0400	       037E	     03C1     00B69		    11$-1$,-						      ;
+	 03A7	       0388	     0394     00B6F		    59$-1$,-						      ;
+				     0461     00B75		    28$-1$,-						      ;
+								    26$-1$,-						      ;
+								    66$-1$,-						      ;
+								    59$-1$,-						      ;
+								    69$-1$,-						      ;
+								    56$-1$,-						      ;
+								    48$-1$,-						      ;
+								    8$-1$,-						      ;
+								    45$-1$,-						      ;
+								    5$-1$,-						      ;
+								    63$-1$,-						      ;
+								    65$-1$,-						      ;
+								    37$-1$,-						      ;
+								    6$-1$,-						      ;
+								    58$-1$,-						      ;
+								    14$-1$,-						      ;
+								    40$-1$,-						      ;
+								    30$-1$,-						      ;
+								    4$-1$,-						      ;
+								    73$-1$,-						      ;
+								    17$-1$,-						      ;
+								    46$-1$,-						      ;
+								    11$-1$,-						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-3
+; Digital Equipment Corporation
+;
+								    12$-1$,-						      ;
+								    56$-1$,-						      ;
+								    49$-1$,-						      ;
+								    64$-1$,-						      ;
+								    52$-1$,-						      ;
+								    50$-1$,-						      ;
+								    53$-1$,-						      ;
+								    74$-1$						      ;
+				     0406  31 00B77 	    BRW     75$							      ; 4769
+				  14   AC  DD 00B7A 2$:     PUSHL   PARSE_STG_DESC					      ; 4717
+		  F6BB   CF	       01  FB 00B7D 	    CALLS   #1, GET_BPT_ACTIONS					      ;
+	      00000000G  EF	       50  D0 00B82 	    MOVL    R0, DBG$GL_LIST+8					      ;
+				       6A  11 00B89 	    BRB     7$							      ; 4712
+		         57	  0C   AC  D0 00B8B 3$:     MOVL    LEX_STG_DESC, R7					      ; 4718
+		         50	       67  3C 00B8F 	    MOVZWL  (R7), R0						      ;
+		         50	       03  C0 00B92 	    ADDL2   #3, R0						      ;
+		         50	       04  C6 00B95 	    DIVL2   #4, R0						      ;
+				  02   A0  9F 00B98 	    PUSHAB  2(R0)						      ;
+	      00000000G  EF	       01  FB 00B9B 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 00BA2 	    MOVL    R0, POINTER						      ;
+      08   A6	    04   B7	       67  28 00BA5 	    MOVC3   (R7), @4(R7), 8(POINTER)				      ;
+		         66	       67  3C 00BAB 	    MOVZWL  (R7), (POINTER)					      ;
+		    04   A6	  08   A6  9E 00BAE 	    MOVAB   8(POINTER), 4(POINTER)				      ;
+		         50	  08   AC  D0 00BB3 	    MOVL    STACK, R0						      ;
+		       6A40	       56  D0 00BB7 	    MOVL    POINTER, DBG$GL_SEMAN2[R0]				      ;
+				       6D  11 00BBB 	    BRB     9$							      ; 4712
+		         52	  08   AC  D0 00BBD 4$:     MOVL    STACK, R2						      ; 4720
+				  14   AC  DD 00BC1 	    PUSHL   PARSE_STG_DESC					      ;
+		  F739   CF	       01  FB 00BC4 	    CALLS   #1, EXTRACT_STRING					      ;
+		       6B42	       50  D0 00BC9 	    MOVL    R0, DBG$GL_SEMAN1[R2]				      ;
+		    04 AB42	     6B42  D0 00BCD 	    MOVL    DBG$GL_SEMAN1[R2], DBG$GL_SEMAN1+4[R2]		      ; 4721
+				       55  11 00BD3 	    BRB     9$							      ; 4712
+		         52	  08   AC  D0 00BD5 5$:     MOVL    STACK, R2						      ; 4723
+				       01  DD 00BD9 	    PUSHL   #1							      ;
+				  0C   AC  DD 00BDB 	    PUSHL   LEX_STG_DESC					      ;
+	      00000000G  EF	       02  FB 00BDE 	    CALLS   #2, DBG$FIND_MODULE					      ;
+		       6B42	       50  D0 00BE5 	    MOVL    R0, DBG$GL_SEMAN1[R2]				      ;
+				       3F  11 00BE9 	    BRB     9$							      ; 4712
+				  0C   AC  DD 00BEB 6$:     PUSHL   LEX_STG_DESC					      ; 4724
+	      00000000G  EF	       01  FB 00BEE 	    CALLS   #1, DBG$BUILD_PATH					      ;
+				       33  11 00BF5 7$:     BRB     9$							      ; 4712
+		         57	  0C   AC  D0 00BF7 8$:     MOVL    LEX_STG_DESC, R7					      ; 4725
+		         50	       67  3C 00BFB 	    MOVZWL  (R7), R0						      ;
+		         50	       03  C0 00BFE 	    ADDL2   #3, R0						      ;
+		         50	       04  C6 00C01 	    DIVL2   #4, R0						      ;
+				  02   A0  9F 00C04 	    PUSHAB  2(R0)						      ;
+	      00000000G  EF	       01  FB 00C07 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 00C0E 	    MOVL    R0, POINTER						      ;
+      08   A6	    04   B7	       67  28 00C11 	    MOVC3   (R7), @4(R7), 8(POINTER)				      ;
+		         66	       67  3C 00C17 	    MOVZWL  (R7), (POINTER)					      ;
+		    04   A6	  08   A6  9E 00C1A 	    MOVAB   8(POINTER), 4(POINTER)				      ;
+		         50	  08   AC  D0 00C1F 	    MOVL    STACK, R0						      ;
+		       6A40	       56  D0 00C23 	    MOVL    POINTER, DBG$GL_SEMAN2[R0]				      ;
+		         68	       10  88 00C27 	    BISB2   #16, DBG$GL_CONTEXT					      ;
+				     034F  31 00C2A 9$:     BRW     74$							      ; 4712
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-4
+; Digital Equipment Corporation
+;
+				  0C   AC  DD 00C2D 10$:    PUSHL   LEX_STG_DESC					      ; 4727
+	   52	    08   AC	       02  C1 00C30 	    ADDL3   #2, STACK, R2					      ;
+				       52  DD 00C35 	    PUSHL   R2							      ;
+	      00000000G  EF	       02  FB 00C37 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				     6B42  DD 00C3E 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+		         69	       01  FB 00C41 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       02  DD 00C44 	    PUSHL   #2							      ;
+	      00000000G  EF	       01  FB 00C46 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				     02EE  31 00C4D 	    BRW     67$							      ; 4728
+				  0C   AC  DD 00C50 11$:    PUSHL   LEX_STG_DESC					      ; 4730
+	   52	    08   AC	       02  C1 00C53 	    ADDL3   #2, STACK, R2					      ;
+				       08  11 00C58 	    BRB     13$							      ;
+				  0C   AC  DD 00C5A 12$:    PUSHL   LEX_STG_DESC					      ; 4731
+	   52	    08   AC	       04  C1 00C5D 	    ADDL3   #4, STACK, R2					      ;
+				       52  DD 00C62 13$:    PUSHL   R2							      ;
+	      00000000G  EF	       02  FB 00C64 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				     6B42  DD 00C6B 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+		         69	       01  FB 00C6E 	    CALLS   #1, DBG$ADD_ARG					      ;
+				     01E0  31 00C71 	    BRW     43$							      ;
+		         52	  08   AC  D0 00C74 14$:    MOVL    STACK, R2						      ; 4732
+		         54	  04 AA42  DE 00C78 	    MOVAL   DBG$GL_SEMAN2+4[R2], R4				      ;
+				  08   AE  9F 00C7D 	    PUSHAB  TEMP_VALU_DESC					      ;
+	      00000000G  EF	       01  FB 00C80 	    CALLS   #1, DBG$PATH_TO_VAL					      ;
+		       6A42	       08  D0 00C87 	    MOVL    #8, DBG$GL_SEMAN2[R2]				      ;
+		         50	  08   AE  3C 00C8B 	    MOVZWL  TEMP_VALU_DESC, TEMP_NT_PTR				      ;
+				       08  13 00C8F 	    BEQL    15$							      ;
+		       6A42 00000000G  E0  9A 00C91 	    MOVZBL  DBG$_RST_BEGIN+2(TEMP_NT_PTR), DBG$GL_SEMAN2[R2]	      ;
+		         53	     6B42  DE 00C99 15$:    MOVAL   DBG$GL_SEMAN1[R2], R3				      ;
+		         51	  0A   AE  D0 00C9D 	    MOVL    TEMP_VALU_DESC+2, R1				      ;
+		         63	       51  D0 00CA1 	    MOVL    R1, (R3)						      ;
+		         64	       50  B0 00CA4 	    MOVW    TEMP_NT_PTR, (R4)					      ;
+				       50  D5 00CA7 	    TSTL    TEMP_NT_PTR						      ;
+				       4B  13 00CA9 	    BEQL    16$							      ;
+		         52 00000000G  E0  9E 00CAB 	    MOVAB   DBG$_RST_BEGIN(TEMP_NT_PTR), R2			      ;
+				  08   A2  B5 00CB2 	    TSTW    8(R2)						      ;
+				       3F  13 00CB5 	    BEQL    16$							      ;
+		         50	  04   A2  D0 00CB7 	    MOVL    4(R2), DST_RECRD					      ;
+      02   A0	         02	       00  ED 00CBB 	    CMPZV   #0, #2, 2(DST_RECRD), #2				      ;
+				       02     00CC0									      ;
+				       33  12 00CC1 	    BNEQ    16$							      ;
+		         54	       51  D0 00CC3 	    MOVL    R1, DESCRIP_BLOCK					      ;
+				4002   8F  BB 00CC6 	    PUSHR   #^M<R1,SP>						      ;
+	      00000000G  EF	       02  FB 00CCA 	    CALLS   #2, DBG$GET_BOUNDS					      ;
+		         63	       6E  D0 00CD1 	    MOVL    BOUNDS, (R3)					      ;
+		         0E	  02   A2  91 00CD4 	    CMPB    2(R2), #14						      ;
+				       1C  12 00CD8 	    BNEQ    16$							      ;
+	      00000000G  EF	       64  3C 00CDA 	    MOVZWL  (DESCRIP_BLOCK), DBG$GL_ASCI_LEN			      ;
+	      00000050   8F 00000000G  EF  D1 00CE1 	    CMPL    DBG$GL_ASCI_LEN, #80				      ;
+				       08  15 00CEC 	    BLEQ    16$							      ;
+	      00000000G  EF	  50   8F  9A 00CEE 	    MOVZBL  #80, DBG$GL_ASCI_LEN				      ;
+		         50 00000000G  EF  D0 00CF6 16$:    MOVL    DBG$GB_MOD_PTR, R0					      ;
+		         74	  08   A0  E8 00CFD 	    BLBS    8(R0), 25$						      ;
+				       04  DD 00D01 	    PUSHL   #4							      ;
+				       63  DD 00D03 	    PUSHL   (R3)						      ;
+	      00000000G  EF	       02  FB 00D05 	    CALLS   #2, DBG$READ_ACCESS					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-5
+; Digital Equipment Corporation
+;
+		         73	       93  D0 00D0C 	    MOVL    @(R3)+, -(R3)					      ;
+				       64  11 00D0F 	    BRB     25$							      ; 4712
+		         7E	  08   AC  7D 00D11 17$:    MOVQ    STACK, -(SP)					      ; 4733
+	      00000000G  EF	       02  FB 00D15 	    CALLS   #2, DBG$TRANS_NAME					      ;
+				       57  11 00D1C 	    BRB     25$							      ; 4712
+		         52	  08   AC  D0 00D1E 18$:    MOVL    STACK, R2						      ; 4734
+				  10 AB42  DD 00D22 	    PUSHL   DBG$GL_SEMAN1+16[R2]				      ;
+		         69	       01  FB 00D26 	    CALLS   #1, DBG$ADD_ARG					      ;
+		         0B	  10 AA42  D1 00D29 	    CMPL    DBG$GL_SEMAN2+16[R2], #11				      ;
+				       08  12 00D2E 	    BNEQ    19$							      ;
+		    08   A0	  14 AB42  D0 00D30 	    MOVL    DBG$GL_SEMAN1+20[R2], 8(POINTER)			      ;
+				       06  11 00D36 	    BRB     20$							      ;
+		    14   A0	  14 AB42  D0 00D38 19$:    MOVL    DBG$GL_SEMAN1+20[R2], 20(POINTER)			      ;
+		    0C   A0	  10 AA42  D0 00D3E 20$:    MOVL    DBG$GL_SEMAN2+16[R2], 12(POINTER)			      ;
+		    10   A0	  14 AA42  D0 00D44 	    MOVL    DBG$GL_SEMAN2+20[R2], 16(POINTER)			      ;
+				       7F  11 00D4A 	    BRB     32$							      ; 4712
+		         50	  08   AC  D0 00D4C 21$:    MOVL    STACK, R0						      ; 4735
+		       6B40	  10 AB40  C0 00D50 	    ADDL2   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0]		      ;
+				       73  11 00D56 	    BRB     32$							      ; 4712
+		    01   A8	       10  88 00D58 22$:    BISB2   #16, DBG$GL_CONTEXT+1				      ; 4736
+				       6D  11 00D5C 	    BRB     32$							      ; 4712
+		         52	  08   AC  D0 00D5E 23$:    MOVL    STACK, R2						      ; 4737
+				  10 AB42  DD 00D62 	    PUSHL   DBG$GL_SEMAN1+16[R2]				      ;
+		         69	       01  FB 00D66 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       3B  11 00D69 	    BRB     29$							      ;
+				  08   AC  DD 00D6B 24$:    PUSHL   STACK						      ; 4739
+	      00000000G  EF	       01  FB 00D6E 	    CALLS   #1, DBG$CANCEL_PARM					      ;
+				       7F  11 00D75 25$:    BRB     36$							      ; 4712
+				  08   AC  DD 00D77 26$:    PUSHL   STACK						      ; 4740
+	      00000000G  EF	       01  FB 00D7A 	    CALLS   #1, DBG$PERFORM_CMD					      ;
+		         72	       50  E8 00D81 	    BLBS    R0, 36$						      ;
+				     01F9  31 00D84 	    BRW     75$							      ;
+		         52	  08   AC  D0 00D87 27$:    MOVL    STACK, R2						      ; 4741
+				     6A42  DD 00D8B 	    PUSHL   DBG$GL_SEMAN2[R2]					      ;
+		         69	       01  FB 00D8E 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       50  D5 00D91 	    TSTL    POINTER						      ;
+				       73  13 00D93 	    BEQL    39$							      ;
+				       6B  11 00D95 	    BRB     38$							      ;
+		         52	  08   AC  D0 00D97 28$:    MOVL    STACK, R2						      ; 4742
+				  10 AA42  DD 00D9B 	    PUSHL   DBG$GL_SEMAN2+16[R2]				      ;
+		         69	       01  FB 00D9F 	    CALLS   #1, DBG$ADD_ARG					      ;
+				       50  D5 00DA2 	    TSTL    POINTER						      ;
+				       62  13 00DA4 	    BEQL    39$							      ;
+		    08   A0	  20 AB42  D0 00DA6 29$:    MOVL    DBG$GL_SEMAN1+32[R2], 8(POINTER)			      ;
+				       5A  11 00DAC 	    BRB     39$							      ; 4712
+		         52	  08   AC  D0 00DAE 30$:    MOVL    STACK, R2						      ; 4743
+				  10 AB42  D5 00DB2 	    TSTL    DBG$GL_SEMAN1+16[R2]				      ;
+				       0D  12 00DB6 	    BNEQ    31$							      ;
+			    000282F0   8F  DD 00DB8 	    PUSHL   #164592						      ;
+	      00000000G  00	       01  FB 00DBE 	    CALLS   #1, LIB$SIGNAL					      ;
+		       6B42	  10 AB42  C6 00DC5 31$:    DIVL2   DBG$GL_SEMAN1+16[R2], DBG$GL_SEMAN1[R2]		      ;
+				       3B  11 00DCB 32$:    BRB     39$							      ; 4712
+		         52	  08   AC  D0 00DCD 33$:    MOVL    STACK, R2						      ; 4744
+				     6B42  DD 00DD1 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+		         69	       01  FB 00DD4 	    CALLS   #1, DBG$ADD_ARG					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-6
+; Digital Equipment Corporation
+;
+		         0B	     6A42  D1 00DD7 	    CMPL    DBG$GL_SEMAN2[R2], #11				      ;
+				       08  12 00DDB 	    BNEQ    34$							      ;
+		    08   A0	  04 AB42  D0 00DDD 	    MOVL    DBG$GL_SEMAN1+4[R2], 8(POINTER)			      ;
+				       06  11 00DE3 	    BRB     35$							      ;
+		    14   A0	  04 AB42  D0 00DE5 34$:    MOVL    DBG$GL_SEMAN1+4[R2], 20(POINTER)			      ;
+		    0C   A0	     6A42  D0 00DEB 35$:    MOVL    DBG$GL_SEMAN2[R2], 12(POINTER)			      ;
+		    10   A0	  04 AA42  D0 00DF0 	    MOVL    DBG$GL_SEMAN2+4[R2], 16(POINTER)			      ;
+				       65  11 00DF6 36$:    BRB     44$							      ; 4712
+		         52	  08   AC  D0 00DF8 37$:    MOVL    STACK, R2						      ; 4745
+				     6B42  DD 00DFC 	    PUSHL   DBG$GL_SEMAN1[R2]					      ;
+		         69	       01  FB 00DFF 	    CALLS   #1, DBG$ADD_ARG					      ;
+		    08   A0	  10 AB42  D0 00E02 38$:    MOVL    DBG$GL_SEMAN1+16[R2], 8(POINTER)			      ;
+				     0080  31 00E08 39$:    BRW     47$							      ; 4712
+		         52	  08   AC  D0 00E0B 40$:    MOVL    STACK, R2						      ; 4746
+		         53	     6B42  D0 00E0F 	    MOVL    DBG$GL_SEMAN1[R2], VALUE				      ;
+		         1F	  10 AB42  D1 00E13 	    CMPL    DBG$GL_SEMAN1+16[R2], #31				      ;
+				       10  14 00E18 	    BGTR    41$							      ;
+		         1F	  20 AB42  D1 00E1A 	    CMPL    DBG$GL_SEMAN1+32[R2], #31				      ;
+				       09  14 00E1F 	    BGTR    41$							      ;
+		    10 AB42	  20 AB42  D1 00E21 	    CMPL    DBG$GL_SEMAN1+32[R2], DBG$GL_SEMAN1+16[R2]		      ;
+				       0D  15 00E28 	    BLEQ    42$							      ;
+			    000282F8   8F  DD 00E2A 41$:    PUSHL   #164600						      ;
+	      00000000G  00	       01  FB 00E30 	    CALLS   #1, LIB$SIGNAL					      ;
+	   50	    10 AB42	  20 AB42  C3 00E37 42$:    SUBL3   DBG$GL_SEMAN1+32[R2], DBG$GL_SEMAN1+16[R2], R0	      ;
+				       50  D6 00E3F 	    INCL    R0							      ;
+	   53	         50	  20 AB42  EF 00E41 	    EXTZV   DBG$GL_SEMAN1+32[R2], R0, VALUE, DBG$GL_SEMAN1[R2]	      ;
+				     6B42     00E47									      ;
+				       02  DD 00E49 	    PUSHL   #2							      ;
+				       03  DD 00E4B 	    PUSHL   #3							      ;
+	      00000000G  EF	       02  FB 00E4D 	    CALLS   #2, DBG$INIT_MODES					      ;
+				       02  DD 00E54 43$:    PUSHL   #2							      ;
+	      00000000G  EF	       01  FB 00E56 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				       7B  11 00E5D 44$:    BRB     55$							      ; 4712
+				       04  DD 00E5F 45$:    PUSHL   #4							      ; 4747
+		         52	  08   AC  D0 00E61 	    MOVL    STACK, R2						      ;
+				  08 AB42  DD 00E65 	    PUSHL   DBG$GL_SEMAN1+8[R2]					      ;
+	      00000000G  EF	       02  FB 00E69 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         50	  08 AB42  D0 00E70 	    MOVL    DBG$GL_SEMAN1+8[R2], R0				      ;
+		       6B42	       60  D0 00E75 	    MOVL    (R0), DBG$GL_SEMAN1[R2]				      ;
+		       6A42	  08 AA42  D0 00E79 	    MOVL    DBG$GL_SEMAN2+8[R2], DBG$GL_SEMAN2[R2]		      ;
+				       7D  11 00E7F 	    BRB     60$							      ; 4712
+		         50	  08   AC  D0 00E81 46$:    MOVL    STACK, R0						      ; 4748
+		       6B40	  10 AB40  C4 00E85 	    MULL2   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0]		      ;
+				       71  11 00E8B 47$:    BRB     60$							      ; 4712
+		         50	  08   AC  D0 00E8D 48$:    MOVL    STACK, R0						      ; 4749
+		       6B40	  08 AB40  CE 00E91 	    MNEGL   DBG$GL_SEMAN1+8[R0], DBG$GL_SEMAN1[R0]		      ;
+				       4D  11 00E97 	    BRB     57$							      ;
+		         50	  08   AC  D0 00E99 49$:    MOVL    STACK, R0						      ; 4750
+				  10 AB40  DD 00E9D 	    PUSHL   DBG$GL_SEMAN1+16[R0]				      ;
+				       08  11 00EA1 	    BRB     51$							      ;
+		         50	  08   AC  D0 00EA3 50$:    MOVL    STACK, R0						      ; 4751
+				  08 AB40  DD 00EA7 	    PUSHL   DBG$GL_SEMAN1+8[R0]					      ;
+				       02  DD 00EAB 51$:    PUSHL   #2							      ;
+				       5E  11 00EAD 	    BRB     62$							      ;
+				       02  DD 00EAF 52$:    PUSHL   #2							      ; 4752
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-7
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       01  FB 00EB1 	    CALLS   #1, DBG$SET_STP_LVL					      ;
+		         50	  08   AC  D0 00EB8 	    MOVL    STACK, R0						      ;
+				  10 AB40  DD 00EBC 	    PUSHL   DBG$GL_SEMAN1+16[R0]				      ;
+				       11  11 00EC0 	    BRB     54$							      ;
+				       02  DD 00EC2 53$:    PUSHL   #2							      ; 4753
+	      00000000G  EF	       01  FB 00EC4 	    CALLS   #1, DBG$SET_STP_LVL					      ;
+		         50	  08   AC  D0 00ECB 	    MOVL    STACK, R0						      ;
+				  08 AB40  DD 00ECF 	    PUSHL   DBG$GL_SEMAN1+8[R0]					      ;
+	      00000000G  EF	       01  FB 00ED3 54$:    CALLS   #1, DBG$SET_NEW_STP					      ;
+				       66  11 00EDA 55$:    BRB     68$							      ; 4712
+		         50	  08   AC  D0 00EDC 56$:    MOVL    STACK, R0						      ; 4755
+		       6B40	  08 AB40  D0 00EE0 	    MOVL    DBG$GL_SEMAN1+8[R0], DBG$GL_SEMAN1[R0]		      ;
+		       6A40	  08 AA40  D0 00EE6 57$:    MOVL    DBG$GL_SEMAN2+8[R0], DBG$GL_SEMAN2[R0]		      ;
+				       54  11 00EEC 	    BRB     68$							      ; 4712
+		    01   A8	       08  88 00EEE 58$:    BISB2   #8, DBG$GL_CONTEXT+1				      ; 4756
+				       7C  11 00EF2 	    BRB     72$							      ; 4712
+				  08   AC  DD 00EF4 59$:    PUSHL   STACK						      ; 4758
+	      00000000G  EF	       01  FB 00EF7 	    CALLS   #1, DBG$BREAK_SETUP					      ;
+				       7C  11 00EFE 60$:    BRB     74$							      ; 4712
+				       02  DD 00F00 61$:    PUSHL   #2							      ; 4759
+	      00000000G  EF	       01  FB 00F02 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				       0B  DD 00F09 	    PUSHL   #11							      ;
+				       03  DD 00F0B 	    PUSHL   #3							      ;
+	      00000000G  EF	       02  FB 00F0D 62$:    CALLS   #2, DBG$SET_OVERS					      ;
+				       66  11 00F14 	    BRB     74$							      ; 4712
+		         68	       01  88 00F16 63$:    BISB2   #1, DBG$GL_CONTEXT					      ; 4760
+				       61  11 00F19 	    BRB     74$							      ; 4712
+		    01   A8	  80   8F  88 00F1B 64$:    BISB2   #128, DBG$GL_CONTEXT+1				      ; 4761
+				       5A  11 00F20 	    BRB     74$							      ; 4712
+		         50	  08   AC  D0 00F22 65$:    MOVL    STACK, R0						      ; 4762
+				  10 AB40  DF 00F26 	    PUSHAL  DBG$GL_SEMAN1+16[R0]				      ;
+	 6B40	       6B40	       9E  78 00F2A 	    ASHL    @(SP)+, DBG$GL_SEMAN1[R0], DBG$GL_SEMAN1[R0]	      ;
+				       4A  11 00F30 	    BRB     74$							      ; 4712
+				  08   AC  DD 00F32 66$:    PUSHL   STACK						      ; 4763
+	      00000000G  EF	       01  FB 00F35 	    CALLS   #1, DBG$SHOW_PARAM					      ;
+				       3E  11 00F3C 	    BRB     74$							      ; 4712
+		    01   A8	       20  88 00F3E 67$:    BISB2   #32, DBG$GL_CONTEXT+1				      ; 4764
+				       38  11 00F42 68$:    BRB     74$							      ; 4712
+		         52	  08   AC  D0 00F44 69$:    MOVL    STACK, R2						      ; 4765
+				  08 AB42  DD 00F48 	    PUSHL   DBG$GL_SEMAN1+8[R2]					      ;
+		         69	       01  FB 00F4C 	    CALLS   #1, DBG$ADD_ARG					      ;
+		         0B	  08 AA42  D1 00F4F 	    CMPL    DBG$GL_SEMAN2+8[R2], #11				      ;
+				       08  12 00F54 	    BNEQ    70$							      ;
+		    08   A0	  0C AB42  D0 00F56 	    MOVL    DBG$GL_SEMAN1+12[R2], 8(POINTER)			      ;
+				       06  11 00F5C 	    BRB     71$							      ;
+		    14   A0	  0C AB42  D0 00F5E 70$:    MOVL    DBG$GL_SEMAN1+12[R2], 20(POINTER)			      ;
+		    0C   A0	  08 AA42  D0 00F64 71$:    MOVL    DBG$GL_SEMAN2+8[R2], 12(POINTER)			      ;
+		    10   A0	  0C AA42  D0 00F6A 	    MOVL    DBG$GL_SEMAN2+12[R2], 16(POINTER)			      ;
+				       0A  11 00F70 72$:    BRB     74$							      ; 4712
+		         50	  08   AC  D0 00F72 73$:    MOVL    STACK, R0						      ; 4766
+		       6B40	  10 AB40  C2 00F76 	    SUBL2   DBG$GL_SEMAN1+16[R0], DBG$GL_SEMAN1[R0]		      ;
+		         50	       01  D0 00F7C 74$:    MOVL    #1, R0						      ; 4773
+					   04 00F7F 	    RET     							      ;
+				       50  D4 00F80 75$:    CLRL    R0							      ; 4660
+					   04 00F82 	    RET     							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 12-8
+; Digital Equipment Corporation
+;
+
+; Routine Size:  1166 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14	DBB3:[DEBUG.SRC]DBGPAR.B32;7					Page 13
+; Digital Equipment Corporation
+;
+;	4775	%IF bliss_syntax
+;     L 4776	%THEN
+;     U 4777	
+;     U 4778	GLOBAL ROUTINE dbg$bli_reductn (action_key, stack_pointer) =
+;     U 4779	
+;     U 4780	!++
+;     U 4781	! Functional description:
+;     U 4782	!	Does the action associated with a reduction. The action is chosen
+;     U 4783	!	based on the action_key, which is the name of an action routine
+;     U 4784	!	as specified in the semantics table.
+;     U 4785	!--
+;     U 4786	
+;     U 4787		BEGIN
+;     U 4788		END;
+;     U 4789	%FI
+;	4790	
+;	4791	
+;	4792	END
+;	4793	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	  3971  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        10         0       226
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	     3257	01:46.5		01:51.8
+;	FLOWAN	     1104	00:22.0		00:22.0
+;	DELAY	      536	00:06.3		00:06.3
+;	TNBIND	      107	00:10.6		00:10.7
+;	CODE	      785	00:31.5		00:31.5
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:27:14									Page 13-1
+; Digital Equipment Corporation
+;
+;	FINAL	      489	00:28.9		00:29.5
+;	Total	     6278	03:25.8		03:31.7
+
+; Size:		3971 code + 0 data bytes
+; Run Time:	03:26.6
+; Elapsed Time:	03:32.7
+; Memory Used:	859 pages
+; Compilation Complete

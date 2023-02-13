@@ -1,0 +1,708 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE PATSYM (
+;	0002			%IF %VARIANT EQL 1
+;     L 0003			%THEN
+;	0004				ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE, NONEXTERNAL = LONG_RELATIVE),
+;	0005			%FI
+;	0006			IDENT = 'X01.08') =
+;	0007	BEGIN
+;	0008	
+;	0009	!
+;	0010	! COPYRIGHT (c) 1977,1978
+;	0011	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0012	!
+;	0013	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0014	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0015	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0016	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0017	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0018	! TRANSFERRED.
+;	0019	!
+;	0020	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0021	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0022	! CORPORATION.
+;	0023	!
+;	0024	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0025	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0026	!
+;	0027	
+;	0028	!++
+;	0029	! FACILITY:	PATCH
+;	0030	!
+;	0031	! ABSTRACT:
+;	0032	!
+;	0033	!	This module contains the routines for manipulating the
+;	0034	!	user-defined and global symbols.
+;	0035	!
+;	0036	! ENVIRONMENT:	STARLET, user mode, interrupts disabled.
+;	0037	!
+;	0038	! Version:	X01.08
+;	0039	!
+;	0040	! History:
+;	0041	!	Author:
+;	0042	!		Carol Peters, 13 Dec 1976: Version 01
+;	0043	!
+;	0044	!	Modified by:
+;	0045	!		Kathleen Morse, 19 Oct 1977: Version X01.00
+;	0046	!
+;	0047	! Revision history:
+;	0048	!
+;	0049	!  NO	DATE		PROGRAMMER		PURPOSE
+;	0050	!  --	----		----------		-------
+;	0051	!
+;	0052	!  00	19-OCT-77	K.D. MORSE		ADAPT VERSION 15 FOR PATCH
+;	0053	!  01	5-JAN-78	K.D. MORSE		NO CHANGES FOR 16-17.
+;	0054	!  02	7-MAR-78	K.D. MORSE		ADD PAT$VAL_TO_DEF.
+;	0055	!  03	7-APR-78	K.D. MORSE		ADD PAT$FIND_VAL TO LOOK UP
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!						USER-DEFINED SYMBOLS (18).
+;	0057	!  04	25-APR-78	K.D. MORSE		CONVERT TO NATIVE COMPILER.
+;	0058	!  05	18-MAY-78	K.D. MORSE		NO CHANGES FOR VERS 19.
+;	0059	!  06	06-JUN-78	K.D. MORSE		REMOVE PAT$VAL_TO_DEF AND ADD
+;	0060	!						CODE TO PAT$FIND_VAL TO FIND
+;	0061	!						CLOSEST VALUE.
+;	0062	!  07	07-JUN-78	K.D. MORSE		ADD PAT$ADD_LABELS.
+;	0063	!  08	13-JUN-78	K.D. MORSE		ADD FAO COUNTS TO SIGNALS.
+;	0064	!
+;	0065	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 2
+; Digital Equipment Corporation
+;
+;	0066	FORWARD ROUTINE
+;	0067		PAT$FIND_VAL,						! Lookup symbol given value
+;	0068		PAT$DEFINE_SYM : NOVALUE,				! Stores a user-defined symbol in the symbol table
+;	0069		PAT$FIND_SYM,						! Finds a symbol in symbol table
+;	0070		PAT$ADD_LABELS : NOVALUE;				! Adds labels from one symbol list to user-defined symbol table
+;	0071	
+;	0072	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0073	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0113	REQUIRE 'SRC$:PATPCT.REQ';
+;	0129	REQUIRE 'SRC$:PATGEN.REQ';
+;	0308	REQUIRE 'LIB$:PATMSG.REQ';
+;	0466	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0517	REQUIRE 'SRC$:DLLNAM.REQ';
+;	0550	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0558	SWITCHES LIST (SOURCE);
+;      R0559	
+;      R0560	EXTERNAL ROUTINE
+;      R0561		PAT$fao_out;		! formats a line and outputs to the terminal
+;      R0562	
+;      R0563	SWITCHES LIST (NOSOURCE);
+;	0608	
+;	0609	EXTERNAL ROUTINE
+;	0610		PAT$FREERELEASE,					! Deallocates a block of free storage
+;	0611		PAT$FREEZ;						! Allocates a block of free storage
+;	0612	
+;	0613	EXTERNAL
+;	0614		PAT$GL_SYMHEAD,						! Pointer to listhead entry of user-defined symbol table
+;	0615		PAT$GL_SYMTBPTR;					! Symbol table listhead
+;	0616	
+;	0617	BUILTIN
+;	0618		INSQUE;
+;	0619	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 3
+; Digital Equipment Corporation
+;
+;	0620	GLOBAL ROUTINE PAT$FIND_VAL (VALUE, MATCH_FLAG) =
+;	0621	
+;	0622	!++
+;	0623	! Functional description:
+;	0624	!
+;	0625	!	Searches (in a binary manner) through the doubly-linked symbol
+;	0626	!	table for the name of a symbol which matches the given value.
+;	0627	!	If such a symbol is found, the address of the entry is
+;	0628	!	returned.  Otherwise 0 is returned.
+;	0629	!
+;	0630	!	If MATCH_FLAG is TRUE, an exact match must be found.
+;	0631	!	Otherwise we return a pointer to the closest lower symbol.
+;	0632	!
+;	0633	! Calling sequence:
+;	0634	!
+;	0635	!	CALLS #2, PAT$FIND_VAL
+;	0636	!
+;	0637	! Inputs:
+;	0638	!
+;	0639	!	VALUE		-the key we are to search for
+;	0640	!	MATCH_FLAG	-TRUE => insist on an exact match,
+;	0641	!			 FALSE => the closest one will do.
+;	0642	!
+;	0643	! Implicit inputs:
+;	0644	!
+;	0645	!	PAT$GL_SYMTBPTR, pointer to the header link in the current symbol table.
+;	0646	!
+;	0647	! Outputs:
+;	0648	!
+;	0649	!	The address of the symbol entry, or zero, if the name is not found.
+;	0650	!
+;	0651	! Implicit outputs:
+;	0652	!
+;	0653	!	none
+;	0654	!
+;	0655	! Routine value:
+;	0656	!
+;	0657	!	an address or zero
+;	0658	!
+;	0659	! Side effects:
+;	0660	!
+;	0661	!	none
+;	0662	!--
+;	0663	
+;	0664	BEGIN
+;	0665	
+;	0666	LOCAL
+;	0667		RETURN_PTR,						! Pointer to closest matched entry
+;	0668		POINTER;						! Pointer to current symbol entry
+;	0669	
+;	0670	!++
+;	0671	! Assume there is no closest match (RETURN_PTR = 0).
+;	0672	!--
+;	0673	RETURN_PTR = 0;
+;	0674	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 3-1
+; Digital Equipment Corporation
+;
+;	0675	!++
+;	0676	! Set pointer to the first entry in the table.  Loop, searching the table
+;	0677	! until an exact match is found or there is no more table.
+;	0678	!--
+;	0679	POINTER = .DLL_RLINK (.PAT$GL_SYMTBPTR);
+;	0680	WHILE .POINTER NEQ .PAT$GL_SYMTBPTR
+;	0681	DO
+;	0682		BEGIN
+;	0683		!++
+;	0684		! Look for exact match.
+;	0685		!--
+;	0686		IF (.SYM_VALUE(.POINTER) EQLU .VALUE)
+;	0687		THEN
+;	0688			RETURN .POINTER;
+;	0689	
+;	0690		!++
+;	0691		! Check if closest match is desired.  If so, check that current entry
+;	0692		! is less than the value sought and if it is closer than RETURN_PTR.
+;	0693		!--
+;	0694		IF (NOT .MATCH_FLAG)
+;	0695		THEN
+;	0696			IF (.SYM_VALUE(.POINTER) LEQU .VALUE)
+;	0697			THEN
+;	0698				BEGIN
+;	0699				IF (.RETURN_PTR EQLA 0)
+;	0700				THEN
+;	0701					RETURN_PTR = .POINTER
+;	0702				ELSE
+;	0703					IF (.SYM_VALUE(.RETURN_PTR) LEQU .SYM_VALUE(.POINTER))
+;	0704					THEN
+;	0705						RETURN_PTR = .POINTER;
+;	0706				END;
+;	0707			
+;	0708		!++
+;	0709		! Go back and look at the next element on the list.
+;	0710		!--
+;	0711		POINTER = .DLL_RLINK(.POINTER);
+;	0712		END;
+;	0713	RETURN(.RETURN_PTR);
+;	0714	END;
+
+
+							    .TITLE  PATSYM
+							    .IDENT  \X01.08\
+
+							    .GLOBL  PAT$FAO_OUT, PAT$FREERELEASE, PAT$FREEZ, PAT$GL_SYMHEAD
+							    .GLOBL  PAT$GL_SYMTBPTR
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 0004 00000 	    .ENTRY  PAT$FIND_VAL, Save R2				      ; 0620
+				       51  D4 00002 	    CLRL    RETURN_PTR						      ; 0673
+		         50 00000000G  FF  D0 00004 	    MOVL    @PAT$GL_SYMTBPTR, POINTER				      ; 0679
+		         52	  08   AC  D2 0000B 	    MCOML   MATCH_FLAG, R2					      ; 0694
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 3-2
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       50  D1 0000F 1$:     CMPL    POINTER, PAT$GL_SYMTBPTR				      ; 0680
+				       24  13 00016 	    BEQL    4$							      ;
+		    04   AC	  08   A0  D1 00018 	    CMPL    8(POINTER), VALUE					      ; 0686
+				       20  13 0001D 	    BEQL    5$							      ;
+		         15	       52  E9 0001F 	    BLBC    R2, 3$						      ; 0694
+		    04   AC	  08   A0  D1 00022 	    CMPL    8(POINTER), VALUE					      ; 0696
+				       0E  1A 00027 	    BGTRU   3$							      ;
+				       51  D5 00029 	    TSTL    RETURN_PTR						      ; 0699
+				       07  13 0002B 	    BEQL    2$							      ;
+		    08   A0	  08   A1  D1 0002D 	    CMPL    8(RETURN_PTR), 8(POINTER)				      ; 0703
+				       03  1A 00032 	    BGTRU   3$							      ;
+		         51	       50  D0 00034 2$:     MOVL    POINTER, RETURN_PTR					      ; 0705
+		         50	       60  D0 00037 3$:     MOVL    (POINTER), POINTER					      ; 0711
+				       D3  11 0003A 	    BRB     1$							      ; 0680
+		         50	       51  D0 0003C 4$:     MOVL    RETURN_PTR, R0					      ; 0713
+					   04 0003F 5$:     RET     							      ; 0620
+
+; Routine Size:  64 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 4
+; Digital Equipment Corporation
+;
+;	0715	GLOBAL ROUTINE PAT$DEFINE_SYM (STRING_DESC, VALUE, MSG_FLAG) : NOVALUE =
+;	0716	
+;	0717	!++
+;	0718	! Functional description:
+;	0719	!
+;	0720	!	Stores a user-defined symbol in the symbol table, which is a doubly
+;	0721	!	linked list.  First searches (in a binary fashion) the table to see
+;	0722	!	whether the symbol exists.  If it does not, then the symbol is
+;	0723	!	inserted, except if no free storage is left, in which case another
+;	0724	!	error message is reported from PAT$FREEZ.
+;	0725	!
+;	0726	! Calling sequence:
+;	0727	!
+;	0728	!	CALLS #2, PAT$DEFINE_SYM
+;	0729	!
+;	0730	! Inputs:
+;	0731	!
+;	0732	!	STRING_DESC	- a string descriptor describing the string
+;	0733	!			  representing the symbol.
+;	0734	!	VALUE		- the value to be stored as the equivalent of the
+;	0735	!			  symbol.
+;	0736	!	MSG_FLAG	- Indicator whether or not to print a define message,
+;	0737	!			  (TRUE=print message, FALSE=don't print message)
+;	0738	!
+;	0739	! Implicit inputs:
+;	0740	!
+;	0741	!	PAT$GL_SYMTBPTR, pointer to the header link in the current symbol table.
+;	0742	!
+;	0743	! Implicit outputs:
+;	0744	!
+;	0745	!	none
+;	0746	!
+;	0747	! Routine value:
+;	0748	!
+;	0749	!	novalue
+;	0750	!
+;	0751	! Side effects:
+;	0752	!
+;	0753	!	The symbol is inserted into the symbol table.  The links of
+;	0754	!	the table are appropriately adjusted.
+;	0755	!
+;	0756	!--
+;	0757	
+;	0758	BEGIN
+;	0759	
+;	0760	MAP
+;	0761		STRING_DESC : REF BLOCK [, BYTE];
+;	0762	
+;	0763	LOCAL
+;	0764		POINTER;
+;	0765	
+;	0766	POINTER = PAT$FIND_SYM (.STRING_DESC);
+;	0767	IF (.POINTER EQL 0)
+;	0768	THEN
+;	0769		BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 4-1
+; Digital Equipment Corporation
+;
+;	0770		!++
+;	0771		! Symbol did not exist. Insert it into the symbol table.  First allocate
+;	0772		! a block of dynamic storage to hold it.
+;	0773		!--
+;	0774		POINTER = PAT$FREEZ ((.STRING_DESC [DSC$W_LENGTH] + 1 + 3) / 4 + OVERHEAD_SYM - 1);
+;	0775	
+;	0776		!++
+;	0777		! Space allocated. Insert the new link. Then write the symbol name and
+;	0778		! value into the new symbol table entry.
+;	0779		!--
+;	0780		INSQUE (.POINTER, .PAT$GL_SYMTBPTR);
+;	0781		CH$MOVE (.STRING_DESC [DSC$W_LENGTH], CH$PTR (.STRING_DESC [DSC$A_POINTER]),
+;	0782				CH$PTR (SYM_NAME (.POINTER)));
+;	0783		SYM_CHCOUNT (.POINTER) = .STRING_DESC [DSC$W_LENGTH];
+;	0784		SYM_VALUE (.POINTER) = .VALUE;
+;	0785		IF (.MSG_FLAG)
+;	0786		THEN
+;	0787			$FAO_TT_OUT('symbol "!AD" defined as !XL',
+;     P 0788					.STRING_DESC[DSC$W_LENGTH],
+;     P 0789					CH$PTR(.STRING_DESC[DSC$A_POINTER]), .VALUE);
+;	0790		END
+;	0791	ELSE
+;	0792		BEGIN
+;	0793		!++
+;	0794		! Symbol already was defined. Just reset the value of
+;	0795		! the symbol stored in the symbol table.
+;	0796		!--
+;	0797		IF (.MSG_FLAG)
+;	0798		THEN
+;	0799				$FAO_TT_OUT('symbol "!AD" redefined from !XL to !XL',
+;     P 0800					.STRING_DESC[DSC$W_LENGTH],
+;     P 0801					CH$PTR(.STRING_DESC[DSC$A_POINTER]),
+;     P 0802					.SYM_VALUE(.POINTER), .VALUE);
+;	0803		SYM_VALUE (.POINTER) = .VALUE;
+;	0804		END;
+;	0805	END;
+
+
+
+							    .PSECT  _PAT$PLIT,NOWRT,NOEXE,0
+
+					      00000 P.AAA:  .BYTE   27							      ;
+					      00001 	    .ASCII  \symbol "!AD" defined as !XL\			      ;
+					      0001C P.AAB:  .BYTE   38							      ;
+					      0001D 	    .ASCII  \symbol "!AD" redefined from !XL to !XL\		      ;
+					      00043	    .BLKB   1
+
+
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 08FC 00040 	    .ENTRY  PAT$DEFINE_SYM, Save R2,R3,R4,R5,R6,R7,R11		      ; 0715
+		         5B 00000000G  EF  9E 00042 	    MOVAB   PAT$FAO_OUT, R11					      ;
+		         52	  04   AC  D0 00049 	    MOVL    STRING_DESC, R2					      ; 0766
+				       52  DD 0004D 	    PUSHL   R2							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 4-2
+; Digital Equipment Corporation
+;
+	      00000000V  EF	       01  FB 0004F 	    CALLS   #1, PAT$FIND_SYM					      ;
+		         56	       50  D0 00056 	    MOVL    R0, POINTER						      ;
+				       4A  12 00059 	    BNEQ    1$							      ; 0767
+		         50	       62  3C 0005B 	    MOVZWL  (R2), R0						      ; 0774
+		         50	       04  C0 0005E 	    ADDL2   #4, R0						      ;
+		         50	       04  C6 00061 	    DIVL2   #4, R0						      ;
+				  03   A0  9F 00064 	    PUSHAB  3(R0)						      ;
+	      00000000G  EF	       01  FB 00067 	    CALLS   #1, PAT$FREEZ					      ;
+		         56	       50  D0 0006E 	    MOVL    R0, POINTER						      ;
+	      00000000G  FF	       66  0E 00071 	    INSQUE  (POINTER), @PAT$GL_SYMTBPTR				      ; 0780
+		         57	  04   AC  D0 00078 	    MOVL    STRING_DESC, R7					      ; 0781
+      0D   A6	    04   B7	       67  28 0007C 	    MOVC3   (R7), @4(R7), 13(POINTER)				      ;
+		         50	       56  D0 00082 	    MOVL    POINTER, R0						      ; 0783
+		    0C   A0	       67  90 00085 	    MOVB    (R7), 12(R0)					      ;
+		    08   A6	  08   AC  D0 00089 	    MOVL    VALUE, 8(POINTER)					      ; 0784
+		         31	  0C   AC  E9 0008E 	    BLBC    MSG_FLAG, 3$					      ; 0785
+				  08   AC  DD 00092 	    PUSHL   VALUE						      ; 0789
+				  04   A7  DD 00095 	    PUSHL   4(R7)						      ;
+		         7E	       67  3C 00098 	    MOVZWL  (R7), -(SP)						      ;
+			    00000000'  EF  9F 0009B 	    PUSHAB  P.AAA						      ;
+		         6B	       04  FB 000A1 	    CALLS   #4, PAT$FAO_OUT					      ;
+					   04 000A4 	    RET     							      ; 0767
+		         15	  0C   AC  E9 000A5 1$:     BLBC    MSG_FLAG, 2$					      ; 0797
+				  08   AC  DD 000A9 	    PUSHL   VALUE						      ; 0802
+				  08   A6  DD 000AC 	    PUSHL   8(POINTER)						      ;
+				  04   A2  DD 000AF 	    PUSHL   4(R2)						      ;
+		         7E	       62  3C 000B2 	    MOVZWL  (R2), -(SP)						      ;
+			    00000000'  EF  9F 000B5 	    PUSHAB  P.AAB						      ;
+		         6B	       05  FB 000BB 	    CALLS   #5, PAT$FAO_OUT					      ;
+		    08   A6	  08   AC  D0 000BE 2$:     MOVL    VALUE, 8(POINTER)					      ; 0803
+					   04 000C3 3$:     RET     							      ; 0715
+
+; Routine Size:  132 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 5
+; Digital Equipment Corporation
+;
+;	0806	GLOBAL ROUTINE PAT$FIND_SYM (STRING_DESC) =
+;	0807	
+;	0808	!++
+;	0809	! Functional description:
+;	0810	!
+;	0811	!	Searches (in a binary manner) through the doubly-linked symbol
+;	0812	!	table for a symbol name. If it is found, the address of the entry
+;	0813	!	is returned. Else a zero is returned.
+;	0814	!
+;	0815	! Calling sequence:
+;	0816	!
+;	0817	!	CALLS #1, PAT$FIND_SYM
+;	0818	!
+;	0819	! Inputs:
+;	0820	!
+;	0821	!	STRING_DESC	- the string descriptor of the symbol to find
+;	0822	!
+;	0823	! Implicit inputs:
+;	0824	!
+;	0825	!	PAT$GL_SYMTBPTR, pointer to the header link in the current symbol table.
+;	0826	!
+;	0827	! Outputs:
+;	0828	!
+;	0829	!	The address of the symbol entry, or zero, if the name is not found.
+;	0830	!
+;	0831	! Implicit outputs:
+;	0832	!
+;	0833	!	none
+;	0834	!
+;	0835	! Routine value:
+;	0836	!
+;	0837	!	an address or zero
+;	0838	!
+;	0839	! Side effects:
+;	0840	!
+;	0841	!	none
+;	0842	!
+;	0843	!--
+;	0844	
+;	0845	BEGIN
+;	0846	
+;	0847	MAP
+;	0848		STRING_DESC : REF BLOCK [, BYTE];
+;	0849	
+;	0850	LOCAL
+;	0851		POINTER;
+;	0852	
+;	0853	POINTER = .DLL_RLINK (.PAT$GL_SYMTBPTR);
+;	0854	WHILE (.POINTER NEQ .PAT$GL_SYMTBPTR)
+;	0855	DO
+;	0856		BEGIN
+;	0857		IF CH$EQL (.STRING_DESC [DSC$W_LENGTH], CH$PTR (.STRING_DESC [DSC$A_POINTER], 0),
+;	0858				.SYM_CHCOUNT (.POINTER), CH$PTR (SYM_NAME (.POINTER), 0))
+;	0859		THEN RETURN .POINTER
+;	0860		ELSE POINTER = .DLL_RLINK (.POINTER);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 5-1
+; Digital Equipment Corporation
+;
+;	0861		END;
+;	0862	RETURN 0
+;	0863	END;
+
+
+
+
+
+					 003C 000C4 	    .ENTRY  PAT$FIND_SYM, Save R2,R3,R4,R5			      ; 0806
+		         55 00000000G  FF  D0 000C6 	    MOVL    @PAT$GL_SYMTBPTR, POINTER				      ; 0853
+	   54	    04   AC	       04  C1 000CD 	    ADDL3   #4, STRING_DESC, R4					      ; 0857
+	      00000000G  EF	       55  D1 000D2 1$:     CMPL    POINTER, PAT$GL_SYMTBPTR				      ; 0854
+				       1B  13 000D9 	    BEQL    3$							      ;
+		         50	  0C   A5  9E 000DB 	    MOVAB   12(POINTER), R0					      ; 0858
+		         51	       60  9A 000DF 	    MOVZBL  (R0), R1						      ;
+	   00	    00   B4	  04   BC  2D 000E2 	    CMPC5   @STRING_DESC, @0(R4), #0, R1, 1(R0)			      ; 0857
+		    01   A0	       51     000E8									      ;
+				       04  12 000EB 	    BNEQ    2$							      ;
+		         50	       55  D0 000ED 	    MOVL    POINTER, R0						      ; 0859
+					   04 000F0 	    RET     							      ;
+		         55	       65  D0 000F1 2$:     MOVL    (POINTER), POINTER					      ; 0860
+				       DC  11 000F4 	    BRB     1$							      ; 0854
+				       50  D4 000F6 3$:     CLRL    R0							      ; 0862
+					   04 000F8 	    RET     							      ; 0806
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 6
+; Digital Equipment Corporation
+;
+;	0864	GLOBAL ROUTINE PAT$ADD_LABELS (SYM_LISTHEAD) : NOVALUE =
+;	0865	
+;	0866	!++
+;	0867	! Functional description:
+;	0868	!
+;	0869	!	This routine merges a label symbol table into the user-defined
+;	0870	!	symbol table.  The label symbol table entries are identical in
+;	0871	!	format to the user-defined symbol table.  Therefore, for new
+;	0872	!	symbols, the entry can be linked into the user table without
+;	0873	!	alteration.  Redefined symbols merely alter the user table entry
+;	0874	!	and are then released to free storage.
+;	0875	!
+;	0876	! Calling sequence:
+;	0877	!
+;	0878	!	CALLS #1, PAT$ADD_LABELS
+;	0879	!
+;	0880	! Inputs:
+;	0881	!
+;	0882	!	SYM_LISTHEAD	- Address of the pointer to the label symbol table
+;	0883	!			  to be added
+;	0884	!
+;	0885	! Implicit inputs:
+;	0886	!
+;	0887	!	PAT$GL_SYMTBPTR, pointer to the header link in the current symbol table.
+;	0888	!
+;	0889	! Outputs:
+;	0890	!
+;	0891	!	none
+;	0892	!
+;	0893	! Implicit outputs:
+;	0894	!
+;	0895	!	none
+;	0896	!
+;	0897	! Routine value:
+;	0898	!
+;	0899	!	none
+;	0900	!
+;	0901	! Side effects:
+;	0902	!
+;	0903	!	The label symbol table contains only its listhead entry and all
+;	0904	!	labels are now in the user-defined symbol table.  The current symbol
+;	0905	!	table pointer, PAT$GL_SYMTBPTR, is reset to the user-defined symbol table.
+;	0906	
+;	0907	!
+;	0908	!--
+;	0909	
+;	0910	BEGIN
+;	0911	
+;	0912	MAP
+;	0913		SYM_LISTHEAD : REF VECTOR[,LONG];			! Pointer to listhead entry of label table
+;	0914	
+;	0915	LOCAL
+;	0916		STRING_DESC : BLOCK[8,BYTE],				! String descriptor for current symbol
+;	0917		SYMBOL_PTR,						! Pointer to symbol entry in user-defined table
+;	0918		NEXT_PTR,						! Pointer to next label entry
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 6-1
+; Digital Equipment Corporation
+;
+;	0919		POINTER;
+;	0920	
+;	0921	PAT$GL_SYMTBPTR = .PAT$GL_SYMHEAD;
+;	0922	WHILE (POINTER=.DLL_RLINK(.SYM_LISTHEAD[0])) NEQA .SYM_LISTHEAD[0]
+;	0923	DO
+;	0924		BEGIN
+;	0925		NEXT_PTR = .DLL_RLINK(.POINTER);
+;	0926		DLL_LLINK(.NEXT_PTR) = .DLL_LLINK(.POINTER);
+;	0927		DLL_RLINK(.SYM_LISTHEAD[0]) = .DLL_RLINK(.POINTER);
+;	0928		STRING_DESC[DSC$W_LENGTH] = .SYM_CHCOUNT(.POINTER);
+;	0929		STRING_DESC[DSC$A_POINTER] = SYM_CSTRING(.POINTER) + 1;
+;	0930		SYMBOL_PTR = PAT$FIND_SYM(STRING_DESC);
+;	0931		IF (.SYMBOL_PTR EQLA 0)
+;	0932		THEN
+;	0933			BEGIN
+;	0934			!++
+;	0935			! This is a new user symbol.  Add the entry to the user-
+;	0936			! defined symbol table.
+;	0937			!--
+;	0938			DLL_RLINK(.POINTER) = 0;
+;	0939			DLL_LLINK(.POINTER) = 0;
+;	0940			INSQUE(.POINTER, .PAT$GL_SYMHEAD);
+;	0941			$FAO_TT_OUT('symbol "!AD" defined as !XL',
+;     P 0942					.STRING_DESC[DSC$W_LENGTH],
+;     P 0943					CH$PTR(.STRING_DESC[DSC$A_POINTER]),
+;     P 0944					.SYM_VALUE(.POINTER));
+;	0945			END
+;	0946		ELSE
+;	0947			BEGIN
+;	0948			!++
+;	0949			! This is a redefinition of a user symbol.  Alter the value
+;	0950			! in the user-defined symbol table and then release the
+;	0951			! label entry to the free storage list.
+;	0952			!--
+;	0953			$FAO_TT_OUT('symbol "!AD" redefined from !XL to !XL',
+;     P 0954				.STRING_DESC[DSC$W_LENGTH], CH$PTR(.STRING_DESC[DSC$A_POINTER]),
+;     P 0955				.SYM_VALUE(.SYMBOL_PTR), .SYM_VALUE(.POINTER));
+;	0956			SYM_VALUE(.SYMBOL_PTR) = .SYM_VALUE(.POINTER);
+;	0957			PAT$FREERELEASE(.POINTER, ((.STRING_DESC[DSC$W_LENGTH] + 1 + 3)/
+;	0958							4 + OVERHEAD_SYM - 1));
+;	0959			END;
+;	0960	
+;	0961		END;
+;	0962	END;
+
+
+
+							    .PSECT  _PAT$PLIT,NOWRT,NOEXE,0
+
+					      00044 P.AAC:  .BYTE   27							      ;
+					      00045 	    .ASCII  \symbol "!AD" defined as !XL\			      ;
+					      00060 P.AAD:  .BYTE   38							      ;
+					      00061 	    .ASCII  \symbol "!AD" redefined from !XL to !XL\		      ;
+					      00087	    .BLKB   1
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 6-2
+; Digital Equipment Corporation
+;
+
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 081C 000F9 	    .ENTRY  PAT$ADD_LABELS, Save R2,R3,R4,R11			      ; 0864
+		         5B 00000000G  EF  9E 000FB 	    MOVAB   PAT$FAO_OUT, R11					      ;
+		         5E	       08  C2 00102 	    SUBL2   #8, SP						      ;
+	      00000000G  EF 00000000G  EF  D0 00105 	    MOVL    PAT$GL_SYMHEAD, PAT$GL_SYMTBPTR			      ; 0921
+		         50	  04   BC  D0 00110 1$:     MOVL    @SYM_LISTHEAD, R0					      ; 0922
+		         52	       60  D0 00114 	    MOVL    (R0), POINTER					      ;
+		         50	       52  D1 00117 	    CMPL    POINTER, R0						      ;
+				       6F  13 0011A 	    BEQL    3$							      ;
+		         54	       62  D0 0011C 	    MOVL    (POINTER), NEXT_PTR					      ; 0925
+		    04   A4	  04   A2  D0 0011F 	    MOVL    4(POINTER), 4(NEXT_PTR)				      ; 0926
+		         60	       62  D0 00124 	    MOVL    (POINTER), (R0)					      ; 0927
+		         6E	  0C   A2  9B 00127 	    MOVZBW  12(POINTER), STRING_DESC				      ; 0928
+		    04   AE	  0D   A2  9E 0012B 	    MOVAB   13(POINTER), STRING_DESC+4				      ; 0929
+				       5E  DD 00130 	    PUSHL   SP							      ; 0930
+		    8E   AF	       01  FB 00132 	    CALLS   #1, PAT$FIND_SYM					      ;
+		         53	       50  D0 00136 	    MOVL    R0, SYMBOL_PTR					      ;
+				       1E  12 00139 	    BNEQ    2$							      ; 0931
+				       62  7C 0013B 	    CLRQ    (POINTER)						      ; 0938
+	      00000000G  FF	       62  0E 0013D 	    INSQUE  (POINTER), @PAT$GL_SYMHEAD				      ; 0940
+				  08   A2  DD 00144 	    PUSHL   8(POINTER)						      ; 0944
+				  08   AE  DD 00147 	    PUSHL   STRING_DESC+4					      ;
+		         7E	  08   AE  3C 0014A 	    MOVZWL  STRING_DESC, -(SP)					      ;
+			    00000000'  EF  9F 0014E 	    PUSHAB  P.AAC						      ;
+		         6B	       04  FB 00154 	    CALLS   #4, PAT$FAO_OUT					      ;
+				       B7  11 00157 	    BRB     1$							      ; 0931
+				  08   A2  DD 00159 2$:     PUSHL   8(POINTER)						      ; 0955
+				  08   A3  DD 0015C 	    PUSHL   8(SYMBOL_PTR)					      ;
+				  0C   AE  DD 0015F 	    PUSHL   STRING_DESC+4					      ;
+		         7E	  0C   AE  3C 00162 	    MOVZWL  STRING_DESC, -(SP)					      ;
+			    00000000'  EF  9F 00166 	    PUSHAB  P.AAD						      ;
+		         6B	       05  FB 0016C 	    CALLS   #5, PAT$FAO_OUT					      ;
+		    08   A3	  08   A2  D0 0016F 	    MOVL    8(POINTER), 8(SYMBOL_PTR)				      ; 0956
+		         50	       6E  3C 00174 	    MOVZWL  STRING_DESC, R0					      ; 0957
+		         50	       04  C0 00177 	    ADDL2   #4, R0						      ;
+		         50	       04  C6 0017A 	    DIVL2   #4, R0						      ;
+				  03   A0  9F 0017D 	    PUSHAB  3(R0)						      ;
+				       52  DD 00180 	    PUSHL   POINTER						      ;
+	      00000000G  EF	       02  FB 00182 	    CALLS   #2, PAT$FREERELEASE					      ;
+				       85  11 00189 	    BRB     1$							      ; 0922
+					   04 0018B 3$:     RET     							      ; 0864
+
+; Routine Size:  147 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:14:42	DBB3:[PATCH.SRC]PATSYM.B32;2					Page 7
+; Digital Equipment Corporation
+;
+;	0963	END
+;	0964	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  _PAT$CODE      	   396  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  _PAT$PLIT      	   136  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         5         0       223
+
+
+
+
+
+; Size:		396 code + 136 data bytes
+; Run Time:	00:23.4
+; Elapsed Time:	00:55.1
+; Memory Used:	312 pages
+; Compilation Complete

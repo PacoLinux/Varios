@@ -1,0 +1,667 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE RDHOME (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'X0006'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MOUNT Utility Structure Levels 1 & 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!	 This routine reads the home block, if any, of the volume being mounted.
+;	0032	!
+;	0033	! ENVIRONMENT:
+;	0034	!
+;	0035	!	STARLET operating system, including privileged system services
+;	0036	!	and internal exec routines.
+;	0037	!
+;	0038	!--
+;	0039	!
+;	0040	!
+;	0041	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  13-Oct-1977  21:29
+;	0042	!
+;	0043	! REVISION HISTORY:
+;	0044	!
+;	0045	!   Andrew C. Goldstein, 21-Nov-1977  19:57
+;	0046	!   X0002 - Modify for structure level 2 support
+;	0047	!
+;	0048	!   Andrew C. Goldstein, 3-May-78  16:30
+;	0049	!   X0003 - Wait for disk to come ready
+;	0050	!
+;	0051	!   Andrew C. Goldstein, 11-May-78  23:04
+;	0052	!   X0004 - Add SET_VALID and CLEAR_VALID routines
+;	0053	!
+;	0054	!   Andrew C. Goldstein, 16-May-78  17:23
+;	0055	!   X0005 - Add full search argument
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!
+;	0057	!   Andrew C. Goldstein, 19-Jul-78  0:49
+;	0058	!   X0006 - Add format and datacheck as retryable errors
+;	0059	!
+;	0060	!**
+;	0061	
+;	0062	
+;	0063	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0064	REQUIRE 'SRC$:MOUDEF.B32';
+;	0371	REQUIRE 'LIBD$:[VMSLIB.OBJ]MOUNTMSG.B32';
+;	0471	
+;	0472	
+;	0473	FORWARD ROUTINE
+;	0474		READ_HOMEBLOCK,			! read the home block
+;	0475		SET_VALID,			! set volume valid bit
+;	0476		CLEAR_VALID;			! clear volume valid bit
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2
+; Digital Equipment Corporation
+;
+;	0477	GLOBAL ROUTINE READ_HOMEBLOCK (VOLUME_LABEL, FULL_SEARCH) =
+;	0478	
+;	0479	!++
+;	0480	!
+;	0481	! FUNCTIONAL DESCRIPTION:
+;	0482	!
+;	0483	!	This routine reads the home block, if any, of the volume being mounted.
+;	0484	!	Various statuses are returned to be interpreted in the context of the
+;	0485	!	operation; errors that are clear losers are signalled.
+;	0486	!
+;	0487	!
+;	0488	! CALLING SEQUENCE:
+;	0489	!	READ_HOMEBLOCK (ARG1, ARG2)
+;	0490	!
+;	0491	! INPUT PARAMETERS:
+;	0492	!	ARG1: address of volume label string descriptor
+;	0493	!	ARG2: 1 if search whole disk for home block
+;	0494	!	      0 if limited search
+;	0495	!
+;	0496	! IMPLICIT INPUTS:
+;	0497	!	CHANNEL: channel number assigned to device being mounted
+;	0498	!
+;	0499	! OUTPUT PARAMETERS:
+;	0500	!	NONE
+;	0501	!
+;	0502	! IMPLICIT OUTPUTS:
+;	0503	!	HOME_BLOCK: buffer contains home block if found
+;	0504	!	HOMEBLOCK_LBN: LBN of home block read
+;	0505	!
+;	0506	! ROUTINE VALUE:
+;	0507	!	1 if valid and correct home block found
+;	0508	!	SS$_NOHOMEBLK if home block not found
+;	0509	!	SS$_INCVOLLABEL if home block found but wrong volume name
+;	0510	!	SS$_DEVOFFLINE
+;	0511	!	SS$_MEDOFL
+;	0512	!	SS$_FILESTRUCT
+;	0513	!
+;	0514	! SIDE EFFECTS:
+;	0515	!	NONE
+;	0516	!
+;	0517	!--
+;	0518	
+;	0519	BEGIN
+;	0520	
+;	0521	MAP
+;	0522		VOLUME_LABEL	: REF VECTOR;	! volume label string descriptor
+;	0523	
+;	0524	LABEL
+;	0525		READY_LOOP;			! retry for volume on line
+;	0526	
+;	0527	LOCAL
+;	0528		J,				! j random index
+;	0529		STATUS,				! system service status
+;	0530		IO_STATUS	: VECTOR[2],	! I/O status block
+;	0531		DELTA,				! home block search delta
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-1
+; Digital Equipment Corporation
+;
+;	0532		LBN;				! current LBN being tried
+;	0533	
+;	0534	LITERAL
+;	0535		ONE_SECOND	= 10000000;	! 1 second in standard time units
+;	0536	
+;	0537	EXTERNAL
+;	0538		CHANNEL,			! channel number for I/O
+;	0539		DEVICE_CHAR	: BBLOCK,	! disk device characteristics
+;	0540		HOME_BLOCK	: BBLOCK,	! home block buffer
+;	0541		DEVICE_TABLE	: BBLOCKVECTOR [,DVT_LENGTH],
+;	0542						! device characteristics table
+;	0543		DEV_INDEX,			! table index of current disk
+;	0544		HOMEBLOCK_LBN;			! LBN of home block read
+;	0545	
+;	0546	EXTERNAL ROUTINE
+;	0547		READ_BLOCK,			! read a disk block
+;	0548		CHECK_HOMEBLK1,			! verify structure level 1 home block
+;	0549		CHECK_HOMEBLK2;			! verify structure level 2 home block
+;	0550	
+;	0551	
+;	0552	! Find the disk in the device data table by matching on the device
+;	0553	! "signature", i.e., the device dependent characteristics longword.
+;	0554	!
+;	0555	
+;	0556	J = 0;
+;	0557	WHILE 1 DO
+;	0558	    BEGIN
+;	0559	    IF .DEVICE_TABLE[.J, DVT_SIGNATURE] EQL 0
+;	0560	    THEN ERR_EXIT (MOUN$_UNKDEV);
+;	0561	    IF .DEVICE_TABLE[.J, DVT_SIGNATURE] EQL .DEVICE_CHAR[DIB$L_DEVDEPEND]
+;	0562	    THEN EXITLOOP;
+;	0563	    J = .J + 1;
+;	0564	    END;
+;	0565	DEV_INDEX = .J;
+;	0566	
+;	0567	! Set the volume valid bit to indicate presence of a volume.
+;	0568	!
+;	0569	
+;	0570	KERNEL_CALL (SET_VALID);
+;	0571	
+;	0572	! Loop for a maximum of 30 seconds to wait for the drive to come ready.
+;	0573	!
+;	0574	
+;	0575	DECR I FROM 30 TO 1 DO
+;	0576	BEGIN
+;	0577	READY_LOOP: BEGIN
+;	0578	
+;	0579	! Issue a pack acknowlege so we can talk to the disk.
+;	0580	!
+;	0581	
+;	0582	    STATUS = $QIOW (CHAN = .CHANNEL,
+;     P 0583			    FUNC = IO$_PACKACK,
+;     P 0584			    IOSB = IO_STATUS[0]);
+;	0585	    IF .STATUS THEN STATUS = .(IO_STATUS[0])<0,16>;
+;	0586	    IF NOT .STATUS
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-2
+; Digital Equipment Corporation
+;
+;	0587	    THEN
+;	0588		BEGIN
+;	0589		IF .STATUS NEQ SS$_ILLIOFUNC
+;	0590		THEN
+;	0591		    BEGIN
+;	0592		    IF .STATUS EQL SS$_MEDOFL
+;	0593		    THEN LEAVE READY_LOOP;
+;	0594		    IF .STATUS EQL SS$_DEVOFFLINE
+;	0595		    THEN RETURN (.STATUS)
+;	0596		    ELSE ERR_EXIT (.STATUS);
+;	0597		    END;
+;	0598		END;
+;	0599	
+;	0600	! Compute the home block search delta from the volume geometry in the
+;	0601	! device table. This is done according to the following rules, where volume
+;	0602	! geometry is expressed in the order sectors, tracks, cylinders:
+;	0603	!
+;	0604	!	n x 1 x 1:	1
+;	0605	!	1 x n x 1:	1
+;	0606	!	1 x 1 x n:	1
+;	0607	!
+;	0608	!	n x m x 1:	n+1
+;	0609	!	n x 1 x m:	n+1
+;	0610	!	1 x n x m:	n+1
+;	0611	!
+;	0612	!	s x t x c:	(t+1)*s+1
+;	0613	!
+;	0614	
+;	0615	    DELTA = 1;
+;	0616	    IF NOT .DEVICE_TABLE[.J, DVT_NOGEOM]
+;	0617	    THEN
+;	0618		BEGIN
+;	0619		IF  .DEVICE_TABLE[.J, DVT_CYLINDERS] GTR 1
+;	0620		AND .DEVICE_TABLE[.J, DVT_TRACKS] GTR 1
+;	0621		THEN DELTA = .DELTA + .DEVICE_TABLE[.J, DVT_TRACKS];
+;	0622	
+;	0623		IF  .DEVICE_TABLE[.J, DVT_SECTORS] GTR 1
+;	0624		AND (.DEVICE_TABLE[.J, DVT_CYLINDERS] GTR 1
+;	0625		    OR .DEVICE_TABLE[.J, DVT_TRACKS] GTR 1)
+;	0626		THEN DELTA = .DELTA * .DEVICE_TABLE[.J, DVT_SECTORS] + 1;
+;	0627		END;
+;	0628	
+;	0629	! Search for the home block. If the device is being mounted foreign, we
+;	0630	! limit the home block search to 10 hits to save time. If the device is
+;	0631	! being mounted Files-11 then we try all the way just in case the home block
+;	0632	! is in a weird location. Note the potential protection hole: Disks with the
+;	0633	! home block far into the disk are not protected from being mounted foreign
+;	0634	! by non-privileged users. C'est la vie.
+;	0635	!
+;	0636	
+;	0637	    LBN = 1;
+;	0638	
+;	0639	    IF (
+;	0640		DECRU J FROM (IF .FULL_SEARCH THEN 10 ELSE -1) TO 1 DO
+;	0641		    BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-3
+; Digital Equipment Corporation
+;
+;	0642		    STATUS = READ_BLOCK (.LBN, HOME_BLOCK);
+;	0643		    IF .STATUS
+;	0644		    THEN
+;	0645			BEGIN
+;	0646			IF .HOME_BLOCK[HM2$B_STRUCLEV] EQL 1
+;	0647			THEN STATUS = CHECK_HOMEBLK1 (HOME_BLOCK, .LBN, .VOLUME_LABEL)
+;	0648			ELSE IF .HOME_BLOCK[HM2$B_STRUCLEV] EQL 2
+;	0649			THEN STATUS = CHECK_HOMEBLK2 (HOME_BLOCK, .LBN, .VOLUME_LABEL)
+;	0650			ELSE STATUS = 0;
+;	0651			IF .STATUS
+;	0652			OR .STATUS EQL SS$_INCVOLLABEL
+;	0653			THEN EXITLOOP 0;
+;	0654			END
+;	0655		    ELSE
+;	0656			BEGIN
+;	0657			IF .STATUS EQL SS$_ILLBLKNUM
+;	0658			THEN EXITLOOP -1;
+;	0659			IF .STATUS EQL SS$_MEDOFL
+;	0660			THEN LEAVE READY_LOOP;
+;	0661			IF .STATUS EQL SS$_DEVOFFLINE
+;	0662			THEN RETURN (.STATUS);
+;	0663	
+;	0664			IF  .STATUS NEQ SS$_PARITY
+;	0665			AND .STATUS NEQ SS$_FORMAT
+;	0666			AND .STATUS NEQ SS$_DATACHECK
+;	0667			THEN ERR_EXIT (.STATUS);
+;	0668			END;
+;	0669		    LBN = .LBN + .DELTA;
+;	0670		    END
+;	0671		)
+;	0672	    THEN
+;	0673		BEGIN
+;	0674		READ_BLOCK (1, HOME_BLOCK);
+;	0675		RETURN (SS$_NOHOMEBLK);
+;	0676		END;
+;	0677	
+;	0678	    HOMEBLOCK_LBN = .LBN;
+;	0679	
+;	0680	    RETURN .STATUS;
+;	0681	
+;	0682	    END;				! end of block READY_LOOP
+;	0683	
+;	0684	! We get here if an I/O returned with SS$_MEDOFL. Wait 1 second and retry
+;	0685	! for a maximum of 30 seconds.
+;	0686	!
+;	0687	
+;	0688	    IF $SETIMR (EFN = 1, DAYTIM = UPLIT (-ONE_SECOND, -1))
+;	0689	    THEN $WAITFR (EFN = 1);
+;	0690	    END;				! end of retry loop
+;	0691	
+;	0692	RETURN .STATUS;				! volume is really off line
+;	0693	END;					! end of routine READ_HOMEBLK
+
+
+							    .TITLE  RDHOME
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-4
+; Digital Equipment Corporation
+;
+							    .IDENT  \X0006\
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .LONG   -10000000, -1					      ;
+
+							    .GLOBL  CHANNEL, DEVICE_CHAR, HOME_BLOCK, DEVICE_TABLE
+							    .GLOBL  DEV_INDEX, HOMEBLOCK_LBN, READ_BLOCK, CHECK_HOMEBLK1
+							    .GLOBL  CHECK_HOMEBLK2, SYS$CMKRNL, SYS$QIOW, SYS$SETIMR
+							    .GLOBL  SYS$WAITFR
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0EFC 00000 	    .ENTRY  READ_HOMEBLOCK, Save R2,R3,R4,R5,R6,R7,R9,R10,R11	      ; 0477
+		         59	0000G  CF  9E 00002 	    MOVAB   HOME_BLOCK, R9					      ;
+		         5A 00000000G  00  9E 00007 	    MOVAB   LIB$STOP, R10					      ;
+		         5B	0000G  CF  9E 0000E 	    MOVAB   DEVICE_TABLE, R11					      ;
+		         5E	       08  C2 00013 	    SUBL2   #8, SP						      ;
+				       55  D4 00016 	    CLRL    J							      ; 0556
+	   52	         55	       04  78 00018 1$:     ASHL    #4, J, R2						      ; 0559
+				     6B42  9F 0001C 	    PUSHAB  DEVICE_TABLE[R2]					      ;
+				       9E  D5 0001F 	    TSTL    @(SP)+						      ;
+				       09  12 00021 	    BNEQ    2$							      ;
+			    0072804C   8F  DD 00023 	    PUSHL   #7503948						      ; 0560
+		         6A	       01  FB 00029 	    CALLS   #1, LIB$STOP					      ;
+				     6B42  9F 0002C 2$:     PUSHAB  DEVICE_TABLE[R2]					      ; 0561
+		  0000G  CF	       9E  D1 0002F 	    CMPL    @(SP)+, DEVICE_CHAR+8				      ;
+				       04  13 00034 	    BEQL    3$							      ;
+				       55  D6 00036 	    INCL    J							      ; 0563
+				       DE  11 00038 	    BRB     1$							      ; 0557
+		  0000G  CF	       55  D0 0003A 3$:     MOVL    J, DEV_INDEX					      ; 0565
+				       7E  D4 0003F 	    CLRL    -(SP)						      ; 0570
+				       5E  DD 00041 	    PUSHL   SP							      ;
+				0000V  CF  9F 00043 	    PUSHAB  SET_VALID						      ;
+	      00000000G  9F	       03  FB 00047 	    CALLS   #3, @#SYS$CMKRNL					      ;
+		         57	       1E  D0 0004E 	    MOVL    #30, I						      ; 0575
+				       7E  7C 00051 4$:     CLRQ    -(SP)						      ; 0584
+				       7E  7C 00053 	    CLRQ    -(SP)						      ;
+				       7E  7C 00055 	    CLRQ    -(SP)						      ;
+				       7E  7C 00057 	    CLRQ    -(SP)						      ;
+				  20   AE  9F 00059 	    PUSHAB  IO_STATUS						      ;
+				       08  DD 0005C 	    PUSHL   #8							      ;
+				0000G  CF  DD 0005E 	    PUSHL   CHANNEL						      ;
+				       7E  D4 00062 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       0C  FB 00064 	    CALLS   #12, @#SYS$QIOW					      ;
+		         52	       50  D0 0006B 	    MOVL    R0, STATUS						      ;
+		         06	       52  E9 0006E 	    BLBC    STATUS, 5$						      ; 0585
+		         52	       6E  3C 00071 	    MOVZWL  IO_STATUS, STATUS					      ;
+		         26	       52  E8 00074 	    BLBS    STATUS, 8$						      ; 0586
+	      000000F4   8F	       52  D1 00077 5$:     CMPL    STATUS, #244					      ; 0589
+				       1D  13 0007E 	    BEQL    8$							      ;
+	      000001A4   8F	       52  D1 00080 	    CMPL    STATUS, #420					      ; 0592
+				       03  12 00087 	    BNEQ    6$							      ;
+				     0111  31 00089 	    BRW     24$							      ;
+	      00000084   8F	       52  D1 0008C 6$:     CMPL    STATUS, #132					      ; 0594
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-5
+; Digital Equipment Corporation
+;
+				       03  12 00093 	    BNEQ    7$							      ;
+				     0128  31 00095 	    BRW     27$							      ;
+				       52  DD 00098 7$:     PUSHL   STATUS						      ; 0596
+		         6A	       01  FB 0009A 	    CALLS   #1, LIB$STOP					      ;
+		         56	       01  D0 0009D 8$:     MOVL    #1, DELTA						      ; 0615
+	   50	         55	       04  78 000A0 	    ASHL    #4, J, R0						      ; 0616
+	   39	    04 AB40	       00  E0 000A4 	    BBS     #0, DEVICE_TABLE+4[R0], 11$				      ;
+				  02 AB40  9F 000AA 	    PUSHAB  DEVICE_TABLE+2[R0]					      ; 0619
+		         01	       9E  B1 000AE 	    CMPW    @(SP)+, #1						      ;
+				       0F  1B 000B1 	    BLEQU   9$							      ;
+		         01	  01 AB40  91 000B3 	    CMPB    DEVICE_TABLE+1[R0], #1				      ; 0620
+				       08  1B 000B8 	    BLEQU   9$							      ;
+		         51	  01 AB40  9A 000BA 	    MOVZBL  DEVICE_TABLE+1[R0], R1				      ; 0621
+		         56	       51  C0 000BF 	    ADDL2   R1, DELTA						      ;
+		         01	     6B40  91 000C2 9$:     CMPB    DEVICE_TABLE[R0], #1				      ; 0623
+				       1B  1B 000C6 	    BLEQU   11$							      ;
+				  02 AB40  9F 000C8 	    PUSHAB  DEVICE_TABLE+2[R0]					      ; 0624
+		         01	       9E  B1 000CC 	    CMPW    @(SP)+, #1						      ;
+				       07  1A 000CF 	    BGTRU   10$							      ;
+		         01	  01 AB40  91 000D1 	    CMPB    DEVICE_TABLE+1[R0], #1				      ; 0625
+				       0B  1B 000D6 	    BLEQU   11$							      ;
+		         50	     6B40  9A 000D8 10$:    MOVZBL  DEVICE_TABLE[R0], R0				      ; 0626
+		         50	       56  C4 000DC 	    MULL2   DELTA, R0						      ;
+	   56	         50	       01  C1 000DF 	    ADDL3   #1, R0, DELTA					      ;
+		         54	       01  D0 000E3 11$:    MOVL    #1, LBN						      ; 0637
+		         05	  08   AC  E9 000E6 	    BLBC    FULL_SEARCH, 12$					      ; 0640
+		         53	       0A  D0 000EA 	    MOVL    #10, R3						      ;
+				       03  11 000ED 	    BRB     13$							      ;
+		         53	       01  CE 000EF 12$:    MNEGL   #1, R3						      ;
+				     008A  31 000F2 13$:    BRW     21$							      ;
+				0210   8F  BB 000F5 14$:    PUSHR   #^M<R4,R9>						      ; 0642
+		  0000G  CF	       02  FB 000F9 	    CALLS   #2, READ_BLOCK					      ;
+		         52	       50  D0 000FE 	    MOVL    R0, STATUS						      ;
+		         3B	       52  E9 00101 	    BLBC    STATUS, 19$						      ; 0643
+		         01	  0D   A9  91 00104 	    CMPB    HOME_BLOCK+13, #1					      ; 0646
+				       0E  12 00108 	    BNEQ    15$							      ;
+				  04   AC  DD 0010A 	    PUSHL   VOLUME_LABEL					      ; 0647
+				       54  DD 0010D 	    PUSHL   LBN							      ;
+				       59  DD 0010F 	    PUSHL   R9							      ;
+		  0000G  CF	       03  FB 00111 	    CALLS   #3, CHECK_HOMEBLK1					      ;
+				       12  11 00116 	    BRB     16$							      ;
+		         02	  0D   A9  91 00118 15$:    CMPB    HOME_BLOCK+13, #2					      ; 0648
+				       11  12 0011C 	    BNEQ    17$							      ;
+				  04   AC  DD 0011E 	    PUSHL   VOLUME_LABEL					      ; 0649
+				       54  DD 00121 	    PUSHL   LBN							      ;
+				       59  DD 00123 	    PUSHL   R9							      ;
+		  0000G  CF	       03  FB 00125 	    CALLS   #3, CHECK_HOMEBLK2					      ;
+		         52	       50  D0 0012A 16$:    MOVL    R0, STATUS						      ;
+				       02  11 0012D 	    BRB     18$							      ; 0648
+				       52  D4 0012F 17$:    CLRL    STATUS						      ; 0650
+		         62	       52  E8 00131 18$:    BLBS    STATUS, 23$						      ; 0651
+	      0000010C   8F	       52  D1 00134 	    CMPL    STATUS, #268					      ; 0652
+				       3D  12 0013B 	    BNEQ    20$							      ;
+				       57  11 0013D 	    BRB     23$							      ; 0653
+	      000000DC   8F	       52  D1 0013F 19$:    CMPL    STATUS, #220					      ; 0657
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 2-6
+; Digital Equipment Corporation
+;
+				       3F  13 00146 	    BEQL    22$							      ;
+	      000001A4   8F	       52  D1 00148 	    CMPL    STATUS, #420					      ; 0659
+				       4C  13 0014F 	    BEQL    24$							      ;
+	      00000084   8F	       52  D1 00151 	    CMPL    STATUS, #132					      ; 0661
+				       66  13 00158 	    BEQL    27$							      ;
+	      000001F4   8F	       52  D1 0015A 	    CMPL    STATUS, #500					      ; 0664
+				       17  13 00161 	    BEQL    20$							      ;
+	      000000BC   8F	       52  D1 00163 	    CMPL    STATUS, #188					      ; 0665
+				       0E  13 0016A 	    BEQL    20$							      ;
+	      0000005C   8F	       52  D1 0016C 	    CMPL    STATUS, #92						      ; 0666
+				       05  13 00173 	    BEQL    20$							      ;
+				       52  DD 00175 	    PUSHL   STATUS						      ; 0667
+		         6A	       01  FB 00177 	    CALLS   #1, LIB$STOP					      ;
+		         54	       56  C0 0017A 20$:    ADDL2   DELTA, LBN						      ; 0669
+				       53  D7 0017D 	    DECL    J							      ; 0640
+		         01	       53  D1 0017F 21$:    CMPL    J, #1						      ;
+				       03  1F 00182 	    BLSSU   22$							      ;
+				     FF6E  31 00184 	    BRW     14$							      ;
+				       59  DD 00187 22$:    PUSHL   R9							      ; 0674
+				       01  DD 00189 	    PUSHL   #1							      ;
+		  0000G  CF	       02  FB 0018B 	    CALLS   #2, READ_BLOCK					      ;
+		         50	08E0   8F  3C 00190 	    MOVZWL  #2272, R0						      ; 0675
+					   04 00195 	    RET     							      ;
+		  0000G  CF	       54  D0 00196 23$:    MOVL    LBN, HOMEBLOCK_LBN					      ; 0678
+				       23  11 0019B 	    BRB     27$							      ; 0680
+				       7E  7C 0019D 24$:    CLRQ    -(SP)						      ; 0688
+				0000'  CF  9F 0019F 	    PUSHAB  P.AAA						      ;
+				       01  DD 001A3 	    PUSHL   #1							      ;
+	      00000000G  9F	       04  FB 001A5 	    CALLS   #4, @#SYS$SETIMR					      ;
+		         09	       50  E9 001AC 	    BLBC    R0, 25$						      ;
+				       01  DD 001AF 	    PUSHL   #1							      ; 0689
+	      00000000G  9F	       01  FB 001B1 	    CALLS   #1, @#SYS$WAITFR					      ;
+		         02	       57  F5 001B8 25$:    SOBGTR  I, 26$						      ; 0575
+				       03  11 001BB 	    BRB     27$							      ;
+				     FE91  31 001BD 26$:    BRW     4$							      ;
+		         50	       52  D0 001C0 27$:    MOVL    STATUS, R0						      ; 0692
+					   04 001C3 	    RET     							      ; 0477
+
+; Routine Size:  452 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 3
+; Digital Equipment Corporation
+;
+;	0694	GLOBAL ROUTINE SET_VALID =
+;	0695	
+;	0696	!++
+;	0697	!
+;	0698	! FUNCTIONAL DESCRIPTION:
+;	0699	!
+;	0700	!	This routine sets the volume valid bit in the UCB, causing
+;	0701	!	PACKACK to be reissued in case of a power failure or volume
+;	0702	!	status transition.
+;	0703	!
+;	0704	!
+;	0705	! CALLING SEQUENCE:
+;	0706	!	SET_VALID ()
+;	0707	!
+;	0708	! INPUT PARAMETERS:
+;	0709	!	NONE
+;	0710	!
+;	0711	! IMPLICIT INPUTS:
+;	0712	!	CHANNEL: channel number assigned to device
+;	0713	!
+;	0714	! OUTPUT PARAMETERS:
+;	0715	!	NONE
+;	0716	!
+;	0717	! IMPLICIT OUTPUTS:
+;	0718	!	NONE
+;	0719	!
+;	0720	! ROUTINE VALUE:
+;	0721	!	1
+;	0722	!
+;	0723	! SIDE EFFECTS:
+;	0724	!	valid bit set in UCB
+;	0725	!
+;	0726	!--
+;	0727	
+;	0728	BEGIN
+;	0729	
+;	0730	LOCAL
+;	0731		UCB		: REF BBLOCK;	! pointer to UCB
+;	0732	
+;	0733	EXTERNAL
+;	0734		CHANNEL;			! channel assigned to device
+;	0735	
+;	0736	EXTERNAL ROUTINE
+;	0737		GET_CHANNELUCB;			! get UCB of channel
+;	0738	
+;	0739	
+;	0740	! Get the UCB address from the channel and set the bit.
+;	0741	!
+;	0742	
+;	0743	UCB = GET_CHANNELUCB (.CHANNEL);
+;	0744	UCB[UCB$V_VALID] = 1;
+;	0745	
+;	0746	RETURN 1;
+;	0747	
+;	0748	END;					! end of routine SET_VALID
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 3-1
+; Digital Equipment Corporation
+;
+
+
+
+							    .GLOBL  GET_CHANNELUCB
+
+					 0000 001C4 	    .ENTRY  SET_VALID, Save nothing				      ; 0694
+				0000G  CF  DD 001C6 	    PUSHL   CHANNEL						      ; 0743
+		  0000G  CF	       01  FB 001CA 	    CALLS   #1, GET_CHANNELUCB					      ;
+		    59   A0	       08  88 001CF 	    BISB2   #8, 89(UCB)						      ; 0744
+		         50	       01  D0 001D3 	    MOVL    #1, R0						      ; 0746
+					   04 001D6 	    RET     							      ; 0694
+
+; Routine Size:  19 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 4
+; Digital Equipment Corporation
+;
+;	0749	GLOBAL ROUTINE CLEAR_VALID =
+;	0750	
+;	0751	!++
+;	0752	!
+;	0753	! FUNCTIONAL DESCRIPTION:
+;	0754	!
+;	0755	!	This routine clears the volume valid bit in the UCB.
+;	0756	!
+;	0757	!
+;	0758	! CALLING SEQUENCE:
+;	0759	!	CLEAR_VALID ()
+;	0760	!
+;	0761	! INPUT PARAMETERS:
+;	0762	!	NONE
+;	0763	!
+;	0764	! IMPLICIT INPUTS:
+;	0765	!	CHANNEL: channel number assigned to device
+;	0766	!
+;	0767	! OUTPUT PARAMETERS:
+;	0768	!	NONE
+;	0769	!
+;	0770	! IMPLICIT OUTPUTS:
+;	0771	!	NONE
+;	0772	!
+;	0773	! ROUTINE VALUE:
+;	0774	!	1
+;	0775	!
+;	0776	! SIDE EFFECTS:
+;	0777	!	valid bit clear in UCB
+;	0778	!
+;	0779	!--
+;	0780	
+;	0781	BEGIN
+;	0782	
+;	0783	LOCAL
+;	0784		UCB		: REF BBLOCK;	! pointer to UCB
+;	0785	
+;	0786	EXTERNAL
+;	0787		CHANNEL;			! channel assigned to device
+;	0788	
+;	0789	EXTERNAL ROUTINE
+;	0790		GET_CHANNELUCB;			! get UCB of channel
+;	0791	
+;	0792	
+;	0793	! Get the UCB address from the channel and clear the bit.
+;	0794	!
+;	0795	
+;	0796	UCB = GET_CHANNELUCB (.CHANNEL);
+;	0797	UCB[UCB$V_VALID] = 0;
+;	0798	
+;	0799	RETURN 1;
+;	0800	
+;	0801	END;					! end of routine CLEAR_VALID
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:10:41	DBB3:[MOUNT.SRC]RDHOME.B32;18					Page 4-1
+; Digital Equipment Corporation
+;
+
+
+
+					 0000 001D7 	    .ENTRY  CLEAR_VALID, Save nothing				      ; 0749
+				0000G  CF  DD 001D9 	    PUSHL   CHANNEL						      ; 0796
+		  0000G  CF	       01  FB 001DD 	    CALLS   #1, GET_CHANNELUCB					      ;
+		    59   A0	       08  8A 001E2 	    BICB2   #8, 89(UCB)						      ; 0797
+		         50	       01  D0 001E6 	    MOVL    #1, R0						      ; 0799
+					   04 001E9 	    RET     							      ; 0749
+
+; Routine Size:  19 bytes
+
+
+;	0802	
+;	0803	END
+;	0804	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $PLIT$         	     8  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   490  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        20         0       234
+
+
+
+
+
+; Size:		490 code + 8 data bytes
+; Run Time:	00:21.1
+; Elapsed Time:	00:42.9
+; Memory Used:	349 pages
+; Compilation Complete

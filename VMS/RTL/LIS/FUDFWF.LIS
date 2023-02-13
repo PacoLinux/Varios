@@ -1,0 +1,1292 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 1
+;
+;00100  0001	MODULE FOR$$UDF_WF (	! FORTRAN Write Formatted UDF
+;00200  0002		IDENT = '2-25'	! File: FUDFWF.B32
+;00300  0003			) =
+;00400  0004	BEGIN
+;00500  0005	
+;00600  0006	!
+;00700  0007	! COPYRIGHT (C) 1977
+;00800  0008	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;00900  0009	!
+;01000  0010	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;01100  0011	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;01200  0012	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;01300  0013	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;01400  0014	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;01500  0015	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;01600  0016	! REMAIN IN DEC.
+;01700  0017	!
+;01800  0018	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;01900  0019	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;02000  0020	! CORPORATION.
+;02100  0021	!
+;02200  0022	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;02300  0023	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;02400  0024	
+;02500  0025	!++
+;02600  0026	! FACILITY:  FORTRAN Support Library - not user callable
+;02700  0027	!
+;02800  0028	! ABSTRACT:
+;02900  0029	!
+;03000  0030	!	This module implements FORTRAN Write Formatted I/O
+;03100  0031	!	statements (sequential access - S, direct access - D,
+;03200  0032	!	ENCODE - M) at the User data Formatter level of
+;03300  0033	!	abstraction (UDF level is 2nd level). This module
+;03400  0034	!	calls the Read/Write independent format
+;03500  0035	!	interpreter (FOR$INTERP) to decode the compiled format
+;03600  0036	!	statement. This module calls the appropriate write record
+;03700  0037	!	routine at the record handling level of abstraction (REC
+;03800  0038	!	level is 3rd level) to write a record.
+;03900  0039	!
+;04000  0040	! ENVIRONMENT:  User access mode; reentrant AST level or not.
+;04100  0041	!
+;04200  0042	! AUTHOR:  Thomas N. Hastings;	 CREATION DATE: 20-Feb-77
+;04300  0043	!
+;04400  0044	! MODIFIED BY:
+;04500  0045	!	Thomas N. Hastings, 12-Mar-77: Version 01
+;04600  0046	! 01	-  original
+;04700  0047	! 06	- internal F4P review - reduced use of CH$ by introducing MAXP, LSSP macros,
+;04800  0048	!	reduced size of SELECT, added debuging macros, and MAP ELEM_ADR: REF VECTOR.
+;04900  0049	! 16	- use SRMDEF for string descriptor symbols
+;05000  0050	! 17	- use SRMDEF symbols for FORTRAN data types
+;05100  0051	! 18	- make local variable dsc a byte array. SHA
+;05200  0052	!
+;05300  0053	!	Richard Grove, 19-Aug-77: Version 2
+;05400  0054	! 2-01	- Change logic from SELECT to CASE with an attributes table.
+;05500  0055	! 2-04	- SIGNAL_STOP FOR$_OUTSTAOVE) on tab - TNH
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 1-1
+;
+;05600  0056	! 2-05	- Removed parameters to record level routines JMT 17-OCT-77
+;05700  0057	! 2-06	- Changed RECTOOBIG to OUTSTAOVE
+;05800  0058	!	  Check if file is direct access and signal on EOF, SLS.  JMT 22-Oct-77
+;05900  0059	! 2-07	- Use FOR$K_abcmnoxyz as EXTERNAL LITERALs.  TNH 27-Oct-77
+;06000  0060	! 2-08	- Fixed Fw.d from string variable.  TNH 29-Oct-77
+;06100  0061	! 2-09	- Use FERR.  TNH 16-Dec-77
+;06200  0062	! 2-10	- Store error in ISB$B_ERR_NO, don't signal!  JMT 14-Jan-78
+;06300  0063	! 2-11	- Bug fix for real number and integer format; now, just
+;06400  0064	!	  fetch as if a longword.  Avoids 64-bit extract.  JMT 16-Jan-78
+;06500  0065	! 2-12	- Global register CCB.  JMT 8-Apr-78
+;06600  0066	! 2-13	- Change to STARLET library.  DGP 20-Apr-78
+;06700  0067	! 2-14	- Change REQUIRE files for VAX system build.  DGP 28-Apr-78
+;06800  0068	! 2-15	- Change STARLET to RTLSTARLE to avoid conflicts.  DGP 1-May-78
+;06900  0069	! 2-16	- Use JSB linkages.  TNH 22-May-78
+;07000  0070	! 2-17	- Call DO_WRITE, if at EOF.  TNH 31-May-78
+;07100  0071	! 2-20	- Only test 7-bit format code.  TNH 6-June-78
+;07200  0072	! 2-21	- PIC dispatch tables.  TNH 6-June-78
+;07300  0073	! 2-22	- Use ADR_VECTOR macro for PIC dispatch table.  TNH 7-June-78
+;07400  0074	! 2-24	- Fix look ahead if no I/O elements.  TNH 16-Aug-78
+;07500  0075	!--
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 2
+;
+;00100  0076	!
+;00200  0077	! LINKAGES:
+;00300  0078	!
+;00400  0079	REQUIRE 'RTLIN:FLNK';		! define all linkages
+; %PRINT:	File: FLNK.B32; Version 1, edit 12, TNH 2-Aug-78
+;00500  0301	
+;00600  0302	!
+;00700  0303	! TABLE OF CONTENTS:
+;00800  0304	!
+;00900  0305	
+;01000  0306	FORWARD ROUTINE
+;01100  0307		FOR$$UDF_WF0: JSB_UDF0 NOVALUE,	! initialization
+;01200  0308		FOR$$UDF_WF1: CALL_CCB NOVALUE,	! format one user I/O list element
+;01300  0309		FOR$$UDF_WF9: JSB_UDF9 NOVALUE,	! end of user I/O list - finish
+;01400  0310		DO_WRITE: JSB_DO_WRITE NOVALUE;	! do per-record formatting and write
+;01500  0311	
+;01600  0312	!
+;01700  0313	! INCLUDE FILES:
+;01800  0314	!
+;01900  0315		REQUIRE 'RTLML:FERR';		! FORTRAN error number definitions
+; %PRINT:	Filename: FERR.MDL! Version 0, edit 36, TNH 19-June-78
+;02000  0433		REQUIRE 'RTLIN:FFMT';		! Format statement codes
+; %PRINT:	Filename: FFMT.B32 ; Version 1, edit 11, TNH,  6-June-78
+;02100  0533		REQUIRE 'RTLML:FISB';		! I/O statement block (ISB) offsets 
+; %PRINT:	File: FISB.MDL which produces FISB.B32! Version 1, EDIT 16, DGP 02-Jun-78
+;02200  0742		REQUIRE 'RTLML:FLUB';		! Only needed to get LUB length!
+; %PRINT:	File: FLUB.MDL which produces FLUB.B32! Version 0, edit 30, TNH, 17-June-78
+;02300  0910		REQUIRE 'RTLIN:FMAC';		! Macros
+; %PRINT:	Filename: FMAC.B32; Version 1, edit 29, TNH, 7-JUN-78
+; %PRINT:	 REQUIRE FILE: LPSECT.B32, VERSION 01-5, TNH, 27-Jun-78
+;02400  1090					! type codes
+;02500  1091		REQUIRE 'RTLIN:ODBG';		! OTS debugging macros
+; %PRINT:	Filename: NODBG.B32; Version 0, edit 20, JMT, 17-Jan-78
+;02600  1167		LIBRARY	'RTLSTARLE';	! STARLET library for macros and symbols
+;02700  1168	
+;02800  1169	!
+;02900  1170	! MACROS:
+;03000  1171	!
+;03100  1172	!	CH_WRITE_A (CS_POINTER_ADR.ma.r) = character;  ! Write character
+;03200  1173	!				! in string, then advance pointer
+;03300  1174	
+;03400  1175	
+;03500  1176	    MACRO			! Field definitions for action table
+;03600  1177		WF_EOLST  = 0,7,1,0%,	! Check for end of user i/o list
+;03700  1178		WF_CHECKW = 0,6,1,0%,	! Check there are w postions available in output buffer
+;03800  1179		WF_SETDSC = 0,5,1,0%,	! Set up a string descriptor for output field
+;03900  1180		WF_DISPAT = 0,0,4,0%;	! CASE index for dispatch
+;04000  1181	
+;04100  1182	    MACRO			! Attributes-packing macro for attributes table
+;04200  1183		A(E,W,D, NDX) = (E^7 + W^6 +D^5 + NDX)%;
+;04300  1184	
+;04400  1185	!
+;04500  1186	! EQUATED SYMBOLS:
+;04600  1187	!
+;04700  1188	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 2-1
+;
+;04800  1189	
+;04900  1190	!
+;05000  1191	! PSECT DECLARATIONS:
+;05100  1192	!
+;05200  1193	
+;05300  1194		DECLARE_PSECTS (FOR);	! declare PSECTs for FOR$ facility
+;05400  1195	
+;05500  1196	!
+;05600  1197	! OWN STORAGE:
+;05700  1198	!
+;05800  1199	    BIND
+;05900  1200		WF_ACT =		! Action table for UDF_WF1, UDF_WF9 format codes
+;06000  1201		    UPLIT BYTE(
+;06100  1202	
+;06200  1203	!		  E C S
+;06300  1204	!		  O H E
+;06400  1205	!		  L E T
+;06500  1206	!		  S C D
+;06600  1207	!		  T K S
+;06700  1208	!		    W C
+;06800  1209			A(0,0,0, 0),	! ER	= 0,	! 00	! format syntax error
+;06900  1210			A(0,0,0, 0),	! LP	= 1,	! 01	! ( - format reversion point
+;07000  1211			A(0,0,0, 0),	! NLP	= 2,	! 02	! n( - left paran of repeat group
+;07100  1212			A(0,0,0, 0),	! )	= 3,	! 03	! ) - right paren of repeat group
+;07200  1213					! MAINTENANCE NOTE: the above should not be seen by this module, except look ahead in FOR$$UDF_WF9
+;07300  1214			A(1,0,0, 1),	! EOF	= 4,	! 04	! ) - End of format
+;07400  1215			A(0,0,0, 1),	! SLS	= 5,	! 05	! / - Record separator
+;07500  1216			A(0,0,0, 2),	! DLR	= 6,	! 06	! $ - Dollar sign: terminal I/O
+;07600  1217			A(1,0,0, 0),	! CLN	= 7,	! 07	! : - Colon: terminate if end of list
+;07700  1218			0,0,0,0,	! UNUSED  8:11
+;07800  1219			A(0,0,0, 0),	! _P	= 12,	! 0C	! sP - signed scale factor
+;07900  1220			A(0,0,0, 3),	! _T	= 13,	! 0D	! Tn - Tab Set
+;08000  1221			A(0,1,0, 4),	! _X	= 14,	! 0E	! nX - Skip n columns
+;08100  1222			A(0,1,0, 5),	! _H	= 15,	! 0F	! nHcccc - Hollerith
+;08200  1223			0,0,0,0,	! UNUSED  16:19
+;08300  1224			A(1,0,0, 6),	! _Q	= 20,	! 14	! Q
+;08400  1225			A(1,1,0, 7),	! _A	= 21,	! 15	! nAw - Alpha numeric
+;08500  1226			A(1,1,1, 8),	! _L	= 22,	! 16	! nLw - Logical
+;08600  1227			A(1,1,1, 8),	! _O	= 23,	! 17	! nOw - Octal
+;08700  1228			A(1,1,1, 8),	! _I	= 24,	! 18	! nIw - Integer
+;08800  1229			A(1,1,1, 8),	! _Z	= 25,	! 19	! nZw - Hexadecimal
+;08900  1230			0,0,0,0,	! UNUSED  26:29
+;09000  1231			A(1,1,1, 9),	! _F	= 30,	! 1E	! nFw.d - Fixed format
+;09100  1232			A(1,1,1, 9),	! _E	= 31,	! 1F	! nEw.d - Scientific notation format
+;09200  1233			A(1,1,1, 9),	! _G	= 32,	! 20	! nGw.d - General format
+;09300  1234			A(1,1,1, 9)	! _D	= 33,	! 21	! nDw.d - Double Precision format
+;09400  1235		    ): VECTOR[30,BYTE];
+;09500  1236	!
+;09600  1237	! EXTERNAL REFERENCES:
+;09700  1238	!
+;09800  1239	
+;09900  1240	EXTERNAL 
+;10000  1241		FOR$$AA_REC_PR0: ADR_VECTOR,	 ! PIC array of record processor
+;10100  1242						! procedure-initializations in REC
+;10200  1243						! level of abstraction. Indexed by
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 2-2
+;
+;10300  1244						! I/O statement type (ISB$B_STTM_TYPE)
+;10400  1245		FOR$$AA_REC_PR1: ADR_VECTOR,	 ! PIC array of record processor procedures
+;10500  1246						! Write a record in REC level of
+;10600  1247						! abstraction. Indexed by I/O statement
+;10700  1248						! type (ISB$B_STTM_TYPE)
+;10800  1249		FOR$$AA_REC_PR9: ADR_VECTOR;	 ! PIC array of record processor procedures
+;10900  1250						! Write last record in REC level of
+;11000  1251						! abstraction. Indexed by I/O
+;11100  1252						! statement type (ISB$B_STTM_TYPE)
+;11200  1253	
+;11300  1254	EXTERNAL ROUTINE
+;11400  1255		FOR$$FMT_INTRP0: JSB_FMT0 NOVALUE,! initialize format interpreter
+;11500  1256		FOR$$FMT_INTRP1: CALL_CCB,	! get next data format code
+;11600  1257					! or input-output format code
+;11700  1258					! error # and SIGNAL
+;11800  1259		FOR$$SIGNAL_STO:NOVALUE,! convert FORTRAN err # to
+;11900  1260					! VAX error # and SIGNAL_STOP
+;12000  1261		FOR$CNV_OUT_D,		! FORTRAN output D conversion
+;12100  1262		FOR$CNV_OUT_E,	! FORTRAN output E
+;12200  1263		FOR$CNV_OUT_F,	! FORTRAN output F
+;12300  1264		FOR$CNV_OUT_G,	! FORTRAN output G
+;12400  1265		FOR$CNV_OUT_L,	! FORTRAN output L
+;12500  1266		FOR$CNV_OUT_O,	! FORTRAN output O
+;12600  1267		FOR$CNV_OUT_I,	! FORTRAN output I
+;12700  1268		FOR$CNV_OUT_Z;	! FORTRAN output Z
+;12800  1269	
+;12900  1270	    !+
+;13000  1271	    ! Define PIC output conversion tables.
+;13100  1272	    ! Order is same as format codes.
+;13200  1273	    ! Define as OWN rather than PSECT, because
+;13300  1274	    ! BLISS won't allow BIND table = UPLIT (... - table).
+;13400  1275	    !-
+;13500  1276	
+;13600  1277	    DISPATCH_PSECTS (FOR);		! Declare OWN PSECTs to be same as code
+;13700  1278						! so can reach with short ofsets.
+;13800  1279	
+;13900  1280	    OWN AA_OUT_FIX: VECTOR [4, WORD, SIGNED] INITIAL (WORD (
+;14000  1281		FOR$CNV_OUT_L - AA_OUT_FIX,
+;14100  1282		FOR$CNV_OUT_O - AA_OUT_FIX,
+;14200  1283		FOR$CNV_OUT_I - AA_OUT_FIX,
+;14300  1284		FOR$CNV_OUT_Z - AA_OUT_FIX));
+;14400  1285	
+;14500  1286	    OWN AA_OUT_FLT: VECTOR[4, WORD, SIGNED] INITIAL (WORD (
+;14600  1287		FOR$CNV_OUT_F - AA_OUT_FLT,
+;14700  1288		FOR$CNV_OUT_E - AA_OUT_FLT,
+;14800  1289		FOR$CNV_OUT_G - AA_OUT_FLT,
+;14900  1290		FOR$CNV_OUT_D - AA_OUT_FLT));
+;15000  1291	
+;15100  1292	    DECLARE_PSECTS (FOR);		! Now put PSECTs back the way they were.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 3
+;
+;00100  1293	GLOBAL ROUTINE FOR$$UDF_WF0 (	! Write formatted UDF initialization
+;00200  1294		FORMAT_ADR)		! Adr. of compiled format byte array
+;00300  1295		: JSB_UDF0 NOVALUE =
+;00400  1296	
+;00500  1297	!++
+;00600  1298	! FUNCTIONAL DESCRIPTION:
+;00700  1299	!
+;00800  1300	! Initialize Write Formatted User data formatter (UDF)
+;00900  1301	!
+;01000  1302	! CALLING SEQUENCE:
+;01100  1303	!
+;01200  1304	!	JSB FOR$$UDF_WF0 (R2=format_adr.rbu.ra)
+;01300  1305	!
+;01400  1306	! FORMAL PARAMETERS:
+;01500  1307	!
+;01600  1308	!	FORMAT_ADR.rbu.ra	Adr. of compiled format byte array
+;01700  1309	!
+;01800  1310	! IMPLICIT INPUTS:
+;01900  1311	!
+;02000  1312	!	CCB			Pointer to current logical unit block
+;02100  1313	!	ISB$B_STTM_TYPE		I/O statement type code - set by
+;02200  1314	!				each I/O statement initialization
+;02300  1315	!
+;02400  1316	! IMPLICIT OUTPUTS:
+;02500  1317	!
+;02600  1318	!	ISB$A_BUF_BEG		Adr. of first byte of output data buffer
+;02700  1319	!	ISB$A_BUF_PTR		Adr. of next byte of output
+;02800  1320	!				data buffer
+;02900  1321	!	ISB$A_BUF_HIGH		Adr. of high water byte in output buffer on this
+;03000  1322	!				I/O statement
+;03100  1323	!	ISB$A_BUF_END		Adr. +1 of last char position allocated
+;03200  1324	!				to output buffer
+;03300  1325	!
+;03400  1326	! ROUTINE VALUE:
+;03500  1327	! COMPLETION CODES:
+;03600  1328	!
+;03700  1329	!	NONE
+;03800  1330	!
+;03900  1331	! SIDE EFFECTS:
+;04000  1332	!
+;04100  1333	!	NONE
+;04200  1334	!
+;04300  1335	!--
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 4
+;
+;00100  1336	    BEGIN
+;00200  1337	
+;00300  1338	    EXTERNAL REGISTER
+;00400  1339		CCB: REF BLOCK[, BYTE];
+;00500  1340	
+;00600  1341	    !+
+;00700  1342	    ! Print input formals and implicit inputs if debugging
+;00800  1343	    !-
+;00900  1344	
+;01000  1345	    INPUT_FORMALS (FOR$$UDF_WF0, '.FORMAT_ADR', .FORMAT_ADR);
+;01100  1346	    IMPLICIT_INPUTS (FOR$$UDF_WF0, 'OTS$$A_CUR_LUB', .OTS$$A_CUR_LUB, '.CCB[ISB$B_STTM_TYPE]', .CCB[ISB$B_STTM_TYPE]
+;01200  1347	
+;01300  1348	    !+
+;01400  1349	    ! Initialize Record processing level of abstraction.
+;01500  1350	    ! Set pointer to current (ISB$A_BUF_PTR)  and last+1
+;01600  1351	    ! (ISB$A_BUF_END) character position for user data in
+;01700  1352	    ! output buffer
+;01800  1353	    !-
+;01900  1354	
+;02000  1355	    JSB_REC0 (FOR$$AA_REC_PR0 + .FOR$$AA_REC_PR0[.CCB[ISB$B_STTM_TYPE]]);
+;02100  1356	
+;02200  1357	    !+
+;02300  1358	    ! Initialize character pointer to first position for user
+;02400  1359	    ! data in output buffer - needed only for T AND $ formats
+;02500  1360	    !-
+;02600  1361	
+;02700  1362	    CCB[ISB$A_BUF_BEG] = .CCB[ISB$A_BUF_PTR];
+;02800  1363	
+;02900  1364	    !+
+;03000  1365	    ! Initialize character pointer to highest position
+;03100  1366	    ! written in user data buffer for this record - needed for
+;03200  1367	    ! T format which can position to the left
+;03300  1368	    !-
+;03400  1369	
+;03500  1370	    CCB[ISB$A_BUF_HIGH] = .CCB[ISB$A_BUF_PTR];
+;03600  1371	
+;03700  1372	    !+
+;03800  1373	    ! Initialize Format interpreter
+;03900  1374	    !-
+;04000  1375	
+;04100  1376	    FOR$$FMT_INTRP0 (.FORMAT_ADR);
+;04200  1377	
+;04300  1378	    !+
+;04400  1379	    ! All other ISB locations and flags have already been 
+;04500  1380	    ! initialized to 0 or a specified value by the I/O statement
+;04600  1381	    ! initialization for this I/O statement.
+;04700  1382	    !-
+;04800  1383	
+;04900  1384	    !+
+;05000  1385	    ! Print function value, output formals, and implicit outputs, if debugging
+;05100  1386	    !-
+;05200  1387	
+;05300  1388	    FUNCTION_VALUE (FOR$$UDF_WF0);
+;05400  1389	    OUTPUT_FORMALS (FOR$$UDF_WF0);
+;05500  1390	    IMPLICIT_OUTPUT  (FOR$$UDF_WF0, '.CCB[ISB$A_BUF_BEG]', .CCB[ISB$A_BUF_BEG],
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 4-1
+;
+;05600P 1391		'.CCB[ISB$A_BUF_PTR]', .CCB[ISB$A_BUF_PTR], '.CCB[ISB$A_BUF_HIGH]', .CCB[ISB$A_BUF_HIGH],
+;05700P 1392		'.CCB[ISB$A_BUF_END]', .CCB[ISB$A_BUF_END]);
+;05800  1393	    RETURN;
+;05900  1394	    END;		! End of FOR$$UDF_WF0 routine
+
+
+							    .TITLE  FOR$$UDF_WF
+							    .IDENT  \2-25\
+
+							    .PSECT  FOR$CODE,NOWRT,  SHR,  PIC,2
+
+  00  00  00  80  02  01  81  00  00  00  00  00000 P.AAA:  .BYTE   0, 0, 0, 0, -127, 1, 2, -128, 0, 0, 0, 0, 0, 3, 68, 69, - ;
+  C7  86  00  00  00  00  45  44  03  00  00  0000B		    0, 0, 0, 0, -122, -57, -24, -24, -24, -24, 0, 0, 0, 0, -  ;
+  E9  E9  E9  00  00  00  00  E8  E8  E8  E8  00016		    -23, -23, -23, -23					      ;
+					  E9  00021									      ;
+					      00022	    .BLKB   2
+		      0000* 0000* 0000* 0000* 00024 AA_OUT_FIX:
+							    .WORD   <FOR$CNV_OUT_L-AA_OUT_FIX>, <FOR$CNV_OUT_O-AA_OUT_FIX>, - ;
+								    <FOR$CNV_OUT_I-AA_OUT_FIX>, <FOR$CNV_OUT_Z-AA_OUT_FIX>    ;
+		      0000* 0000* 0000* 0000* 0002C AA_OUT_FLT:
+							    .WORD   <FOR$CNV_OUT_F-AA_OUT_FLT>, <FOR$CNV_OUT_E-AA_OUT_FLT>, - ;
+								    <FOR$CNV_OUT_G-AA_OUT_FLT>, <FOR$CNV_OUT_D-AA_OUT_FLT>    ;
+
+						    WF_ACT=		P.AAA
+							    .EXTRN  FOR$$AA_REC_PR0, FOR$$AA_REC_PR1, FOR$$AA_REC_PR9
+							    .EXTRN  FOR$$FMT_INTRP0, FOR$$FMT_INTRP1, FOR$$SIGNAL_STO
+							    .EXTRN  FOR$CNV_OUT_D, FOR$CNV_OUT_E, FOR$CNV_OUT_F, FOR$CNV_OUT_G
+							    .EXTRN  FOR$CNV_OUT_L, FOR$CNV_OUT_O, FOR$CNV_OUT_I, FOR$CNV_OUT_Z
+
+		         50 	  A5   AB  9A 00034 FOR$$UDF_WF0::
+							    MOVZBL  -91(CCB), R0					      ; 1355
+		         50 	0000GCF40  32 00038 	    CVTWL   FOR$$AA_REC_PR0[R0], R0				      ;
+				0000GCF40  16 0003E 	    JSB     FOR$$AA_REC_PR0[R0]					      ;
+		    C4   AB	  B8   AB  D0 00043 	    MOVL    -72(CCB), -60(CCB)					      ; 1362
+		    C8   AB	  B8   AB  D0 00048 	    MOVL    -72(CCB), -56(CCB)					      ; 1370
+				     0000G 30 0004D 	    BSBW    FOR$$FMT_INTRP0					      ; 1376
+					   05 00050 	    RSB     							      ; 1293
+
+; Routine Size:  29 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5
+;
+;00100  1395	GLOBAL ROUTINE FOR$$UDF_WF1 (	! Format one user output element
+;00200  1396		ELEM_TYPE,		! Type code of user I/O list element
+;00300  1397		ELEM_SIZE,		! No. of addressable units in element
+;00400  1398		ELEM_ADR)		! Adr. of element
+;00500  1399		: CALL_CCB NOVALUE =
+;00600  1400	
+;00700  1401	!++
+;00800  1402	! FUNCTIONAL DESCRIPTION:
+;00900  1403	!
+;01000  1404	!	FOR$$UDF_WF1 formats a single user I/O list element
+;01100  1405	!	and places it in the current output buffer, truncating
+;01200  1406	!	if necessary to fit. It and the format interpreter,
+;01300  1407	!	(FOR$$FMT_INTRP1) interprets all format codes until the
+;01400  1408	!	first I/O list element transmitting format code is
+;01500  1409	!	encountered.
+;01600  1410	!
+;01700  1411	!	FOR$$UDF_WF1 is also called when the user I/O list
+;01800  1412	!	has no more elements. This is indicated with .ELEM_SIZE=0
+;01900  1413	!	FOR$$UDF_WF1 and FOR$$FMT_INTRP1 interpret all format
+;02000  1414	!	codes up to the first data formatting one, :,
+;02100  1415	!	or end of format.
+;02200  1416	!
+;02300  1417	! CALLING SEQUENCE:
+;02400  1418	!
+;02500  1419	!	CALL FOR$$UDF_WF1 (elem_type.rlu.v, elem_size.rlu.v, elem_adr.rx.r)
+;02600  1420	!
+;02700  1421	! FORMAL PARAMETERS:
+;02800  1422	!
+;02900  1423	!	ELEM_TYPE.rlu.v		Type code of user I/O list
+;03000  1424	!				element. Form: ELEM_TYPE_x
+;03100  1425	!				x = B,W,L,WU,LU,F,D,FC or T.
+;03200  1426	!	ELEM_SIZE.rlu.v		Size of user I/O list element
+;03300  1427	!				in addressable machine units
+;03400  1428	!				If 0, this is end of I/O list call.
+;03500  1429	!	ELEM_ADR.rx.r		Adr. of user I/O list element
+;03600  1430	!				x = b, w, l, wu, lu, f, d, fc or t.
+;03700  1431	!
+;03800  1432	! IMPLICIT INPUTS:
+;03900  1433	!
+;04000  1434	!	CCB			Pointer to current logical unit block
+;04100  1435	!	ISB$B_STTM_TYPE		I/O statement type code - set by each
+;04200  1436	!				I/O statement initialization
+;04300  1437	!
+;04400  1438	! The following ISB locations are set only by previous calls to
+;04500  1439	! FOR$$UDF_WF{0,1}, i.e., are effectively OWN.
+;04600  1440	!
+;04700  1441	!	ISB$A_BUF_BEG		Pointer to first char. position in
+;04800  1442	!				user data part of output buffer
+;04900  1443	!	ISB$A_BUF_PTR		Pointer to next char. position
+;05000  1444	!				in user data part of output buffer
+;05100  1445	!	ISB$A_BUF_HIGH		Pointer to highest char. position
+;05200  1446	!				written so far on any T format code
+;05300  1447	!	ISB$A_BUF_END		Pointer to last+1 char. position
+;05400  1448	!				in user data part of output buffer
+;05500  1449	!	ISB$V_DOLLAR		Dollar sign seen in format for this
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-1
+;
+;05600  1450	!				record, if 1. Change carriage
+;05700  1451	!				control SP (space) to $, + to Null (0).
+;05800  1452	!   The following ISB locations are set by the format interpreter
+;05900  1453	!   (FOR$$FMT_INTRP1) which this module calls:
+;06000  1454	!
+;06100  1455	!	ISB$A_FMT_PTR		Pointer to next char. position
+;06200  1456	!				in user data part of output buffer
+;06300  1457	!				Used only in H format.
+;06400  1458	!	ISB$W_FMT_W		Field width (w)
+;06500  1459	!	ISB$B_FMT_D		No. of fraction digits (d)
+;06600  1460	!	ISB$B_FMT_E		No. of exponent characters (e)
+;06700  1461	!	ISB$B_FMT_P		Signed scale factor (p)
+;06800  1462	!
+;06900  1463	! IMPLICIT OUTPUTS:
+;07000  1464	!
+;07100  1465	!	ISB$A_FMT_PTR		Pointer to next char. position
+;07200  1466	!				in compiled format character string
+;07300  1467	!				Changed only for H format.
+;07400  1468	!
+;07500  1469	! The following ISB locations are set only by previous calls
+;07600  1470	! to FOR$$UDF_WF{0,1}, i.e., are effectively OWN.
+;07700  1471	!
+;07800  1472	!	ISB$A_BUF_PTR		Pointer to next char. position
+;07900  1473	!				in user data part of output buffer
+;08000  1474	!	ISB$A_BUF_HIGH		Pointer to highest char. position
+;08100  1475	!				written so far on any T format code
+;08200  1476	!	ISB$V_DOLLAR		Dollar sign seen in format for this
+;08300  1477	!				record, if 1. Change carriage
+;08400  1478	!				control SP to $, + to Null.
+;08500  1479	!
+;08600  1480	! FUNCTIONAL VALUE:
+;08700  1481	!
+;08800  1482	!	NONE
+;08900  1483	!
+;09000  1484	! SIDE EFFECTS:
+;09100  1485	!
+;09200  1486	!	SIGNAL_STOPs FOR$_OUTSTAOVE (66='OUTPUT STATEMENT OVERFLOWED RECORD')
+;09300  1487	!	if user attampts to write beyond the end of the record buffer.
+;09400  1488	!	SIGNALS FOR$_OUTCONERR (63='OUTPUT CONVERSION ERROR') -
+;09500  1489	!	    overflowed field is filled with *'s.
+;09600  1490	!	SIGNALS FOR$FORVARMIS (61='FORMAT/VARIABLE-TYPE MISMATCH')
+;09700  1491	!--
+;09800  1492	
+;09900  1493	    BEGIN
+;10000  1494	
+;10100  1495	    EXTERNAL REGISTER
+;10200  1496		CCB: REF BLOCK[, BYTE];
+;10300  1497	
+;10400  1498	    MAP
+;10500  1499		ELEM_ADR: REF VECTOR;	! element is call-by-reference
+;10600  1500	
+;10700  1501	    LOCAL
+;10800  1502		ACT: BLOCK[1,LONG],	! Action table entry for format code
+;10900  1503		BUF_PTR,		! Output buffer pointer from ISB
+;11000  1504		FMT_CODE,		! Compressed format code returned
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-2
+;
+;11100  1505					! from format interpreter (FOR$$FMT_INTRP)
+;11200  1506		FMT_W,			! Output field width from ISB
+;11300  1507	
+;11400  1508		DSC: BLOCK[8,BYTE];	! Static string desciptor for output field
+;11500  1509	
+;11600  1510	
+;11700  1511	    !+
+;11800  1512	    ! Print input formals and implicit inputs if debugging
+;11900  1513	    !-
+;12000  1514	
+;12100  1515	    INPUT_FORMALS (FOR$$UDF_WF1, '.ELEM_TYPE', .ELEM_TYPE, '.ELEM_SIZE', .ELEM_SIZE, '.ELEM_ADR', .ELEM_ADR,
+;12200P 1516		'.ELEM_ADR[0] (ref)', (IF .ELEM_ADR NEQ 0 THEN .ELEM_ADR[0] ELSE 0));
+;12300  1517	    IMPLICIT_INPUTS ( FOR$$UDF_WF1, '.OTS$$A_CUR_LUB', .OTS$$A_CUR_LUB,
+;12400P 1518		'.CCB[ISB$B_STTM_TYPE]', .CCB[ISB$B_STTM_TYPE], '.CCB[ISB$A_BUF_BEG]', .CCB[ISB$A_BUF_BEG],
+;12500P 1519		'.CCB[ISB$A_BUF_PTR]', .CCB[ISB$A_BUF_PTR], '.CCB[ISB$A_BUF_HIGH]', .CCB[ISB$A_BUF_HIGH],
+;12600P 1520		'.CCB[ISB$A_BUF_END]', .CCB[ISB$A_BUF_END], '.CCB[ISB$V_DOLLAR]', .CCB[ISB$V_DOLLAR]);
+;12700  1521	
+;12800  1522	    !+
+;12900  1523	    ! Perform loop beginning with a call to the format
+;13000  1524	    ! interpreter and continue processing until we get
+;13100  1525	    ! a format code for transmitting the user I/O list data
+;13200  1526	    ! element (i.e., Q,A,L,O,Z,I,F,E,G,D) in which case perform
+;13300  1527	    ! the output conversion and return to the user program.
+;13400  1528	    ! For other formats which do output without reference to
+;13500  1529	    ! the user I/O list, perform output formatting and continue
+;13600  1530	    ! loop (i.e., EOF, /, $, :, T, X, H)
+;13700  1531	    !-
+;13800  1532	
+;13900  1533	    WHILE 1 DO
+;14000  1534	
+;14100  1535		!+
+;14200  1536		! Get next format code requiring output interpretation:
+;14300  1537		!    1. If repeating an explicit format code, the code
+;14400  1538		!       is simply obtained from the B_FMT_CODE field of the ISB.
+;14500  1539		!
+;14600  1540		!    2. In other cases it is necessary to call FOR$$FMT_INTRP1
+;14700  1541		!
+;14800  1542		! Dispatch on format code and select appropriate actions.
+;14900  1543		!-
+;15000  1544	
+;15100  1545		BEGIN
+;15200  1546		IF .CCB[ISB$W_FMT_REP] GTR 1 AND .CCB[ISB$B_FMT_CODE] LSSU _DA
+;15300  1547		THEN
+;15400  1548		    BEGIN
+;15500  1549		    FMT_CODE = .CCB[ISB$B_FMT_CODE];
+;15600  1550		    CCB[ISB$W_FMT_REP] = .CCB[ISB$W_FMT_REP] - 1;
+;15700  1551		    END
+;15800  1552		ELSE
+;15900  1553		    FMT_CODE = FOR$$FMT_INTRP1(.ELEM_SIZE);
+;16000  1554	
+;16100  1555		ACT = .WF_ACT[.FMT_CODE];
+;16200  1556	
+;16300  1557		!+
+;16400  1558		! End of I/O list check:
+;16500  1559		! Bad format, End of format, :, all data format codes
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-3
+;
+;16600  1560		! (Q,A,L,O,Z,I,F,E,G,D)
+;16700  1561		! If end of I/O list (.ELEM_SIZE = 0) then do per-record
+;16800  1562		! formatting and write last record (PR9) of I/O
+;16900  1563		! statement and EXITLOOP which returns.
+;17000  1564		!-
+;17100  1565	
+;17200  1566		IF .ACT[WF_EOLST] AND .ELEM_SIZE EQL 0
+;17300  1567		THEN
+;17400  1568		    BEGIN
+;17500  1569		    DO_WRITE (FOR$$AA_REC_PR9 + .FOR$$AA_REC_PR9[.CCB[ISB$B_STTM_TYPE]]);
+;17600  1570		    EXITLOOP;
+;17700  1571		    END;
+;17800  1572	
+;17900  1573		!+
+;18000  1574		! Check for field extending beyond end of output buffer.
+;18100  1575		! SIGNAL_STOP FOR$_OUTSTAOVE if the buffer is exceeded.
+;18200  1576		! Advance buffer pointer in ISB.
+;18300  1577		!-
+;18400  1578	
+;18500  1579		BUF_PTR = .CCB[ISB$A_BUF_PTR];
+;18600  1580		FMT_W   = .CCB[ISB$W_FMT_W];
+;18700  1581	
+;18800  1582		IF .ACT[WF_CHECKW]
+;18900  1583		THEN
+;19000  1584		    BEGIN
+;19100  1585		    CCB[ISB$A_BUF_PTR] = .BUF_PTR + .FMT_W;
+;19200  1586	
+;19300  1587		    IF .CCB[ISB$A_BUF_PTR] GTRP .CCB[ISB$A_BUF_END]
+;19400  1588		    THEN
+;19500  1589			FOR$$SIGNAL_STO(FOR$K_OUTSTAOVE);
+;19600  1590		    END;
+;19700  1591	
+;19800  1592		!+
+;19900  1593		! Construct a string descriptor for output field if necessary.
+;20000  1594		!-
+;20100  1595	
+;20200  1596		IF .ACT[WF_SETDSC]
+;20300  1597		THEN
+;20400  1598		    BEGIN
+;20500  1599		    DSC[DSC$B_DTYPE] = DSC$K_DTYPE_T;
+;20600  1600		    DSC[DSC$B_CLASS] = DSC$K_CLASS_S;
+;20700  1601		    DSC[DSC$W_LENGTH]  = .FMT_W;
+;20800  1602		    DSC[DSC$A_POINTER] = .BUF_PTR;
+;20900  1603		    END;
+;21000  1604	
+;21100  1605		!+
+;21200  1606		! Dispatch to a format-code-specific action
+;21300  1607		!-
+;21400  1608	
+;21500  1609		CASE .ACT[WF_DISPAT] FROM 0 TO 9 OF
+;21600  1610		    SET
+;21700  1611	
+;21800  1612		    [0]:
+;21900  1613			!+
+;22000  1614			! No action required on format code (e.g. Colon)
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-4
+;
+;22100  1615			!-
+;22200  1616			;
+;22300  1617	
+;22400  1618		    [1]:
+;22500  1619			!+
+;22600  1620			! EOF,SLS
+;22700  1621			! Write record for end of format or / format codes
+;22800  1622			! If direct-access, signal error, else
+;22900  1623			! do per-record formatting and call
+;23000  1624			! intermediate record processing routine (PR1).
+;23100  1625			! Initialize all output buffer pointer for next record
+;23200  1626			! in this I/O statement, e.g., ISB$A_BUF_{BEG,PTR,END,HIGH}
+;23300  1627			! and ISB$V_DOLLAR = 0.
+;23400  1628			!-
+;23500  1629	
+;23600  1630			BEGIN
+;23700  1631			IF .CCB[LUB$V_DIRECT] THEN
+;23800  1632			  FOR$$SIGNAL_STO (FOR$K_MORONEREC);
+;23900  1633			DO_WRITE (FOR$$AA_REC_PR1 + .FOR$$AA_REC_PR1[.CCB[ISB$B_STTM_TYPE]]);
+;24000  1634			END;
+;24100  1635	
+;24200  1636		    [2]:
+;24300  1637			!+
+;24400  1638			! DLR
+;24500  1639			! Dollar sign: set dollar sign encountered in this
+;24600  1640			! record flag (ISB$V_DOLLAR). Checked when record
+;24700  1641			! written to determine whether to change
+;24800  1642			! carriage control for terminal.
+;24900  1643			!-
+;25000  1644	
+;25100  1645			CCB[ISB$V_DOLLAR] = 1;
+;25200  1646	
+;25300  1647		    [3]:
+;25400  1648			!+
+;25500  1649			! Tn : set position to (beginning + n) - 1 (n in FMT_W)
+;25600  1650			!
+;25700  1651			! 1) Update high water mark if
+;25800  1652			! current position higher than last high water mark.
+;25900  1653			!-
+;26000  1654	
+;26100  1655			BEGIN
+;26200  1656			CCB[ISB$A_BUF_HIGH] = MAXP (.CCB[ISB$A_BUF_HIGH], .BUF_PTR);
+;26300  1657	
+;26400  1658			!+
+;26500  1659			! 2) Set current position according to desired
+;26600  1660			! new position n.
+;26700  1661			! Check for request past end of data buffer
+;26800  1662			! If yes, set to end and SIGNAL_STOP FOR$_OUTSTAOVE.
+;26900  1663			!-
+;27000  1664	
+;27100  1665			CCB[ISB$A_BUF_PTR] = .CCB[ISB$A_BUF_BEG] + .FMT_W -1;
+;27200  1666	
+;27300  1667			IF .CCB[ISB$A_BUF_PTR] GTRP .CCB[ISB$A_BUF_END]
+;27400  1668			THEN
+;27500  1669			    FOR$$SIGNAL_STO (FOR$K_OUTSTAOVE);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-5
+;
+;27600  1670	
+;27700  1671			!+
+;27800  1672			! 3) Set any skipped positions to spaces, i.e., if new position
+;27900  1673			! is to the right of old position
+;28000  1674			!-
+;28100  1675	
+;28200  1676			IF .CCB[ISB$A_BUF_PTR] GTRP .CCB[ISB$A_BUF_HIGH]
+;28300  1677			THEN
+;28400  1678			    CH$FILL (%C' ', CH$DIFF (.CCB[ISB$A_BUF_PTR], .CCB[ISB$A_BUF_HIGH]),
+;28500  1679				     .CCB[ISB$A_BUF_HIGH])
+;28600  1680			END;
+;28700  1681	
+;28800  1682		    [4]:
+;28900  1683			!+
+;29000  1684			! nX: output n spaces (n in FMT_W)
+;29100  1685			!-
+;29200  1686	
+;29300  1687			CH$FILL (%C' ', .FMT_W, .BUF_PTR);
+;29400  1688	
+;29500  1689		    [5]:
+;29600  1690			!+
+;29700  1691			! nHccccc: Hollerith - copy n (FMT_W) chars
+;29800  1692			! from format to output buffer. Update format
+;29900  1693			! character pointer (ISB$A_FMT_PTR).
+;30000  1694			!-
+;30100  1695	
+;30200  1696			BEGIN
+;30300  1697			CH$MOVE (.FMT_W, .CCB[ISB$A_FMT_PTR], .BUF_PTR);
+;30400  1698			CCB[ISB$A_FMT_PTR] = .CCB[ISB$A_FMT_PTR] + .FMT_W;
+;30500  1699			END;
+;30600  1700	
+;30700  1701		    [6]:
+;30800  1702			!+
+;30900  1703			! Q format - ignore on output but use up I/O list element
+;31000  1704			! Just exit loop and return to user program
+;31100  1705			!-
+;31200  1706	
+;31300  1707			EXITLOOP;
+;31400  1708	
+;31500  1709		    [7]:
+;31600  1710			!+
+;31700  1711			! nAw.d and nA formats: output right-justified
+;31800  1712			! string in field. Insert leading spaces or truncate
+;31900  1713			! on right as necessary. Then exit loop and return to user program.
+;32000  1714			!-
+;32100  1715	
+;32200  1716			BEGIN
+;32300  1717			IF .ELEM_SIZE LSSU .FMT_W
+;32400  1718			THEN
+;32500  1719	
+;32600  1720			    !+
+;32700  1721			    ! User I/O list element is smaller than
+;32800  1722			    ! field width w (FMT_W). Fill with
+;32900  1723			    ! leading spaces, then copy entire user
+;33000  1724			    ! I/O list element.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-6
+;
+;33100  1725			    !-
+;33200  1726	
+;33300  1727			    CH$MOVE(.ELEM_SIZE, .ELEM_ADR,
+;33400  1728				CH$FILL(%C' ', .FMT_W - .ELEM_SIZE, .BUF_PTR) )
+;33500  1729			ELSE
+;33600  1730	
+;33700  1731			    !+
+;33800  1732			    ! User I/O list element is greater or equal
+;33900  1733			    ! to field width w (DSC$W_LENGTH)  Copy the
+;34000  1734			    ! first (smaller addressed end) w characters only.
+;34100  1735			    !-
+;34200  1736	
+;34300  1737			    CH$MOVE (.FMT_W, .ELEM_ADR, .BUF_PTR);
+;34400  1738	
+;34500  1739			EXITLOOP;
+;34600  1740			END;
+;34700  1741	
+;34800  1742		    [8]:
+;34900  1743			!+
+;35000  1744			! All integer formats (L,O,I,Z) output:
+;35100  1745			! 1) Check data type. If user I/o list element is not integer (B,W,L,WU,LU),
+;35200  1746			! SIGNAL FOR$_FORVARMIS (61='FORMAT VARIABLE-TYPE MISMATCH').
+;35300  1747			! Then exit loop and return to user program.
+;35400  1748			!-
+;35500  1749	
+;35600  1750			BEGIN
+;35700  1751			LOCAL
+;35800  1752			    S,		! No. of addressable units in user I/O list
+;35900  1753					! element.
+;36000  1754			    V;		! value to pass to conversion routines
+;36100  1755	
+;36200  1756			IF .ELEM_TYPE GEQU DSC$K_DTYPE_Q
+;36300  1757			THEN
+;36400  1758			    BEGIN
+;36500  1759			    CCB[ISB$B_ERR_NO] = FOR$K_FORVARMIS;
+;36600  1760			    S = %UPVAL;		! treat as if long
+;36700  1761			    END
+;36800  1762			ELSE
+;36900  1763			    S = .ELEM_SIZE;
+;37000  1764	
+;37100  1765			!+
+;37200  1766			! 2) Sign extend (I) or zero-extend (L,O,Z) to machine
+;37300  1767			! value. Call appropriate library conversion routine
+;37400  1768			! If value could not fit, SIGNAL FOR$_OUTCONERR
+;37500  1769			! (63='OUTPUT CONVERSION ERROR' - field filled with *'s
+;37600  1770			!-
+;37700  1771	
+;37800  1772			V = (IF .FMT_CODE EQLU _I
+;37900  1773			     THEN
+;38000  1774				 .(.ELEM_ADR)<0, .S*8, 1>
+;38100  1775			     ELSE
+;38200  1776				 .(.ELEM_ADR)<0, .S*8, 0>);
+;38300  1777			IF NOT
+;38400  1778			     (AA_OUT_FIX + .AA_OUT_FIX[.FMT_CODE - _L]) (.V, DSC)
+;38500  1779			THEN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-7
+;
+;38600  1780			    CCB[ISB$B_ERR_NO] = FOR$K_OUTCONERR;
+;38700  1781	
+;38800  1782			EXITLOOP;
+;38900  1783			END;
+;39000  1784	
+;39100  1785		    [9]:
+;39200  1786			!+
+;39300  1787			! All Floating formats (F,E,G,D) output:
+;39400  1788			! 1) Check data type. If user I/O list element is of
+;39500  1789			! type integer SIGNAL FOR$_FORVARMIS
+;39600  1790			! (61='FORMAT VARIABLE-TYPE MISMATCH')
+;39700  1791			! Copy value to double precision temporary
+;39800  1792			! Then exit loop and return to user program.
+;39900  1793			!-
+;40000  1794	
+;40100  1795			BEGIN
+;40200  1796			LOCAL
+;40300  1797			    D_VALUE: VECTOR[2];		! Double precision floating point
+;40400  1798	
+;40500  1799			IF .ELEM_TYPE LSSU DSC$K_DTYPE_F OR .ELEM_TYPE GTRU DSC$K_DTYPE_D
+;40600  1800			THEN
+;40700  1801			    CCB[ISB$B_ERR_NO] = FOR$K_FORVARMIS;
+;40800  1802	
+;40900  1803			D_VALUE[0] = .ELEM_ADR[0];
+;41000  1804	
+;41100  1805			IF .ELEM_SIZE EQL 4
+;41200  1806			THEN
+;41300  1807			    D_VALUE[1] = 0
+;41400  1808			ELSE
+;41500  1809			    D_VALUE[1] = .ELEM_ADR[1];
+;41600  1810	
+;41700  1811			!+
+;41800  1812			! 2) Call appropriate conversion routine
+;41900  1813			! If value did not fit in field, SIGNAL FOR$_OUTCONERR
+;42000  1814			! (63='OUTPUT CONVERSION ERROR') - field filled with *'s
+;42100  1815			!-
+;42200  1816	
+;42300  1817			IF NOT
+;42400  1818			    (AA_OUT_FLT + .AA_OUT_FLT[.FMT_CODE - _F])
+;42500  1819				(D_VALUE, DSC, .CCB[ISB$B_FMT_D], .CCB[ISB$B_FMT_P])
+;42600  1820			THEN
+;42700  1821			    CCB[ISB$B_ERR_NO] = FOR$K_OUTCONERR;
+;42800  1822	
+;42900  1823			EXITLOOP;
+;43000  1824			END;
+;43100  1825	
+;43200  1826	
+;43300  1827		    TES;	! End of CASE
+;43400  1828		END;		! End of processing loop
+;43500  1829	
+;43600  1830	    !+
+;43700  1831	    ! Print function value, output formals, and implicit outputs, if debugging.
+;43800  1832	    !-
+;43900  1833	
+;44000  1834	    FUNCTION_VALUE (FOR$$UDF_WF1);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-8
+;
+;44100  1835	    OUTPUT_FORMALS (FOR$$UDF_WF1);
+;44200  1836	    IMPLICIT_OUTPUT (FOR$$UDF_WF1, '.CCB[ISB$A_FMT_PTR]', .CCB[ISB$A_FMT_PTR],
+;44300P 1837		'.CCB[ISB$A_BUF_PTR]', .CCB[ISB$A_BUF_PTR],
+;44400P 1838		'.CCB[ISB$A_BUF_HIGH]', .CCB[ISB$A_BUF_HIGH], '.CCB[ISB$V_DOLLAR]', .CCB[ISB$V_DOLLAR]);
+;44500  1839	    RETURN;		! Return from FOR$$UDF_WF1 routine
+;44600  1840	    END;		! End of FOR$$UDF_WF1
+
+
+
+
+
+					 07FC 00051 	    .ENTRY  FOR$$UDF_WF1, Save R2,R3,R4,R5,R6,R7,R8,R9,R10	      ; 1395
+		         5E 	       10  C2 00053 	    SUBL2   #16, SP						      ;
+		         01 	  D1   AB  B1 00056 1$:     CMPW    -47(CCB), #1					      ; 1546
+				       0F  15 0005A 	    BLEQ    2$							      ;
+		         29 	  D3   AB  91 0005C 	    CMPB    -45(CCB), #41					      ;
+				       09  1E 00060 	    BGEQU   2$							      ;
+		         56 	  D3   AB  9A 00062 	    MOVZBL  -45(CCB), FMT_CODE					      ; 1549
+				  D1   AB  B7 00066 	    DECW    -47(CCB)						      ; 1550
+				       0B  11 00069 	    BRB     3$							      ; 1546
+				  08   AC  DD 0006B 2$:     PUSHL   ELEM_SIZE						      ; 1553
+		  0000G  CF	       01  FB 0006E 	    CALLS   #1, FOR$$FMT_INTRP1					      ;
+		         56 	       50  D0 00073 	    MOVL    R0, FMT_CODE					      ;
+		         59 	  86 AF46  9A 00076 3$:     MOVZBL  WF_ACT[FMT_CODE], ACT				      ; 1555
+	   19 	         59 	       07  E1 0007B 	    BBC     #7, ACT, 4$						      ; 1566
+				  08   AC  D5 0007F 	    TSTL    ELEM_SIZE						      ;
+				       14  12 00082 	    BNEQ    4$							      ;
+		         50 	  A5   AB  9A 00084 	    MOVZBL  -91(CCB), R0					      ; 1569
+		         50 	0000GCF40  32 00088 	    CVTWL   FOR$$AA_REC_PR9[R0], R0				      ;
+		         50 	0000GCF40  9E 0008E 	    MOVAB   FOR$$AA_REC_PR9[R0], R0				      ;
+				     0000V 30 00094 	    BSBW    DO_WRITE						      ;
+					   04 00097 	    RET     							      ; 1570
+		         52 	  B8   AB  9E 00098 4$:     MOVAB   -72(CCB), R2					      ; 1579
+		         58 	       62  D0 0009C 	    MOVL    (R2), BUF_PTR					      ;
+		         57 	  CD   AB  3C 0009F 	    MOVZWL  -51(CCB), FMT_W					      ; 1580
+	   13 	         59 	       06  E1 000A3 	    BBC     #6, ACT, 5$						      ; 1582
+	   62 	         58 	       57  C1 000A7 	    ADDL3   FMT_W, BUF_PTR, (R2)				      ; 1585
+		    BC   AB	       62  D1 000AB 	    CMPL    (R2), -68(CCB)					      ; 1587
+				       09  1B 000AF 	    BLEQU   5$							      ;
+		         7E 	  42   8F  9A 000B1 	    MOVZBL  #66, -(SP)						      ; 1589
+		  0000G  CF	       01  FB 000B5 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   0E 	         59 	       05  E1 000BA 5$:     BBC     #5, ACT, 6$						      ; 1596
+		    0A   AE	010E   8F  B0 000BE 	    MOVW    #270, DSC+2						      ; 1599
+		    08   AE	       57  B0 000C4 	    MOVW    FMT_W, DSC						      ; 1601
+		    0C   AE	       58  D0 000C8 	    MOVL    BUF_PTR, DSC+4					      ; 1602
+	   59 	         04 	       00  EF 000CC 6$:     EXTZV   #0, #4, ACT, R10					      ; 1609
+				       5A     000D0									      ;
+	   09 	         00 	       5A  CF 000D1 	    CASEL   R10, #0, #9						      ;
+	 0037 	       0016 	     FF81     000D5 7$:     .WORD   1$-7$,-						      ;
+	 0081 	       0079 	     003D     000DB		    8$-7$,-						      ;
+	 00AB 	       008D 	     012F     000E1		    10$-7$,-						      ;
+				     00E7     000E7		    11$-7$,-						      ;
+								    14$-7$,-						      ;
+								    15$-7$,-						      ;
+								    30$-7$,-						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-9
+;
+								    17$-7$,-						      ;
+								    19$-7$,-						      ;
+								    24$-7$						      ;
+				       74  11 000E9 	    BRB     16$							      ;
+	   07 	    FC   AB	       04  E1 000EB 8$:     BBC     #4, -4(CCB), 9$					      ; 1631
+				       1B  DD 000F0 	    PUSHL   #27							      ; 1632
+		  0000G  CF	       01  FB 000F2 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		         50 	  A5   AB  9A 000F7 9$:     MOVZBL  -91(CCB), R0					      ; 1633
+		         50 	0000GCF40  32 000FB 	    CVTWL   FOR$$AA_REC_PR1[R0], R0				      ;
+		         50 	0000GCF40  9E 00101 	    MOVAB   FOR$$AA_REC_PR1[R0], R0				      ;
+				     0000V 30 00107 	    BSBW    DO_WRITE						      ;
+				       53  11 0010A 	    BRB     16$							      ; 1609
+		    D7   AB	       01  88 0010C 10$:    BISB2   #1, -41(CCB)					      ; 1645
+				       4D  11 00110 	    BRB     16$							      ; 1609
+		         50 	  C8   AB  D0 00112 11$:    MOVL    -56(CCB), R0					      ; 1656
+		         58 	       50  D1 00116 	    CMPL    R0, BUF_PTR						      ;
+				       03  1E 00119 	    BGEQU   12$							      ;
+		         50 	       58  D0 0011B 	    MOVL    BUF_PTR, R0						      ;
+		    C8   AB	       50  D0 0011E 12$:    MOVL    R0, -56(CCB)					      ;
+	   50 	         57 	  C4   AB  C1 00122 	    ADDL3   -60(CCB), FMT_W, R0					      ; 1665
+		         62 	  FF   A0  9E 00127 	    MOVAB   -1(R0), (R2)					      ;
+		    BC   AB	       62  D1 0012B 	    CMPL    (R2), -68(CCB)					      ; 1667
+				       09  1B 0012F 	    BLEQU   13$							      ;
+		         7E 	  42   8F  9A 00131 	    MOVZBL  #66, -(SP)						      ; 1669
+		  0000G  CF	       01  FB 00135 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    C8   AB	       62  D1 0013A 13$:    CMPL    (R2), -56(CCB)					      ; 1676
+				       1F  1B 0013E 	    BLEQU   16$							      ;
+	   50 	         62 	  C8   AB  C3 00140 	    SUBL3   -56(CCB), (R2), R0					      ; 1678
+	   20 	         6E 	       00  2C 00145 	    MOVC5   #0, (SP), #32, R0, @-56(CCB)			      ;
+		    C8   BB	       50     00149									      ;
+				       11  11 0014C 	    BRB     16$							      ; 1609
+	   20 	         6E 	       00  2C 0014E 14$:    MOVC5   #0, (SP), #32, FMT_W, (BUF_PTR)			      ; 1687
+		         68 	       57     00152									      ;
+				       09  11 00154 	    BRB     16$							      ; 1609
+	   68 	    C0   BB	       57  28 00156 15$:    MOVC3   FMT_W, @-64(CCB), (BUF_PTR)				      ; 1697
+		    C0   AB	       57  C0 0015B 	    ADDL2   FMT_W, -64(CCB)					      ; 1698
+				     FEF4  31 0015F 16$:    BRW     1$							      ; 1609
+		         57 	  08   AC  D1 00162 17$:    CMPL    ELEM_SIZE, FMT_W					      ; 1717
+				       12  1E 00166 	    BGEQU   18$							      ;
+	   50 	         57 	  08   AC  C3 00168 	    SUBL3   ELEM_SIZE, FMT_W, R0				      ; 1728
+	   20 	         6E 	       00  2C 0016D 	    MOVC5   #0, (SP), #32, R0, (BUF_PTR)			      ;
+		         68 	       50     00171									      ;
+	   63 	    0C   BC	  08   AC  28 00173 	    MOVC3   ELEM_SIZE, @ELEM_ADR, (R3)				      ; 1727
+					   04 00179 	    RET     							      ; 1717
+	   68 	    0C   BC	       57  28 0017A 18$:    MOVC3   FMT_W, @ELEM_ADR, (BUF_PTR)				      ; 1737
+					   04 0017F 	    RET     							      ; 1739
+		         09 	  04   AC  D1 00180 19$:    CMPL    ELEM_TYPE, #9					      ; 1756
+				       09  1F 00184 	    BLSSU   20$							      ;
+		    A4   AB	       3D  90 00186 	    MOVB    #61, -92(CCB)					      ; 1759
+		         50 	       04  D0 0018A 	    MOVL    #4, S						      ; 1760
+				       04  11 0018D 	    BRB     21$							      ; 1756
+		         50 	  08   AC  D0 0018F 20$:    MOVL    ELEM_SIZE, S					      ; 1763
+		         50 	       08  C4 00193 21$:    MULL2   #8, R0						      ; 1774
+		         18 	       56  D1 00196 	    CMPL    FMT_CODE, #24					      ; 1772
+				       08  12 00199 	    BNEQ    22$							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 5-10
+;
+      0C   BC	         50 	       00  EE 0019B 	    EXTV    #0, R0, @ELEM_ADR, V				      ; 1774
+				       51     001A0									      ;
+				       06  11 001A1 	    BRB     23$							      ; 1772
+      0C   BC	         50 	       00  EF 001A3 22$:    EXTZV   #0, R0, @ELEM_ADR, V				      ; 1776
+				       51     001A8									      ;
+		         50 	FE4A CF46  32 001A9 23$:    CVTWL   AA_OUT_FIX-44[FMT_CODE], R0				      ; 1778
+				  08   AE  9F 001AF 	    PUSHAB  DSC							      ;
+				       51  DD 001B2 	    PUSHL   V							      ;
+		  FE6A CF40	       02  FB 001B4 	    CALLS   #2, AA_OUT_FIX[R0]					      ;
+				       41  11 001BA 	    BRB     29$							      ;
+		         0A 	  04   AC  D1 001BC 24$:    CMPL    ELEM_TYPE, #10					      ; 1799
+				       06  1F 001C0 	    BLSSU   25$							      ;
+		         0B 	  04   AC  D1 001C2 	    CMPL    ELEM_TYPE, #11					      ;
+				       04  1B 001C6 	    BLEQU   26$							      ;
+		    A4   AB	       3D  90 001C8 25$:    MOVB    #61, -92(CCB)					      ; 1801
+		         50 	  0C   AC  D0 001CC 26$:    MOVL    ELEM_ADR, R0					      ; 1803
+		         6E 	       60  D0 001D0 	    MOVL    (R0), D_VALUE					      ;
+		         04 	  08   AC  D1 001D3 	    CMPL    ELEM_SIZE, #4					      ; 1805
+				       05  12 001D7 	    BNEQ    27$							      ;
+				  04   AE  D4 001D9 	    CLRL    D_VALUE+4						      ; 1807
+				       05  11 001DC 	    BRB     28$							      ; 1805
+		    04   AE	  04   A0  D0 001DE 27$:    MOVL    4(R0), D_VALUE+4					      ; 1809
+		         50 	FE08 CF46  32 001E3 28$:    CVTWL   AA_OUT_FLT-60[FMT_CODE], R0				      ; 1818
+		         7E 	  CC   AB  98 001E9 	    CVTBL   -52(CCB), -(SP)					      ; 1819
+		         7E 	  CF   AB  9A 001ED 	    MOVZBL  -49(CCB), -(SP)					      ;
+				  10   AE  9F 001F1 	    PUSHAB  DSC							      ;
+				  0C   AE  9F 001F4 	    PUSHAB  D_VALUE						      ;
+		  FE2F CF40	       04  FB 001F7 	    CALLS   #4, AA_OUT_FLT[R0]					      ;
+		         04 	       50  E8 001FD 29$:    BLBS    R0, 30$						      ;
+		    A4   AB	       3F  90 00200 	    MOVB    #63, -92(CCB)					      ; 1821
+					   04 00204 30$:    RET     							      ; 1395
+
+; Routine Size:  436 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 6
+;
+;00100  1841	ROUTINE DO_WRITE (		! do per-record formatting and write record
+;00200  1842		FOR$$REC_xn)		! adr. or record processing routine
+;00300  1843		: JSB_DO_WRITE NOVALUE =
+;00400  1844	
+;00500  1845	
+;00600  1846	!+
+;00700  1847	!FUNCTIONAL DESCRIPTION:
+;00800  1848	!
+;00900  1849	!	DO_WRITE is a local routine which performs any per-record
+;01000  1850	!	formatting (as distinguished from per I/O list element formatting)
+;01100  1851	!	and then output the record by calling the appropriate
+;01200  1852	!	record processing routine depending on the statement type
+;01300  1853	!	(ISB$BSTTM_TYPE) and formal parameter FOR$$REC_xn which 
+;01400  1854	!	is either (1) FOR$$REC_x1 if this is not the last record
+;01500  1855	!	of the I/o statement or (2) FOR$$REC_x9 if the is the last
+;01600  1856	!	record of the I/O statement, i.e., this is the end of I/O list call.
+;01700  1857	!	Note: DO_WRITE is also called directly from FOR$$UDF_WF9 on end of
+;01800  1858	!	I/O list if at end of format too.  Therefore, all end of
+;01900  1859	!	list processing should be kept here in DO_WRITE.
+;02000  1860	!
+;02100  1861	! CALLING SEQUENCE:
+;02200  1862	!
+;02300  1863	!	JSB DO_WRITE (R0=for$$rec_xn.s.ar)
+;02400  1864	!
+;02500  1865	! FORMAL PARAMETERS:
+;02600  1866	!
+;02700  1867	!	FOR$$REC_xn.s.ar	Adr. of record processing routine
+;02800  1868	!
+;02900  1869	! IMPLICIT INPUTS:
+;03000  1870	!
+;03100  1871	!	CCB			Pointer to current logical unit block
+;03200  1872	!
+;03300  1873	! The following locations are set only by previous calls to
+;03400  1874	! FOR$$UDF_WF{0,1}, i.e., are effectively OWN for this module.
+;03500  1875	!
+;03600  1876	!	ISB$A_BUF_BEG		Pointer to first char. position in
+;03700  1877	!				user data part of output buffer
+;03800  1878	!	ISB$A_BUF_PTR		Pointer to next char. position
+;03900  1879	!				in user data part of output buffer
+;04000  1880	!	ISB$A_BUF_HIGH		Pointer to highest char. position
+;04100  1881	!				written so far on any T format code
+;04200  1882	!	ISB$A_BUF_END		Pointer to last+1 char. position
+;04300  1883	!				in user data part of output buffer
+;04400  1884	!	ISB$V_DOLLAR		Dollar sign seen in format for this
+;04500  1885	!				record, if 1. Change carriage
+;04600  1886	!				control SP to $, + to Null.
+;04700  1887	!
+;04800  1888	! IMPLICIT OUTPUTS:
+;04900  1889	!
+;05000  1890	! The following locations are set only by previous calls
+;05100  1891	! to FOR$$UDF_WF{0,1}, i.e., are effectively OWN for this module.
+;05200  1892	!
+;05300  1893	!	ISB$A_BUF_BEG		Pointer: set to first char. position
+;05400  1894	!				of next output buffer to be filled.
+;05500  1895	!	ISB$A_BUF_PTR		Pointer: set to first char. position
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 6-1
+;
+;05600  1896	!				in user data part of output buffer to be filled
+;05700  1897	!	ISB$A_BUF_HIGH		Pointer: set to first char. position
+;05800  1898	!				of user data part of output buffer to be filled
+;05900  1899	!	ISB$V_DOLLAR		Set to 0
+;06000  1900	!--
+;06100  1901	
+;06200  1902	    BEGIN
+;06300  1903	
+;06400  1904	    EXTERNAL REGISTER
+;06500  1905		CCB: REF BLOCK[, BYTE];
+;06600  1906	
+;06700  1907	    !+
+;06800  1908	    ! 1) IF $ seen in
+;06900  1909	    ! format for current record (ISB$V_DOLLAR=1),
+;07000  1910	    ! change carriage control character space to $
+;07100  1911	    ! or + to Null for terminal dialog no CR's
+;07200  1912	    ! and/or LF's.
+;07300  1913	    !-
+;07400  1914	
+;07500  1915	    IF .CCB[ISB$V_DOLLAR]
+;07600  1916	    THEN
+;07700  1917		BEGIN
+;07800  1918		IF CH$RCHAR (.CCB[ISB$A_BUF_BEG]) EQL %C' '
+;07900  1919		THEN
+;08000  1920		    CH_WCHAR (.CCB[ISB$A_BUF_BEG]) = %C'$';
+;08100  1921		IF CH$RCHAR (.CCB[ISB$A_BUF_BEG]) EQL %C'+'
+;08200  1922		THEN
+;08300  1923		    CH_WCHAR (.CCB[ISB$A_BUF_BEG]) = 0;
+;08400  1924		END;
+;08500  1925	
+;08600  1926	
+;08700  1927	    !+
+;08800  1928	    ! 2) Determine max of current position and highest
+;08900  1929	    ! T format. Output from the beginning to max.
+;09000  1930	    ! Return with new beginning and end pointers
+;09100  1931	    ! to next user data buffer to be filled.
+;09200  1932	    !-
+;09300  1933	
+;09400  1934	    CCB[ISB$A_BUF_PTR] = MAXP (.CCB[ISB$A_BUF_PTR], .CCB[ISB$A_BUF_HIGH]);
+;09500  1935	    JSB_REC1 (.FOR$$REC_xn);
+;09600  1936	
+;09700  1937	    !+
+;09800  1938	    ! 3) Initialize beginning and highest pointer
+;09900  1939	    ! (T format) and dollar-sign-seen-this-record flag
+;10000  1940	    !-
+;10100  1941	
+;10200  1942	    CCB[ISB$A_BUF_BEG] = .CCB[ISB$A_BUF_PTR];
+;10300  1943	    CCB[ISB$A_BUF_HIGH] = .CCB[ISB$A_BUF_PTR];
+;10400  1944	    CCB[ISB$V_DOLLAR] = 0;
+;10500  1945	    RETURN;	! Return from DO_WRITE routine
+;10600  1946	    END;	! End of DO_WRITE routine
+
+
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 6-2
+;
+
+		         51 	       50  D0 00205 DO_WRITE:
+							    MOVL    R0, R1						      ; 1841
+		         13 	  D7   AB  E9 00208 	    BLBC    -41(CCB), 2$					      ; 1915
+		         20 	  C4   BB  91 0020C 	    CMPB    @-60(CCB), #32					      ; 1918
+				       04  12 00210 	    BNEQ    1$							      ;
+		    C4   BB	       24  90 00212 	    MOVB    #36, @-60(CCB)					      ; 1920
+		         2B 	  C4   BB  91 00216 1$:     CMPB    @-60(CCB), #43					      ; 1921
+				       03  12 0021A 	    BNEQ    2$							      ;
+				  C4   BB  94 0021C 	    CLRB    @-60(CCB)						      ; 1923
+		         50 	  B8   AB  D0 0021F 2$:     MOVL    -72(CCB), R0					      ; 1934
+		    C8   AB	       50  D1 00223 	    CMPL    R0, -56(CCB)					      ;
+				       04  1E 00227 	    BGEQU   3$							      ;
+		         50 	  C8   AB  D0 00229 	    MOVL    -56(CCB), R0					      ;
+		    B8   AB	       50  D0 0022D 3$:     MOVL    R0, -72(CCB)					      ;
+				       61  16 00231 	    JSB     (FOR$$REC_XN)					      ; 1935
+		    C4   AB	  B8   AB  D0 00233 	    MOVL    -72(CCB), -60(CCB)					      ; 1942
+		    C8   AB	  B8   AB  D0 00238 	    MOVL    -72(CCB), -56(CCB)					      ; 1943
+		    D7   AB	       01  8A 0023D 	    BICB2   #1, -41(CCB)					      ; 1944
+					   05 00241 	    RSB     							      ; 1841
+
+; Routine Size:  61 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 7
+;
+;00100  1947	GLOBAL ROUTINE FOR$$UDF_WF9  ! Formatted output - end of I/O list call
+;00200  1948		: JSB_UDF9 NOVALUE =
+;00300  1949	
+;00400  1950	
+;00500  1951	!++
+;00600  1952	! FUNCTIONAL DESCRIPTION:
+;00700  1953	!
+;00800  1954	!	FOR$$UDF_WF9 performs end of I/O list output formatting.
+;00900  1955	!	All format codes are processed until a data transmitting
+;01000  1956	!	format code is encountered (or colon) or end of format.
+;01100  1957	!
+;01200  1958	! CALLING SEQUENCE:
+;01300  1959	!
+;01400  1960	!	JSB FOR$$UDF_WF9 ()
+;01500  1961	!
+;01600  1962	! FORMAL PARAMETERS:
+;01700  1963	!
+;01800  1964	!	NONE
+;01900  1965	!
+;02000  1966	! IMPLICIT INPUTS:
+;02100  1967	!
+;02200  1968	!	See FOR$$UDF_WF1
+;02300  1969	!
+;02400  1970	!
+;02500  1971	! IMPLICIT OUTPUTS:
+;02600  1972	!
+;02700  1973	!	See FOR$$UDF_WF1
+;02800  1974	!
+;02900  1975	! FUNCTION VALUE:
+;03000  1976	!
+;03100  1977	!	NONE
+;03200  1978	!
+;03300  1979	! SIDE EFFECTS:
+;03400  1980	!
+;03500  1981	!	See FOR$$UDF_WF1
+;03600  1982	!--
+;03700  1983	
+;03800  1984	    BEGIN
+;03900  1985	
+;04000  1986	    EXTERNAL REGISTER
+;04100  1987		CCB: REF BLOCK[, BYTE];
+;04200  1988	
+;04300  1989	    LOCAL
+;04400  1990		X: BLOCK[1, BYTE];
+;04500  1991	
+;04600  1992	    !+
+;04700  1993	    ! Check if next format byte is end of format.  If yes, just
+;04800  1994	    ! do terminal write processing (thereby avoiding 2 CALLs
+;04900  1995	    ! to FOR$$UDF_WF1 and FOR$$INTRP1).
+;05000  1996	    !-
+;05100  1997	
+;05200  1998	    X = .WF_ACT[.BLOCK[(.CCB[ISB$A_FMT_PTR]), V_FMT_CODE; , BYTE]];
+;05300  1999	    IF .X[WF_EOLST]
+;05400  2000	    THEN
+;05500  2001		DO_WRITE (FOR$$AA_REC_PR9 + .FOR$$AA_REC_PR9[.CCB[ISB$B_STTM_TYPE]])
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 7-1
+;
+;05600  2002	    ELSE
+;05700  2003	
+;05800  2004		!+
+;05900  2005		! Call data transmit entry point with element size of 0 as
+;06000  2006		! a flag. Return as soon as a data transmitting format code,
+;06100  2007		! colon, or End of Format code is encountered.
+;06200  2008		!-
+;06300  2009	
+;06400  2010		FOR$$UDF_WF1 (0, 0, 0);
+;06500  2011	
+;06600  2012	    RETURN;
+;06700  2013	    END;	! End of FOR$$UDF_WF9 Routine
+
+
+
+
+
+      C0   BB	         07 	       00  EF 00242 FOR$$UDF_WF9::
+							    EXTZV   #0, #7, @-64(CCB), R0				      ; 1998
+				       50     00247									      ;
+		         50 	FDB3 CF40  9A 00248 	    MOVZBL  WF_ACT[R0], X					      ;
+	   13 	         50 	       07  E1 0024E 	    BBC     #7, X, 1$						      ; 1999
+		         50 	  A5   AB  9A 00252 	    MOVZBL  -91(CCB), R0					      ; 2001
+		         50 	0000GCF40  32 00256 	    CVTWL   FOR$$AA_REC_PR9[R0], R0				      ;
+		         50 	0000GCF40  9E 0025C 	    MOVAB   FOR$$AA_REC_PR9[R0], R0				      ;
+				       A1  10 00262 	    BSBB    DO_WRITE						      ;
+					   05 00264 	    RSB     							      ; 1999
+				       7E  7C 00265 1$:     CLRQ    -(SP)						      ; 2010
+				       7E  D4 00267 	    CLRL    -(SP)						      ;
+		  FDE3   CF	       03  FB 00269 	    CALLS   #3, FOR$$UDF_WF1					      ;
+					   05 0026E 	    RSB     							      ; 1947
+
+; Routine Size:  45 bytes
+
+
+;06800  2014	
+;06900  2015	
+;07000  2016	END		! End of FOR$$UDF_WF Module
+;07100  2017	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  FOR$CODE       	   623  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:29:12	DBB3:[RTL.SRC]FUDFWF.B32;13					Page 7-2
+;
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         9         0       111
+
+
+
+
+
+; Size:		571 code + 52 data bytes
+; Run Time:	00:23.4
+; Elapsed Time:	01:42.1
+; Memory Used:	277 pages
+; Compilation Complete

@@ -1,0 +1,530 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGSCA (	! lexical scanner for DEBUG
+;	0002			ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0003			IDENT = '000008') =
+;	0004	BEGIN
+;	0005	
+;	0006	!
+;	0007	!			  COPYRIGHT (c) 1977 BY
+;	0008	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0009	!
+;	0010	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0011	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0012	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0013	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0014	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0015	! TRANSFERRED.
+;	0016	!
+;	0017	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0018	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0019	! CORPORATION.
+;	0020	!
+;	0021	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0022	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0023	!
+;	0024	
+;	0025	!++
+;	0026	! FACILITY:	DEBUG (DBG)
+;	0027	!
+;	0028	! ABSTRACT:
+;	0029	!	This module contains the routine called by the parser to get a
+;	0030	!	token from the input line. It also contains the routine that
+;	0031	!	translates an alpha string into a keyword token.
+;	0032	!
+;	0033	! ENVIRONMENT:	STARLET, user mode, interrupts disabled.
+;	0034	!
+;	0035	! Version:	08
+;	0036	!
+;	0037	! History:
+;	0038	!	Author:
+;	0039	!		Carol Peters, CREATION DATE: 13 September 1977
+;	0040	!
+;	0041	!	Modified by:
+;	0042	!		Dale Roedger, 09 May 1978:	08
+;	0043	!
+;	0044	! 02	06-10-77	CP	Delete declaration of VAXERR.BEG.
+;	0045	! 03	28-12-77	CP	Redefine keyword list; add EQV and XOR
+;	0046	!				for FORTRAN.
+;	0047	! 04	05-JAN-78	DAR	Changed require file MARTOK.BEG to COMTER.BEG
+;	0048	!				also changed token names to correspond to
+;	0049	!				those in COMTER.BEG
+;	0050	! 05	24-APR-78	DAR	DBG$GET_A_TOKEN sets mode level to local before
+;	0051	!				calling the lecical routine.
+;	0052	! 06	27-APR-78	DAR	Modified the require and library directives
+;	0053	!				for the native build.
+;	0054	! 07	01-MAY-78	DAR	Added parameter to trans_lexeme and made it
+;	0055	!				global dbg$tran_lexeme so that set language can
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!				use this routine too.
+;	0057	! 08	09-MAY-78	DAR	lexical routines return alpha_str_token instead
+;	0058	!				of alpha.
+;	0059	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0060	! TABLE OF CONTENTS:
+;	0061	!
+;	0062	FORWARD ROUTINE
+;	0063		dbg$get_a_token,	! extracts a token from the input buffer
+;	0064		dbg$tran_lexeme;	! translates a lexeme into a token
+;	0065	
+;	0066	!
+;	0067	! INCLUDE FILES:
+;	0068	!
+;	0069	%IF %VARIANT		! True for TEN.
+;     L 0070	%THEN
+;     U 0071	LIBRARY	'NEW:LIB';
+;     U 0072	
+;     U 0073	REQUIRE 'DBGPCT.REQ';
+;     U 0074	REQUIRE 'VXSMAC.REQ';
+;     U 0075	REQUIRE 'DBGGEN.REQ';
+;     U 0076	REQUIRE 'COMTER.REQ';
+;     U 0077	REQUIRE 'SCALIT.REQ';
+;     U 0078	REQUIRE 'COMKEY.REQ';
+;     U 0079	REQUIRE 'SYSSER.REQ';
+;     U 0080	%ELSE
+;	0081	LIBRARY	'SYS$LIBRARY:LIB.L32';
+;	0082	
+;	0083	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0095	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0135	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0385	REQUIRE 'SRC$:COMTER.REQ';
+;	0477	REQUIRE 'SRC$:SCALIT.REQ';
+;	0515	REQUIRE 'SRC$:COMKEY.REQ';
+;	0609	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0612	SWITCHES LIST (SOURCE);
+;      R0613	
+;      R0614	EXTERNAL ROUTINE
+;      R0615		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R0616	
+;      R0617	SWITCHES LIST (NOSOURCE);
+;	0662	%FI
+;	0663	
+;	0664	!
+;	0665	! MACROS:
+;	0666	!
+;	0667	
+;	0668	!
+;	0669	! EQUATED SYMBOLS:
+;	0670	!
+;	0671	LITERAL
+;	0672		dbg_sca		= 0;		! diagnostic messages in dbg$tran_lexeme
+;	0673	
+;	0674	!
+;	0675	! OWN STORAGE:
+;	0676	!
+;	0677	
+;	0678	!
+;	0679	! EXTERNAL REFERENCES:
+;	0680	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 2-1
+; Digital Equipment Corporation
+;
+;	0681	
+;	0682	EXTERNAL
+;	0683		dbg$gl_get_lex;			! holds name of get lexeme routine
+;	0684	
+;	0685	EXTERNAL ROUTINE
+;	0686		dbg$set_mod_lvl;		! routine to set the mode level.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	0687	GLOBAL ROUTINE dbg$get_a_token (input_stg_desc, lexeme_stg_desc) =
+;	0688	
+;	0689	!++
+;	0690	! Functional description:
+;	0691	!	Extracts a lexeme from the input stream by calling the routine
+;	0692	!	dbg$???_get_lex. Translates the lexeme to a token (sometimes a
+;	0693	!	null operation). Returns the token as the routine value and
+;	0694	!	the ASCII string representing the token in the character string
+;	0695	!	pointed to by the pointer field of lexeme_stg_desc. Also returns
+;	0696	!	the actual length of the ASCII string of the lexeme in the
+;	0697	!	length field of lexeme_stg_desc.
+;	0698	!
+;	0699	!	The pointer to the input buffer is updated and rewritten into
+;	0700	!	the pointer field of input_stg_desc.
+;	0701	!
+;	0702	! Formal parameters:
+;	0703	!	input_stg_desc	- string descriptor to the input buffer.
+;	0704	!	lexeme_stg_desc	- varying string descriptor to the lexeme buffer.
+;	0705	!
+;	0706	! Implicit inputs:
+;	0707	!	none
+;	0708	!
+;	0709	! Outputs:
+;	0710	!	none
+;	0711	!
+;	0712	! Implicit outputs:
+;	0713	!	The mode level is set to local.
+;	0714	!
+;	0715	! Routine value:
+;	0716	!	an encoded representation of the token found.
+;	0717	!
+;	0718	! Side effects:
+;	0719	!	none
+;	0720	!--
+;	0721	
+;	0722		BEGIN
+;	0723	
+;	0724		MAP
+;	0725			lexeme_stg_desc: REF BLOCK [, BYTE];	! descriptor of lexeme string
+;	0726	
+;	0727		LOCAL
+;	0728			lexeme_type;				! type of lexeme found
+;	0729	
+;	0730		!++
+;	0731		! Fill the lexeme buffer with zeroes.
+;	0732		!--
+;	0733		ZEROCOR (.lexeme_stg_desc [dsc$a_pointer], (.lexeme_stg_desc [dsc$w_maxlen] / 4));
+;	0734		dbg$set_mod_lvl (local_mode);			! set mode level to local
+;	0735		lexeme_type = (.dbg$gl_get_lex) (.input_stg_desc, .lexeme_stg_desc);
+;	0736		IF .lexeme_type EQL alpha_str_token
+;	0737		THEN RETURN dbg$tran_lexeme (.lexeme_stg_desc, keyword_table)
+;	0738		ELSE RETURN .lexeme_type;
+;	0739		END;						! end of dbg$get_a_token
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+							    .TITLE  DBGSCA
+							    .IDENT  \000008\
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   1, 2, 7						      ;
+					      00003 	    .ASCII  \ADDRESS\						      ;
+					      0000A 	    .BYTE   2, 2, 5						      ;
+					      0000D 	    .ASCII  \AFTER\						      ;
+					      00012 	    .BYTE   3, 2, 3						      ;
+					      00015 	    .ASCII  \ALL\						      ;
+					      00018 	    .BYTE   4, 2, 5						      ;
+					      0001B 	    .ASCII  \.AND.\						      ;
+					      00020 	    .BYTE   5, 2, 5						      ;
+					      00023 	    .ASCII  \ASCII\						      ;
+					      00028 	    .BYTE   6, 3, 6						      ;
+					      0002B 	    .ASCII  \BRANCH\						      ;
+					      00031 	    .BYTE   7, 1, 5						      ;
+					      00034 	    .ASCII  \BREAK\						      ;
+					      00039 	    .BYTE   8, 2, 4						      ;
+					      0003C 	    .ASCII  \BYTE\						      ;
+					      00040 	    .BYTE   9, 1, 5						      ;
+					      00043 	    .ASCII  \CALLS\						      ;
+					      00048 	    .BYTE   10, 3, 6						      ;
+					      0004B 	    .ASCII  \CANCEL\						      ;
+					      00051 	    .BYTE   13, 1, 7						      ;
+					      00054 	    .ASCII  \DEPOSIT\						      ;
+					      0005B 	    .BYTE   11, 3, 7						      ;
+					      0005E 	    .ASCII  \DECIMAL\						      ;
+					      00065 	    .BYTE   12, 3, 6						      ;
+					      00068 	    .ASCII  \DEFINE\						      ;
+					      0006E 	    .BYTE   14, 2, 2						      ;
+					      00071 	    .ASCII  \DO\						      ;
+					      00073 	    .BYTE   15, 2, 5						      ;
+					      00076 	    .ASCII  \.EQV.\						      ;
+					      0007B 	    .BYTE   17, 1, 7						      ;
+					      0007E 	    .ASCII  \EXAMINE\						      ;
+					      00085 	    .BYTE   18, 3, 9						      ;
+					      00088 	    .ASCII  \EXCEPTION\						      ;
+					      00091 	    .BYTE   19, 3, 4						      ;
+					      00094 	    .ASCII  \EXIT\						      ;
+					      00098 	    .BYTE   16, 2, 8						      ;
+					      0009B 	    .ASCII  \EVALUATE\						      ;
+					      000A3 	    .BYTE   22, 1, 2						      ;
+					      000A6 	    .ASCII  \GO\						      ;
+					      000A8 	    .BYTE   21, 2, 6						      ;
+					      000AB 	    .ASCII  \GLOBAL\						      ;
+					      000B1 	    .BYTE   23, 1, 11						      ;
+					      000B4 	    .ASCII  \HEXADECIMAL\					      ;
+					      000BF 	    .BYTE   24, 1, 11						      ;
+					      000C2 	    .ASCII  \INSTRUCTION\					      ;
+					      000CD 	    .BYTE   25, 3, 4						      ;
+					      000D0 	    .ASCII  \INTO\						      ;
+					      000D4 	    .BYTE   26, 3, 6						      ;
+					      000D7 	    .ASCII  \%LABEL\						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+					      000DD 	    .BYTE   27, 2, 8						      ;
+					      000E0 	    .ASCII  \LANGUAGE\						      ;
+					      000E8 	    .BYTE   28, 3, 5						      ;
+					      000EB 	    .ASCII  \%LINE\						      ;
+					      000F0 	    .BYTE   48, 2, 4						      ;
+					      000F3 	    .ASCII  \LINE\						      ;
+					      000F7 	    .BYTE   30, 3, 7						      ;
+					      000FA 	    .ASCII  \LITERAL\						      ;
+					      00101 	    .BYTE   29, 2, 4						      ;
+					      00104 	    .ASCII  \LONG\						      ;
+					      00108 	    .BYTE   31, 1, 4						      ;
+					      0010B 	    .ASCII  \MODE\						      ;
+					      0010F 	    .BYTE   32, 4, 6						      ;
+					      00112 	    .ASCII  \MODULE\						      ;
+					      00118 	    .BYTE   33, 4, 7						      ;
+					      0011B 	    .ASCII  \NOASCII\						      ;
+					      00122 	    .BYTE   34, 3, 8						      ;
+					      00125 	    .ASCII  \NOGLOBAL\						      ;
+					      0012D 	    .BYTE   35, 3, 13						      ;
+					      00130 	    .ASCII  \NOINSTRUCTION\					      ;
+					      0013D 	    .BYTE   36, 4, 7						      ;
+					      00140 	    .ASCII  \NOSCOPE\						      ;
+					      00147 	    .BYTE   37, 4, 10						      ;
+					      0014A 	    .ASCII  \NOSYMBOLIC\					      ;
+					      00154 	    .BYTE   38, 5, 8						      ;
+					      00157 	    .ASCII  \NOSYSTEM\						      ;
+					      0015F 	    .BYTE   39, 2, 5						      ;
+					      00162 	    .ASCII  \.NOT.\						      ;
+					      00167 	    .BYTE   40, 1, 5						      ;
+					      0016A 	    .ASCII  \OCTAL\						      ;
+					      0016F 	    .BYTE   41, 2, 4						      ;
+					      00172 	    .ASCII  \.OR.\						      ;
+					      00176 	    .BYTE   42, 2, 4						      ;
+					      00179 	    .ASCII  \OVER\						      ;
+					      0017D 	    .BYTE   43, 1, 4						      ;
+					      00180 	    .ASCII  \READ\						      ;
+					      00184 	    .BYTE   47, 1, 4						      ;
+					      00187 	    .ASCII  \STEP\						      ;
+					      0018B 	    .BYTE   44, 2, 5						      ;
+					      0018E 	    .ASCII  \SCOPE\						      ;
+					      00193 	    .BYTE   45, 2, 3						      ;
+					      00196 	    .ASCII  \SET\						      ;
+					      00199 	    .BYTE   46, 2, 4						      ;
+					      0019C 	    .ASCII  \SHOW\						      ;
+					      001A0 	    .BYTE   49, 2, 8						      ;
+					      001A3 	    .ASCII  \SYMBOLIC\						      ;
+					      001AB 	    .BYTE   50, 3, 6						      ;
+					      001AE 	    .ASCII  \SYSTEM\						      ;
+					      001B4 	    .BYTE   51, 1, 5						      ;
+					      001B7 	    .ASCII  \TRACE\						      ;
+					      001BC 	    .BYTE   52, 1, 5						      ;
+					      001BF 	    .ASCII  \WATCH\						      ;
+					      001C4 	    .BYTE   53, 2, 4						      ;
+					      001C7 	    .ASCII  \WORD\						      ;
+					      001CB 	    .BYTE   54, 2, 5						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 3-3
+; Digital Equipment Corporation
+;
+					      001CE 	    .ASCII  \.XOR.\						      ;
+					      001D3 	    .BYTE   0							      ;
+
+						    KEYWORD_TABLE=	P.AAA
+							    .GLOBL  DBG$FAO_OUT, DBG$GL_GET_LEX, DBG$SET_MOD_LVL
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 007C 00000 	    .ENTRY  DBG$GET_A_TOKEN, Save R2,R3,R4,R5,R6		      ; 0687
+		         56	  08   AC  D0 00002 	    MOVL    LEXEME_STG_DESC, R6					      ; 0733
+		         50	  08   A6  3C 00006 	    MOVZWL  8(R6), R0						      ;
+		         50	       04  C6 0000A 	    DIVL2   #4, R0						      ;
+		         50	       04  C4 0000D 	    MULL2   #4, R0						      ;
+	   00	         6E	       00  2C 00010 	    MOVC5   #0, (SP), #0, R0, @4(R6)				      ;
+		    04   B6	       50     00014									      ;
+				       03  DD 00017 	    PUSHL   #3							      ; 0734
+	      00000000G  EF	       01  FB 00019 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				       56  DD 00020 	    PUSHL   R6							      ; 0735
+				  04   AC  DD 00022 	    PUSHL   INPUT_STG_DESC					      ;
+	      00000000G  FF	       02  FB 00025 	    CALLS   #2, @DBG$GL_GET_LEX					      ;
+	      00000049   8F	       50  D1 0002C 	    CMPL    LEXEME_TYPE, #73					      ; 0736
+				       0D  12 00033 	    BNEQ    1$							      ;
+			    00000000'  EF  9F 00035 	    PUSHAB  KEYWORD_TABLE					      ; 0687
+				       56  DD 0003B 	    PUSHL   R6							      ; 0737
+		  0000V  CF	       02  FB 0003D 	    CALLS   #2, DBG$TRAN_LEXEME					      ;
+					   04 00042 1$:     RET     							      ; 0687
+
+; Routine Size:  67 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	0740	GLOBAL ROUTINE dbg$tran_lexeme (lexeme_stg_desc, keyword_tbl) =
+;	0741	
+;	0742	!++
+;	0743	! Functional description:
+;	0744	!	Maps an alphabetic string onto an element in the keyword table.
+;	0745	!	If the alphabetic string does not match a keyword, then
+;	0746	!	"alpha_str_token" is returned. If the alphabetic string does match
+;	0747	!	a keyword, then the token for the keyword is abstracted from
+;	0748	!	the keyword table and returned.
+;	0749	!
+;	0750	! Formal parameters:
+;	0751	!	lexeme_stg_desc	- varying string descriptor for lexeme string
+;	0752	!	keyword_tbl	- Address of the keyword table where this routine
+;	0753	!			  looks for a match.
+;	0754	!
+;	0755	! Implicit inputs:
+;	0756	!	The keyword table for the current DEBUG language.
+;	0757	!
+;	0758	! Outputs:
+;	0759	!	none
+;	0760	!
+;	0761	! Implicit outputs:
+;	0762	!	none
+;	0763	!
+;	0764	! Routine value:
+;	0765	!	The token for the keyword that matches the ASCII string,
+;	0766	!	or "alpha_str_token", if no keyword matches the string.
+;	0767	!
+;	0768	! Side effects:
+;	0769	!	none
+;	0770	!--
+;	0771	
+;	0772		BEGIN
+;	0773	
+;	0774		MAP
+;	0775			lexeme_stg_desc: REF BLOCK [, BYTE],	! lexeme string descriptor
+;	0776			keyword_tbl: REF VECTOR [, BYTE];	! keyword table
+;	0777	
+;	0778		LOCAL
+;	0779			keyword_entry : REF VECTOR [, BYTE];	! address of a keyword record;
+;	0780	
+;	0781	%IF dbg_sca
+;     L 0782	%THEN
+;     U 0783		$fao_tt_out ('string is "!AS"', .lexeme_stg_desc);
+;     U 0784	%FI
+;	0785	
+;	0786		keyword_entry = keyword_tbl [0];
+;	0787		DO
+;	0788			BEGIN
+;	0789	
+;	0790			!++
+;	0791			! If the length of the keyword is at least as long as
+;	0792			! the lexeme found, and the lexeme found is at least as
+;	0793			! long as the abbreviation of the keyword, then try
+;	0794			! to match the strings.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+;	0795			!--
+;	0796			IF .keyword_entry [kword_length] GEQ .lexeme_stg_desc [dsc$w_length]
+;	0797				AND .lexeme_stg_desc [dsc$w_length] GEQ .keyword_entry [kword_abbrev]
+;	0798			THEN
+;	0799				BEGIN
+;	0800	
+;	0801	%IF dbg_sca
+;     L 0802	%THEN
+;     U 0803				$fao_tt_out ('keyword is "!AD"', .keyword_entry [kword_length], keyword_entry [kword_name]);
+;     U 0804	%FI
+;	0805	
+;	0806				IF ch$eql (.lexeme_stg_desc [dsc$w_length],
+;	0807						ch$ptr (.lexeme_stg_desc [dsc$a_pointer]),
+;	0808						.lexeme_stg_desc [dsc$w_length],
+;	0809						ch$ptr (keyword_entry [kword_name]))
+;	0810	
+;	0811				!++
+;	0812				! Keyword match found. Return the token
+;	0813				! equivalent.
+;	0814				!--
+;	0815				THEN RETURN .keyword_entry [kword_token];
+;	0816				END;
+;	0817	
+;	0818			!++
+;	0819			! Keyword did not match. Advance the table pointer to
+;	0820			! point to the next entry. If the first byte of this
+;	0821			! next entry is zero, conclude that the table is
+;	0822			! exhausted, and just return the name_token.
+;	0823			!--
+;	0824			keyword_entry = keyword_entry [0]
+;	0825					+ .keyword_entry[kword_length] + kword_overhead;
+;	0826			END
+;	0827		UNTIL (.keyword_entry [kword_token] EQL 0);
+;	0828		RETURN alpha_str_token;
+;	0829		END;
+
+
+
+
+
+					 003C 00043 	    .ENTRY  DBG$TRAN_LEXEME, Save R2,R3,R4,R5			      ; 0740
+		         54	  08   AC  D0 00045 	    MOVL    KEYWORD_TBL, KEYWORD_ENTRY				      ; 0786
+		         55	  04   AC  D0 00049 	    MOVL    LEXEME_STG_DESC, R5					      ; 0796
+		         50	  02   A4  9A 0004D 1$:     MOVZBL  2(KEYWORD_ENTRY), R0				      ;
+		         65	       50  B1 00051 	    CMPW    R0, (R5)						      ;
+				       15  1F 00054 	    BLSSU   2$							      ;
+		         50	  01   A4  9A 00056 	    MOVZBL  1(KEYWORD_ENTRY), R0				      ; 0797
+		         65	       50  B1 0005A 	    CMPW    R0, (R5)						      ;
+				       0C  1A 0005D 	    BGTRU   2$							      ;
+      03   A4	    04   B5	       65  29 0005F 	    CMPC3   (R5), @4(R5), 3(KEYWORD_ENTRY)			      ; 0806
+				       04  12 00065 	    BNEQ    2$							      ;
+		         50	       64  9A 00067 	    MOVZBL  (KEYWORD_ENTRY), R0					      ; 0815
+					   04 0006A 	    RET     							      ;
+		         50	  02   A4  9A 0006B 2$:     MOVZBL  2(KEYWORD_ENTRY), R0				      ; 0825
+		         50	       54  C0 0006F 	    ADDL2   KEYWORD_ENTRY, R0					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03	DBB3:[DEBUG.SRC]DBGSCA.B32;5					Page 4-2
+; Digital Equipment Corporation
+;
+	   54	         50	       03  C1 00072 	    ADDL3   #3, R0, KEYWORD_ENTRY				      ;
+				       64  95 00076 	    TSTB    (KEYWORD_ENTRY)					      ; 0827
+				       D3  12 00078 	    BNEQ    1$							      ;
+		         50	  49   8F  9A 0007A 	    MOVZBL  #73, R0						      ; 0828
+					   04 0007E 	    RET     							      ; 0740
+
+; Routine Size:  60 bytes
+
+
+;	0830	
+;	0831	END							! End of module
+;	0832	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$PLIT       	   468  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$CODE       	   127  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         3         0       222
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      452	00:07.6		00:11.4
+;	FLOWAN	       23	00:00.3		00:00.3
+;	DELAY	       25	00:00.2		00:00.2
+;	TNBIND	       37	00:00.3		00:00.3
+;	CODE	       50	00:00.3		00:00.3
+;	FINAL	      107	00:01.6		00:01.7
+;	Total	      694	00:10.2		00:14.2
+
+; Size:		127 code + 468 data bytes
+; Run Time:	00:10.5
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:33:03									Page 4-3
+; Digital Equipment Corporation
+;
+; Elapsed Time:	00:14.5
+; Memory Used:	282 pages
+; Compilation Complete

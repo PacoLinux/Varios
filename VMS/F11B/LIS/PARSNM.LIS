@@ -1,0 +1,393 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 1
+;
+;	0001	MODULE PARSNM (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'B0005'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine parses a file name string.
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET operating system, including privileged system services
+;	0037	!	and internal exec routines.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  3-Jan-1978  18:30
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   Andrew C. Goldstein, 14-Jan-1978  15:24
+;	0047	!   B0002 - Directory structure change
+;	0048	!
+;	0049	!   Andrew C. Goldstein, 1-Feb-1978  14:29
+;	0050	!   B0003 - Accept * in file name
+;	0051	!
+;	0052	!   Andrew C. Goldstein, 24-Mar-1978  11:12
+;	0053	!   B0004 - Disallow * unless wild card bit is set
+;	0054	!
+;	0055	!   Andrew C. Goldstein, 3-May-78  12:08
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 1-1
+;
+;	0056	!   B0005 - Fix radix of lower to upper case conversion
+;	0057	!
+;	0058	!**
+;	0059	
+;	0060	
+;	0061	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0062	REQUIRE 'SRC$:FCPDEF.B32';
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2
+;
+;	0411	GLOBAL ROUTINE PARSE_NAME (NAME_DESC, COUNT, STRING, FLAGS) : NOVALUE =
+;	0412	
+;	0413	!++
+;	0414	!
+;	0415	! FUNCTIONAL DESCRIPTION:
+;	0416	!
+;	0417	!	This routine parses a file name string.
+;	0418	!
+;	0419	!
+;	0420	! CALLING SEQUENCE:
+;	0421	!	PARSE_NAME (ARG1, ARG2, ARG3, ARG4)
+;	0422	!
+;	0423	! INPUT PARAMETERS:
+;	0424	!	ARG2: character count of name string
+;	0425	!	ARG3: address of name string
+;	0426	!	ARG4: name control flag bits
+;	0427	!
+;	0428	! IMPLICIT INPUTS:
+;	0429	!	NONE
+;	0430	!
+;	0431	! OUTPUT PARAMETERS:
+;	0432	!	ARG1: address of name descriptor block
+;	0433	!
+;	0434	! IMPLICIT OUTPUTS:
+;	0435	!	NONE
+;	0436	!
+;	0437	! ROUTINE VALUE:
+;	0438	!	NONE
+;	0439	!
+;	0440	! SIDE EFFECTS:
+;	0441	!	NONE
+;	0442	!
+;	0443	!--
+;	0444	
+;	0445	BEGIN
+;	0446	
+;	0447	MAP
+;	0448		NAME_DESC	: REF BBLOCK;	! name descriptor block arg
+;	0449	
+;	0450	LOCAL
+;	0451		DP		: REF BBLOCK,	! local pointer to descriptor
+;	0452		J,				! character counter
+;	0453		P0,				! string base pointer
+;	0454		P1,				! pointer to scan string
+;	0455		P2,				! pointer to build output string
+;	0456		C		: BYTE,		! character in process
+;	0457		DOT_COUNT;			! count of "." encountered
+;	0458	
+;	0459	OWN
+;	0460		NAME_BUFFER	: VECTOR [20, BYTE]; ! buffer to build file name
+;	0461	
+;	0462	EXTERNAL ROUTINE
+;	0463		LIB$CVT_DTB;			! convert decimal to binary
+;	0464	
+;	0465	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2-1
+;
+;	0466	! Load a local pointer to the name descriptor block. Once the compiler
+;	0467	! learns how to address structures through formals, this code can be removed.
+;	0468	!
+;	0469	
+;	0470	DP = .NAME_DESC;
+;	0471	
+;	0472	! First do an upper bounds check on the name string to avoid blowing the buffer.
+;	0473	! Then iterate on the characters, copying alphanumerics in upper case.
+;	0474	! If a wild card is present if name or type, we leave that field null.
+;	0475	! Dots and semicolons delimit the name and type strings; once two have been
+;	0476	! seen, get the version number. Note that a semicolon seen without a dot is
+;	0477	! processed twice to produce a null type field. We stuff dots at the end
+;	0478	! if necessary to get the descriptors completed.
+;	0479	!
+;	0480	
+;	0481	IF .COUNT GTRU 20
+;	0482	THEN ERR_EXIT (SS$_BADFILENAME);
+;	0483	
+;	0484	CH$FILL (0, FND_LENGTH, .DP);
+;	0485	DP[FND_FLAGS] = .FLAGS;
+;	0486	J = .COUNT;
+;	0487	P0 = P1 = .STRING;
+;	0488	P2 = NAME_BUFFER;
+;	0489	DOT_COUNT = 0;
+;	0490	DP[FND_STRING] = .P2;
+;	0491	
+;	0492	WHILE 1 DO
+;	0493	    BEGIN
+;	0494	    IF (J = .J - 1) GEQ 0
+;	0495	    THEN
+;	0496		C = CH$RCHAR_A (P1)
+;	0497	    ELSE
+;	0498		BEGIN
+;	0499		C = '.';
+;	0500		J = .J + 1;
+;	0501		END;
+;	0502	
+;	0503	    SELECTONEU .C OF
+;	0504		SET
+;	0505	
+;	0506		['A' TO 'Z', '0' TO '9']:
+;	0507			IF NOT (
+;	0508			    IF NOT .DOT_COUNT
+;	0509			    THEN .DP[FND_WILD_NAME]
+;	0510			    ELSE .DP[FND_WILD_TYPE]
+;	0511			    )
+;	0512			THEN CH$WCHAR_A (.C, P2);
+;	0513	
+;	0514		['a' TO 'z']:
+;	0515			BEGIN
+;	0516			C = .C AND NOT %X'20';
+;	0517			IF NOT (
+;	0518			    IF NOT .DOT_COUNT
+;	0519			    THEN .DP[FND_WILD_NAME]
+;	0520			    ELSE .DP[FND_WILD_TYPE]
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2-2
+;
+;	0521			    )
+;	0522			THEN CH$WCHAR_A (.C, P2);
+;	0523			END;
+;	0524	
+;	0525		['.', ';']:
+;	0526			IF NOT .DOT_COUNT
+;	0527			THEN
+;	0528			    BEGIN
+;	0529			    IF .P1 - .P0 GTRU 10
+;	0530			    THEN ERR_EXIT (SS$_BADFILENAME);
+;	0531			    IF .C EQL ';'
+;	0532			    THEN
+;	0533				BEGIN
+;	0534				P1 = .P1 - 1;
+;	0535				J = .J + 1;
+;	0536				END;
+;	0537			    P0 = .P1;
+;	0538			    CH$WCHAR_A ('.', P2);
+;	0539			    DOT_COUNT = .DOT_COUNT + 1;
+;	0540			    END
+;	0541	
+;	0542			ELSE
+;	0543			    BEGIN
+;	0544			    IF .P1 - .P0 GTRU 4
+;	0545			    THEN ERR_EXIT (SS$_BADFILENAME);
+;	0546			    EXITLOOP;
+;	0547			    END;
+;	0548	
+;	0549		['*']:	IF .P1 - .P0 GTRU 1
+;	0550			OR NOT (IF NOT .DOT_COUNT
+;	0551			    THEN .DP[FND_WILD_NAME]
+;	0552			    ELSE .DP[FND_WILD_TYPE]
+;	0553			   )
+;	0554			THEN ERR_EXIT (SS$_BADFILENAME);
+;	0555	
+;	0556	
+;	0557		[OTHERWISE]:
+;	0558			ERR_EXIT (SS$_BADFILENAME);
+;	0559	
+;	0560		TES;
+;	0561	
+;	0562	    END;				! end of character loop
+;	0563	
+;	0564	! Record the length of the generated string. Then convert and check the
+;	0565	! version number.
+;	0566	!
+;	0567	
+;	0568	DP[FND_COUNT] = .P2 - .DP[FND_STRING];
+;	0569	IF .J NEQ 1
+;	0570	OR NOT (CH$RCHAR (.P1) EQL '*' AND .DP[FND_WILD_VER])
+;	0571	THEN
+;	0572	    IF NOT LIB$CVT_DTB (.J, .P1, DP[FND_VERSION])
+;	0573	    THEN ERR_EXIT (SS$_BADFILENAME);
+;	0574	
+;	0575	IF .(DP[FND_VERSION])<0,32> GTRU 32767
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2-3
+;
+;	0576	THEN ERR_EXIT (SS$_BADFILEVER);
+;	0577	
+;	0578	END;					! end of routine PARSE_NAME
+
+
+							    .TITLE  PARSNM
+							    .IDENT  \B0005\
+
+							    .PSECT  $LOCKEDD1$,NOEXE,2
+
+					      00000 NAME_BUFFER:
+							    .BLKB   20
+
+							    .EXTRN  LIB$CVT_DTB
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 00FC 00000 	    .ENTRY  PARSE_NAME, Save R2,R3,R4,R5,R6,R7			      ; 0411
+		         56 	  04   AC  D0 00002 	    MOVL    NAME_DESC, DP					      ; 0470
+		         14 	  08   AC  D1 00006 	    CMPL    COUNT, #20						      ; 0481
+				       7E  1A 0000A 	    BGTRU   13$							      ;
+	   00 	         6E 	       00  2C 0000C 	    MOVC5   #0, (SP), #0, #16, (DP)				      ; 0484
+		         66 	       10     00010									      ;
+		         66 	  10   AC  B0 00012 	    MOVW    FLAGS, (DP)						      ; 0485
+		         54 	  08   AC  D0 00016 	    MOVL    COUNT, J						      ; 0486
+		         52 	  0C   AC  D0 0001A 	    MOVL    STRING, P1						      ; 0487
+		         57 	       52  D0 0001E 	    MOVL    P1, P0						      ;
+		         53 	0000'  CF  9E 00021 	    MOVAB   NAME_BUFFER, P2					      ; 0488
+				       55  D4 00026 	    CLRL    DOT_COUNT						      ; 0489
+		    08   A6	       53  D0 00028 	    MOVL    P2, 8(DP)						      ; 0490
+				       54  D7 0002C 1$:     DECL    J							      ; 0494
+				       05  19 0002E 	    BLSS    2$							      ;
+		         51 	       82  90 00030 	    MOVB    (P1)+, C						      ; 0496
+				       05  11 00033 	    BRB     3$							      ; 0494
+		         51 	       2E  90 00035 2$:     MOVB    #46, C						      ; 0499
+				       54  D6 00038 	    INCL    J							      ; 0500
+		         30 	       51  91 0003A 3$:     CMPB    C, #48						      ; 0503
+				       05  1F 0003D 	    BLSSU   4$							      ;
+		         39 	       51  91 0003F 	    CMPB    C, #57						      ;
+				       0C  1B 00042 	    BLEQU   5$							      ;
+		    41   8F	       51  91 00044 4$:     CMPB    C, #65						      ;
+				       0B  1F 00048 	    BLSSU   6$							      ;
+		    5A   8F	       51  91 0004A 	    CMPB    C, #90						      ;
+				       05  1A 0004E 	    BGTRU   6$							      ;
+		         14 	       55  E9 00050 5$:     BLBC    DOT_COUNT, 7$					      ; 0508
+				       18  11 00053 	    BRB     9$							      ; 0510
+		    61   8F	       51  91 00055 6$:     CMPB    C, #97						      ; 0503
+				       1B  1F 00059 	    BLSSU   11$							      ;
+		    7A   8F	       51  91 0005B 	    CMPB    C, #122						      ;
+				       15  1A 0005F 	    BGTRU   11$							      ;
+		         51 	       20  8A 00061 	    BICB2   #32, C						      ; 0516
+		         06 	       55  E8 00064 	    BLBS    DOT_COUNT, 9$					      ; 0518
+	   06 	         66 	       05  E1 00067 7$:     BBC     #5, (DP), 10$					      ; 0519
+				       BF  11 0006B 8$:     BRB     1$							      ;
+	   BB 	         66 	       04  E0 0006D 9$:     BBS     #4, (DP), 1$					      ; 0520
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2-4
+;
+		         83 	       51  90 00071 10$:    MOVB    C, (P2)+						      ; 0522
+				       B6  11 00074 	    BRB     1$							      ; 0503
+		         2E 	       51  91 00076 11$:    CMPB    C, #46						      ;
+				       05  13 00079 	    BEQL    12$							      ;
+		         3B 	       51  91 0007B 	    CMPB    C, #59						      ;
+				       26  12 0007E 	    BNEQ    16$							      ;
+	   50 	         52 	       57  C3 00080 12$:    SUBL3   P0, P1, R0						      ; 0529
+		         18 	       55  E8 00084 	    BLBS    DOT_COUNT, 15$					      ; 0526
+		         0A 	       50  D1 00087 	    CMPL    R0, #10						      ; 0529
+				       5A  1A 0008A 13$:    BGTRU   20$							      ;
+		         3B 	       51  91 0008C 	    CMPB    C, #59						      ; 0531
+				       04  12 0008F 	    BNEQ    14$							      ;
+				       52  D7 00091 	    DECL    P1							      ; 0534
+				       54  D6 00093 	    INCL    J							      ; 0535
+		         57 	       52  D0 00095 14$:    MOVL    P1, P0						      ; 0537
+		         83 	       2E  90 00098 	    MOVB    #46, (P2)+						      ; 0538
+				       55  D6 0009B 	    INCL    DOT_COUNT						      ; 0539
+				       8D  11 0009D 	    BRB     1$							      ; 0526
+		         04 	       50  D1 0009F 15$:    CMPL    R0, #4						      ; 0544
+				       1F  1B 000A2 	    BLEQU   18$							      ;
+				       40  11 000A4 	    BRB     20$							      ; 0545
+		         2A 	       51  91 000A6 16$:    CMPB    C, #42						      ; 0503
+				       3B  12 000A9 	    BNEQ    20$							      ;
+	   50 	         52 	       57  C3 000AB 	    SUBL3   P0, P1, R0						      ; 0549
+		         01 	       50  D1 000AF 	    CMPL    R0, #1						      ;
+				       32  1A 000B2 	    BGTRU   20$							      ;
+		         06 	       55  E8 000B4 	    BLBS    DOT_COUNT, 17$					      ; 0550
+	   2B 	         66 	       05  E1 000B7 	    BBC     #5, (DP), 20$					      ; 0551
+				       AE  11 000BB 	    BRB     8$							      ;
+	   AA 	         66 	       04  E0 000BD 17$:    BBS     #4, (DP), 8$					      ; 0552
+				       23  11 000C1 	    BRB     20$							      ; 0554
+      04   A6	         53 	  08   A6  C3 000C3 18$:    SUBL3   8(DP), P2, 4(DP)					      ; 0568
+		         01 	       54  D1 000C9 	    CMPL    J, #1						      ; 0569
+				       09  12 000CC 	    BNEQ    19$							      ;
+		         2A 	       62  91 000CE 	    CMPB    (P1), #42						      ; 0570
+				       04  12 000D1 	    BNEQ    19$							      ;
+	   14 	         66 	       03  E0 000D3 	    BBS     #3, (DP), 21$					      ;
+				  0C   A6  9F 000D7 19$:    PUSHAB  12(DP)						      ; 0572
+				       52  DD 000DA 	    PUSHL   P1							      ;
+				       54  DD 000DC 	    PUSHL   J							      ;
+		  0000G  CF	       03  FB 000DE 	    CALLS   #3, LIB$CVT_DTB					      ;
+		         05 	       50  E8 000E3 	    BLBS    R0, 21$						      ;
+				0818   8F  BF 000E6 20$:    CHMU    #2072						      ; 0573
+					   04 000EA 	    RET     							      ;
+	      00007FFF   8F	  0C   A6  D1 000EB 21$:    CMPL    12(DP), #32767					      ; 0575
+				       04  1B 000F3 	    BLEQU   22$							      ;
+				0820   8F  BF 000F5 	    CHMU    #2080						      ; 0576
+					   04 000F9 22$:    RET     							      ; 0411
+
+; Routine Size:  250 bytes
+
+
+;	0579	
+;	0580	END
+;	0581	ELUDOM
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:18:55	DBB3:[F11B.SRC]PARSNM.B32;9					Page 2-5
+;
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDD1$     	    20    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   250  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         9         0       225
+
+
+
+
+
+; Size:		250 code + 20 data bytes
+; Run Time:	00:08.7
+; Elapsed Time:	00:16.9
+; Memory Used:	312 pages
+; Compilation Complete

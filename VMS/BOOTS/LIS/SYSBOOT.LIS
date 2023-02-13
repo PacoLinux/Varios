@@ -1,0 +1,1729 @@
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)    5450  Secondary Bootstrap Main Routine
+   (1)   35850  BOO$FILOPEN - Lookup a specified file
+   (1)   37300  ALLOCPFN - Allocate physical page
+   (1)   38850  BOO$READFILE - Routine to read specified piece 
+   (1)   40500  BOO$USEFILE - Use parameter file
+   (1)   42700  GETCONLOC - Routine to read console information
+   (1)   44300  DUMMY COMMAND ROUTINES FOR COMMANDS NOT IN SYSB
+   (1)   45850  BOO$FACMSG - Output facility error message
+   (1)   46700  Unexpected Machine Check Handler
+   (1)   48050  Error message subroutine
+   (1)   48850  PROMPT - Routine to prompt console for input
+   (1)   49850  SYS$ASSIGN - Dummy assign device system service
+   (1)   51350  BOO$GIVEHELP - Print Help information
+   (1)   53050  Miscellaneous constants and temps
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   1
+02                                                                                                                               (1)
+
+                                     0000    50 	.TITLE	SYSBOOT - VMS Secondary Bootstrap Routine
+                                     0000   100 	.IDENT	/02/
+                                     0000   150 ;
+                                     0000   200 ; COPYRIGHT (C) 1978
+                                     0000   250 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000   300 ;
+                                     0000   350 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000   400 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000   450 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000   500 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000   550 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000   600 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000   650 ; REMAIN IN DEC.
+                                     0000   700 ;
+                                     0000   750 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000   800 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000   850 ; CORPORATION.
+                                     0000   900 ;
+                                     0000   950 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000  1000 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000  1050 
+                                     0000  1100 ;++
+                                     0000  1150 ;
+                                     0000  1200 ; Facility:  System bootstrapping and initialization
+                                     0000  1250 ;
+                                     0000  1300 ; Abstract: 
+                                     0000  1350 ;
+                                     0000  1400 ;
+                                     0000  1450 ; Environment:
+                                     0000  1500 ;	Mode=Kernel ,  Memory Management OFF
+                                     0000  1550 ;	IS=1 ,  IPL=31
+                                     0000  1600 ;
+                                     0000  1650 ; Author:  RICHARD I. HUSTVEDT, Creation date:  28-APR-1978
+                                     0000  1700 ;
+                                     0000  1750 ; Modified by:
+                                     0000  1800 ;
+                                     0000  1850 ;  , Version  ,
+                                     0000  1900 ; 01	- 
+                                     0000  1950 ;--
+                                     0000  2000 
+                                     0000  2050 ;
+                                     0000  2100 ; Include files:
+                                     0000  2150 ;
+                                     0000  2200 	$DPTDEF				; Define Driver Prologue Definitions
+                                     0000  2250 	$IHDDEF				; Define Image Header offsets
+                                     0000  2300 	$IODEF				; Define I/O function code values
+                                     0000  2350 	$PHDDEF				; Define process header offsets
+                                     0000  2400 	$PRDEF				; Define process register numbers
+                                     0000  2450 	$PTEDEF				; Define page table entry fields
+                                     0000  2500 	$RPBDEF				; Define restart parameter block offsets
+                                     0000  2550 	$SECDEF				; Define process section block
+                                     0000  2600 	$TPADEF				; Define TPARSE offsets
+                                     0000  2650 	$VADEF				; Define fields in virtual address
+                                     0000  2700 	$WSLDEF				; Define Working Set lis entry
+                                     0000  2750 
+                                     0000  2800 ;
+                                     0000  2850 ; Macros:
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   2
+02                                                                                                                               (1)
+
+                                     0000  2900 ;
+                                     0000  2950 	.MACRO	ERROR,STR		; 
+                                     0000  3000 	BSBW	ERROUT			; Output error string
+                                     0000  3050 	.ASCIZ	STR			;
+                                     0000  3100 	.ENDM	ERROR			;
+                                     0000  3150 
+                                     0000  3200 	.MACRO	MSG,STR			;
+                                     0000  3250 	BSBW	BOO$FACMSG		; Output message
+                                     0000  3300 	.ASCIZ	\'STR'\			;
+                                     0000  3350 	.ENDM	MSG			;
+                                     0000  3400 
+                                     0000  3450 ;
+                                     0000  3500 ;	Macro to output prompt string and read response into BOO$GT_COMBUF
+                                     0000  3550 ;
+                                     0000  3600 	.MACRO	PROMPT,STR		;
+                                     0000  3650 	BSBW	PROMPT			;
+                                     0000  3700 	.ASCIZ	STR			;
+                                     0000  3750 	.ENDM	PROMPT			;
+                                     0000  3800 
+                                     0000  3850 ;
+                                     0000  3900 ; Equated Symbols:
+                                     0000  3950 ;
+                                     0000  4000 ;
+                           0000007F  0000  4050 	IOSIZE = 127			; Do I/O in very large chunks
+                           00004000  0000  4100 	MAXPGS = 16384			; Allow for 8Mb of memory
+                           00000001  0000  4150 	DEBUG  = 1			; Assemble DEBUG code
+                           0000000D  0000  4200 	CR     = 13			; Character code for carriage return
+                           0000000A  0000  4250 	LF     = 10			; Character code for line feed
+                                     0000  4300 
+                           00000018  0000  4350 	RP_DT  = 24			; Offset to drive type register for massbus
+                                     0000  4400 
+                           0000006D  0000  4450 	FPLA_VLOC = ^O155		; Offset to FPLA version number location
+                           00000008  0000  4500 	FPLA = ^X08			; FPLA version number
+                           0000006A  0000  4550 	PCS_VLOC  = ^O152		; Offset to PCS version number location
+                           00000001  0000  4600 	PCS = ^X01			; PCS version number
+                           0000006B  0000  4650 	WCSP_VLOC = ^O153		; Offset to WCS primary version location
+                           00000008  0000  4700 	WCSP = ^X08			; WCS primary version number
+                           0000006C  0000  4750 	WCSS_VLOC = ^O154		; Offset to WCS secondary version location
+                           00000011  0000  4800 	WCSS = ^X11			; WCS secondary version
+                                     0000  4850 
+                                     0000  4900  
+                                     0000  4950 ;
+                                     0000  5000 ; Own Storage:
+                                     0000  5050 ;
+                                 00000000  5100 	.PSECT	Z99BOOT,PAGE		; PSECT to mark end of secondary boot
+                                     0000  5150 BOOTHIGH:				;
+                                     0000  5200 	.IF	DF,DEBUG		;
+                           00000004  0000  5250 EXE$MCHKVEC==BOOTHIGH+4			; Symbol used by XDELTA to locate SCB
+                                     0000  5300 	.ENDC				;
+                                 00000000  5350 	.PSECT	$$$$00BOOT,LONG		;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   3
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+                                     0000  5450 	.SBTTL	Secondary Bootstrap Main Routine
+                                     0000  5500 ;++
+                                     0000  5550 ;
+                                     0000  5600 ; Functional Description:
+                                     0000  5650 ;
+                                     0000  5700 ; Calling Sequence:
+                                     0000  5750 ;	JMP	EXE$SYSBOOT
+                                     0000  5800 ;
+                                     0000  5850 ; Input Parameters:
+                                     0000  5900 ;	R10 - Base address of secondary bootstrap
+                                     0000  5950 ;	R11 - Pointer to Restart Parameter Block
+                                     0000  6000 ;	SP  - Stack pointer
+                                     0000  6050 ;	PR$_SCBB - System Control Block Base (SCB)
+                                     0000  6100 ;
+                                     0000  6150 ;	Memory layout at start of secondary bootstrap:
+                                     0000  6200 ;
+                                     0000  6250 ;	+-----------------------------------------+ :BASE
+                                     0000  6300 ;	!					  !
+                                     0000  6350 ;	!	Restart Parameter Block (RPB)	  !
+                                     0000  6400 ;	!					  !
+                                     0000  6450 ;	+-----------------------------------------+ :BASE+^X200
+                                     0000  6500 ;	!					  !
+                                     0000  6550 ;	!	  Primary Bootstrap Code	  !
+                                     0000  6600 ;	!					  !
+                                     0000  6650 ;	!					  !
+                                     0000  6700 ;	+-----------------------------------------+ :PR$_SCBB
+                                     0000  6750 ;	!					  !
+                                     0000  6800 ;	!	   System Control Block		  !
+                                     0000  6850 ;	!					  !
+                                     0000  6900 ;	+-----------------------------------------+ :PFNMAP
+                                     0000  6950 ;	!					  !
+                                     0000  7000 ;	!		PFN Bitmap		  !
+                                     0000  7050 ;	!					  !
+                                     0000  7100 ;	+-----------------------------------------+ :PFNMAP+^X800
+                                     0000  7150 ;	!					  !
+                                     0000  7200 ;	!	     Bootstrap Stack		  !
+                                     0000  7250 ;	!					  !
+                                     0000  7300 ;	+-----------------------------------------+ :(SP)
+                                     0000  7350 ;	!					  !
+                                     0000  7400 ;	!	 Secondary Bootstrap Code	  !
+                                     0000  7450 ;	!					  !
+                                     0000  7500 ;	+-----------------------------------------+
+                                     0000  7550 ;	!					  !
+                                     0000  7600 ;	!	SCB for Secondary Bootstrap	  !
+                                     0000  7650 ;	!					  !
+                                     0000  7700 ;	+-----------------------------------------+
+                                     0000  7750 ;
+                                     0000  7800 ; Output Parameters:
+                                     0000  7850 ;
+                                     0000  7900 ;--
+                                     0000  7950 	.LIST	MEB			; Show macro expansions
+                                     0000  8000 
+                                     0000  8050 EXE$SYSBOOT::				; Secondary bootstrap start address
+            56            22     DB  0000  8100 5$:	MFPR	#PR$_TXCS,R6		; Get transmitter status
+            56            07     E1  0003  8150 	BBC	#7,R6,5$		; Branch if not ready
+                          F9         0006       
+            23   00000F03 8F     DA  0007  8200 	MTPR	#^XF03,#PR$_TXDB	; Clear coldstart flag in console
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   4
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            56            22     DB  000E  8250 6$:	MFPR	#PR$_TXCS,R6		; Wait until accepted by console
+            56            07     E1  0011  8300 	BBC	#7,R6,6$		;
+                          F9         0014       
+       0E84'CF            5B     D0  0015  8350 	MOVL	R11,W^BOO$GL_RPBBASE	; Save base of RPB
+                                     001A  8400 ;
+                                     001A  8450 ; Get pointer to SCB used by primary bootstrap and fill with pointers to
+                                     001A  8500 ; exception handlers for secondary bootstrap.
+                                     001A  8550 ;
+            56       0ADD'CF     DE  001A  8600 	MOVAL	W^BOOT_FAULT+1,R6	; Unexpected fault handler vector
+            58       0200'CF     DE  001F  8650 	MOVAL	W^BOOTHIGH+512,R8	; Address of SCB while booting
+                                     0024  8700 					; (Page aligned)
+       0E6B'CF            58     D0  0024  8750 	MOVL	R8,W^BOO$GL_FREEMEM	; Save pointer to free memory
+            78            56     D0  0029  8800 10$:	MOVL	R6,-(R8)		; Store a vector
+            58       01FF 8F     B3  002C  8850 	BITW	#^X1FF,R8		; Check for page boundary
+                          F6     12  0031  8900 	BNEQ	10$			; Need another vector
+         04 A8       0AF8'CF     9E  0033  8950 	MOVAB	W^UNEXP_MCHK,4(R8)	; Machine checks are not expected
+            11            58     DA  0039  9000 	MTPR	R8,#PR$_SCBB		; Set pointer to new SCB
+                                     003C  9050 ;
+                                     003C  9100 ; If debug code is included, connect debugger to BPT and TBIT exception
+                                     003C  9150 ; vectors, then execute a BPT instruction to give control to the debugger.
+                                     003C  9200 ;
+                                     003C  9250 	.IF	DF,DEBUG		;
+         2C A8       0000'CF     9E  003C  9300 	MOVAB	W^XDELBPT,^X2C(R8)	; Set BPT exception vector to debugger
+         28 A8       0000'CF     9E  0042  9350 	MOVAB	W^XDELTBIT,^X28(R8)	;  and TBIT vector also
+       0000'CF         53'AF     9E  0048  9400 	MOVAB	B^INI$BRK,W^XDELIBRK	; Make correct break address in brk table
+         30 AB            05     E1  004E  9450 	BBC	#RPB$V_BOOBPT,RPB$L_BOOTR5(R11),NOBRK	; Check for bootstrap BPT
+                          01         0052       
+                                     0053  9500 INI$BRK::				;
+                                 03  0053  9550 	BPT				; Breakpoint initially, changed to NOP
+                                     0054  9600 NOBRK:					; No bootstrap break point
+                                     0054  9650 	.ENDC				;
+                                     0054  9700 ;****************************************************************************
+                                     0054  9750 ;*	DEALLOCATE ANY PAGES SPECIFIED BY BAD PAGE FILE
+                                     0054  9800 ;*
+                                     0054  9850 ;****************************************************************************
+                                     0054  9900 
+                                     0054  9950 CHKVERSION:				; Check for minimum FPLA/WCS/PCS version
+            55       0ABA'CF     9E  0054 10000 	MOVAB	W^VERSVECT,R5		; Get address of version vector
+            51            85     9A  0059 10050 10$:	MOVZBL	(R5)+,R1		; Get offset to version code
+                          03     12  005C 10100 	BNEQ	20$			; Zero if end of list
+                          0085   31  005E 10125 	BRW	30$			; All version numbers check
+                          0A2B   30  0061 10150 20$:	BSBW	GETCONLOC		; Ask console for value
+            85            50     91  0064 10200 	CMPB	R0,(R5)+		; Check version against required value
+                          F0     18  0067 10250 	BGEQ	10$			; Continue for all versions
+                                     0069 10300 	MSG	<-W-FPLA,PCS or WCS version less than minimum required for VMS.>
+                          0A5C   30  0069       	BSBW	BOO$FACMSG		; Output message
+20 53 43 50 2C 41 4C 50 46 2D 57 2D  006C       	.ASCIZ	\-W-FPLA,PCS or WCS version less than minimum required for VMS.\			;
+69 73 72 65 76 20 53 43 57 20 72 6F  0078       
+6E 61 68 74 20 73 73 65 6C 20 6E 6F  0084       
+71 65 72 20 6D 75 6D 69 6E 69 6D 20  0090       
+4D 56 20 72 6F 66 20 64 65 72 69 75  009C       
+                           00 2E 53  00A8       
+                                     00AB 10350 	MSG	<-W-Continue from halt to proceed with boot if desired.>
+                          0A1A   30  00AB       	BSBW	BOO$FACMSG		; Output message
+20 65 75 6E 69 74 6E 6F 43 2D 57 2D  00AE       	.ASCIZ	\-W-Continue from halt to proceed with boot if desired.\			;
+6F 74 20 74 6C 61 68 20 6D 6F 72 66  00BA       
+74 69 77 20 64 65 65 63 6F 72 70 20  00C6       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   5
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+65 64 20 66 69 20 74 6F 6F 62 20 68  00D2       
+               00 2E 64 65 72 69 73  00DE       
+                                 00  00E5 10400 	HALT				; Require Action
+                                     00E6 10450 30$:					;
+                                     00E6 10500 GETCURRENT:				; Read current parameter values
+            51       0E63'CF     9E  00E6 10550 	MOVAB	W^BOO$GT_SYS,R1		; Address of system image name
+            50            81     9A  00EB 10600 	MOVZBL	(R1)+,R0		; Get count
+            7E            50     7D  00EE 10650 	MOVQ	R0,-(SP)		; Push string descriptor
+            57            5E     D0  00F1 10700 	MOVL	SP,R7			; Set address of descriptor
+                          0827   30  00F4 10750 	BSBW	BOO$FILOPEN		; Locate system image
+            20            50     E8  00F7 10800 	BLBS	R0,10$			; Continue if no error
+                                     00FA 10850 	MSG	<-F-Unable to locate SYS.EXE>
+                          09CB   30  00FA       	BSBW	BOO$FACMSG		; Output message
+6F 74 20 65 6C 62 61 6E 55 2D 46 2D  00FD       	.ASCIZ	\-F-Unable to locate SYS.EXE\			;
+2E 53 59 53 20 65 74 61 63 6F 6C 20  0109       
+                        00 45 58 45  0115       
+                                 00  0119 10900 	HALT				; ***** Fatal Error *****
+            5E            08     C0  011A 10950 10$:	ADDL	#8,SP			; Clean stack
+       0E9C'CF       0E8C'CF     7D  011D 11000 	MOVQ	W^BOO$GQ_STATBLK,W^BOO$GQ_SYSSTAT	; Save file descriptor
+            56       0E6B'CF     D0  0124 11050 	MOVL	W^BOO$GL_FREEMEM,R6	; SET BUFFER ADDRESS
+            59            01     D0  0129 11100 	MOVL	#1,R9			; Read only header
+                          08A5   30  012C 11150 	BSBW	BOO$READFILE		; Read image header
+            01            50     E8  012F 11200 	BLBS	R0,20$			; Continue if successful read
+                                 00  0132 11250 	HALT				; ***** FATAL ERROR *****
+            56       0E6B'CF     D0  0133 11300 20$:	MOVL	W^BOO$GL_FREEMEM,R6	; Set base address
+            50         10 A6     9A  0138 11350 	MOVZBL	IHD$B_HDRBLKCNT(R6),R0	; Get count of header blocks
+       0E9C'CF            50     C0  013C 11400 	ADDL	R0,W^BOO$GQ_SYSSTAT	; Update LBN to skip
+       0EA0'CF            50     C2  0141 11450 	SUBL	R0,W^BOO$GQ_SYSSTAT+4	; And blocks to read
+            56       0000'CF     9E  0146 11500 	MOVAB	W^EXE$A_SYSPARAM,R6	; Set buffer address
+                                 C1  014B 11550 	ADDL3	#<<MMG$A_SYSPARAM-^X80000000>@-9>,-	; Comput block number
+       0E9C'CF   FFC00000'8F         014C 11600 		W^BOO$GQ_SYSSTAT,R8	; of system parameters
+                          58         0154       
+            59       0000'8F     3C  0155 11650 	MOVZWL	#<<EXE$C_SYSPARSZ+511>@-9>,R9	; Size of SYSPARAM in pages
+                          0877   30  015A 11700 	BSBW	BOO$READFILE		; Read current parameters
+                                     015D 11750 ;
+                                     015D 11800 ; The type of boot device will be determined and the proper driver file 
+                                     015D 11850 ; will be looked up and read to obtain the proper driver size. This will
+                                     015D 11900 ; be passed to the exec initialization.  If the type of boot
+                                     015D 11950 ; device does not correspond to one of the standard disk devices, then
+                                     015D 12000 ; the driver name will be set to UNKDRIVER.EXE and a fatal error message
+                                     015D 12050 ; given if the driver file is not found.
+                                     015D 12100 ;
+                                     015D 12150 LOOKUPDRIVER:				; Lookup proper driver for boot device
+            55         5C AB     D0  015D 12200 	MOVL	RPB$L_ADPPHY(R11),R5	; Get physical address of bus adapter
+            50            65     D0  0161 12250 	MOVL	(R5),R0			; Read configuration register 0
+            50            20     91  0164 12300 	CMPB	#^X20,R0		; Is it a massbus adapter
+                          0D     13  0167 12350 	BEQL	10$			; Branch if yes
+         1C AB            01     D1  0169 12400 	CMPL	#1,RPB$L_BOOTR0(R11)	; Is this a cartridge disk(RK06/7)?
+                          2D     12  016D 12450 	BNEQ	12$			; Otherwise unknown driver
+            54       0EBD'CF     9E  016F 12500 	MOVAB	W^DMNAME,R4		; No, assume unibus RK06/RK07
+                          32     11  0174 12550 	BRB	20$			;
+            55       0400 C5     9E  0176 12600 10$:	MOVAB	^X400(R5),R5		; Compute address of device registers
+            07         64 AB     F0  017B 12650 	INSV	RPB$W_UNIT(R11),#7,#3,R5; For boot device
+            55            03         017F       
+            50         18 A5     D0  0181 12700 	MOVL	RP_DT(R5),R0		; Read device type number
+            54       0EB0'CF     9E  0185 12750 	MOVAB	W^DBNAME,R4		; Assume RP04/RP05/RP06 (DBDRIVER)
+            12            50     91  018A 12800 	CMPB	R0,#^X12		; Is drive type = RP04/5/6
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   6
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+                          19     15  018D 12850 	BLEQ	20$			; Branch if yes
+            50            14     91  018F 12900 	CMPB	#^X14,R0		; Is device RM03?
+                          0F     13  0192 12950 	BEQL	15$			; Yes
+            50            01     CA  0194 13000 	BICL	#1,R0			; Equate both kinds of RP07 drives
+            50            20     91  0197 13050 	CMPB	#^X20,R0		; Is device RP07?
+                          07     13  019A 13100 	BEQL	15$			; Yes
+            54       0ED7'CF     9E  019C 13150 12$:	MOVAB	W^UNKNAME,R4		; Use driver for unknown devices
+                          05     11  01A1 13200 	BRB	20$			;
+            54       0ECA'CF     9E  01A3 13250 15$:	MOVAB	W^DRNAME,R4		; Use DRDRIVER for RM03/RP07
+                       01 A4     9F  01A8 13300 20$:	PUSHAB	1(R4)			; Build string descriptor
+            7E            64     9A  01AB 13350 	MOVZBL	(R4),-(SP)		;  for driver name
+            57            5E     D0  01AE 13400 	MOVL	SP,R7			; Set pointer to string descriptor
+                          076A   30  01B1 13450 	BSBW	BOO$FILOPEN		; Open driver file
+            2F            50     E8  01B4 13500 	BLBS	R0,30$			; Continue if success
+                                     01B7 13550 	MSG	<-F-Unable to locate driver for boot device>
+                          090E   30  01B7       	BSBW	BOO$FACMSG		; Output message
+6F 74 20 65 6C 62 61 6E 55 2D 46 2D  01BA       	.ASCIZ	\-F-Unable to locate driver for boot device\			;
+76 69 72 64 20 65 74 61 63 6F 6C 20  01C6       
+20 74 6F 6F 62 20 72 6F 66 20 72 65  01D2       
+               00 65 63 69 76 65 64  01DE       
+                                 00  01E5 13600 	HALT				; ***** Fatal Error *****
+            5E            08     C0  01E6 13650 30$:	ADDL	#8,SP			; Clean stack
+       0EA4'CF       0E8C'CF     7D  01E9 13700 	MOVQ	W^BOO$GQ_STATBLK,W^BOO$GQ_DRIVSTAT ; Save file descriptor
+            56       0E6B'CF     D0  01F0 13750 	MOVL	W^BOO$GL_FREEMEM,R6	; Set buffer pointer to free memory
+            59            02     D0  01F5 13800 	MOVL	#2,R9			; Read two blocks to get header and prologue
+                          07D9   30  01F8 13850 	BSBW	BOO$READFILE		; Perform read location
+            01            50     E8  01FB 13900 	BLBS	R0,40$			; Continue if no error
+                                 00  01FE 13950 	HALT				; ***** Fatal Error *****
+            56       0E6B'CF     D0  01FF 14000 40$:	MOVL	W^BOO$GL_FREEMEM,R6	; Point to image header
+            50         10 A6     9A  0204 14050 	MOVZBL	IHD$B_HDRBLKCNT(R6),R0	; Get count of header blocks
+       0EA4'CF            50     C0  0208 14100 	ADDL	R0,W^BOO$GQ_DRIVSTAT	; Correct LBN for driver
+       0EA8'CF            50     C2  020D 14150 	SUBL	R0,W^BOO$GQ_DRIVSTAT+4	;  and adjust block count
+            50            09     78  0212 14200 	ASHL	#9,R0,R0		; Convert block count to byte count
+                          50         0215       
+            56            6640   9E  0216 14250 	MOVAB	(R6)[R0],R6		; Locate driver prologue
+            50         08 A6     3C  021A 14300 	MOVZWL	DPT$W_SIZE(R6),R0	; Get size of driver in bytes
+            50            0F     C0  021E 14350 	ADDL	#15,R0			; Round to even double quadword
+            50            0F     CB  0221 14400 	BICL3	#15,R0,W^BOO$GL_DRIVSIZE ; Size of driver in bytes
+                     0EAC'CF         0224       
+                                     0227 14450 	
+                                     0227 14500 ;
+                                     0227 14550 ; If this is a conversational bootstrap, then prompt terminal for command
+                                     0227 14600 ; input to specify a starting set of parameters and any modifications 
+                                     0227 14650 ; desired.  In the event that a conversational boot was not selected and
+                                     0227 14700 ; there is no current parameter set, the defaults will be used anyway.
+                                     0227 14750 ;
+         30 AB            00     E1  0227 14800 	BBC	#RPB$V_CONV,RPB$L_BOOTR5(R11),NOCONVER	; Branch if not conversational
+                          07         022B       
+                          00     DD  022C 14850 	PUSHL	#0			; Indicate no command echo
+       0000'CF            01     FB  022E 14900 	CALLS	#1,W^BOO$GETPARAM	; Prompt for parameters
+                                     0233 14950 NOCONVER:				;
+                                     0233 15000 HAVEPRM:				; All parameter values have been acquired
+                                     0233 15050 ;
+                                     0233 15100 ;	Use only specified number of physical pages to permit the testing
+                                     0233 15150 ;	of small memory configurations without actually reconfiguring hardware.
+                                     0233 15200 ;
+            50         44 AB     7D  0233 15250 	MOVQ	RPB$Q_PFNMAP(R11),R0	; Get descriptor for PFN bitmap
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   7
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            50            08     C4  0237 15300 	MULL	#8,R0			; Scale byte count to bit count
+            52       0000'CF     D0  023A 15350 	MOVL	W^MMG$GL_PHYPGCNT,R2	; Get count of pages to use
+                          53     D4  023F 15400 	CLRL	R3			; Initialize bit pointer
+            61            53     E1  0241 15450 10$:	BBC	R3,(R1),20$		; Skip over empty pages
+                          08         0244       
+                          52     D7  0245 15500 	DECL	R2			; Count a present page
+                          04     18  0247 15550 	BGEQ	20$			; Continue if count not exhausted
+            61            53     E5  0249 15600 	BBCC	R3,(R1),20$		; Remove all pages once count exhausted
+                          00         024C       
+            53            50     F2  024D 15650 20$:	AOBLSS	R0,R3,10$		; Scan entire bitmap
+                          F0         0250       
+                                     0251 15700 ;
+                                     0251 15750 ;	COMPUTE VALUES FOR SHELL PROCESS FROM SYSGEN PARAMETERS
+                                     0251 15800 ;
+                                     0251 15850 SHELLSIZE:				;
+       0000'CF            02     78  0251 15900 	ASHL	#2,W^SGN$GL_MAXVPGCT,R2	; 4*VIRTUALPAGE COUNT=BYTES OF PGTBL
+                          52         0256       
+            52       01FF C2     9E  0257 15950 	MOVAB	511(R2),R2		; ROUND UP TO PAGE BOUNDARY	
+            52         F7 8F     78  025C 16000 	ASHL	#-9,R2,R2		; DIVIDE BY 512 TO GET COUNT OF PAGES
+                          52         0260       
+       0000'CF            52     D0  0261 16050 	MOVL	R2,W^SGN$GL_PTPAGCNT	; SAVE COUNT OF PAGE TABLES
+                                     0266 16100 ;
+                                     0266 16150 ;	COMPUTE SIZE OF WSL PART OF PHD
+                                     0266 16200 ;
+       0000'CF            04     C5  0266 16250 	MULL3	#WSL$C_LENGTH,W^SGN$GL_MAXWSCNT,R3; SIZE OF WSLIST
+                          53         026B       
+       0000'CF            04     C5  026C 16300 	MULL3	#WSL$C_LENGTH,W^PQL$GDWSDEFAULT,R1; SIZE OF DEFAULT WSLIST
+                          51         0271       
+            53            51     C3  0272 16350 	SUBL3	R1,R3,R1			; FIND EMPTY BYTE COUNT
+                          51         0275       
+            53       0317 C3     9E  0276 16400 	MOVAB	<PHD$C_LENGTH+511>(R3),R3	; ADD FIXED SIZE AND ROUNDING
+       0000'CF            20     A5  027B 16450 	MULW3	#SEC$C_LENGTH,W^SGN$GW_MAXPSTCT,R0; GUARANTEED SECTION SPACE
+                          50         0280       
+            50            50     3C  0281 16500 	MOVZWL	R0,R0			; ZERO EXTEND TO LONGWORD
+            53            50     C0  0284 16550 	ADDL	R0,R3			; ADD TO FIXED AND WSL
+            53         F7 8F     78  0287 16600 	ASHL	#-9,R3,R3		; GET PAGE COUNT
+                          53         028B       
+            51         F7 8F     78  028C 16650 	ASHL	#-9,R1,R1		; AND EMPTY PAGE COUNT
+                          51         0290       
+            53            51     A3  0291 16700 	SUBW3	R1,R3,W^SWP$GW_WSLPTE	; COUNT OF FIXED +WSL PAGES
+                     0000'CF         0294       
+       0000'CF            51     B0  0297 16750 	MOVW	R1,W^SWP$GW_EMPTPTE	; COUNT OF EMPTY PTE
+            50            53     D0  029C 16800 	MOVL	R3,R0			; COUNT OF ALL WSL+FIXED PAGES
+            53            09     78  029F 16850 	ASHL	#9,R3,R3		; BACK TO BYTE COUNT
+                          53         02A2       
+            53       01FF C3     9E  02A3 16900 	MOVAB	511(R3),R3		; ADD PAGE ROUNDING FACTOR
+            50            52     C0  02A8 16950 	ADDL	R2,R0			; GET TOTAL HEADER PAGE COUNT
+            50            08     C4  02AB 17000 	MULL	#8,R0			; WSLX+BAK+LCK+VAL = 2+4+1+1
+            53            50     C0  02AE 17050 10$:	ADDL	R0,R3			; HEADER BYTE COUNT
+            50         F7 8F     78  02B1 17100 	ASHL	#-9,R0,R0		; CONVERT ADDED BYTES TO PAGES
+                          50         02B5       
+            50            08     C4  02B6 17150 	MULL	#8,R0			; ADDED PAGES BACK TO ADDED BYTES
+                          F3     12  02B9 17200 	BNEQ	10$			; REPEAT IF SIGNIFICANT
+            53         F7 8F     78  02BB 17250 	ASHL	#-9,R3,R3		; GET TOTAL PAGE COUNT
+                          53         02BF       
+       0000'CF            53     D0  02C0 17300 	MOVL	R3,W^SGN$GL_PHDPAGCT	; SAVE TOTAL
+            53            09     78  02C5 17350 	ASHL	#9,R3,R0		; GET BYTE COUNT FOR PHD
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   8
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+                          50         02C8       
+                          50     C3  02C9 17400 	SUBL3	R0,#<^X80000000-<<256-SWP$C_SHLFPTE>@9>>,-	;
+       0000'CF   7FFE0000'8F         02CB 17450 		W^MMG$GL_CTLBASVA	; SET CONTROL REGION BASE VA
+       0000'CF       0000'CF     D0  02D3 17500 	MOVL	W^MMG$GL_CTLBASVA,W^SWP$GL_PHDBASVA; AND SWAPPER VERSION
+            53            51     C3  02DA 17550 	SUBL3	R1,R3,W^SGN$GL_PHDAPCNT	; TOTAL ALLOCATED PAGES FOR SHELL PHD
+                     0000'CF         02DD       
+       0000'CF            53     B0  02E0 17600 	MOVW	R3,W^SWP$GW_BAKPTE	; SET AS TOTAL BAK PTE
+       0000'CF       0000'CF     A2  02E5 17650 	SUBW	W^SWP$GW_WSLPTE,W^SWP$GW_BAKPTE	;
+       0000'CF            51     A2  02EC 17700 	SUBW	R1,W^SWP$GW_BAKPTE	; SUBTRACT WSL AND EMPTY  TO GET BAK
+            53            07     78  02F1 17750 	ASHL	#7,R3,W^SGN$GL_PHDLWCNT	; COUNT OF LONGWORDS IN PHD
+                     0000'CF         02F4       
+            53            52     C1  02F7 17800 	ADDL3	R2,R3,R0		; TOTAL PAGES
+                          50         02FA       
+            50            07     78  02FB 17850 	ASHL	#7,R0,W^SGN$GL_P1LWCNT	; LW COUNT TO P1PT END
+                     0000'CF         02FE       
+       0000'CF   0000007F'8F     C1  0301 17900 	ADDL3	#<127-SWP$C_SHLFPTE>,W^SGN$GL_PHDPAGCT,R4	; COMPUTE TOTAL
+                          54         030A       
+            54         F9 8F     78  030B 17950 	ASHL	#-7,R4,R4		; COUNT OF EXTENSION PAGES
+                          54         030F       
+            54            00'    C0  0310 18000 	ADDL	S^#SWP$C_SHLP1PT,R4	; TOTAL SHELL P1 PAGE TABLES
+       0000'CF            54     D0  0313 18050 	MOVL	R4,W^SWP$GB_SHLP1PT	; SAVE RESULT
+            54            00'    C0  0318 18100 	ADDL	S^#SWP$C_KSTACK,R4	; ADD STACK
+            54       0000'CF     C0  031B 18150 	ADDL	W^SGN$GL_PHDAPCNT,R4	; ADD ACTUAL PHD PAGE COUNT
+            54            01'    C0  0320 18200 	ADDL	S^#SWP$C_NDYN+1,R4	; VECTOR PAGE + DYNAMIC PAGES
+       0000'CF            54     D0  0323 18250 	MOVL	R4,W^SWP$GL_SHELLSIZ	; SAVE SHELL SIZE TOTAL
+                                     0328 18300 ;
+                                     0328 18350 ;	Check  maximum and default process working set values to ensure
+                                     0328 18400 ;	that they are at least large enough to contain the process header
+                                     0328 18450 ;	plus the specified fluid working set.
+                                     0328 18500 ;
+            7E       0000'CF     9A  0328 18550 	MOVZBL	W^SWP$GB_SHLP1PT,-(SP)	; GET COUNT OF MANDATORY PAGE TABLES
+            50       0000'CF     3C  032D 18600 	MOVZWL	W^SGN$GW_MINWSCNT,R0	; GET MINIMUM FLUID WORKING SET
+            50            50     C0  0332 18650 	ADDL	R0,R0			; DOUBLE FLUID REQUIREMENT
+            50       0000'CF     C0  0335 18700 	ADDL	W^SGN$GL_PHDPAGCT,R0	; ADD MIN PROCESS HEADER SIZE
+            50            8E     C0  033A 18750 	ADDL	(SP)+,R0		; ADD COUNT OF NECESSARY PAGE TABLES
+            50            01'    C0  033D 18800 	ADDL	S^#SWP$C_KSTACK+1,R0	; ADD KERNEL STACK AND VECTOR PAGE
+       0000'CF            50     D1  0340 18850 	CMPL	R0,W^SGN$GL_MAXWSCNT	; MUST BE LESS THAN THE TOTAL WORKING SET
+                          30     15  0345 18900 	BLEQ	20$			; CONTINUE IF SO
+       0000'CF            50     D0  0347 18950 	MOVL	R0,W^SGN$GL_MAXWSCNT	; FORCE TO  AT LEAST MINIMUM VALUE
+                                     034C 19000 	MSG	<-W-Maximum WS raised to PHD+MINWSCNT>
+                          0779   30  034C       	BSBW	BOO$FACMSG		; Output message
+57 20 6D 75 6D 69 78 61 4D 2D 57 2D  034F       	.ASCIZ	\-W-Maximum WS raised to PHD+MINWSCNT\			;
+20 6F 74 20 64 65 73 69 61 72 20 53  035B       
+54 4E 43 53 57 4E 49 4D 2B 44 48 50  0367       
+                                 00  0373       
+                          FEBC   31  0374 19050 	BRW	HAVEPRM			; RECYCLE TO RECOMPUTE SIZES
+   00000000'EF            50     D1  0377 19100 20$:	CMPL	R0,PQL$GDWSDEFAULT	; MUST ALSO HAVE LARGE ENOUGH DEFAULT
+                          49     15  037E 19150 	BLEQ	30$			; CONTINUE IF SO
+       0000'CF            50     D0  0380 19200 	MOVL	R0,W^PQL$GDWSDEFAULT	; FORCE DEFAULT TO PROPER VALUE
+       0000'CF            50     D0  0385 19250 	MOVL	R0,W^PQL$GMWSDEFAULT	; ALSO MINIMUM DEFAULT
+       0000'CF            50     D0  038A 19300 	MOVL	R0,W^PQL$GDWSQUOTA	; AND WS QUOTA
+       0000'CF            50     D0  038F 19350 	MOVL	R0,W^PQL$GMWSQUOTA	; AND MINIMUM QUOTA
+                                     0394 19400 	MSG	<-W-WS default and quota raised to PHD+MINWSCNT>
+                          0731   30  0394       	BSBW	BOO$FACMSG		; Output message
+6C 75 61 66 65 64 20 53 57 2D 57 2D  0397       	.ASCIZ	\-W-WS default and quota raised to PHD+MINWSCNT\			;
+20 61 74 6F 75 71 20 64 6E 61 20 74  03A3       
+48 50 20 6F 74 20 64 65 73 69 61 72  03AF       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page   9
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+   00 54 4E 43 53 57 4E 49 4D 2B 44  03BB       
+                          FE6A   31  03C6 19450 	BRW	HAVEPRM			; REPEAT CALCULATION
+                                     03C9 19500 30$:					;
+            50       0000'CF     D0  03C9 19550 	MOVL	W^SGN$GL_MAXWSCNT,R0	; GET MAXIMUM SIZE OF WS
+       0000'CF            50     D1  03CE 19600 	CMPL	R0,W^PQL$GDWSQUOTA	; DEFAULT MUST BE LESS THAN MAX
+                          08     18  03D3 19650 	BGEQ	40$			; YES, CONTINUE
+       0000'CF            50     D0  03D5 19700 	MOVL	R0,W^PQL$GDWSQUOTA	; LIMIT DEFAULT TO MAXIMUM
+                          FE56   31  03DA 19750 	BRW	HAVEPRM			; RECYCLE THROUGH CALCULATIONS
+       0000'CF            50     D1  03DD 19800 40$:	CMPL	R0,W^PQL$GMWSQUOTA	; SAME FOR MINIMUM DEFAULT WS
+                          08     18  03E2 19850 	BGEQ	50$			; OK, CONTINUE
+       0000'CF            50     D0  03E4 19900 	MOVL	R0,W^PQL$GMWSQUOTA	; LIMIT TO MAXIMUM
+                          FE47   31  03E9 19950 	BRW	HAVEPRM			; RECYCLE THROUGH CALCULATIONS
+       0000'CF       0000'CF     D1  03EC 20000 50$:	CMPL	W^PQL$GDWSQUOTA,W^PQL$GDWSDEFAULT ; DEFAULT MUST BE LEQ QUOTA
+                          0A     18  03F3 20050 	BGEQ	60$			; YES, CONTINUE
+       0000'CF       0000'CF     D0  03F5 20100 	MOVL	W^PQL$GDWSQUOTA,W^PQL$GDWSDEFAULT; LIMIT DEFAULT TO QUOTA
+                          FE34   31  03FC 20150 	BRW	HAVEPRM			; RECYCLE THROUG CALCULATIONS
+       0000'CF       0000'CF     D1  03FF 20200 60$:	CMPL	W^PQL$GMWSQUOTA,W^PQL$GMWSDEFAULT; SAME FOR MINIMUMS
+                          0A     18  0406 20250 	BGEQ	70$			; OK, CONTINUE
+       0000'CF       0000'CF     D0  0408 20300 	MOVL	W^PQL$GMWSQUOTA,W^PQL$GMWSDEFAULT; LIMIT TO QUOTA
+                          FE21   31  040F 20350 	BRW	HAVEPRM			; RECYCLE THROUGH CALCULATIONS
+                                     0412 20400 70$:					;
+       0000'CF       0000'CF     C1  0412 20450 	ADDL3	W^SGN$GL_PHDPAGCT,W^SGN$GL_PTPAGCNT,R4	; GET TOTAL BALANCE SLOT PAGES
+                          54         0419       
+       0000'CF            54     D0  041A 20500 	MOVL	R4,W^SWP$GL_BSLOTSZ	; SAVE SIZE OF BALANCE SLOT IN PAGES
+            54       0000'CF     C4  041F 20550 	MULL	W^SGN$GL_BALSETCT,R4	; TOTAL PAGE REQ FOR BALANCE SLOTS
+       0000'CF   000001FF 8F     CA  0424 20600 	BICL	#^X1FF,W^SGN$GL_NPAGEDYN	; ROUND DOWN TO PAGE BOUND
+       0000'CF   000001FF 8F     CA  042D 20650 	BICL	#^X1FF,W^SGN$GL_PAGEDYN	; ROUND DOWN TO PAGE BOUND
+       0000'CF       0000'CF     C1  0436 20700 	ADDL3	W^SGN$GL_PAGEDYN,W^SGN$GL_NPAGEDYN,R0 ; TOTAL POOL BYTES
+                          50         043D       
+            50         F7 8F     78  043E 20750 	ASHL	#-9,R0,R0		; CONVERT TO PAGE COUNT
+                          50         0442       
+            54            50     C0  0443 20800 	ADDL	R0,R4			; TOTAL DYNAMIC SPT SO FAR
+         4C AB   00000000'8F     C5  0446 20850 	MULL3	#PFN$C_LENGTH,RPB$L_PFNCNT(R11),R1; BYTES FOR PFN DATA BASE
+                          51         044E       
+            51       01FF C1     9E  044F 20900 	MOVAB	511(R1),R1		; ROUND TO PAGE BOUND
+            51         F7 8F     78  0454 20950 	ASHL	#-9,R1,R1		; CONVERT TO PAGE COUNT
+                          51         0458       
+            54            51     C0  0459 21000 	ADDL	R1,R4			; ADD TO TOTAL SPT SIZE
+            54       0000'CF     C0  045C 21050 	ADDL	W^SGN$GL_SPTREQ,R4	; ADD REQUESTED EXTRA PAGES
+            54   00000000'8F     C0  0461 21100 	ADDL	#MMG$C_SPTSKEL,R4	; ADD SIZE OF SPT SKELETON
+            50       0000'CF     3C  0468 21150 	MOVZWL	W^SGN$GW_SYSDWSCT,R0	; GET SIZE OF SYSTEM WORKING SET
+            50            04     C4  046D 21200 	MULL	#WSL$C_LENGTH,R0 	; BYTE SIZE OF WORKING SET
+            50       01FF'C0     9E  0470 21250 	MOVAB	<PFN$C_LENGTH+511>(R0),R0 ; SYSPHD WITH WORKING SET LIST
+       0000'CF            20     A5  0475 21300 	MULW3	#SEC$C_LENGTH,W^SGN$GW_GBLSECNT,R1; BYTES FOR GLOBAL SECTIONS
+                          51         047A       
+            51            51     3C  047B 21350 	MOVZWL	R1,R1			; ZERO EXTEND WORD
+            50            51     C0  047E 21400 	ADDL	R1,R0			; TOTAL SYSTEM HEADER BYTES
+            50         F7 8F     78  0481 21450 	ASHL	#-9,R0,R0		; CONVERT TO PAGES
+                          50         0485       
+       0E98'CF            50     D0  0486 21500 	MOVL	R0,W^BOO$GL_SYSPHDPG	; SAVE SYSPHD PAGE COUNT
+            54            50     C0  048B 21550 	ADDL	R0,R4			; ADD TO SPT REQUIREMENT
+            50       0000'CF     3C  048E 21600 	MOVZWL	W^SGN$GW_ISPPGCT,R0	; PAGES OF INTERRUPT STACK
+            54            50     C0  0493 21650 	ADDL	R0,R4			; ADD TO SPT REQUIREMENT
+            51       0000'CF     3C  0496 21700 	MOVZWL	W^SGN$GW_MAXGPGCT,R1	; REQUESTED NUMBER OF GLOBAL PAGES
+            51            02     78  049B 21750 	ASHL	#2,R1,R1		; SIZE OF GLOBAL PAGE TABLE
+                          51         049E       
+            51       01FF C1     9E  049F 21800 	MOVAB	511(R1),R1		; ROUND TO PAGE BOUNDARY
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  10
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            51         F7 8F     78  04A4 21850 	ASHL	#-9,R1,R1		; CONVERT TO PAGE COUNT
+                          51         04A8       
+       0E7C'CF            51     D0  04A9 21900 	MOVL	R1,W^BOO$GL_GPTPGCT	; SAVE COUNT OF GLOBAL PAGE TABLES
+            54            51     C0  04AE 21950 	ADDL	R1,R4			; ADD TO SPT TOTAL
+            54         7F A4     9E  04B1 22000 	MOVAB	127(R4),R4		; ROUND TO PAGE BOUND
+            54         F9 8F     78  04B5 22050 	ASHL	#-7,R4,R1		; CONVERT TO PAGES
+                          51         04B9       
+            54            51     C0  04BA 22100 	ADDL	R1,R4			; ADD PAGES OF SPT TO MAP
+            54         F9 8F     78  04BD 22150 	ASHL	#-7,R4,R4		; PAGE COUNT FOR SPT ALLOCATION
+                          54         04C1       
+       0E88'CF            54     D0  04C2 22200 	MOVL	R4,W^BOO$GL_SPTPAGCT	; SAVE COUNT OF PAGES
+                                     04C7 22250 ALLOCSPT:				; ALLOCATE SPACE FOR SYSPHD AND SPT
+       0E98'CF            54     C1  04C7 22300 	ADDL3	R4,W^BOO$GL_SYSPHDPG,R8	; TOTAL SIZE OF PHD+SPT
+                          58         04CC       
+            56         44 AB     7D  04CD 22350 	MOVQ	RPB$Q_PFNMAP(R11),R6	; GET DESCRIPTOR FOR PFNMAP
+            56            08     C4  04D1 22400 	MULL	#8,R6			; CONVERT SIZE TO BIT COUNT
+                          56     D7  04D4 22450 10$:	DECL	R6			; POINT TO NEXT/HIGHEST PAGE
+                          1E     14  04D6 22500 	BGTR	20$			; CONTINUE IF PAGES AVAILABLE
+                                     04D8 22550 15$:	MSG	<-F-Unable to allocate SPT>
+                          05ED   30  04D8       	BSBW	BOO$FACMSG		; Output message
+6F 74 20 65 6C 62 61 6E 55 2D 46 2D  04DB       	.ASCIZ	\-F-Unable to allocate SPT\			;
+50 53 20 65 74 61 63 6F 6C 6C 61 20  04E7       
+                              00 54  04F3       
+                                 00  04F5 22600 	HALT				; FATAL ERROR
+            67            56     E1  04F6 22650 20$:	BBC	R6,(R7),10$		; FIND HIGHEST PAGE NUMBER
+                          DA         04F9       
+                     0E80'CF     D5  04FA 22700 	TSTL	W^BOO$GL_NEXTPFN	; HAVE WE MARKED IT?
+                          05     12  04FE 22750 	BNEQ	25$			; YES
+       0E80'CF            56     D0  0500 22800 	MOVL	R6,W^BOO$GL_NEXTPFN	; SAVE HIGH WATER MARK
+                          50     D4  0505 22850 25$:	CLRL	R0			; INIT COUNT OF CONTIGUOUS PAGES
+                          06     11  0507 22900 	BRB	35$			;
+                          56     D7  0509 22950 30$:	DECL	R6			; NEXT PAGE (LOWER)
+            67            56     E1  050B 23000 	BBC	R6,(R7),10$		; SKIP IF NO FIT
+                          C5         050E       
+                          50     D6  050F 23050 35$:	INCL	R0			; BUMP COUNT OF PAGES
+            58            50     D1  0511 23100 	CMPL	R0,R8			; CHECK FOR FIT
+                          F3     19  0514 23150 	BLSS	30$			; NOT YET
+         4C AB            50     C2  0516 23200 	SUBL	R0,RPB$L_PFNCNT(R11)	; ACCOUNT FOR PAGES REMOVED
+            51            56     D0  051A 23250 	MOVL	R6,R1			; COPY LOWEST PAGE NUMBER
+            67            51     E5  051D 23300 40$:	BBCC	R1,(R7),50$		; MARK PAGE ALLOCATED
+                          02         0520       
+                          51     D6  0521 23350 	INCL	R1			; NEXT PAGE
+            F7            50     F5  0523 23400 50$:	SOBGTR	R0,40$			; ALLOCATE THEM ALL
+                                     0526 23450 ;
+                                     0526 23500 ;	R6 - PFN FOR START OF SYSPHD
+                                     0526 23550 ;	R7 - BASE OF PFNMAP
+                                     0526 23600 ;	R8 - SIZE OF SYSPHD+SPT
+                                     0526 23650 ;	R4 - SPT SIZE IN PAGES
+                                     0526 23700 ;
+            56            09     78  0526 23750 	ASHL	#9,R6,R9		; COMPUTE PHYSICAL ADDRESS OF SYSPHD
+                          59         0529       
+       0E6B'CF            59     D1  052A 23800 	CMPL	R9,W^BOO$GL_FREEMEM	; CHECK FOR OVERLAP WITH SYSBOOT
+                          A7     15  052F 23850 	BLEQ	15$			; CONTINUE IF OK
+            50            59     D0  0531 23900 	MOVL	R9,R0			; GET A WORKING COPY OF ADDRESS
+            58            05     78  0534 23950 	ASHL	#5,R8,R1		; GET COUNT OF DOUBLE QUADWORDS
+                          51         0537       
+                          80     7C  0538 24000 60$:	CLRQ	(R0)+			; CLEAR A
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  11
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+                          80     7C  053A 24050 	CLRQ	(R0)+			;  DOUBLE QUADWORD
+            F9            51     F5  053C 24100 	SOBGTR	R1,60$			; CLEAR THEM ALL
+       0000'CF       0118 8F     28  053F 24150 	MOVC3	#PHD$C_LENGTH,W^BOO$A_SYSPHD,(R9)	; COPY PHD TO REAL PLACE
+                          69         0546       
+                                     0547 24200 INITSYSPHD:				; 
+            50         10 A9     B0  0547 24250 	MOVW	PHD$W_WSNEXT(R9),R0	; GET POINTER TO WORKING SET
+            50       0000'CF     A0  054B 24300 	ADDW	W^SGN$GW_SYSDWSCT,R0	; FORM END POINTER
+         12 A9            50     B0  0550 24350 	MOVW	R0,PHD$W_WSLAST(R9)	; SET END OF SYSTEM WORKING SET LIST
+         18 A9            50     B0  0554 24400 	MOVW	R0,PHD$W_WSQUOTA(R9)	; SET QUOTA VALUES
+         0A A9            50     B0  0558 24450 	MOVW	R0,PHD$W_WSAUTH(R9)	; FOR CONSISTENCY
+         1A A9            50     B0  055C 24500 	MOVW	R0,PHD$W_DFWSCNT(R9)	; SAKE
+         46 A9       0000'CF     B0  0560 24550 	MOVW	W^SGN$GL_BALSETCT,PHD$W_PHVINDEX(R9)	; SET HEADER NUMBER
+         1F A9       0000'CF     90  0566 24600 	MOVB	W^SGN$GW_SFTMAX,PHD$B_PAGFIL(R9) ; SET SYSTEM PAGING FILE
+       0E88'CF            07     78  056C 24650 	ASHL	#7,W^BOO$GL_SPTPAGCT,PHD$L_P0LRASTL(R9)	; SET SPT LENGTH	
+                     00CC C9         0571       
+       0000'CF       00CC C9     D0  0574 24700 	MOVL	PHD$L_P0LRASTL(R9),W^MMG$GL_SPTLEN	; AND SAVE FOR REFERENCE
+       0E98'CF            09     78  057B 24750 	ASHL	#9,W^BOO$GL_SYSPHDPG,R1	; BYTE OFFSET TO SPT
+                          51         0580       
+            59            51     C1  0581 24800 	ADDL3	R1,R9,W^MMG$GL_SBR	; SAVE PHYSICAL ADDRESS OF SPT
+                     0000'CF         0584       
+       0E98'CF            09     78  0587 24850 	ASHL	#9,W^BOO$GL_SYSPHDPG,PHD$L_PSTBASOFF(R9); SAVE AS BYTE OFFSET
+                       20 A9         058C       
+       00CC C9            09     78  058E 24900 	ASHL	#9,PHD$L_P0LRASTL(R9),R0; COMPUTE MAX SYSTEM ADDRESS+1
+                          50         0593       
+            01            1F     78  0594 24950 	ASHL	#VA$V_SYSTEM,#1,R2	; SYSTEM MASK
+                          52         0597       
+            50            52     C9  0598 25000 	BISL3	R2,R0,PHD$L_FREP0VA(R9)	; SAVE AS MAX ADDRESS
+                       28 A9         059B       
+            50            52     C9  059D 25050 	BISL3	R2,R0,W^MMG$GL_FRESVA	;
+                     0000'CF         05A0       
+            50            52     C9  05A3 25100 	BISL3	R2,R0,W^MMG$GL_MAXSYSVA	;
+                     0000'CF         05A6       
+            50            52     C9  05A9 25150 	BISL3	R2,R0,W^MMG$GL_MAXGPTE	;
+                     0000'CF         05AC       
+       0E94'CF            59     D0  05AF 25200 	MOVL	R9,W^BOO$GL_SYSPHD	; SAVE PHYSICAL PHD ADDRESS
+       00CC C9       0E7C'CF     C3  05B4 25250 	SUBL3	W^BOO$GL_GPTPGCT,PHD$L_P0LRASTL(R9),R1	; VPN OF GPT
+                          51         05BB       
+            51            09     78  05BC 25300 	ASHL	#9,R1,R0		; CONVERT TO BYTE ADDRESS
+                          50         05BF       
+            50            52     C9  05C0 25350 	BISL3	R2,R0,W^MMG$GL_GPTE	; BASE OF GLOBAL PAGE TABLE ENTRIES
+                     0000'CF         05C3       
+            51       0E88'CF     C2  05C6 25400 	SUBL	W^BOO$GL_SPTPAGCT,R1	; VPN OF SPT
+            51            09     78  05CB 25450 	ASHL	#9,R1,R0		; BYTE ADDRESS
+                          50         05CE       
+            50            52     C9  05CF 25500 	BISL3	R2,R0,W^MMG$GL_GPTBASE	; SAVE AS GPT BASE
+                     0000'CF         05D2       
+            50            52     C9  05D5 25550 	BISL3	R2,R0,W^MMG$GL_SPTBASE	; AND SPT BASE
+                     0000'CF         05D8       
+            50            52     C9  05DB 25600 	BISL3	R2,R0,PHD$L_P0BR(R9)	; AND VIRTUAL SBR
+                     00C8 C9         05DE       
+            51       0E98'CF     C2  05E1 25650 	SUBL	W^BOO$GL_SYSPHDPG,R1	; VPN OF SYSPHD
+            51            09     78  05E6 25700 	ASHL	#9,R1,R0		; BYTE ADDRESS
+                          50         05E9       
+            50            52     C9  05EA 25750 	BISL3	R2,R0,W^MMG$GL_SYSPHD	; SAVE VIRTUAL POINTER TO PHD
+                     0000'CF         05ED       
+       0E98'CF            09     78  05F0 25800 	ASHL	#9,W^BOO$GL_SYSPHDPG,W^MMG$GL_SYSPHDLN	; BYTES IN SYSTEM PHD
+                     0000'CF         05F5       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  12
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+       0000'CF       0000'CF     C5  05F8 25850 	MULL3	W^SWP$GL_BSLOTSZ,W^SGN$GL_BALSETCT,R0	; BALANCE SET MAP SIZE
+                          50         05FF       
+            51            50     C3  0600 25900 	SUBL3	R0,R1,R0		; VPN OF BAL BASE
+                          50         0603       
+       0000'CF       0000'DF40   DE  0604 25950 	MOVAL	@W^MMG$GL_SPTBASE[R0],W^SWP$GL_BALSPT	; SET BASE OF BALANCE MAP
+            50            09     78  060C 26000 	ASHL	#9,R0,R0		; CONVERT VPN TO VA
+                          50         060F       
+            50            52     C9  0610 26050 	BISL3	R2,R0,W^SWP$GL_BALBASE	; SAVE VA BASE OF BALANCE SLOTS
+                     0000'CF         0613       
+            50       FE00 C0     9E  0616 26100 	MOVAB	-512(R0),R0		; SKIP ONE PAGE FOR ERROR DETECTION
+            50            52     C9  061B 26150 	BISL3	R2,R0,W^EXE$GL_INTSTK	; SET BASE OF INTERRUPT STACK
+                     0000'CF         061E       
+            53       0000'DF41   DE  0621 26200 	MOVAL	@W^MMG$GL_SBR[R1],R3	; POINTER TO SPTE
+            50            58     D0  0627 26250 	MOVL	R8,R0			; COPY SIZE TO MAP
+            56   B0000000 8F     C9  062A 26300 10$:	BISL3	#<PTE$C_ERKW!PTE$M_VALID>,R6,(R3)+	; MAP A PAGE
+                          83         0631       
+                          56     D6  0632 26350 	INCL	R6			; NEXT PFN
+            F3            50     F5  0634 26400 	SOBGTR	R0,10$			; MAP ENTIRE SYSPHD+SPT
+            50       0E7C'CF     D0  0637 26450 	MOVL	W^BOO$GL_GPTPGCT,R0	; COUNT OF GLOBAL PAGE TABLE PAGES
+            83   70000000 8F     D0  063C 26500 20$:	MOVL	#PTE$C_URKW,(R3)+	; FILL THEM AS DEMAND ZERO
+            F6            50     F5  0643 26550 	SOBGTR	R0,20$			;
+                                     0646 26600 MAPISTK:				; MAP INTERRUPT STACK
+            15            09     EF  0646 26650 	EXTZV	#VA$V_VPN,#VA$S_VPN,W^EXE$GL_INTSTK,R1	; GET VPN FOR INT STK
+            51       0000'CF         0649       
+            53       0000'DF41   DE  064D 26700 	MOVAL	@W^MMG$GL_SBR[R1],R3	; SVASPT + 4
+            51       0000'CF     3C  0653 26750 	MOVZWL	W^SGN$GW_ISPPGCT,R1	; GET PAGE COUNT FOR INTERRUPT STACK
+                          032A   30  0658 26800 10$:	BSBW	ALLOCPFN		; ALLOCATE A PAGE
+            50   B0000000 8F     C9  065B 26850 	BISL3	#<PTE$C_ERKW!PTE$M_VALID>,R0,-(R3); FILL VALID MAP ENTRY
+                          73         0662       
+            F2            51     F5  0663 26900 	SOBGTR	R1,10$			; MAP ENTIRE INTERRUPT STACK
+                                     0666 26950 MAPNPAGDYN:				; MAP NON-PAGED DYNAMIC POOL
+            51       0000'CF     3C  0666 27000 	MOVZWL	W^SGN$GW_ISPPGCT,R1	; GET SIZE OF INTERRUPT STACK
+                          51     D6  066B 27050 	INCL	R1			; SKIP ONE PAGE FOR ERROR DETECTION
+                          73     D5  066D 27100 	TSTL	-(R3)			; ALSO BUMP SPT POINTER DOWN
+            51            09     78  066F 27150 	ASHL	#9,R1,R1		; CONVERT TO BYTES
+                          51         0672       
+       0000'CF            51     C3  0673 27200 	SUBL3	R1,W^EXE$GL_INTSTK,R1	; FORM ADDRESS OF BASE
+                          51         0678       
+            51       0000'CF     C2  0679 27250 	SUBL	W^SGN$GL_NPAGEDYN,R1	; AND COMPUTE BASE OF POOL
+       0000'CF            51     D0  067E 27300 	MOVL	R1,W^MMG$GL_NPAGEDYN	; SAVE VA OF BASE
+            51       0000'CF     C3  0683 27350 	SUBL3	W^SGN$GL_PAGEDYN,R1,W^MMG$GL_PAGEDYN	; COMPUTE BASE OF PAGED POOL
+                     0000'CF         0688       
+            51       0000'CF     D0  068B 27400 	MOVL	W^SGN$GL_NPAGEDYN,R1	; GET BYTES OF POOL
+            51         F7 8F     78  0690 27450 	ASHL	#-9,R1,R1		; AND CONVERT TO PAGE COUNT
+                          51         0694       
+                          02ED   30  0695 27500 10$:	BSBW	ALLOCPFN		; ALLOCATE A PAGE
+            50   B0000000 8F     C9  0698 27550 	BISL3	#<PTE$C_ERKW!PTE$M_VALID>,R0,-(R3); FILL A VALID MAP ENTRY
+                          73         069F       
+            F2            51     F5  06A0 27600 	SOBGTR	R1,10$			; MAP ALL POOL PAGES
+                                     06A3 27650 ;
+                                     06A3 27700 ;	MOVE SKELETON SPT TO ACTUAL LOCATION
+                                     06A3 27750 ;
+                                 28  06A3 27800 	MOVC3	#<MMG$C_SPTSKEL@2>,-	;
+                     0000'8F         06A4 27850 		W^MMG$AL_SYSPAGTB,-	;
+       0000'DF       0000'CF         06A7 27900 		@W^MMG$GL_SBR		;
+                                     06AD 27950 MAPRESEXEC:				; MAP RESIDENT EXEC
+            51   FFC00000'8F     D0  06AD 28000 	MOVL	#<<MMG$AL_PGDCOD-^X80000000>@-9>,R1	; VPN+1 OF NON-PAGED EXEC
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  13
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            53       0000'DF41   DE  06B4 28050 	MOVAL	@W^MMG$GL_SBR[R1],R3	; GET SVASPT
+            51       0000'8F     3C  06BA 28100 	MOVZWL	#<<MMG$AL_PGDCOD-MMG$A_ENDVEC>@-9>,R1	; COUNT OF PAGES
+                          02C3   30  06BF 28150 10$:	BSBW	ALLOCPFN		; ALLOCATE A PAGE
+            73   001FFFFF 8F     CA  06C2 28200 	BICL	#PTE$M_PFN,-(R3)	; CLEAR PFN FIELD
+            63            50     C8  06C9 28250 	BISL	R0,(R3)			; ATTEMPT SIMPLE MERGE OF PAGE
+                          08     19  06CC 28300 	BLSS	20$			; SUCCESS
+            50   F0000000 8F     C9  06CE 28350 	BISL3	#<PTE$C_URKW!PTE$M_VALID>,R0,(R3); MAP A VALID PAGE
+                          63         06D5       
+            E6            51     F5  06D6 28400 20$:	SOBGTR	R1,10$			; MAP ALL RESIDENT EXEC
+                                     06D9 28450 MAPPFNDAT:				; MAP PFN DATA BASE
+       0E80'CF            02     C1  06D9 28500 	ADDL3	#2,W^BOO$GL_NEXTPFN,R3	; START WITH CURRENT TOP PFN + FUDGE
+                          53         06DE       
+            53            00'    C5  06DF 28550 	MULL3	S^#PFN$C_LENGTH,R3,R2	; COMPUTE BYTES OF PFN DATA BASE NEEDED
+                          52         06E2       
+            52       01FF C2     9E  06E3 28600 	MOVAB	511(R2),R2		; ROUND UP TO PAGE BOUND
+            52         F7 8F     78  06E8 28650 	ASHL	#-9,R2,R0		; AND CONVERT TO PAGES
+                          50         06EC       
+            50            00'    C4  06ED 28700 10$:	MULL	S^#PFN$C_LENGTH,R0	; GET BYTES OF PFN DATA
+            52            50     C2  06F0 28750 	SUBL	R0,R2			; REMOVE FROM REQUIREMENT
+            50         F7 8F     78  06F3 28800 	ASHL	#-9,R0,R0		; GET PAGES REMOVED
+                          50         06F7       
+                          F3     12  06F8 28850 	BNEQ	10$			; BR IF WHOLE PAGES REMOVED
+            52         F7 8F     78  06FA 28900 	ASHL	#-9,R2,R2		; CONVERT TO PAGE COUNT
+                          52         06FE       
+            53            52     C2  06FF 28950 	SUBL	R2,R3			; SUBTRACT PAGES OF PFN DATA
+            53            00'    C4  0702 29000 	MULL	S^#PFN$C_LENGTH,R3	; COMPUTE BYTE OF PFN DATA
+            52       01FF C3     9E  0705 29050 	MOVAB	511(R3),R2		; ROUND TO NEXT PAGE
+            52         F7 8F     78  070A 29100 	ASHL	#-9,R2,R1		; COMPUTE PAGES OF PFN DATA BASE
+                          51         070E       
+            51            09     78  070F 29150 	ASHL	#9,R1,R2		; BACK TO BYTES
+                          52         0712       
+            52            00'    C7  0713 29200 	DIVL3	S^#PFN$C_LENGTH,R2,R3	; COMPUTE NUMBER OF ENTRIES
+                          53         0716       
+       0000'CF            52     C3  0717 29250 	SUBL3	R2,W^MMG$GL_PAGEDYN,R2	; SUBTRACT FROM PAGEDYN TO GET PFN BASE
+                          52         071C       
+       0000'CF            52     D0  071D 29300 	MOVL	R2,W^PFN$AL_PTE		; SAVE AS BASE OF FIRST W^PFN ARRAY
+       0000'CF       0000'DF43   DE  0722 29350 	MOVAL	@W^PFN$AL_PTE[R3],W^PFN$AL_BAK	; ADD SIZE * PAGE COUNT
+       0000'CF       0000'DF43   DE  072A 29400 	MOVAL	@W^PFN$AL_BAK[R3],W^PFN$AW_REFCNT	; FOR EACH OF THE W^PFN ARRAYS
+       0000'CF       0000'DF43   3E  0732 29450 	MOVAW	@W^PFN$AW_REFCNT[R3],W^PFN$AW_FLINK;
+       0000'CF       0000'DF43   3E  073A 29500 	MOVAW	@W^PFN$AW_FLINK[R3],W^PFN$AW_BLINK	; TO GET ADDRESS OF NEXT
+       0000'CF       0000'DF43   3E  0742 29550 	MOVAW	@W^PFN$AW_BLINK[R3],W^PFN$AW_SWPVBN; ARRAY BASE
+       0000'CF       0000'DF43   3E  074A 29600 	MOVAW	@W^PFN$AW_SWPVBN[R3],W^PFN$AB_STATE;
+       0000'CF       0000'DF43   9E  0752 29650 	MOVAB	@W^PFN$AB_STATE[R3],W^PFN$AB_TYPE	;
+                          52     DD  075A 29700 	PUSHL	R2			; SAVE PFN DATA AREA BASE ADDRESS
+            15            09     EF  075C 29750 	EXTZV	#VA$V_VPN,#VA$S_VPN,R2,R2	; COMPUTE STARTING PAGE NUMBER
+            52            52         075F       
+            53       0000'DF42   DE  0761 29800 	MOVAL	@W^MMG$GL_SBR[R2],R3	; AND CONVERT TO SVAPTE
+            53            6341   DE  0767 29850 	MOVAL	(R3)[R1],R3		; POINTING TO HIGH VPN+1
+                          0217   30  076B 29900 40$:	BSBW	ALLOCPFN		; ALLOCATE A PAGE
+            50   F0000000 8F     C9  076E 29950 	BISL3	#<PTE$C_URKW!PTE$M_VALID>,R0,-(R3); MAP A VALID ENTRY
+                          73         0775       
+            50            09     78  0776 30000 	ASHL	#9,R0,R0		; CONVERT TO PHYSICAL ADDRESS
+                          50         0779       
+            52       0100 8F     3C  077A 30050 	MOVZWL	#256,R2			; SET COUNT TO CLEAR
+                          80     7C  077F 30100 45$:	CLRQ	(R0)+			; CLEAR A QUAD
+            FB            52     F5  0781 30150 	SOBGTR	R2,45$			; CLEAR ENTIRE PAGE
+            E4            51     F5  0784 30200 	SOBGTR	R1,40$			; DO ALL OF THE PFN DATA BASE PAGES
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  14
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+                          04     BA  0787 30250 	POPR	#^M<R2>			; RESTORE BASE ADDRESS
+                                     0789 30300 MAPRPB:					;
+            15            09     EF  0789 30350 	EXTZV	#VA$V_VPN,#VA$S_VPN,R2,R2 ; FREE HIGH VPN+1
+            52            52         078C       
+                          52     D7  078E 30400 	DECL	R2			; VPN FOR RPB
+            5B         F7 8F     78  0790 30450 	ASHL	#-9,R11,R0		; PFN FOR FPB
+                          50         0794       
+         48 BB            50     E5  0795 30500 	BBCC	R0,@RPB$Q_PFNMAP+4(R11),10$	; MARK RPB ALLOCATED
+                          00         0799       
+            50   F0000000 8F     C9  079A 30550 10$:	BISL3	#<PTE$C_URKW!PTE$M_VALID>,R0,@MMG$GL_SBR[R2]	; MAP PAGE
+                 00000000'FF42       07A1       
+                       4C AB     D7  07A7 30600 	DECL	RPB$L_PFNCNT(R11)	; ONE LESS AVAILABLE PAGE
+            52            09     78  07AA 30650 	ASHL	#9,R2,R0		; CONVERT VPN TO VA
+                          50         07AD       
+            50   80000000 8F     C9  07AE 30700 	BISL3	#^X80000000,R0,W^EXE$GL_RPB	; SAVE VA OF RPB
+                     0000'CF         07B5       
+       0000'CF            72     9E  07B8 30750 	MOVAB	-(R2),W^BOO$GL_SPTFREH	; SAVE FOR SUBSEQUENT USE
+       0000'CF       0000'8F     3C  07BD 30800 	MOVZWL	#MMG$C_SPTSKEL,W^BOO$GL_SPTFREL	; SAVE LOW VPN ALSO
+       0000'CF       0E80'CF     D0  07C4 30850 	MOVL	W^BOO$GL_NEXTPFN,W^MMG$GL_MAXPFN ; SAVE MAX PFN VALUE
+                                     07CB 30900 MAPPAGED:				; MAP POTENTIALLY PAGED EXEC
+            53   FFC00000'8F     D0  07CB 30950 	MOVL	#<<SWP$GL_SHELLBAS-^X80000000>@-9>,R3	; VPN+1 OF PAGED
+            53       0000'DF43   DE  07D2 31000 	MOVAL	@W^MMG$GL_SBR[R3],R3	; SVAPTE+4
+       0000'CF            00'    E0  07D8 31050 	BBS	S^#EXE$V_SYSPAGING,W^EXE$GL_DEFFLAGS,5$ ; SKIP IF PAGING
+                          07         07DD       
+            51       0000'8F     3C  07DE 31100 	MOVZWL	#<<SWP$GL_SHELLBAS-MMG$AL_PGDCOD>@-9>,R1; COUNT OF PAGED EXEC
+                          05     11  07E3 31150 	BRB	10$			;
+            51       0000'8F     3C  07E5 31200 5$:	MOVZWL	#<<SWP$GL_SHELLBAS-MMG$AL_PGDCODEN>@-9>,R1; COUNT OF XDELTA+INIT
+                          0198   30  07EA 31250 10$:	BSBW	ALLOCPFN		; ALL
+            50   F0000000 8F     C9  07ED 31300 	BISL3	#<PTE$C_URKW!PTE$M_VALID>,R0,-(R3); MAP A VALID PAGE
+                          73         07F4       
+            F2            51     F5  07F5 31350 	SOBGTR	R1,10$			; MAP ALL POTENTIALLY PAGED EXEC
+                                     07F8 31400 MAPVECTORS:				;
+       0000'CF            00'    E0  07F8 31450 	BBS	S^#EXE$V_SYSPAGING,W^EXE$GL_DEFFLAGS,INITBOOTDRV ;
+                          1B         07FD       
+            51   FFC00000'8F     D0  07FE 31500 	MOVL	#<<MMG$A_ENDVEC-^X80000000>@-9>,R1; START VPN+1
+            53       0000'DF41   DE  0805 31550 	MOVAL	@W^MMG$GL_SBR[R1],R3	; SVAPTE+4
+                          0177   30  080B 31600 10$:	BSBW	ALLOCPFN	;ALLOCATE A PAGE
+            50   F0000000 8F     C9  080E 31650 	BISL3	#<PTE$C_URKW!PTE$M_VALID>,R0,-(R3); MAP A VALID PAGE
+                          73         0815       
+            F2            51     F5  0816 31700 	SOBGTR	R1,10$		; MAP ALL VECTOR PAGES
+                                     0819 31750 ;
+                                     0819 31800 ;
+                                     0819 31850 ;	SET MAP INFORMATION FOR BOOT DRIVER
+                                     0819 31900 ;
+                                     0819 31950 INITBOOTDRV:				;
+            59       0000'8F     3C  0819 32000 	MOVZWL	#<<SWP$GL_SHELLBAS-^X80000000>@-9>,R9	; SET NUMBER OF PAGES
+   00000000'EF            59     D0  081E 32050 	MOVL	R9,BOO$GL_SPTFREL	; SAVE NEXT FREE SPT ENTRY
+            54         34 AB     D0  0825 32100 	MOVL	RPB$L_IOVEC(R11),R4	; GET POINTER TO I/O VECTOR
+                          5B     DD  0829 32150 	PUSHL	R11			; ADDRESS OF RPB
+                 00000000'9F     DF  082B 32200 	PUSHAL	@#SWP$GL_SHELLBAS	; VA FOR I/O WINDOW
+                     0000'CF     DD  0831 32250 	PUSHL	W^MMG$GL_SBR		; PHYSICAL ADDRESS OF SPT
+         04 B444          03     FB  0835 32300 	CALLS	#3,@4(R4)[R4]		; CALL BOO$MAP
+                                     083A 32350 ;
+                                     083A 32400 ; 	MAPPING INFORMATION HAS NOW BEEN PROVIDED TO PERMIT THE
+                                     083A 32450 ;	BOOTSTRAP I/O DRIVER TO READ THE EXEC INTO NON-CONTIGUOUS PHYSICAL
+                                     083A 32500 ;	PAGES.
+                                     083A 32550 ;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  15
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            58   00000E9C'EF     D0  083A 32600 	MOVL	BOO$GQ_SYSSTAT,R8	; GET STATISTICS BLOCK FOR SYS.EXE
+            01            1F     78  0841 32650 	ASHL	#VA$V_SYSTEM,#1,R6	; SET ADDRESS OF "BUFFER"
+                          56         0844       
+       0000'CF            00'    E1  0845 32700 	BBC	S^#EXE$V_SYSPAGING,W^EXE$GL_DEFFLAGS,20$ ; SINGLE READ IF NOT PAGING
+                          30         084A       
+            50   FFC00000'8F     D0  084B 32750 	MOVL	#<<MMG$A_ENDVEC-^X80000000>@-9>,R0 ; LBN OFFSET TO NON-PAGED EXEC
+            58            50     C0  0852 32800 	ADDL	R0,R8			; ADD TO LBN BASE VALUE
+            50            09     78  0855 32850 	ASHL	#9,R0,R0		; MULTIPLY BY 512 TO GET BYTES
+                          50         0858       
+            56            50     C0  0859 32900 	ADDL	R0,R6			; SET BUFFER ADDRESS
+            59   00000000'8F     D0  085C 32950 	MOVL	#<<MMG$AL_PGDCOD-MMG$A_ENDVEC>@-9>,R9	; SET NUMBER OF PAGES
+                          016E   30  0863 33000 	BSBW	BOO$READFILE		; READ NONPAGED EXEC CODE
+            56   00000000'9F     DE  0866 33050 	MOVAL	@#MMG$AL_PGDCODEN,R6	; SET NEW BUFFER ADDRESS
+            59   00000000'8F     D0  086D 33100 	MOVL	#<<SWP$GL_SHELLBAS-MMG$AL_PGDCODEN>@-9>,R9 ; SET SIZE OF INIT
+            58   00000000'8F     C0  0874 33150 	ADDL	#<<MMG$AL_PGDCODEN-MMG$AL_PGDCOD>@-9>,R8   ; COMPUTE LBN FOR INIT
+                                     087B 33200 20$:					;
+                          0156   30  087B 33250 	BSBW	BOO$READFILE		; READ EXEC IMAGE
+                                     087E 33300 ;
+                                     087E 33350 ;	EXEC IMAGE HAS NOW BEEN READ. THE CORRECT COPY OF SYSPARAM
+                                     087E 33400 ;	INFORMATION WILL NOW BE MOVED INTO THE SYSTEM IMAGE.
+                                     087E 33450 ;
+                                     087E 33500 MOVPARAM:				;
+            56   00000000'8F     D0  087E 33550 	MOVL	#<<EXE$C_SYSPARSZ+511>@-9>,R6	; SIZE OF SYSPARAM IN PAGES
+            53   FFC00000'8F     D0  0885 33600 	MOVL	#<<MMG$A_SYSPARAM-^X80000000>@-9>,R3	; GET VPN OF SYSPARAM
+            57   00000000'FF43   DE  088C 33650 	MOVAL	@MMG$GL_SBR[R3],R7		; GET SVAPTE
+            58       0000'CF     DE  0894 33700 	MOVAL	W^EXE$A_SYSPARAM,R8		; SET SOURCE ADDRESS
+            50            87     D0  0899 33750 10$:	MOVL	(R7)+,R0		; GET PFN
+            15            00     EF  089C 33800 	EXTZV	#PTE$V_PFN,#PTE$S_PFN,R0,R0	; ISOLATE PFN
+            50            50         089F       
+            50            09     78  08A1 33850 	ASHL	#9,R0,R0		; CONVERT TO BYTE ADDRESS
+                          50         08A4       
+            68       0200 8F     28  08A5 33900 	MOVC3	#512,(R8),(R0)		; MOVE A PAGE OF PARAMETERS
+                          60         08AA       
+            58       0200 C8     9E  08AB 33950 	MOVAB	512(R8),R8		; NEXT PAGE
+            E6            56     F5  08B0 34000 	SOBGTR	R6,10$			; MOVE ALL PAGES
+                                     08B3 34050 ;
+                                     08B3 34100 ;	NOW LOCATE INIT AND TRANSFER CONTROL TO IT
+                                     08B3 34150 ;
+            53   FFC00000'8F     D0  08B3 34200 	MOVL	#<<EXE$INIT-^X80000000>@-9>,R3	; VPN OF INIT
+            50   00000000'FF43   D0  08BA 34250 	MOVL	@MMG$GL_SBR[R3],R0	; GET PHYSICAL PAGE NUMBER
+            15            00     EF  08C2 34300 	EXTZV	#PTE$V_PFN,#PTE$S_PFN,R0,R0	; ISOLATE PFN
+            50            50         08C5       
+            50            09     78  08C7 34350 	ASHL	#9,R0,R0		; CONVERT TO PHYSICAL ADDRESS
+                          50         08CA       
+            51   00000000'8F     D0  08CB 34400 	MOVL	#EXE$INIT,R1		; VIRTUAL ADDRESS OF INIT
+            00            51     F0  08D2 34450 	INSV	R1,#0,#9,R0		; INSERT BYTE OFFSET TO GET PHYSICAL
+            50            09         08D5       
+            55       0E9C'CF     7D  08D7 34500 	MOVQ	W^BOO$GQ_SYSSTAT,R5	; SYSTEM IMAGE DESCRIPTOR
+            54            56     D0  08DC 34550 	MOVL	R6,R4			; SET SIZE OF IMAGE
+            56       0EA4'CF     D0  08DF 34600 	MOVL	W^BOO$GQ_DRIVSTAT,R6	; LBN OF BOOTDEVICE DRIVER
+            57       0EAC'CF     D0  08E4 34650 	MOVL	W^BOO$GL_DRIVSIZE,R7	; AND SIZE IN BYTES
+            0C       0000'CF     DA  08E9 34700 	MTPR	W^MMG$GL_SBR,#PR$_SBR	; SET SYSTEM BASE REGISTER
+            0D       0000'CF     DA  08EE 34750 	MTPR	W^MMG$GL_SPTLEN,#PR$_SLR; AND LENGTH REGISTER
+            09       0000'CF     DA  08F3 34800 	MTPR	W^MMG$GL_SPTLEN,#PR$_P0LR; ALSO SET AS P0 LENGTH
+            51       0000'CF     D0  08F8 34850 	MOVL	W^MMG$GL_SPTBASE,R1	; GET SPT VIRTUAL ADDRESS
+   80000000'8F            50     C3  08FD 34900 	SUBL3	R0,#<EXE$INIT-^X80000000>,R2	; DELTA PFN-VPN
+                          52         0904       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  16
+02              Secondary Bootstrap Main Routine                                                                                 (1)
+
+            52         F7 8F     78  0905 34950 	ASHL	#-9,R2,R2		; CONVERT TO PAGE COUNT
+                          52         0909       
+            52            6142   DE  090A 35000 	MOVAL	(R1)[R2],R2		; COMPUTE BASE FOR P0 PT
+            08            52     DA  090E 35050 	MTPR	R2,#PR$_P0BR		; AND SET AS BASE REGISTER
+                                     0911 35100 	INVALID				; INVALIDATE TRANSLATION BUFFER
+            39            01     DA  0911       		MTPR	#1,S^#PR$_TBIA
+            53         28 AB     D0  0914 35150 	MOVL	RPB$L_BOOTR3(R11),R3	; RESTORE UNIT NUMBER
+            51         20 AB     D0  0918 35200 	MOVL	RPB$L_BOOTR1(R11),R1	; AND CONTROLLER/ADAPTER TR NUMBER
+                          60     17  091C 35250 	JMP	(R0)			; TRANSFER TO INIT
+                                     091E 35300 ;
+                                     091E 35350 ;	R0 - PHYSICAL ADDRESS OF EXE$INIT
+                                     091E 35400 ;	R4 - SIZE OF EXEC IMAGE IN BLOCKS
+                                     091E 35450 ;	R5 - LBN OF EXEC IMAGE
+                                     091E 35500 ;	R11 - PHYSICAL ADDRESS OF RPB
+                                     091E 35550 ;	SP - PHYSICAL ADDRESS OF A 3 PAGE STACK
+                                     091E 35600 ;	PR$_SBR/PR$_SLR - SET TO DESCRIBE SPT
+                                     091E 35650 ;	PR$_P0BR/PR$_P0LR - SET TO MAP INIT VIRTUAL=REAL
+                                     091E 35700 ;
+                                     091E 35750 ;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  17
+02              BOO$FILOPEN - Lookup a specified file                                                                            (1)
+
+                                     091E 35850 	.SBTTL	BOO$FILOPEN - Lookup a specified file
+                                     091E 35900 ;
+                                     091E 35950 ; Input Parameters:
+                                     091E 36000 ;	R7 - Address of file name descriptor
+                                     091E 36050 ;
+                                     091E 36100 ; Output Parameters:
+                                     091E 36150 ;	R8 - Starting LBN of file
+                                     091E 36200 ;	R9 - Size of file in blocks
+                                     091E 36250 ;
+                                     091E 36300 BOO$FILOPEN::				; File open Routine
+            50            7E     DE  091E 36350 	MOVAL	-(SP),R0		; Save pointer to phony channel
+                     0E8C'CF     7F  0921 36400 	PUSHAQ	W^BOO$GQ_STATBLK	; Address of file statistics block
+                     0E6B'CF     DD  0925 36450 	PUSHL	W^BOO$GL_FREEMEM	; file header buffer
+            6E   00000200 8F     C1  0929 36500 	ADDL3	#512,(SP),-(SP)		; Index file header buffer
+                          7E         0930       
+                          67     DF  0931 36550 	PUSHAL	(R7)			; Address of file name descriptor
+                          66     DF  0933 36600 	PUSHAL	(R6)			; Address of phony channel
+       0000'CF            06     FB  0935 36650 	CALLS	#6,W^FIL$OPENFILE	; Call FILEREAD to locate file
+            1F            50     E8  093A 36700 	BLBS	R0,10$			; Continue if successful open
+                                     093D 36750 	MSG	<-E-Unable to locate file>	; Report error
+                          0188   30  093D       	BSBW	BOO$FACMSG		; Output message
+6F 74 20 65 6C 62 61 6E 55 2D 45 2D  0940       	.ASCIZ	\-E-Unable to locate file\			;
+65 6C 69 66 20 65 74 61 63 6F 6C 20  094C       
+                                 00  0958       
+                          50     D4  0959 36800 	CLRL	R0			; Indicate failure
+                                 05  095B 36850 	RSB				;  and return
+            58       0E8C'CF     7D  095C 36900 10$:	MOVQ	W^BOO$GQ_STATBLK,R8	; Get file statistics, LBN/Size in blocks
+            50            01     D0  0961 36950 	MOVL	#1,R0			; Assume success
+                          58     D5  0964 37000 	TSTL	R8			; Check for contiguous
+                          1C     12  0966 37050 	BNEQ	20$			; Yes, continue
+                                     0968 37100 	MSG	<-E-File not contiguous>	; Give error
+                          015D   30  0968       	BSBW	BOO$FACMSG		; Output message
+20 74 6F 6E 20 65 6C 69 46 2D 45 2D  096B       	.ASCIZ	\-E-File not contiguous\			;
+   00 73 75 6F 75 67 69 74 6E 6F 63  0977       
+                          50     D4  0982 37150 	CLRL	R0			; Indicate error
+                                 05  0984 37200 20$:	RSB				; Return to caller
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  18
+02              ALLOCPFN - Allocate physical page                                                                                (1)
+
+                                     0985 37300 	.SBTTL	ALLOCPFN - Allocate physical page
+                                     0985 37350 ;
+                                     0985 37400 ; Output parameters:
+                                     0985 37450 ;	R0 - PFN of allocated page
+                                     0985 37500 ;
+                                     0985 37550 ALLOCPFN:				;
+            50       0E80'CF     D0  0985 37600 	MOVL	W^BOO$GL_NEXTPFN,R0	; Get PFN to start scan
+                          09     12  098A 37650 	BNEQ	20$			; Branch if not null
+         44 AB            03     78  098C 37700 10$:	ASHL	#3,RPB$Q_PFNMAP(R11),R0	; Else start at end of map
+                          50         0990       
+                          50     D7  0991 37750 15$:	DECL	R0			; Next/first PFN
+                          0F     15  0993 37800 	BLEQ	30$			; Branch if none left
+         48 BB            50     E5  0995 37850 20$:	BBCC	R0,@RPB$Q_PFNMAP+4(R11),15$	; Allocate it if possible
+                          F7         0999       
+            50            01     C3  099A 37900 	SUBL3	#1,R0,W^BOO$GL_NEXTPFN	; Save pointer for next time
+                     0E80'CF         099D       
+                       4C AB     D7  09A0 37950 	DECL	RPB$L_PFNCNT(R11)	; Account for page removed
+                                 05  09A3 38000 	RSB				;  and return
+                                     09A4 38050 30$:	MSG	<-F-Unable to allocate physical memory>
+                          0121   30  09A4       	BSBW	BOO$FACMSG		; Output message
+6F 74 20 65 6C 62 61 6E 55 2D 46 2D  09A7       	.ASCIZ	\-F-Unable to allocate physical memory\			;
+68 70 20 65 74 61 63 6F 6C 6C 61 20  09B3       
+72 6F 6D 65 6D 20 6C 61 63 69 73 79  09BF       
+                              00 79  09CB       
+                                 00  09CD 38100 	HALT				; **** FATAL ERROR ****
+                                     09CE 38150 ;
+                                     09CE 38200 ; Functional Description:
+                                     09CE 38250 ;	DALLOCPFN marks the specified page available in the PFN bitmap
+                                     09CE 38300 ;	but does not reposition the scan pointer.
+                                     09CE 38350 ;
+                                     09CE 38400 ; Calling Sequence:
+                                     09CE 38450 ;	BSBW	DALLOCPFN
+                                     09CE 38500 ; Input Parameters:
+                                     09CE 38550 ;	R0 - PFN
+                                     09CE 38600 ;
+                                     09CE 38650 DALLOCPFN:				; Deallocate pfn
+         48 BB            50     E2  09CE 38700 	BBSS	R0,@RPB$Q_PFNMAP+4(R11),10$	; Mark it available
+                          00         09D2       
+                                 05  09D3 38750 10$:	RSB				; And return
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  19
+02              BOO$READFILE - Routine to read specified piece                                                                   (1)
+
+                                     09D4 38850 	.SBTTL	BOO$READFILE - Routine to read specified piece of file
+                                     09D4 38900 ;
+                                     09D4 38950 ;	R5 - Preserved
+                                     09D4 39000 ;	R6 - Buffer address (Updated)
+                                     09D4 39050 ;	R7 - Volatile
+                                     09D4 39100 ;	R8 - Logical block number (Updated)
+                                     09D4 39150 ;	R9 - Blocks in file (Updated)
+                                     09D4 39200 ;
+                                     09D4 39250 BOO$READFILE::				;
+            51       0E84'CF     D0  09D4 39300 20$:	MOVL	W^BOO$GL_RPBBASE,R1	; Get pointer to RPB
+            57         7F 8F     9A  09D9 39350 	MOVZBL	#IOSIZE,R7		; Assume maximum transfer
+            59            57     D1  09DD 39400 	CMPL	R7,R9			; Minimize with file size
+                          03     15  09E0 39450 	BLEQ	30$			; Smaller than remaining file size
+            57            59     D0  09E2 39500 	MOVL	R9,R7			; Set to remaining file size
+                          51     DD  09E5 39550 30$:	PUSHL	R1			; Base of RPB
+            01            1F     EF  09E7 39600 	EXTZV	#VA$V_SYSTEM,#1,R6,-(SP); Set mode to virtual if system space
+            7E            56         09EA       
+                          21     DD  09EC 39650 	PUSHL	#IO$_READLBLK		; Set function to read
+                          58     DD  09EE 39700 	PUSHL	R8			; Set Logical Block Number
+            57            09     9C  09F0 39750 	ROTL	#9,R7,-(SP)		; Set transfer size in bytes
+                          7E         09F3       
+                          56     DD  09F4 39800 	PUSHL	R6			; Set buffer address
+            56         04 AE     C0  09F6 39850 	ADDL	4(SP),R6		; Update buffer address
+            58            57     C0  09FA 39900 	ADDL	R7,R8			;  and block number
+            50         34 A1     D0  09FD 39950 	MOVL	RPB$L_IOVEC(R1),R0	; GET POINTER TO I/O VECTOR
+         00 B040          06     FB  0A01 40000 	CALLS	#6,@(R0)[R0]		; Perform read
+            20            50     E8  0A06 40050 	BLBS	R0,40$			; Continue if no error
+                                     0A09 40100 	MSG	<-E-I/O error reading file>
+                          00BC   30  0A09       	BSBW	BOO$FACMSG		; Output message
+72 6F 72 72 65 20 4F 2F 49 2D 45 2D  0A0C       	.ASCIZ	\-E-I/O error reading file\			;
+6C 69 66 20 67 6E 69 64 61 65 72 20  0A18       
+                              00 65  0A24       
+                          50     D4  0A26 40150 	CLRL	R0			; Indicate error
+                                 05  0A28 40200 	RSB				; And return
+            59            57     C2  0A29 40250 40$:	SUBL	R7,R9			; Decrement blocks remaining
+                          A6     14  0A2C 40300 	BGTR	20$			; Another transfer if not done
+            50            01     D0  0A2E 40350 	MOVL	#1,R0			; Signal success
+                                 05  0A31 40400 	RSB				; Return
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  20
+02              BOO$USEFILE - Use parameter file                                                                                 (1)
+
+                                     0A32 40500 	.SBTTL	BOO$USEFILE - Use parameter file
+                                     0A32 40550 ;++
+                                     0A32 40600 ; Functional description:
+                                     0A32 40650 ;	BOO$USEFILE reads the specified file in response to the USE
+                                     0A32 40700 ;	command and merges all of the values specified in that file into
+                                     0A32 40750 ;	the working copy of the parameter values.  This is accomplished
+                                     0A32 40800 ;	by looking up each value specified and merging the associated 
+                                     0A32 40850 ;	value.
+                                     0A32 40900 ;
+                                     0A32 40950 ; Calling sequence:
+                                     0A32 41000 ;	CALLG	arglist,BOO$USEFILE
+                                     0A32 41050 ;
+                                     0A32 41100 ; Input Parameters:
+                                     0A32 41150 ;	TPA$L_TOKENCNT(AP) - Length of file name string
+                                     0A32 41200 ;	TPA$L_TOKENPTR(AP) - Address fo file name string
+                                     0A32 41250 ; Output Parameters:
+                                     0A32 41300 ;	R0 - Completion status code
+                                     0A32 41350 ;
+                                     0A32 41400 ;--
+                                     0A32 41450 BOO$USEFILE::				;
+                               03FC  0A32 41500 	.WORD	^M<R2,R3,R4,R5,R6,R7,R8,R9>	; Entry mask
+            57         10 AC     9E  0A34 41550 	MOVAB	TPA$L_TOKENCNT(AP),R7	; Set address of file name descriptor
+                          FEE3   30  0A38 41600 	BSBW	BOO$FILOPEN		; Open specified file
+            04            50     E8  0A3B 41650 	BLBS	R0,20$			; Continue if success
+            50            01     3C  0A3E 41700 10$:	MOVZWL	#1,R0			; Force success
+                                 04  0A41 41750 	RET				;
+            56   00000E6B'EF     D0  0A42 41800 20$:	MOVL	BOO$GL_FREEMEM,R6	; Set address of parameter buffer
+                          FF88   30  0A49 41850 	BSBW	BOO$READFILE		; Read file content into parameter buffer
+            EF            50     E9  0A4C 41900 	BLBC	R0,10$			; Exit if error
+   00000E6B'EF            20     C1  0A4F 41950 	ADDL3	#32,BOO$GL_FREEMEM,R8	; Init pointer to parameter buffer
+                          58         0A56       
+   00000E6B'FF            20     28  0A57 42000 	MOVC3	#32,@BOO$GL_FREEMEM,EXE$GT_STARTUP	; Set name of startup file
+                 00000000'EF         0A5E       
+                          68     D5  0A63 42050 30$:	TSTL	(R8)			; Check for end of list
+                          24     13  0A65 42100 	BEQL	DONE			; Branch if yes
+         10 AC            68     9A  0A67 42150 	MOVZBL	(R8),TPA$L_TOKENCNT(AP)	; Set token count for search
+         14 AC         01 A8     9E  0A6B 42200 	MOVAB	1(R8),TPA$L_TOKENPTR(AP); And address of string
+            58            10     C0  0A70 42250 	ADDL	#16,R8			; Advance to value
+         1C AC            88     D0  0A73 42300 	MOVL	(R8)+,TPA$L_NUMBER(AP)	; Set number 
+   00000000'EF            6C     FA  0A77 42350 	CALLG	(AP),BOO$SEARCH		; Search for parameter
+            E2            50     E9  0A7E 42400 	BLBC	R0,30$			; Next parameter if not found
+   00000000'EF            6C     FA  0A81 42450 	CALLG	(AP),BOO$SETVALUE	; Set value of parameter
+                          FFD8   31  0A88 42500 	BRW	30$			; Continue with next parameter
+            50            01     3C  0A8B 42550 DONE:	MOVZWL	#1,R0			; Return success
+                                 04  0A8E 42600 	RET				;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  21
+02              GETCONLOC - Routine to read console information                                                                  (1)
+
+                                     0A8F 42700 	.SBTTL	GETCONLOC - Routine to read console information location
+                                     0A8F 42750 ;++
+                                     0A8F 42800 ; Functional Description:
+                                     0A8F 42850 ;	GETCONLOC is used to access the locations in console memory containing
+                                     0A8F 42900 ;	values such as WCS and FPLA version numbers.
+                                     0A8F 42950 ;
+                                     0A8F 43000 ; Input Parameters:
+                                     0A8F 43050 ;	R1 - Location code
+                                     0A8F 43100 ;
+                                     0A8F 43150 ; Output Parameters:
+                                     0A8F 43200 ;	R0 - Value contained in console cell
+                                     0A8F 43250 ;--
+                                     0A8F 43300 GETCONLOC:				;
+            51       0300 C1     9E  0A8F 43325 	MOVAB	^X300(R1),R1		; Set code to read console memory
+            50            22     DB  0A94 43350 10$:	MFPR	#PR$_TXCS,R0		; Get transmit status register
+            50            07     E1  0A97 43400 	BBC	#7,R0,10$		; Wait for done
+                          F9         0A9A       
+            23            51     DA  0A9B 43500 	MTPR	R1,#PR$_TXDB		; Request data from console
+            50            22     DB  0A9E 43550 20$:	MFPR	#PR$_TXCS,R0		; Read transmit status register
+            50            07     E1  0AA1 43600 	BBC	#7,R0,20$		; Wait for done
+                          F9         0AA4       
+            50            20     DB  0AA5 43650 30$:	MFPR	#PR$_RXCS,R0		; Get receiver status
+            50            07     E1  0AA8 43700 	BBC	#7,R0,30$		; And wait for done
+                          F9         0AAB       
+            50            21     DB  0AAC 43750 	MFPR	#PR$_RXDB,R0		; Now read data value
+            04            08     ED  0AAF 43775 	CMPZV	#8,#4,R0,#3		; Is this a valid response?
+            03            50         0AB2       
+                                     0AB4 43787 ;	BNEQ	10$			; No, try again
+                                 01  0AB4 43793 	NOP				;****** TEMP
+                                 01  0AB5 43799 	NOP				;****** TEMP
+            50            50     9A  0AB6 43800 	MOVZBL	R0,R0			; Zero extend data
+                                 05  0AB9 43850 	RSB				;
+                                     0ABA 43900 VERSVECT:				; Vector of version offsets and 
+                                     0ABA 43950 					;  required version numbers
+                              08 6D  0ABA 44000 	.BYTE	FPLA_VLOC,FPLA		; FPLA Version offset and minimum value
+                              01 6A  0ABC 44050 	.BYTE	PCS_VLOC,PCS		; PCS Version offset and minimum
+                              08 6B  0ABE 44100 	.BYTE	WCSP_VLOC,WCSP		; WCS Primary version offset and minimum
+                              11 6C  0AC0 44150 	.BYTE	WCSS_VLOC,WCSS		; WCS Secondary version offset and minimum
+                                 00  0AC2 44200 	.BYTE	0			; End of list
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  22
+02              DUMMY COMMAND ROUTINES FOR COMMANDS NOT IN SYSB                                                                  (1)
+
+                                     0AC3 44300 	.SBTTL	DUMMY COMMAND ROUTINES FOR COMMANDS NOT IN SYSBOOT
+                                     0AC3 44350 BOO$CONFIGALL::				; Dummy autoconfigure command
+                                     0AC3 44400 BOO$CONFIGONE::				; Dummy autoconfigure one adapter
+                                     0AC3 44450 BOO$CONADP::				; 
+                                     0AC3 44500 BOO$CONAUNIT::				;
+                                     0AC3 44550 BOO$CONCNUM::				;
+                                     0AC3 44600 BOO$CONCREG::				;
+                                     0AC3 44650 BOO$CONCVEC::				;
+                                     0AC3 44700 BOO$CONDRVNAM::				;
+                                     0AC3 44750 BOO$CONNECT::				;
+                                     0AC3 44800 BOO$CONRESET::				;
+                                     0AC3 44850 BOO$CREATE::				;
+                                     0AC3 44900 BOO$DEVNAME::				;
+                                     0AC3 44950 BOO$FILESIZE::				;
+                                     0AC3 45000 BOO$INSRESET::				;
+                                     0AC3 45050 BOO$INSTALL::				;
+                                     0AC3 45100 BOO$LOAD::				;
+                                     0AC3 45150 BOO$MAKLIST::				;
+                                     0AC3 45200 BOO$RELOAD::				;
+                                     0AC3 45250 BOO$REMOVE::				;
+                                     0AC3 45300 BOO$RESETLIST::				;
+                                     0AC3 45350 BOO$SETADP::				;
+                                     0AC3 45400 BOO$SETFILNAM::				;
+                                     0AC3 45450 BOO$SETPGFL::				;
+                                     0AC3 45500 BOO$SETSFTX::				;
+                                     0AC3 45550 BOO$SHODEV_ALL::			;
+                                     0AC3 45600 BOO$SHODEV::				;
+                               0000  0AC3 45650 BOO$WRTFILE::.WORD	0		; Null entry mask
+                          50     D4  0AC5 45700 	CLRL	R0			;
+                                 04  0AC7 45750 	RET				;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  23
+02              BOO$FACMSG - Output facility error message                                                                       (1)
+
+                                     0AC8 45850 	.SBTTL	BOO$FACMSG - Output facility error message
+                                     0AC8 45900 ;++
+                                     0AC8 45950 ; Functional Description:
+                                     0AC8 46000 ;	BOO$FACMSG outputs an error message preceded by a new line
+                                     0AC8 46050 ;	and facility name string.
+                                     0AC8 46100 ;
+                                     0AC8 46150 ; Calling Sequence:
+                                     0AC8 46200 ;	BSBW	BOO$FACMSG
+                                     0AC8 46250 ;	.ASCIZ	message-text
+                                     0AC8 46300 ;++
+                                     0AC8 46350 BOO$FACMSG::				;
+                          F535'  30  0AC8 46400 	BSBW	BOO$MSGOUT		; Output prefix message
+                              0A 0D  0ACB 46450 	.ASCII	<CR><LF>		; With a new line first
+         00 54 4F 4F 42 53 59 53 25  0ACD 46500 	.ASCIZ	/%SYSBOOT/		; Then facility name
+                          F527'  31  0AD6 46550 	BRW	BOO$MSGOUT		; And finally the meat of the message
+                                     0AD9 46600 
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  24
+02              Unexpected Machine Check Handler                                                                                 (1)
+
+                                     0AD9 46700 	.SBTTL	Unexpected Machine Check Handler
+                                     0AD9 46750 ;
+                                     0AD9 46800 ;	Unexpected Machine Check Handler
+                                     0AD9 46850 ;
+                                     0AD9 46900 	.ALIGN	LONG			; Exception handlers must be longword aligned
+                                     0ADC 46950 	.IF	DF,DEBUG		;
+                                     0ADC 47000 EXE$ACVIOLAT::				; Access violation vector 
+                                     0ADC 47050 EXE$BREAK::				; Breakpoint vector
+                                     0ADC 47100 EXE$ROPRAND::				; Reserved operand vector
+                                     0ADC 47150 EXE$TBIT::				; TBIT vector
+                                     0ADC 47200 MMG$PAGEFAULT::				; Pagefault exception vector
+                                     0ADC 47250 	.ENDC				;
+                                     0ADC 47300 BOOT_FAULT:				;
+                                     0ADC 47350 	ERROR	</-F-Unexpected Exception/>; Output error message
+                          003D   30  0ADC       	BSBW	ERROUT			; Output error string
+65 74 63 65 70 78 65 6E 55 2D 46 2D  0ADF       	.ASCIZ	/-F-Unexpected Exception/			;
+00 6E 6F 69 74 70 65 63 78 45 20 64  0AEB       
+                                     0AF7 47400 
+                                     0AF7 47450 	.ALIGN	LONG			;
+                                     0AF8 47500 UNEXP_MCHK:				;
+                                     0AF8 47550 	ERROR	</-F-Unexpected Machine Check/>; Output error message
+                          0021   30  0AF8       	BSBW	ERROUT			; Output error string
+65 74 63 65 70 78 65 6E 55 2D 46 2D  0AFB       	.ASCIZ	/-F-Unexpected Machine Check/			;
+68 43 20 65 6E 69 68 63 61 4D 20 64  0B07       
+                        00 6B 63 65  0B13       
+                                     0B17 47600 
+                                     0B17 47650 	.IF	DF,DEBUG		;
+                                     0B17 47700 INI$RDONLY::				; Dummy change protection routines
+                                     0B17 47750 INI$WRITABLE::				;
+                                 05  0B17 47800 	RSB				;
+                                     0B18 47850 EXE$GL_FLAGS::				; Dummy
+                           00000000  0B18 47900 	.LONG	0			;
+                                     0B1C 47950 	.ENDC				;
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  25
+02              Error message subroutine                                                                                         (1)
+
+                                     0B1C 48050 	.SBTTL	Error message subroutine
+                                     0B1C 48100 ;+
+                                     0B1C 48150 ; Functional Description:
+                                     0B1C 48200 ;	ERROUT outputs a descriptive error message to the console.
+                                     0B1C 48250 ;
+                                     0B1C 48300 ; Calling Sequence:
+                                     0B1C 48350 ;	BSBW	ERROUT
+                                     0B1C 48400 ;	.ASCIZ	/message/
+                                     0B1C 48450 ;
+                                     0B1C 48500 ;-
+            58            8E     D0  0B1C 48550 ERROUT:	MOVL	(SP)+,R8		; Get pointer to message text
+                          7E     7C  0B1F 48600 	CLRQ	-(SP)			; Null size and buffer arguments
+                          58     DD  0B21 48650 	PUSHL	R8			; Address of prompt string
+       0000'CF            03     FB  0B23 48700 	CALLS	#3,W^BOO$READPROMPT	; Write error message
+                                 00  0B28 48750 	HALT				;  and halt.
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  26
+02              PROMPT - Routine to prompt console for input                                                                     (1)
+
+                                     0B29 48850 	.SBTTL	PROMPT - Routine to prompt console for input
+                                     0B29 48900 ;
+                                     0B29 48950 ; Calling Sequence:
+                                     0B29 49000 ;	BSBW	PROMPT
+                                     0B29 49050 ;	.ASCIZ	/prompt string/
+                                     0B29 49100 ;
+                                     0B29 49150 ; Ouput Parameters:
+                                     0B29 49200 ;	COMBUF - Filled with ASCIC string representing reply.
+                                     0B29 49250 ;		 Reply does not include terminator.
+                                     0B29 49300 ;
+                                     0B29 49350 ;
+                                     0B29 49400 PROMPT:					;
+            50            6E     D0  0B29 49450 	MOVL	(SP),R0			; Get prompt string pointer
+                     0000'CF     9F  0B2C 49500 	PUSHAB	W^BOO$GT_COMBUF		; Set buffer address
+            7E         00'8F     9A  0B30 49550 	MOVZBL	#BOO$C_COMBUFSZ,-(SP)	;  and size for read.
+                          50     DD  0B34 49600 	PUSHL	R0			; Set address of prompt string
+       0000'CF            03     FB  0B36 49650 	CALLS	#3,W^BOO$READPROMPT	; Prompt and read response
+       0100 8F            00     3A  0B3B 49700 	LOCC	#0,#256,@(SP)		; Find end of string
+                       00 BE         0B40       
+                       01 A1     17  0B42 49750 	JMP	1(R1)			; and return
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  27
+02              SYS$ASSIGN - Dummy assign device system service                                                                  (1)
+
+                                     0B45 49850 	.SBTTL	SYS$ASSIGN - Dummy assign device system service
+                                     0B45 49900 ;
+                                     0B45 49950 ; Functional Description:
+                                     0B45 50000 ;	SYS$ASSIGN is a dummy routine to satisfy the requirements of
+                                     0B45 50050 ;	FIL$OPENFILE.
+                                     0B45 50100 ;
+                                     0B45 50150 ; Input Parameters:
+                                     0B45 50200 ;	CHAN(AP) - Address at which to return channnel (RPB base address)
+                           00000008  0B45 50250 	CHAN	 = 8
+                                     0B45 50300 ;
+                                     0B45 50350 ; Output Parameters:
+                                     0B45 50400 ;	R0 - Completion status code
+                                     0B45 50450 ;
+                                     0B45 50500 ; Completion Codes:
+                                     0B45 50550 ;	SS$_NORMAL - Normal successful completion
+                                     0B45 50600 ;
+                                     0B45 50650 ;--
+                               0000  0B45 50700 SYS$ASSIGN::	.WORD	0		; Null entry mask
+         08 BC       0E84'CF     D0  0B47 50750 	MOVL	W^BOO$GL_RPBBASE,@CHAN(AP)	; Store RPB address as channel
+            50            01     3C  0B4D 50800 	MOVZWL	#1,R0			; Return success
+                                 04  0B50 50850 	RET				;
+                                     0B51 50900 
+                                     0B51 50950 ;
+                                     0B51 51000 ; DUMMY SYS$FAO LINKAGE TO EXE$FAO
+                                     0B51 51050 ;
+                                     0B51 51100 SYS$FAO::				;
+                               0FFC  0B51 51150 	.WORD	^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>	; ALL REGISTERS
+                          F4AC'  31  0B53 51200 	BRW	EXE$FAO+2		; ENTER FAO 
+                                     0B56 51250 
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  28
+02              BOO$GIVEHELP - Print Help information                                                                            (1)
+
+                                     0B56 51350 	.SBTTL	BOO$GIVEHELP - Print Help information
+                                     0B56 51400 ;
+                                     0B56 51450 ; 	Print Help Information
+                                     0B56 51500 ;
+                               003C  0B56 51550 BOO$GIVEHELP::	.WORD	^M<R2,R3,R4,R5>	;
+                          7E     7C  0B58 51600 	CLRQ	-(SP)			; Null input buffer
+                       66'AF     9F  0B5A 51650 	PUSHAB	B^HELPMSG		; Set address of help message
+       0000'CF            03     FB  0B5D 51700 	CALLS	#3,W^BOO$READPROMPT	; Write help message
+            50            01     D0  0B62 51750 	MOVL	#1,R0			; Return success
+                                 04  0B65 51800 	RET				;
+                                     0B66 51850 
+                                     0B66 51900 
+                                     0B66 51950 HELPMSG:				; ASCIZ Help message string
+4F 4F 42 53 59 53 20 72 6F 6A 61 4D  0B66 52000 	.ASCII	/Major SYSBOOT Commands are:/<CR><LF><LF>
+61 20 73 64 6E 61 6D 6D 6F 43 20 54  0B72       
+                  0A 0A 0D 3A 65 72  0B7E       
+20 2D 20 45 55 4E 49 54 4E 4F 43 09  0B84 52050 	.ASCII	/	CONTINUE - Continue with boot process/<CR><LF>
+74 69 77 20 65 75 6E 69 74 6E 6F 43  0B90       
+65 63 6F 72 70 20 74 6F 6F 62 20 68  0B9C       
+                        0A 0D 73 73  0BA8       
+6E 6F 43 20 2D 20 09 54 49 58 45 09  0BAC 52100 	.ASCII	/	EXIT	 - Continue with boot process/<CR><LF>
+62 20 68 74 69 77 20 65 75 6E 69 74  0BB8       
+0D 73 73 65 63 6F 72 70 20 74 6F 6F  0BC4       
+                                 0A  0BD0       
+20 74 65 53 20 2D 20 09 54 45 53 09  0BD1 52150 	.ASCII	/	SET	 - Set parameter value/<CR><LF>
+61 76 20 72 65 74 65 6D 61 72 61 70  0BDD       
+                     0A 0D 65 75 6C  0BE9       
+72 61 70 20 54 45 53 20 20 20 20 09  0BEE 52200 	.ASCII	/	    SET parameter_name value/<CR><LF>
+20 65 6D 61 6E 5F 72 65 74 65 6D 61  0BFA       
+               0A 0D 65 75 6C 61 76  0C06       
+54 53 2F 20 54 45 53 20 20 20 20 09  0C0D 52205 	.ASCII	\	    SET /STARTUP file_spec\<CR><LF>
+73 5F 65 6C 69 66 20 50 55 54 52 41  0C19       
+                     0A 0D 63 65 70  0C25       
+6F 68 53 20 2D 20 09 57 4F 48 53 09  0C2A 52250 	.ASCII	/	SHOW	 - Show parameter value(s)/<CR><LF>
+20 72 65 74 65 6D 61 72 61 70 20 77  0C36       
+      0A 0D 29 73 28 65 75 6C 61 76  0C42       
+61 70 20 57 4F 48 53 20 20 20 20 09  0C4C 52300 	.ASCII	/	    SHOW parameter_name/<CR><LF>
+65 6D 61 6E 5F 72 65 74 65 6D 61 72  0C58       
+                              0A 0D  0C64       
+6F 68 53 20 2D 20 50 43 41 2F 09 09  0C66 52350 	.ASCII	\		/ACP - Show ACP parameters\<CR><LF>
+65 6D 61 72 61 70 20 50 43 41 20 77  0C72       
+                  0A 0D 73 72 65 74  0C7E       
+6F 68 53 20 2D 20 4C 4C 41 2F 09 09  0C84 52400 	.ASCII	\		/ALL - Show ALL parameters\<CR><LF>
+65 6D 61 72 61 70 20 4C 4C 41 20 77  0C90       
+                  0A 0D 73 72 65 74  0C9C       
+6F 68 53 20 2D 20 4E 45 47 2F 09 09  0CA2 52450 	.ASCII	\		/GEN - Show generative parameters\<CR><LF>
+65 76 69 74 61 72 65 6E 65 67 20 77  0CAE       
+0D 73 72 65 74 65 6D 61 72 61 70 20  0CBA       
+                                 0A  0CC6       
+53 20 2D 20 52 4F 4A 41 4D 2F 09 09  0CC7 52500 	.ASCII	\		/MAJOR - Show MAJOR parameters\<CR><LF>
+61 70 20 52 4F 4A 41 4D 20 77 6F 68  0CD3       
+      0A 0D 73 72 65 74 65 6D 61 72  0CDF       
+53 20 2D 20 53 45 4D 41 4E 2F 09 09  0CE9 52550 	.ASCII	\		/NAMES - Show parameter names\<CR><LF>
+65 74 65 6D 61 72 61 70 20 77 6F 68  0CF5       
+         0A 0D 73 65 6D 61 6E 20 72  0D01       
+6F 68 53 20 2D 20 4C 51 50 2F 09 09  0D0A 52600 	.ASCII	\		/PQL - Show Process Quota List values\<CR><LF>
+75 51 20 73 73 65 63 6F 72 50 20 77  0D16       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  29
+02              BOO$GIVEHELP - Print Help information                                                                            (1)
+
+6C 61 76 20 74 73 69 4C 20 61 74 6F  0D22       
+                     0A 0D 73 65 75  0D2E       
+6F 68 53 20 2D 20 53 4D 52 2F 09 09  0D33 52650 	.ASCII	\		/RMS - Show RMS parameters\<CR><LF>
+65 6D 61 72 61 70 20 53 4D 52 20 77  0D3F       
+                  0A 0D 73 72 65 74  0D4B       
+2D 20 50 55 54 52 41 54 53 2F 09 09  0D51 52655 	.ASCII	\		/STARTUP - Show Startup command file name\<CR><LF>
+75 74 72 61 74 53 20 77 6F 68 53 20  0D5D       
+69 66 20 64 6E 61 6D 6D 6F 63 20 70  0D69       
+         0A 0D 65 6D 61 6E 20 65 6C  0D75       
+6F 68 53 20 2D 20 53 59 53 2F 09 09  0D7E 52700 	.ASCII	\		/SYS - Show SYSTEM parameters\<CR><LF>
+72 61 70 20 4D 45 54 53 59 53 20 77  0D8A       
+         0A 0D 73 72 65 74 65 6D 61  0D96       
+20 74 65 53 20 2D 20 09 45 53 55 09  0D9F 52750 	.ASCII	/	USE	 - Set parameter file name /<CR><LF>
+69 66 20 72 65 74 65 6D 61 72 61 70  0DAB       
+      0A 0D 20 65 6D 61 6E 20 65 6C  0DB7       
+6C 69 66 20 45 53 55 20 20 20 20 09  0DC1 52800 	.ASCII	\	    USE file_spec.PAR \<CR><LF>
+0D 20 52 41 50 2E 63 65 70 73 5F 65  0DCD       
+                                 0A  0DD9       
+66 20 64 65 76 72 65 73 65 52 09 09  0DDA 52850 	.ASCII	/		Reserved filespecs are:/<CR><LF>
+65 72 61 20 73 63 65 70 73 65 6C 69  0DE6       
+                           0A 0D 3A  0DF2       
+2D 20 54 4C 55 41 46 45 44 09 09 09  0DF5 52900 	.ASCII	/			DEFAULT - Use permanent defaults/<CR><LF>
+65 6E 61 6D 72 65 70 20 65 73 55 20  0E01       
+0D 73 74 6C 75 61 66 65 64 20 74 6E  0E0D       
+                                 0A  0E19       
+2D 20 54 4E 45 52 52 55 43 09 09 09  0E1A 52950 	.ASCIZ	/			CURRENT - Use current values/<CR><LF>
+74 6E 65 72 72 75 63 20 65 73 55 20  0E26       
+      00 0A 0D 73 65 75 6C 61 76 20  0E32       
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  30
+02              Miscellaneous constants and temps                                                                                (1)
+
+                                     0E3C 53050 	.SBTTL	Miscellaneous constants and temps
+                                     0E3C 53100 FIL$GT_DDDEV::				; Default device string
+                  3A 56 45 44 44 00' 0E3C 53150 	.ASCIC	/DDEV:/			;
+                                 05  0E3C       
+                           00000E4A  0E42 53200 	.BLKB	8			;
+                                     0E4A 53250 FIL$GT_DDSTRING::			; Default directory string
+         5D 45 58 45 53 59 53 5B 00' 0E4A 53300 	.ASCIC	/[SYSEXE]/		;
+                                 08  0E4A       
+                           00000E63  0E53 53350 	.BLKB	16			;
+                                     0E63 53400 
+                                     0E63 53450 BOO$GT_SYS::				;
+            45 58 45 2E 53 59 53 00' 0E63 53500 	.ASCIC	/SYS.EXE/		; Name of system image
+                                 07  0E63       
+                                     0E6B 53550 BOO$GL_FREEMEM::			; Base of free memory after boot image
+                           00000000  0E6B 53600 	.LONG	0			;
+                                     0E6F 53650 BOO$GT_PROMPT::				; Prompt string
+20 20 3E 54 4F 4F 42 53 59 53 0A 0D  0E6F 53700 	.ASCIZ	<CR><LF>%SYSBOOT>  %	;
+                                 00  0E7B       
+                                     0E7C 53750 BOO$GL_GPTPGCT::			; Count of global page table pages
+                           00000000  0E7C 53800 	.LONG	0			;
+                                     0E80 53850 BOO$GL_NEXTPFN::			; Starting index for PFN scan
+                           00000000  0E80 53900 	.LONG	0			;
+                                     0E84 53950 BOO$GL_RPBBASE::			; Base address of RPB
+                           00000000  0E84 54000 	.LONG	0			;
+                                     0E88 54050 BOO$GL_SPTPAGCT::			; Count of pages allocated for SPT
+                           00000000  0E88 54100 	.LONG	0			;
+                                     0E8C 54150 BOO$GQ_STATBLK::			; Statistics block for file open
+                  00000000 00000000  0E8C 54200 	.LONG	0,0			;
+                                     0E94 54250 BOO$GL_SYSPHD::				; Physical address of system header
+                           00000000  0E94 54300 	.LONG	0			;
+                                     0E98 54350 BOO$GL_SYSPHDPG::			; Count of pages for system PHD
+                           00000000  0E98 54400 	.LONG	0			;
+                                     0E9C 54450 BOO$GQ_SYSSTAT::			; Statistics block for System image
+                  00000000 00000000  0E9C 54500 	.LONG	0,0			;
+                                     0EA4 54550 BOO$GQ_DRIVSTAT::			; Statistics block for boot device driver
+                  00000000 00000000  0EA4 54600 	.LONG	0,0			; LBN,Size
+                                     0EAC 54650 BOO$GL_DRIVSIZE::			; Size of driver in bytes (rounded)
+                           00000000  0EAC 54700 	.LONG	0			;
+                                     0EB0 54750 
+58 45 2E 52 45 56 49 52 44 42 44 00' 0EB0 54800 DBNAME:	.ASCIC	/DBDRIVER.EXE/		; Name of RP06 Driver
+                                 45  0EBC       
+                                 0C  0EB0       
+58 45 2E 52 45 56 49 52 44 4D 44 00' 0EBD 54850 DMNAME:	.ASCIC	/DMDRIVER.EXE/		; Name of RK07 Driver
+                                 45  0EC9       
+                                 0C  0EBD       
+58 45 2E 52 45 56 49 52 44 52 44 00' 0ECA 54900 DRNAME:	.ASCIC	/DRDRIVER.EXE/		; Name of RM03/RP07 Driver
+                                 45  0ED6       
+                                 0C  0ECA       
+45 2E 52 45 56 49 52 44 4B 4E 55 00' 0ED7 54950 UNKNAME:.ASCIC	/UNKDRIVER.EXE/		; Name of Driver for unknown devices
+                              45 58  0EE3       
+                                 0D  0ED7       
+                                     0EE5 55000 
+                                     0EE5 55050 
+                                     0EE5 55100 	.END				; 
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  31
+SYMBOL TABLE                                                                                                                     (1)
+
+ALLOCPFN         00000985 R     04   BOO$WRTFILE      00000AC3 RG    04   HAVEPRM          00000233 R     04   
+ALLOCSPT         000004C7 R     04   BOOTHIGH         00000000 R     03   HELPMSG          00000B66 R     04   
+BIT...         = 00000000            BOOT_FAULT       00000ADC R     04   IHD$B_HDRBLKCNT  00000010            
+BOO$A_SYSPHD     ********   X   04   CHAN           = 00000008            IHD$B_IMGTYPE    00000011            
+BOO$CONADP       00000AC3 RG    04   CHKVERSION       00000054 R     04   IHD$C_LENGTH     00000028            
+BOO$CONAUNIT     00000AC3 RG    04   CR             = 0000000D            IHD$K_EXE      = 00000001            
+BOO$CONCNUM      00000AC3 RG    04   DALLOCPFN        000009CE R     04   IHD$K_LENGTH     00000028            
+BOO$CONCREG      00000AC3 RG    04   DBNAME           00000EB0 R     04   IHD$K_LIM      = 00000002            
+BOO$CONCVEC      00000AC3 RG    04   DEBUG          = 00000001            IHD$K_MAJORID  = 00003230            
+BOO$CONDRVNAM    00000AC3 RG    04   DMNAME           00000EBD R     04   IHD$K_MINORID  = 00003130            
+BOO$CONFIGALL    00000AC3 RG    04   DONE             00000A8B R     04   IHD$L_IDENT      00000024            
+BOO$CONFIGONE    00000AC3 RG    04   DPT$B_ADPTYPE    0000000C            IHD$L_LNKFLAGS   00000020            
+BOO$CONNECT      00000AC3 RG    04   DPT$B_FLAGS      0000000D            IHD$M_LNKDEBUG = 00000001            
+BOO$CONRESET     00000AC3 RG    04   DPT$B_REFC       0000000B            IHD$M_LNKNOTFR = 00000002            
+BOO$CREATE       00000AC3 RG    04   DPT$B_TYPE       0000000A            IHD$M_MATCHCTL = 07000000            
+BOO$C_COMBUFSZ   ********   X   04   DPT$C_LENGTH     00000022            IHD$M_NOP0BUFS = 00000004            
+BOO$DEVNAME      00000AC3 RG    04   DPT$K_LENGTH     00000022            IHD$M_PICIMG   = 00000008            
+BOO$FACMSG       00000AC8 RG    04   DPT$L_BLINK      00000004            IHD$Q_PRIVREQS   00000014            
+BOO$FILESIZE     00000AC3 RG    04   DPT$L_FLINK      00000000            IHD$S_MATCHCTL = 00000003            
+BOO$FILOPEN      0000091E RG    04   DPT$M_NOUNLOAD = 00000004            IHD$V_LNKDEBUG = 00000000            
+BOO$GETPARAM     ********   X   04   DPT$M_SUBCNTRL = 00000001            IHD$V_LNKNOTFR = 00000001            
+BOO$GIVEHELP     00000B56 RG    04   DPT$M_SVP      = 00000002            IHD$V_MATCHCTL = 00000018            
+BOO$GL_DRIVSIZE  00000EAC RG    04   DPT$T_NAME       00000016            IHD$V_NOP0BUFS = 00000002            
+BOO$GL_FREEMEM   00000E6B RG    04   DPT$V_NOUNLOAD = 00000002            IHD$V_PICIMG   = 00000003            
+BOO$GL_GPTPGCT   00000E7C RG    04   DPT$V_SUBCNTRL = 00000000            IHD$W_ACTIVOFF   00000002            
+BOO$GL_NEXTPFN   00000E80 RG    04   DPT$V_SVP      = 00000001            IHD$W_IMGIDOFF   00000006            
+BOO$GL_RPBBASE   00000E84 RG    04   DPT$W_INITTAB    00000010            IHD$W_IMGIOCNT   0000001E            
+BOO$GL_SPTFREH   ********   X   04   DPT$W_REINITTAB  00000012            IHD$W_IOCHANCNT  0000001C            
+BOO$GL_SPTFREL   ********   X   04   DPT$W_SIZE       00000008            IHD$W_MAJORID    0000000C            
+BOO$GL_SPTPAGCT  00000E88 RG    04   DPT$W_UCBSIZE    0000000E            IHD$W_MINORID    0000000E            
+BOO$GL_SYSPHD    00000E94 RG    04   DPT$W_UNLOAD     00000014            IHD$W_PATCHOFF   00000008            
+BOO$GL_SYSPHDPG  00000E98 RG    04   DRNAME           00000ECA R     04   IHD$W_SIZE       00000000            
+BOO$GQ_DRIVSTAT  00000EA4 RG    04   ERROUT           00000B1C R     04   IHD$W_SYMDBGOFF  00000004            
+BOO$GQ_STATBLK   00000E8C RG    04   EXE$ACVIOLAT     00000ADC RG    04   INI$BRK          00000053 RG    04   
+BOO$GQ_SYSSTAT   00000E9C RG    04   EXE$A_SYSPARAM   ********   X   04   INI$RDONLY       00000B17 RG    04   
+BOO$GT_COMBUF    ********   X   04   EXE$BREAK        00000ADC RG    04   INI$WRITABLE     00000B17 RG    04   
+BOO$GT_PROMPT    00000E6F RG    04   EXE$C_SYSPARSZ   ********   X   04   INITBOOTDRV      00000819 R     04   
+BOO$GT_SYS       00000E63 RG    04   EXE$FAO          ********   X   04   INITSYSPHD       00000547 R     04   
+BOO$INSRESET     00000AC3 RG    04   EXE$GL_DEFFLAGS  ********   X   04   IO$M_ABORT     = 00000100            
+BOO$INSTALL      00000AC3 RG    04   EXE$GL_FLAGS     00000B18 RG    04   IO$M_ACCESS    = 00000040            
+BOO$LOAD         00000AC3 RG    04   EXE$GL_INTSTK    ********   X   04   IO$M_ATTNAST   = 00000100            
+BOO$MAKLIST      00000AC3 RG    04   EXE$GL_RPB       ********   X   04   IO$M_BINARY    = 00000040            
+BOO$MSGOUT       ********   X   04   EXE$GT_STARTUP   ********   X   04   IO$M_CANCTRLO  = 00000040            
+BOO$READFILE     000009D4 RG    04   EXE$INIT         ********   X   04   IO$M_COMMOD    = 00000040            
+BOO$READPROMPT   ********   X   04   EXE$MCHKVEC    = 00000004 RG    03   IO$M_CREATE    = 00000080            
+BOO$RELOAD       00000AC3 RG    04   EXE$ROPRAND      00000ADC RG    04   IO$M_CTRLCAST  = 00000100            
+BOO$REMOVE       00000AC3 RG    04   EXE$SYSBOOT      00000000 RG    04   IO$M_CTRLYAST  = 00000080            
+BOO$RESETLIST    00000AC3 RG    04   EXE$TBIT         00000ADC RG    04   IO$M_CVTLOW    = 00000100            
+BOO$SEARCH       ********   X   04   EXE$V_SYSPAGING  ********   X   04   IO$M_DATACHECK = 00004000            
+BOO$SETADP       00000AC3 RG    04   FIL$GT_DDDEV     00000E3C RG    04   IO$M_DELETE    = 00000100            
+BOO$SETFILNAM    00000AC3 RG    04   FIL$GT_DDSTRING  00000E4A RG    04   IO$M_DMOUNT    = 00000400            
+BOO$SETPGFL      00000AC3 RG    04   FIL$OPENFILE     ********   X   04   IO$M_DSABLMBX  = 00000400            
+BOO$SETSFTX      00000AC3 RG    04   FPLA           = 00000008            IO$M_ENABLMBX  = 00000080            
+BOO$SETVALUE     ********   X   04   FPLA_VLOC      = 0000006D            IO$M_FCODE     = 0000003F            
+BOO$SHODEV       00000AC3 RG    04   GBL...         = 00000000            IO$M_HANGUP    = 00000200            
+BOO$SHODEV_ALL   00000AC3 RG    04   GETCONLOC        00000A8F R     04   IO$M_INHERLOG  = 00000800            
+BOO$USEFILE      00000A32 RG    04   GETCURRENT       000000E6 R     04   IO$M_INHEXTGAP = 00001000            
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  32
+SYMBOL TABLE                                                                                                                     (1)
+
+IO$M_INHRETRY  = 00008000            IO$V_TIMED     = 00000007            MAPPAGED         000007CB R     04   
+IO$M_INHSEEK   = 00001000            IO$V_TRMNOECHO = 0000000C            MAPPFNDAT        000006D9 R     04   
+IO$M_INTERRUPT = 00000040            IO$V_WRTATTN   = 00000008            MAPRESEXEC       000006AD R     04   
+IO$M_INTSKIP   = 00000100            IO$_ACCESS     = 00000032            MAPRPB           00000789 R     04   
+IO$M_MOUNT     = 00000200            IO$_ACPCONTROL = 00000038            MAPVECTORS       000007F8 R     04   
+IO$M_NOECHO    = 00000040            IO$_CREATE     = 00000033            MAXPGS         = 00004000            
+IO$M_NOFILTR   = 00000200            IO$_DEACCESS   = 00000034            MMG$AL_PGDCOD    ********   X   04   
+IO$M_NOFORMAT  = 00000100            IO$_DELETE     = 00000035            MMG$AL_PGDCODEN  ********   X   04   
+IO$M_NOW       = 00000040            IO$_DIAGNOSE   = 0000001D            MMG$AL_SYSPAGTB  ********   X   04   
+IO$M_NOWAIT    = 00000080            IO$_DRVCLR     = 00000004            MMG$A_ENDVEC     ********   X   04   
+IO$M_PACKED    = 00000080            IO$_ERASETAPE  = 00000006            MMG$A_SYSPARAM   ********   X   04   
+IO$M_PURGE     = 00000800            IO$_LOGICAL    = 0000002F            MMG$C_SPTSKEL    ********   X   04   
+IO$M_READATTN  = 00000080            IO$_MODIFY     = 00000036            MMG$GL_CTLBASVA  ********   X   04   
+IO$M_REVERSE   = 00000040            IO$_MOUNT      = 00000039            MMG$GL_FRESVA    ********   X   04   
+IO$M_SHUTDOWN  = 00000080            IO$_NOP        = 00000000            MMG$GL_GPTBASE   ********   X   04   
+IO$M_STARTUP   = 00000040            IO$_OFFSET     = 00000006            MMG$GL_GPTE      ********   X   04   
+IO$M_SYNCH     = 00000200            IO$_PACKACK    = 00000008            MMG$GL_MAXGPTE   ********   X   04   
+IO$M_TIMED     = 00000080            IO$_PHYSICAL   = 0000001F            MMG$GL_MAXPFN    ********   X   04   
+IO$M_TRMNOECHO = 00001000            IO$_READHEAD   = 0000000E            MMG$GL_MAXSYSVA  ********   X   04   
+IO$M_WRTATTN   = 00000100            IO$_READLBLK   = 00000021            MMG$GL_NPAGEDYN  ********   X   04   
+IO$S_FCODE     = 00000006            IO$_READPBLK   = 0000000C            MMG$GL_PAGEDYN   ********   X   04   
+IO$V_ABORT     = 00000008            IO$_READPRESET = 00000019            MMG$GL_PHYPGCNT  ********   X   04   
+IO$V_ACCESS    = 00000006            IO$_READPROMPT = 00000037            MMG$GL_SBR       ********   X   04   
+IO$V_ATTNAST   = 00000008            IO$_READTRACKD = 00000010            MMG$GL_SPTBASE   ********   X   04   
+IO$V_BINARY    = 00000006            IO$_READVBLK   = 00000031            MMG$GL_SPTLEN    ********   X   04   
+IO$V_CANCTRLO  = 00000006            IO$_RECAL      = 00000003            MMG$GL_SYSPHD    ********   X   04   
+IO$V_COMMOD    = 00000006            IO$_RELEASE    = 00000005            MMG$GL_SYSPHDLN  ********   X   04   
+IO$V_CREATE    = 00000007            IO$_RETCENTER  = 00000007            MMG$PAGEFAULT    00000ADC RG    04   
+IO$V_CTRLCAST  = 00000008            IO$_REWIND     = 00000024            MOVPARAM         0000087E R     04   
+IO$V_CTRLYAST  = 00000007            IO$_REWINDOFF  = 00000022            NOBRK            00000054 R     04   
+IO$V_CVTLOW    = 00000008            IO$_SEARCH     = 00000009            NOCONVER         00000233 R     04   
+IO$V_DATACHECK = 0000000E            IO$_SEEK       = 00000002            PCS            = 00000001            
+IO$V_DELETE    = 00000008            IO$_SENSECHAR  = 0000001B            PCS_VLOC       = 0000006A            
+IO$V_DMOUNT    = 0000000A            IO$_SENSEMODE  = 00000027            PFN$AB_STATE     ********   X   04   
+IO$V_DSABLMBX  = 0000000A            IO$_SETCHAR    = 0000001A            PFN$AB_TYPE      ********   X   04   
+IO$V_ENABLMBX  = 00000007            IO$_SETMODE    = 00000023            PFN$AL_BAK       ********   X   04   
+IO$V_FCODE     = 00000000            IO$_SKIPFILE   = 00000025            PFN$AL_PTE       ********   X   04   
+IO$V_HANGUP    = 00000009            IO$_SKIPRECORD = 00000026            PFN$AW_BLINK     ********   X   04   
+IO$V_INHERLOG  = 0000000B            IO$_SPACEFILE  = 00000002            PFN$AW_FLINK     ********   X   04   
+IO$V_INHEXTGAP = 0000000C            IO$_SPACERECORD= 00000009            PFN$AW_REFCNT    ********   X   04   
+IO$V_INHRETRY  = 0000000F            IO$_STARTSPNDL = 00000019            PFN$AW_SWPVBN    ********   X   04   
+IO$V_INHSEEK   = 0000000C            IO$_UNLOAD     = 00000001            PFN$C_LENGTH     ********   X   04   
+IO$V_INTERRUPT = 00000006            IO$_VIRTUAL    = 0000003F            PHD$B_ASTLVL     000000CF            
+IO$V_INTSKIP   = 00000008            IO$_WRITECHECK = 0000000A            PHD$B_DFPFC      00000038            
+IO$V_MOUNT     = 00000009            IO$_WRITECHECKH= 00000018            PHD$B_PAGFIL     0000001F            
+IO$V_NOECHO    = 00000006            IO$_WRITEHEAD  = 0000000D            PHD$B_PGTBPFC    00000039            
+IO$V_NOFILTR   = 00000009            IO$_WRITELBLK  = 00000020            PHD$C_LENGTH     00000118            
+IO$V_NOFORMAT  = 00000008            IO$_WRITEMARK  = 0000001C            PHD$C_PHDPAGCTX= 00000008            
+IO$V_NOW       = 00000006            IO$_WRITEOF    = 00000028            PHD$K_LENGTH     00000118            
+IO$V_NOWAIT    = 00000007            IO$_WRITEPBLK  = 0000000B            PHD$L_BIOCNT     00000054            
+IO$V_PACKED    = 00000007            IO$_WRITETRACKD= 0000000F            PHD$L_CPULIM     00000058            
+IO$V_PURGE     = 0000000B            IO$_WRITEVBLK  = 00000030            PHD$L_CPUTIM     0000003C            
+IO$V_READATTN  = 00000007            IOSIZE         = 0000007F            PHD$L_DIOCNT     00000050            
+IO$V_REVERSE   = 00000006            LF             = 0000000A            PHD$L_ESP        0000007C            
+IO$V_SHUTDOWN  = 00000007            LOOKUPDRIVER     0000015D R     04   PHD$L_FREP0VA    00000028            
+IO$V_STARTUP   = 00000006            MAPISTK          00000646 R     04   PHD$L_FREP1VA    00000030            
+IO$V_SYNCH     = 00000009            MAPNPAGDYN       00000666 R     04   PHD$L_FREPTECNT  0000002C            
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  33
+SYMBOL TABLE                                                                                                                     (1)
+
+PHD$L_KSP        00000078            PHD$W_PTCNTACT   00000070            PR$_USP        = 00000003            
+PHD$L_P0BR       000000C8            PHD$W_PTCNTLCK   0000006C            PR$_WCSA       = 0000002C            
+PHD$L_P0LRASTL   000000CC            PHD$W_PTCNTMAX   00000072            PR$_WCSD       = 0000002D            
+PHD$L_P1BR       000000D0            PHD$W_PTCNTVAL   0000006E            PROMPT           00000B29 R     04   
+PHD$L_P1LR       000000D4            PHD$W_QUANT      00000040            PTE$C_EOWN     = 00800000            
+PHD$L_PAGEFLTS   0000004C            PHD$W_TQLM       00000062            PTE$C_ER       = 38000000            
+PHD$L_PAGFIL     0000001C            PHD$W_WSAUTH     0000000A            PTE$C_ERKW     = 30000000            
+PHD$L_PC         000000C0            PHD$W_WSDYN      0000000E            PTE$C_EW       = 28000000            
+PHD$L_PCB        00000078            PHD$W_WSFLUID    00000074            PTE$C_KOWN     = 00000000            
+PHD$L_PGFLCNT    00000034            PHD$W_WSLAST     00000012            PTE$C_KR       = 18000000            
+PHD$L_PGFLQUOTA  0000005C            PHD$W_WSLIST     00000008            PTE$C_KW       = 10000000            
+PHD$L_PSL        000000C4            PHD$W_WSLOCK     0000000C            PTE$C_NA       = 00000000            
+PHD$L_PSTBASOFF  00000020            PHD$W_WSLX       0000004A            PTE$C_SOWN     = 01000000            
+PHD$L_PTWSLELCK  00000064            PHD$W_WSNEXT     00000010            PTE$C_SR       = 58000000            
+PHD$L_PTWSLEVAL  00000068            PHD$W_WSQUOTA    00000018            PTE$C_SREW     = 48000000            
+PHD$L_R0         00000088            PQL$GDWSDEFAULT  ********   X   04   PTE$C_SRKW     = 50000000            
+PHD$L_R1         0000008C            PQL$GDWSQUOTA    ********   X   04   PTE$C_SW       = 40000000            
+PHD$L_R10        000000B0            PQL$GMWSDEFAULT  ********   X   04   PTE$C_UOWN     = 01800000            
+PHD$L_R11        000000B4            PQL$GMWSQUOTA    ********   X   04   PTE$C_UR       = 78000000            
+PHD$L_R12        000000B8            PR$_ACCR       = 00000029            PTE$C_UREW     = 68000000            
+PHD$L_R13        000000BC            PR$_ACCS       = 00000028            PTE$C_URKW     = 70000000            
+PHD$L_R2         00000090            PR$_ASTLVL     = 00000013            PTE$C_URSW     = 60000000            
+PHD$L_R3         00000094            PR$_ESP        = 00000001            PTE$C_UW       = 20000000            
+PHD$L_R4         00000098            PR$_ICCS       = 00000018            PTE$M_CRF      = 00010000            
+PHD$L_R5         0000009C            PR$_ICR        = 0000001A            PTE$M_DZRO     = 00020000            
+PHD$L_R6         000000A0            PR$_IPL        = 00000012            PTE$M_GPTX     = 003FFFFF            
+PHD$L_R7         000000A4            PR$_ISP        = 00000004            PTE$M_MODIFY   = 04000000            
+PHD$L_R8         000000A8            PR$_KSP        = 00000000            PTE$M_OWN      = 01800000            
+PHD$L_R9         000000AC            PR$_MAPEN      = 00000038            PTE$M_PFN      = 001FFFFF            
+PHD$L_REFERFLT   00000014            PR$_NICR       = 00000019            PTE$M_PGFLVB   = 003FFFFF            
+PHD$L_SSP        00000080            PR$_P0BR       = 00000008            PTE$M_PROT     = 78000000            
+PHD$L_USP        00000084            PR$_P0LR       = 00000009            PTE$M_TYP0     = 00400000            
+PHD$L_WSL        00000118            PR$_P1BR       = 0000000A            PTE$M_TYP1     = 04000000            
+PHD$M_DALCSTX  = 00000002            PR$_P1LR       = 0000000B            PTE$M_VALID    = 80000000            
+PHD$M_PFMFLG   = 00000001            PR$_PCBB       = 00000010            PTE$M_WRT      = 00040000            
+PHD$M_WSPEAKCHK= 00000004            PR$_PME        = 0000003D            PTE$S_GPTX     = 00000016            
+PHD$Q_PRIVMSK    00000000            PR$_RXCS       = 00000020            PTE$S_OWN      = 00000002            
+PHD$S_ASTLVL   = 00000008            PR$_RXDB       = 00000021            PTE$S_PFN      = 00000015            
+PHD$S_P0LR     = 00000018            PR$_SBIER      = 00000034            PTE$S_PGFLVB   = 00000016            
+PHD$V_ASTLVL   = 00000018            PR$_SBIFS      = 00000030            PTE$S_PROT     = 00000004            
+PHD$V_DALCSTX  = 00000001            PR$_SBIMT      = 00000033            PTE$S_STX      = 00000010            
+PHD$V_P0LR     = 00000000            PR$_SBIQC      = 00000036            PTE$V_CRF      = 00000010            
+PHD$V_PFMFLG   = 00000000            PR$_SBIS       = 00000031            PTE$V_DZRO     = 00000011            
+PHD$V_WSPEAKCHK= 00000002            PR$_SBISC      = 00000032            PTE$V_GPTX     = 00000000            
+PHD$W_ASTLM      00000044            PR$_SBITA      = 00000035            PTE$V_MODIFY   = 0000001A            
+PHD$W_BAK        00000048            PR$_SBR        = 0000000C            PTE$V_OWN      = 00000017            
+PHD$W_DFWSCNT    0000001A            PR$_SCBB       = 00000011            PTE$V_PFN      = 00000000            
+PHD$W_EMPTPG     000000D8            PR$_SID        = 0000003E            PTE$V_PGFLVB   = 00000000            
+PHD$W_EXTDYNWS   00000076            PR$_SIRR       = 00000014            PTE$V_PROT     = 0000001B            
+PHD$W_FILLM      00000060            PR$_SISR       = 00000015            PTE$V_STX      = 00000000            
+PHD$W_FLAGS      0000003A            PR$_SLR        = 0000000D            PTE$V_TYP0     = 00000016            
+PHD$W_PHVINDEX   00000046            PR$_SSP        = 00000002            PTE$V_TYP1     = 0000001A            
+PHD$W_PRCLM      00000042            PR$_TBIA       = 00000039            PTE$V_VALID    = 0000001F            
+PHD$W_PST        00000020            PR$_TBIS       = 0000003A            PTE$V_WRT      = 00000012            
+PHD$W_PSTBASMAX  0000004A            PR$_TODR       = 0000001B            RPB$B_CONFREG    00000090            
+PHD$W_PSTFREE    00000026            PR$_TXCS       = 00000022            RPB$B_DEVTYP     00000066            
+PHD$W_PSTLAST    00000024            PR$_TXDB       = 00000023            RPB$B_HDRPGCNT   000000A0            
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  34
+SYMBOL TABLE                                                                                                                     (1)
+
+RPB$B_SLAVE      00000067            SEC$L_REFCNT     00000018            SWP$GL_BALSPT    ********   X   04   
+RPB$C_LENGTH     000000BC            SEC$L_VBN        00000010            SWP$GL_BSLOTSZ   ********   X   04   
+RPB$K_LENGTH     000000BC            SEC$L_VPXPFC     00000008            SWP$GL_PHDBASVA  ********   X   04   
+RPB$L_ADPPHY     0000005C            SEC$L_WINDOW     0000000C            SWP$GL_SHELLBAS  ********   X   04   
+RPB$L_ADPVIR     00000060            SEC$M_AMOD     = 00000300            SWP$GL_SHELLSIZ  ********   X   04   
+RPB$L_BASE       00000000            SEC$M_CRF      = 00000002            SWP$GW_BAKPTE    ********   X   04   
+RPB$L_BOOTR0     0000001C            SEC$M_DZRO     = 00000004            SWP$GW_EMPTPTE   ********   X   04   
+RPB$L_BOOTR1     00000020            SEC$M_GBL      = 00000001            SWP$GW_WSLPTE    ********   X   04   
+RPB$L_BOOTR2     00000024            SEC$M_PERM     = 00004000            SYS$ASSIGN       00000B45 RG    04   
+RPB$L_BOOTR3     00000028            SEC$M_SYSGBL   = 00008000            SYS$FAO          00000B51 RG    04   
+RPB$L_BOOTR4     0000002C            SEC$M_WRT      = 00000008            TPA$B_MCOUNT     00000007            
+RPB$L_BOOTR5     00000030            SEC$S_AMOD     = 00000002            TPA$C_LENGTH0    00000024            
+RPB$L_CHKSUM     00000008            SEC$S_CRF      = 00000001            TPA$K_COUNT0   = 00000008            
+RPB$L_CSRPHY     00000054            SEC$S_DZRO     = 00000001            TPA$K_LENGTH0    00000024            
+RPB$L_CSRVIR     00000058            SEC$S_GBL      = 00000001            TPA$L_CHAR       00000018            
+RPB$L_FILLBN     0000003C            SEC$S_PERM     = 00000001            TPA$L_COUNT      00000000            
+RPB$L_FILSIZ     00000040            SEC$S_PFC      = 00000008            TPA$L_NUMBER     0000001C            
+RPB$L_HALTCODE   00000018            SEC$S_SYSGBL   = 00000001            TPA$L_OPTIONS    00000004            
+RPB$L_HALTPC     00000010            SEC$S_VPX      = 00000016            TPA$L_PARAM      00000020            
+RPB$L_HALTPSL    00000014            SEC$S_WRT      = 00000001            TPA$L_STRINGCNT  00000008            
+RPB$L_IOVEC      00000034            SEC$V_AMOD     = 00000008            TPA$L_STRINGPTR  0000000C            
+RPB$L_IOVECSZ    00000038            SEC$V_CRF      = 00000001            TPA$L_TOKENCNT   00000010            
+RPB$L_ISP        000000A4            SEC$V_DZRO     = 00000002            TPA$L_TOKENPTR   00000014            
+RPB$L_PCBB       000000A8            SEC$V_GBL      = 00000000            TPA$M_ABBREV   = 00000002            
+RPB$L_PFNCNT     0000004C            SEC$V_PERM     = 0000000E            TPA$M_ABBRFM   = 00000004            
+RPB$L_RESTART    00000004            SEC$V_PFC      = 00000018            TPA$M_AMBIG    = 00010000            
+RPB$L_RSTRTFLG   0000000C            SEC$V_SYSGBL   = 0000000F            TPA$M_BLANKS   = 00000001            
+RPB$L_SBR        000000AC            SEC$V_VPX      = 00000000            TPA$V_ABBREV   = 00000001            
+RPB$L_SCBB       000000B0            SEC$V_WRT      = 00000003            TPA$V_ABBRFM   = 00000002            
+RPB$L_SISR       000000B4            SEC$W_FLAGS      00000014            TPA$V_AMBIG    = 00000010            
+RPB$L_SLR        000000B8            SEC$W_SECXBL     00000006            TPA$V_BLANKS   = 00000000            
+RPB$L_SVASPT     00000050            SEC$W_SECXFL     00000004            UNEXP_MCHK       00000AF8 R     04   
+RPB$Q_PFNMAP     00000044            SGN$GL_BALSETCT  ********   X   04   UNKNAME          00000ED7 R     04   
+RPB$T_FILE       00000068            SGN$GL_MAXVPGCT  ********   X   04   VA$M_BYTE      = 000001FF            
+RPB$V_BBLOCK   = 00000003            SGN$GL_MAXWSCNT  ********   X   04   VA$M_P1        = 40000000            
+RPB$V_BOOBPT   = 00000005            SGN$GL_NPAGEDYN  ********   X   04   VA$M_SYSTEM    = 80000000            
+RPB$V_CONV     = 00000000            SGN$GL_P1LWCNT   ********   X   04   VA$M_VPG       = FFFFFE00            
+RPB$V_DEBUG    = 00000001            SGN$GL_PAGEDYN   ********   X   04   VA$M_VPN       = 3FFFFE00            
+RPB$V_DIAG     = 00000004            SGN$GL_PHDAPCNT  ********   X   04   VA$S_BYTE      = 00000009            
+RPB$V_HALT     = 00000009            SGN$GL_PHDLWCNT  ********   X   04   VA$S_VPG       = 00000017            
+RPB$V_HEADER   = 00000006            SGN$GL_PHDPAGCT  ********   X   04   VA$S_VPN       = 00000015            
+RPB$V_INIBPT   = 00000002            SGN$GL_PTPAGCNT  ********   X   04   VA$V_BYTE      = 00000000            
+RPB$V_NOPFND   = 0000000A            SGN$GL_SPTREQ    ********   X   04   VA$V_P1        = 0000001E            
+RPB$V_NOTEST   = 00000007            SGN$GW_GBLSECNT  ********   X   04   VA$V_SYSTEM    = 0000001F            
+RPB$V_SOLICT   = 00000008            SGN$GW_ISPPGCT   ********   X   04   VA$V_VPG       = 00000009            
+RPB$W_UNIT       00000064            SGN$GW_MAXGPGCT  ********   X   04   VA$V_VPN       = 00000009            
+RP_DT          = 00000018            SGN$GW_MAXPSTCT  ********   X   04   VERSVECT         00000ABA R     04   
+SEC$B_AMOD       00000015            SGN$GW_MINWSCNT  ********   X   04   WCSP           = 00000008            
+SEC$B_PFC        0000000B            SGN$GW_SFTMAX    ********   X   04   WCSP_VLOC      = 0000006B            
+SEC$C_LENGTH     00000020            SGN$GW_SYSDWSCT  ********   X   04   WCSS           = 00000011            
+SEC$K_LENGTH     00000020            SHELLSIZE        00000251 R     04   WCSS_VLOC      = 0000006C            
+SEC$K_MATALL   = 00000000            SWP$C_KSTACK     ********   X   04   WSL$C_GBLWRT   = 00000006            
+SEC$K_MATEQU   = 00000001            SWP$C_NDYN       ********   X   04   WSL$C_GLOBAL   = 00000004            
+SEC$K_MATLEQ   = 00000002            SWP$C_SHLFPTE    ********   X   04   WSL$C_GPGTBL   = 0000000A            
+SEC$L_CCB        00000000            SWP$C_SHLP1PT    ********   X   04   WSL$C_LENGTH   = 00000004            
+SEC$L_GSD        00000000            SWP$GB_SHLP1PT   ********   X   04   WSL$C_PPGTBL   = 00000008            
+SEC$L_PAGCNT     0000001C            SWP$GL_BALBASE   ********   X   04   WSL$C_PROCESS  = 00000000            
+SYSBOOT         - VMS Secondary Bootstrap Routine                21-AUG-1978 22:32:42   VAX-11 MACRO X0.3-11               Page  35
+SYMBOL TABLE                                                                                                                     (1)
+
+WSL$C_SYSTEM   = 00000002            
+WSL$M_GOODPAGE = 00000040            
+WSL$M_MODIFY   = 00000100            
+WSL$M_PAGTYP   = 0000000E            
+WSL$M_PFNLOCK  = 00000010            
+WSL$M_VALID    = 00000001            
+WSL$M_WSLOCK   = 00000020            
+WSL$S_PAGTYP   = 00000003            
+WSL$V_GOODPAGE = 00000006            
+WSL$V_MODIFY   = 00000008            
+WSL$V_PAGTYP   = 00000001            
+WSL$V_PFNLOCK  = 00000004            
+WSL$V_VALID    = 00000000            
+WSL$V_WSLOCK   = 00000005            
+XDELBPT          ********   X   04   
+XDELIBRK         ********   X   04   
+XDELTBIT         ********   X   04   
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            0000011C      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+Z99BOOT          00000000      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT PAGE  
+$$$$00BOOT       00000EE5      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT LONG  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+10006. BYTES LEFT IN FREE MEMORY POOL.
+28. BYTES OF RECLAIMED MEMORY.
+OBJ$:SYSBOOT,LIS$:SYSBOOT/-SP=EXECML$/ML,SRC$:SYSBOOT
+11 MLB DIR RDS - 827 GETS TO DEFINE 21 MACROS. 82 INTER. FILE WRITES. 

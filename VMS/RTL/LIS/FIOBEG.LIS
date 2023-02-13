@@ -1,0 +1,1077 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 1
+;
+;00100  0001	MODULE FOR$$IO_BEG (	! FORTRAN READ/WRITE statement initialization user calls
+;00200  0002		IDENT = '0-51'	! File: FIOBEG.B32
+;00300  0003			) =
+;00400  0004	BEGIN
+;00500  0005	
+;00600  0006	!
+;00700  0007	! COPYRIGHT (C) 1977
+;00800  0008	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;00900  0009	!
+;01000  0010	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;01100  0011	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;01200  0012	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;01300  0013	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;01400  0014	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;01500  0015	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;01600  0016	! REMAIN IN DEC.
+;01700  0017	!
+;01800  0018	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;01900  0019	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;02000  0020	! CORPORATION.
+;02100  0021	!
+;02200  0022	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;02300  0023	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;02400  0024	
+;02500  0025	!++
+;02600  0026	! FACILITY: FORTRAN Support LIbrary - User callable
+;02700  0027	!
+;02800  0028	! ABSTRACT:
+;02900  0029	!
+;03000  0030	!	This module (plus FOR$IO_ELEM and FOR$IO_END modules) 
+;03100  0031	!	implements FORTRAN READ/WRITE/DECODE/ENCODE (TYPE, ACCEPT
+;03200  0032	!	and PRINT) statements at the user program interface level
+;03300  0033	!	of abstraction. (UPI = first level). To implement
+;03400  0034	!	a single I/O statement a user program calls one of the
+;03500  0035	!	initialization routines in this module followed by zero
+;03600  0036	!	or more calls to be FOR$IO_ELM module and terminated by a
+;03700  0037	!	call to the FOR$IO_END module. This module also defines the
+;03800  0038	!	vectors for the 2nd and 3rd levels of abstraction (used
+;03900  0039	!	data formatters (UDF) and record processors (REC).
+;03910  0040	
+;03920  0041	!	Actually, in order to save code an be fast, the entry points
+;03930  0042	!	for each I/O statement initialization are in a MACRO module FOR$ENTRY.
+;03940  0043	!	They load up R11 with flags and branch to FOR$$IO_BEG+2.
+;04000  0044	!
+;04100  0045	! ENVIRONMENT: User access mode; mixture of AST level or not.
+;04200  0046	!
+;04300  0047	! AUTHOR: Thomas N. Hastings, CREATION DATE: 08-Mar-77: Version 01
+;04400  0048	!
+;04500  0049	! MODIFIED BY: PETER YUO AND SUSAN AZIBERT
+;04600  0050	!
+;04700  0051	! 	Thomas N. Hastings, 17-Mar-77 : VERSION 01
+;04800  0052	! 01	- original
+;04900  0053	! 0-22	- combine direct formatted and unformatted TNH
+;05000  0054	! 0-23	- pop LUB on errors TNH
+;05100  0055	! 0-24	- set logical record number to 1 9-SEP-77 TNH
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 1-1
+;
+;05200  0056	! 0-25	- simplify call to FOR$$IO_BEG to speed things up
+;05300  0057	!	  Add more code for ENCODE/DECODE support 18-SEP-77 JMT
+;05400  0058	! 0-27	- Code for FORTRAN FIND statement 1-OCT-77 JMT
+;05500  0059	! 0-28	- Modifications so record number checking happens here 16-OCT-77 JMT
+;05600  0060	! 0-29	- Removed FIND support from here and put in FOR$FIND module
+;05700  0061	!	  for faster flow.  JMT 24-OCT-77
+;05800  0062	! 0-30	- Use FOR$K_abcmno30yz as E30TERNAL LITERALs.  TNH 27-Oct-77
+;05900  0063	! 0-32	- Use OPEDEFREQ (26) and MIXFILACC (31).  TNH 29-Oct-77
+;06000  0064	! 0-33	- Use UNWIND condition UNWINDRET during file open.  JMT 4-Dec-77
+;06100  0065	! 0-34	- Use FERR.  TNH 16-Dec-77
+;06200  0066	! 0-35	- Fix MIN_LUN bug.  JMT 27-Dec-77
+;06300  0067	! 0-36	- Clear ISB$B_ERR_NO to detect errors in FIOEND.  JMT 14-Jan-78
+;06400  0068	! 0-37	- Don't set the record number into LOG_RECNO until after OPEN,
+;06500  0069	!	  since OPEN sets it to 1.  JMT 27-Jan-78
+;06600  0070	! 0-38	- Global register CCB.  JMT 8-Apr-78
+;06700  0071	! 0-40	- Change REQUIRE files for system build on VAX.  DGP 28-Apr-78
+;06800  0072	! 0-41	- Use JSB linkages.  TNH 21-May-78
+;06900  0073	! 0-42	- Clear ISB$W_FMT_LEN, ISB$A_FMT_BEG.  TNH 22-May-78
+;07000  0074	! 0-43	- Remove one level of CALLS, and tidy up code.   RBG 28-May-78
+;07010  0075	! 0-44	- Use FPAR symbols and .MASK.  TNH 30-May-78
+;07020  0076	! 0-45	- Declare CCB GLOBAL.  TNH 1-June-78
+;07030  0077	! 0-46	- PIC dispatch tables.  TNH 6-June-78
+;07040  0078	! 0-47	- 
+;07050  0079	! 0-50	- Fix ENDFILE bug (use LUB$V_ENDFILOPN).  TNH 17-June-78
+;07060  0080	! 0-51	- Pass arg in R0, not R11.  TNH 29-July-78
+;07100  0081	!--
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 2
+;
+;00100  0082	!
+;00200  0083	! LINKAGES:
+;00300  0084	!
+;00400  0085	REQUIRE 'RTLIN:FLNK';		! Define all linkages
+; %PRINT:	File: FLNK.B32; Version 1, edit 12, TNH 2-Aug-78
+;00500  0307	
+;00600  0308	!
+;00700  0309	! TABLE OF CONTENTS:
+;00800  0310	!
+;00900  0311	
+;01000  0312	FORWARD ROUTINE
+;01100  0313		FOR$$IO_BEG: CALL_FIOBEG NOVALUE;	! Common routine for all
+;01200  0314						! I/O statements
+;01300  0315	!
+;01400  0316	! INCLUDE FILES:
+;01500  0317	!
+;01600  0318		REQUIRE 'RTLML:FERR';		! FORTRAN error number definitions
+; %PRINT:	Filename: FERR.MDL! Version 0, edit 36, TNH 19-June-78
+;01700  0436		REQUIRE 'RTLML:FLUB';		! logical unit block (LUB) offsets
+; %PRINT:	File: FLUB.MDL which produces FLUB.B32! Version 0, edit 30, TNH, 17-June-78
+;01800  0604		REQUIRE 'RTLML:FISB';		! I/O statement block (ISB) offsets
+; %PRINT:	File: FISB.MDL which produces FISB.B32! Version 1, EDIT 16, DGP 02-Jun-78
+;01900  0813		REQUIRE 'RTLIN:FMAC';		! Macros
+; %PRINT:	Filename: FMAC.B32; Version 1, edit 29, TNH, 7-JUN-78
+; %PRINT:	 REQUIRE FILE: LPSECT.B32, VERSION 01-5, TNH, 27-Jun-78
+;02000  0993		REQUIRE 'RTLIN:FOPN';		! OPEN parameter symbols
+; %PRINT:	Filename: FOPN.B32; version 0, edit 22, TNH, 30-May-78
+;02100  1132						! of form: OPEN$K_ keyword
+;02200  1133						! and literal values of form:
+;02300  1134						! OPEN$K_key_lit
+;02400  1135		REQUIRE 'RTLML:FPAR';		! FORTRAN inter-module paramters (UNWIND, FOR$ENTRY)
+; %PRINT:	File: FPAR.MDL! version 0, edit 11, TNH, 30-May-78
+;02500  1237	
+;02600  1238	!
+;02700  1239	! MACROS:
+;02800  1240	!
+;02900  1241	!	NONE
+;03000  1242	!
+;03100  1243	! EQUATED SYMBOLS:
+;03200  1244	!
+;03210  1245	
+;03300  1246	LITERAL
+;03310  1247		K_DISP_LEN = 12;		! No. of entries in dispatch tables
+;03500  1248	
+;03600  1249	!
+;03700  1250	! PSECT DECLARATIONS:
+;03800  1251	!
+;03900  1252	
+;04000  1253		DECLARE_PSECTS (FOR);	! declare PSECTs for FOR$ facility
+;04100  1254	
+;04200  1255	!
+;04300  1256	! OWN STORAGE:
+;04400  1257	!
+;04500  1258	!	NONE
+;04600  1259	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 2-1
+;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 3
+;
+;00100  1260	!
+;00200  1261	! EXTERNAL REFERENCES:
+;00300  1262	!
+;00400  1263	!
+;00500  1264	
+;00510  1265	BUILTIN
+;00520  1266		TESTBITSC;		! Test bit set and clear
+;00530  1267	
+;00600  1268	EXTERNAL ROUTINE
+;00700  1269		FOR$$CB_PUSH: JSB_CB_PUSH NOVALUE,	! Create LUB/ISB/RAB, if needed, for this unit and
+;00800  1270						! push down I/O system
+;00900  1271		FOR$$FMT_COMPIL,		! Format compiler - returns adr
+;01000  1272						! of compiled format
+;01100  1273		FOR$$ERR_ENDHND,		! error condition handler for ERR= and END=
+;01200  1274		FOR$$SIGNAL_STO: NOVALUE,	! Convert FORTRAN  err#
+;01300  1275						! to VAX error # and SIGNAL_STOP.
+;01400  1276		FOR$$OPEN_DEFLT: CALL_CCB NOVALUE;! Perform default OPEN
+;01500  1277	!
+;01600  1278	! User data formatter level of abstraction (UDF is 2nd level)
+;01700  1279	!
+;01800  1280	
+;01900  1281	EXTERNAL ROUTINE
+;02000  1282		FOR$$UDF_RF0: JSB_UDF0 NOVALUE,	! Initialize read formatted
+;02100  1283		FOR$$UDF_RF1: CALL_CCB NOVALUE,	! format one I/O list element
+;02200  1284		FOR$$UDF_RF9: JSB_UDF9 NOVALUE,	! terminate read formatted
+;02300  1285	
+;02400  1286		FOR$$UDF_WF0: JSB_UDF0 NOVALUE,	! Initialize write formatted
+;02500  1287		FOR$$UDF_WF1: CALL_CCB NOVALUE,	! Format one I/O list element
+;02600  1288		FOR$$UDF_WF9: JSB_UDF9 NOVALUE,	! Terminate write formatted
+;02700  1289	
+;02800  1290		FOR$$UDF_RU0: JSB_UDF0 NOVALUE,	! Initialize read unformatted
+;02900  1291		FOR$$UDF_RU1: CALL_CCB NOVALUE,	! Transmit one I/O list element
+;03000  1292		FOR$$UDF_RU9: JSB_UDF9 NOVALUE,	! Terminate read unformatted
+;03100  1293	
+;03200  1294		FOR$$UDF_WU0: JSB_UDF0 NOVALUE,	! Initialize write unformatted
+;03300  1295		FOR$$UDF_WU1: CALL_CCB NOVALUE,	! Transmit one I/O list element
+;03400  1296		FOR$$UDF_WU9: JSB_UDF9 NOVALUE,	! Terminate write unformatted
+;03500  1297	
+;03600  1298		FOR$$UDF_RL0: JSB_UDF0 NOVALUE,	! Initialize read list-directed
+;03700  1299		FOR$$UDF_RL1: CALL_CCB NOVALUE,	! Transmit one I/O list element
+;03800  1300		FOR$$UDF_RL9: JSB_UDF9 NOVALUE,	! Terminate read list directed
+;03900  1301	
+;04000  1302		FOR$$UDF_WL0: JSB_UDF0 NOVALUE,	! Initialize write list-directed
+;04100  1303		FOR$$UDF_WL1: CALL_CCB NOVALUE,	! Transmit one I/O list element
+;04200  1304		FOR$$UDF_WL9: JSB_UDF9 NOVALUE;	! Terminate write list-directed
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 4
+;
+;00100  1305	!
+;00200  1306	! Entire record processing (as opposed to one I/O list element):
+;00300  1307	!
+;00400  1308	
+;00500  1309	EXTERNAL ROUTINE		! Read sequential formatted record
+;00600  1310		FOR$$REC_RSF0: JSB_REC0 NOVALUE,		! read first record
+;00700  1311		FOR$$REC_RSF1: JSB_REC1 NOVALUE,		! read all subsequent records
+;00800  1312		FOR$$REC_RSF9: JSB_REC9 NOVALUE,		! terminate read write sequential
+;00900  1313					! formatted record
+;01000  1314		FOR$$REC_WSF0: JSB_REC0 NOVALUE,		! initialize output buffer
+;01100  1315		FOR$$REC_WSF1: JSB_REC1 NOVALUE,		! write all but last record
+;01200  1316		FOR$$REC_WSF9: JSB_REC9 NOVALUE,		! write last record
+;01300  1317					! read sequential unformatted record
+;01400  1318		FOR$$REC_RSU0: JSB_REC0 NOVALUE,		! read first record
+;01500  1319		FOR$$REC_RSU1: JSB_REC1 NOVALUE,		! read all subsequent records
+;01600  1320		FOR$$REC_RSU9: JSB_REC9 NOVALUE,		! terminate read
+;01700  1321					! write sequential unformatted record:
+;01800  1322		FOR$$REC_WSU0: JSB_REC0 NOVALUE,		! initialize output buffer
+;01900  1323		FOR$$REC_WSU1: JSB_REC1 NOVALUE,		! write all but last record
+;02000  1324		FOR$$REC_WSU9: JSB_REC9 NOVALUE,		! write last record
+;02100  1325					! read direct (formatted: and unformatted)
+;02200  1326		FOR$$REC_RD0: JSB_REC0 NOVALUE,			! read first record
+;02300  1327		FOR$$REC_RD1: JSB_REC1 NOVALUE,			! illegal
+;02400  1328		FOR$$REC_RD9: JSB_REC9 NOVALUE,			! terminate read
+;02500  1329					! write direct (formatted: and unformatted)
+;02600  1330		FOR$$REC_WD0: JSB_REC0 NOVALUE,			! initialize output buffer
+;02700  1331		FOR$$REC_WD1: JSB_REC1 NOVALUE,			! illegal
+;02800  1332		FOR$$REC_WD9: JSB_REC9 NOVALUE,			! write last record
+;02900  1333					! read sequential list-directed
+;03000  1334		FOR$$REC_RSL0: JSB_REC0 NOVALUE,		! read first record
+;03100  1335		FOR$$REC_RSL1: JSB_REC1 NOVALUE,		! read all subsequent records
+;03200  1336		FOR$$REC_RSL9: JSB_REC9 NOVALUE,		! terminate read
+;03300  1337					! write sequential list-directed
+;03400  1338		FOR$$REC_WSL0: JSB_REC0 NOVALUE,		! initialize output buffer
+;03500  1339		FOR$$REC_WSL1: JSB_REC1 NOVALUE,		! write all but last record
+;03600  1340		FOR$$REC_WSL9: JSB_REC9 NOVALUE,		! write last record
+;03700  1341					! read memory formatted (DECODE)
+;03800  1342		FOR$$REC_RMF0: JSB_REC0 NOVALUE,		! initialize pointers to user area
+;03900  1343		FOR$$REC_RMF1: JSB_REC1 NOVALUE,		! illegal
+;04000  1344		FOR$$REC_RMF9: JSB_REC9 NOVALUE,		! terminate read
+;04100  1345					! write memory formatted (ENCODE)
+;04200  1346		FOR$$REC_WMF0: JSB_REC0 NOVALUE,		! initialize output buffer to user area
+;04300  1347		FOR$$REC_WMF1: JSB_REC1 NOVALUE,		! illegal
+;04400  1348		FOR$$REC_WMF9: JSB_REC9 NOVALUE;		! terminate write
+;04500  1349	
+;04600  1350	!+
+;04700  1351	! GLOBAL DISPATCH VECTORS (indexed by I/O statement type numbers):
+;04800  1352	! Connects the first level of abstraction (UPI) to the
+;04900  1353	! second level (UDF). Note: The comments down the
+;05000  1354	! side describe the I/O statement index (UPI level) into the
+;05100  1355	! dispatch table rather than the external routine contained in
+;05200  1356	! the entry (UDF level). The entries are the name of the
+;05300  1357	! User data formatters (UDF level = 2nd level of abstraction) -
+;05400  1358	! First letter: R = READ, W = WRITE; second letter: F = formatted,
+;05500  1359	! W = unformatted, L = list-directed.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 4-1
+;
+;05510  1360	! Define dispatch tables as PIC word entry tables.
+;05520  1361	! All FOR$ procedures are in same 32K.
+;05530  1362	! Declare as GLOBAL rather then GLOBAL BIND because
+;05540  1363	! BLISS doesn't allow BIND table = ... - table).
+;05550  1364	!-
+;05560  1365	
+;05570  1366	    DISPATCH_PSECTS (FOR);		! Define GLOBAL PSECTs same as code
+;05580  1367						! so short offsets to reach
+;05590  1368	
+;05800  1369	
+;05900  1370		!+
+;06000  1371		! Initialization of UDF level:
+;06100  1372		!-
+;06200  1373	
+;06300  1374		GLOBAL FOR$$AA_UDF_PR0: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;06400  1375					! I/O statement type:
+;06500  1376		    FOR$$UDF_RF0 - FOR$$AA_UDF_PR0,	! READ sequential formatted (RSF)
+;06600  1377		    FOR$$UDF_WF0 - FOR$$AA_UDF_PR0,	! WRITE sequential object-time formatted (WSO)
+;06700  1378		    FOR$$UDF_RU0 - FOR$$AA_UDF_PR0,	! READ sequential unformatted (RSU)
+;06800  1379		    FOR$$UDF_WU0 - FOR$$AA_UDF_PR0,	! WRITE sequential unformatted (WSU)
+;06900  1380		    FOR$$UDF_RF0 - FOR$$AA_UDF_PR0,	! READ direct formatted (RDF)
+;07000  1381		    FOR$$UDF_WF0 - FOR$$AA_UDF_PR0,	! WRITE direct formatted (WDF)
+;07100  1382		    FOR$$UDF_RU0 - FOR$$AA_UDF_PR0,	! READ direct unformatted (RDU)
+;07200  1383		    FOR$$UDF_WU0 - FOR$$AA_UDF_PR0,	! WRITE direct unformatted (WDU)
+;07300  1384		    FOR$$UDF_RL0 - FOR$$AA_UDF_PR0,	! READ sequential list-directed (RSL)
+;07400  1385		    FOR$$UDF_WL0 - FOR$$AA_UDF_PR0,	! WRITE sequential list-direct (WSL)
+;07500  1386		    FOR$$UDF_RF0 - FOR$$AA_UDF_PR0,	! DECODE (memory formatted) (RMF)
+;07600  1387		    FOR$$UDF_WF0 - FOR$$AA_UDF_PR0));	! ENCODE (memory formatted) (WMF)
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 5
+;
+;00100  1388		!+
+;00200  1389		! Transmit a single I/O list element
+;00300  1390		!-
+;00400  1391	
+;00500  1392		GLOBAL FOR$$AA_UDF_PR1: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;00600  1393					! I/O statement type:
+;00700  1394		    FOR$$UDF_RF1 - FOR$$AA_UDF_PR1,	! READ sequential formatted (RSF)
+;00800  1395		    FOR$$UDF_WF1 - FOR$$AA_UDF_PR1,	! WRITE sequential formatted (WSF)
+;00900  1396		    FOR$$UDF_RU1 - FOR$$AA_UDF_PR1,	! READ sequential unformatted (RSU)
+;01000  1397		    FOR$$UDF_WU1 - FOR$$AA_UDF_PR1,	! WRITE sequential unformatted (WSU)
+;01100  1398		    FOR$$UDF_RF1 - FOR$$AA_UDF_PR1,	! READ direct formatted (RDF)
+;01200  1399		    FOR$$UDF_WF1 - FOR$$AA_UDF_PR1,	! WRITE direct formatted (WDF)
+;01300  1400		    FOR$$UDF_RU1 - FOR$$AA_UDF_PR1,	! READ direct unformatted (RDU)
+;01400  1401		    FOR$$UDF_WU1 - FOR$$AA_UDF_PR1,	! WRITE direct unformatted (WDU)
+;01500  1402		    FOR$$UDF_RL1 - FOR$$AA_UDF_PR1,	! READ sequential list-directed (RSL)
+;01600  1403		    FOR$$UDF_WL1 - FOR$$AA_UDF_PR1,	! WRITE sequential list-direct (WSL)
+;01700  1404		    FOR$$UDF_RF1 - FOR$$AA_UDF_PR1,	! DECODE (memory formatted) (RMF)
+;01800  1405		    FOR$$UDF_WF1 - FOR$$AA_UDF_PR1));	! ENCODE (memory formatted) (WMF)
+;01900  1406	
+;02000  1407		!+
+;02100  1408		! End I/O list entry points:
+;02200  1409		!-
+;02300  1410	
+;02400  1411		GLOBAL FOR$$AA_UDF_PR9: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;02500  1412					! I/O statement type:
+;02600  1413		    FOR$$UDF_RF9 - FOR$$AA_UDF_PR9,	! READ sequential formatted (RSF)
+;02700  1414		    FOR$$UDF_WF9 - FOR$$AA_UDF_PR9,	! WRITE sequential formatted (WSF)
+;02800  1415		    FOR$$UDF_RU9 - FOR$$AA_UDF_PR9,	! READ sequential unformatted (RSU)
+;02900  1416		    FOR$$UDF_WU9 - FOR$$AA_UDF_PR9,	! WRITE sequential unformatted (WSU)
+;03000  1417		    FOR$$UDF_RF9 - FOR$$AA_UDF_PR9,	! READ direct formatted (RDF)
+;03100  1418		    FOR$$UDF_WF9 - FOR$$AA_UDF_PR9,	! WRITE direct formatted (WDF)
+;03200  1419		    FOR$$UDF_RU9 - FOR$$AA_UDF_PR9,	! READ direct unformatted (RDU)
+;03300  1420		    FOR$$UDF_WU9 - FOR$$AA_UDF_PR9,	! WRITE direct unformatted (WDU)
+;03400  1421		    FOR$$UDF_RL9 - FOR$$AA_UDF_PR9,	! READ sequential list-directed (RSL)
+;03500  1422		    FOR$$UDF_WL9 - FOR$$AA_UDF_PR9,	! WRITE sequential list-direct (WSL)
+;03600  1423		    FOR$$UDF_RF9 - FOR$$AA_UDF_PR9,	! DECODE (memory formatted) (RMF)
+;03700  1424		    FOR$$UDF_WF9 - FOR$$AA_UDF_PR9));	! ENCODE (memory formatted) (WMF)
+;03800  1425	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 6
+;
+;00100  1426	!+
+;00200  1427	! Dispatch tables to call record processing level of abstraction
+;00300  1428	! routines (REC = 3rd level). Used to connect 2nd level of
+;00400  1429	! abstraction (UDF) to third level of abstraction (REC).
+;00500  1430	! The dispatch tables are indexed by I/O statement type (1st
+;00600  1431	! level UPI.)
+;00700  1432	! Record processing routine names have the form:
+;00800  1433	! First letters: R = READ, W = WRITE));
+;00900  1434	! Second letters: S = sequential, D = direct, M = memory));
+;01000  1435	! third letters: F = formatted, U = unformatted, L = list-directed.
+;01100  1436	!-
+;01200  1437	
+;01400  1438		!+
+;01500  1439		! Initialize entry points (read first record or setup
+;01600  1440		! output buffer).
+;01700  1441		!-
+;01800  1442	
+;01900  1443		GLOBAL FOR$$AA_REC_PR0: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;02000  1444					! I/O statement type:
+;02100  1445		    FOR$$REC_RSF0 - FOR$$AA_REC_PR0,	! READ sequential formatted (RSF)
+;02200  1446		    FOR$$REC_WSF0 - FOR$$AA_REC_PR0,	! WRITE sequential formatted (WSF)
+;02300  1447		    FOR$$REC_RSU0 - FOR$$AA_REC_PR0,	! READ sequential unformatted (RSU)
+;02400  1448		    FOR$$REC_WSU0 - FOR$$AA_REC_PR0,	! WRITE sequential unformatted (WSU)
+;02500  1449		    FOR$$REC_RD0 - FOR$$AA_REC_PR0,	! READ direct formatted (RDF)
+;02600  1450		    FOR$$REC_WD0 - FOR$$AA_REC_PR0,	! WRITE direct formatted (WDF)
+;02700  1451		    FOR$$REC_RD0 - FOR$$AA_REC_PR0,	! READ direct unformatted (RDU)
+;02800  1452		    FOR$$REC_WD0 - FOR$$AA_REC_PR0,	! WRITE direct unformatted (WDU)
+;02900  1453		    FOR$$REC_RSL0 - FOR$$AA_REC_PR0,	! READ sequential list-directed (RSL)
+;03000  1454		    FOR$$REC_WSL0 - FOR$$AA_REC_PR0,	! WRITE sequential list-direct (WSL)
+;03100  1455		    FOR$$REC_RMF0 - FOR$$AA_REC_PR0,	! DECODE (memory formatted) (RMF)
+;03200  1456		    FOR$$REC_WMF0 - FOR$$AA_REC_PR0));	! ENCODE (memory formatted) (WMF)
+;03300  1457	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 7
+;
+;00300  1458		!+
+;00400  1459		! Intermediate transfer a record - read second and
+;00500  1460		! subsequent records for this I/O statement or write 
+;00600  1461		! first and all but last record for this I/O statement.
+;00700  1462		!-
+;00800  1463	
+;00900  1464		GLOBAL FOR$$AA_REC_PR1: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;01000  1465					! I/O statement type:
+;01100  1466		    FOR$$REC_RSF1 - FOR$$AA_REC_PR1,	! READ sequential formatted (RSF)
+;01200  1467		    FOR$$REC_WSF1 - FOR$$AA_REC_PR1,	! WRITE sequential formatted (WSF)
+;01300  1468		    FOR$$REC_RSU1 - FOR$$AA_REC_PR1,	! READ sequential unformatted (RSU)
+;01400  1469		    FOR$$REC_WSU1 - FOR$$AA_REC_PR1,	! WRITE sequential unformatted (WSU)
+;01500  1470		    FOR$$REC_RD1 - FOR$$AA_REC_PR1,	! READ direct formatted (RDF)
+;01600  1471		    FOR$$REC_WD1 - FOR$$AA_REC_PR1,	! WRITE direct formatted (WDF)
+;01700  1472		    FOR$$REC_RD1 - FOR$$AA_REC_PR1,	! READ direct unformatted (RDU)
+;01800  1473		    FOR$$REC_WD1 - FOR$$AA_REC_PR1,	! WRITE direct unformatted (WDU)
+;01900  1474		    FOR$$REC_RSL1 - FOR$$AA_REC_PR1,	! READ sequential list-directed (RSL)
+;02000  1475		    FOR$$REC_WSL1 - FOR$$AA_REC_PR1,	! WRITE sequential list-direct (WSL)
+;02100  1476		    FOR$$REC_RMF1 - FOR$$AA_REC_PR1,	! DECODE (memory formatted) (RMF)
+;02200  1477		    FOR$$REC_WMF1 - FOR$$AA_REC_PR1));	! ENCODE (memory formatted) (WMF)
+;02300  1478	
+;02400  1479		!+
+;02500  1480		! End of I/O list record processing
+;02600  1481		!-
+;02700  1482	
+;02800  1483		GLOBAL FOR$$AA_REC_PR9: VECTOR[K_DISP_LEN, WORD, SIGNED] INITIAL (WORD(
+;02900  1484					! I/O statement type:
+;03000  1485		    FOR$$REC_RSF9 - FOR$$AA_REC_PR9,	! READ sequential formatted (RSF)
+;03100  1486		    FOR$$REC_WSF9 - FOR$$AA_REC_PR9,	! WRITE sequential formatted (WSF)
+;03200  1487		    FOR$$REC_RSU9 - FOR$$AA_REC_PR9,	! READ sequential unformatted (RSU)
+;03300  1488		    FOR$$REC_WSU9 - FOR$$AA_REC_PR9,	! WRITE sequential unformatted (WSU)
+;03400  1489		    FOR$$REC_RD9 - FOR$$AA_REC_PR9,	! READ direct formatted (RDF)
+;03500  1490		    FOR$$REC_WD9 - FOR$$AA_REC_PR9,	! WRITE direct formatted (WDF)
+;03600  1491		    FOR$$REC_RD9 - FOR$$AA_REC_PR9,	! READ direct unformatted (RDU)
+;03700  1492		    FOR$$REC_WD9 - FOR$$AA_REC_PR9,	! WRITE direct unformatted (WDU)
+;03800  1493		    FOR$$REC_RSL9 - FOR$$AA_REC_PR9,	! READ sequential list-directed (RSL)
+;03900  1494		    FOR$$REC_WSL9 - FOR$$AA_REC_PR9,	! WRITE sequential list-direct (WSL)
+;04000  1495		    FOR$$REC_RMF9 - FOR$$AA_REC_PR9,	! DECODE (memory formatted) (RMF)
+;04100  1496		    FOR$$REC_WMF9 - FOR$$AA_REC_PR9));	! ENCODE (memory formatted) (WMF)
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8
+;
+;00100  1497	GLOBAL ROUTINE FOR$$IO_BEG (FLAGS_ARG, UNIT) : CALL_FIOBEG NOVALUE =
+;00200  1498	
+;00300  1499	!+
+;00400  1500	! FUNCTIONAL DESCRIPTION:
+;00500  1501	!
+;00600  1502	!	Common I/O statement initialization:
+;00700  1503	!
+;00800  1504	!	1. Determine if ERR= and/or END= optional parameters
+;00900  1505	!	   are present or not.
+;01000  1506	!	2. Setup an error handler.
+;01100  1507	!	3. Setup a LUB/ISB/RAB control block for this logical unit
+;01200  1508	!	   if not setup already.
+;01300  1509	!	4. Check for incorrect mixing of I/O statements.
+;01400  1510	!	5. If unit not already OPEN, OPEN it.
+;01500  1511	!	6. Store away passed parameters.
+;01600  1512	!
+;01700  1513	! FORMAL PARAMETERS:
+;01800  1514	!
+;01805  1515	!	FLAGS_ARG = FLAGS.rlu.v	Contains (defined in FPAR.MDL):
+;01810  1516	!					1) I/O statement type <15:8>
+;01815  1517	!					2) Flag indicating object-time
+;01820  1518	!					   format processing should be
+;01825  1519	!					   used (bit 7 = 1).
+;01830  1520	!					3) flags indicating which of five
+;01835  1521	!					   possible arguments were passed
+;01840  1522	!					   to the caller <6:0>
+;01845  1523	!
+;01850  1524	!		The bits are:
+;01855  1525	!			FOR$K_REC_NO	user supplied record number
+;01860  1526	!			FOR$K_FMT_ADR	user supplied format address
+;01865  1527	!			FOR$K_USR_BUF	user supplied buffer for EN/DECODE
+;01870  1528	!			FOR$K_LIST_DIR	list-directed I/O flag
+;01875  1529	!			FOR$K_OBJ_FMT	object-time formatting flag
+;01880  1530	!			FOR$K_WRITE	write (versus read) flag
+;01882  1531	!		NOTE: FLAGS_ARG is passed in R0.
+;01885  1532	!
+;01900  1533	!	UNIT			First argument passed to I/O statement entry point.
+;02000  1534	!				Unit number for standard I/O statements.
+;02100  1535	!				Character count for ENCODE/DECODE statements.
+;02200  1536	!
+;02300  1537	!				Note: There are 0 or more additional arguments depending
+;02400  1538	!				upon the particular I/O entry point. Acess to these arguments
+;02500  1539	!				is via AP, controlled by the flags passed in FLAGS_ARG, ie. R0.
+;02600  1540	!
+;03600  1541	! IMPLICIT INPUTS:
+;03700  1542	!
+;03800  1543	!	LUB$V_DIRECT		This unit has been specified for
+;03900  1544	!				direct access by a previous OPEN
+;04000  1545	!				or DEFINE FILE.
+;04100  1546	!	LUB$V_FORMATTED		This unit has been specified for
+;04200  1547	!				formatted I/O by a previous OPEN
+;04300  1548	!				or default OPEN.
+;04400  1549	!	LUB$V_UNFORMAT		This unit has been specified for
+;04500  1550	!				unformatted I/O by a previous
+;04600  1551	!				OPEN, DEFINE FILE, or default OPEN.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-1
+;
+;04700  1552	!	LUB$V_READ_ONLY		This unit has been specified for
+;04800  1553	!				performing READs only by the current
+;04900  1554	!				OPEN or CALL FDBSET.
+;05000  1555	!	LUB$V_OPENED		This unit has been opened by a previous
+;05100  1556	!				OPEN, or default OPEN (for READ/WRITE
+;05200  1557	!				OR ENDFILE).
+;05300  1558	!	LUB$B_LUN		FORTRAN logical unit number, if unit
+;05400  1559	!				not already open
+;05500  1560	!
+;05600  1561	! IMPLICIT OUTPUTS:
+;05700  1562	!
+;05800  1563	!	OTS$$AA_CUR_LUB		! New current LUB/ISB/RAB address
+;05900  1564	!	LUB$L_LOG_RECNO		Current logical (or spanned)
+;06000  1565	!				record number for sequential access
+;06100  1566	!				files (needed for BACKSPACE of spanned
+;06200  1567	!				records). Current FORTRAN direct
+;06300  1568	!				access files 1 = first record.
+;06400  1569	!				0 never stored.
+;06500  1570	!	ISB$A_ERR_EQUAL		Adr. of jump to if error occurs
+;06600  1571	!				(ERR= supplied) or 0 
+;06700  1572	!	ISB$A_END_EQUAL		Adr. to jump to if end of file
+;06800  1573	!				occurs (END= supplied) or 0.
+;06900  1574	!	ISB$B_ERR_NO		0.  Last continuable error during statement
+;07000  1575	!	LUB$V_IO_ACTIVE		Flag I/O active on this unit.
+;07100  1576	!	ISB$W_FMT_LEN		If object-time format, no. of char.
+;07200  1577	!				allocated dynamically.  Needed for deallocation
+;07300  1578	!	ISB$A_FMT_BEG		If object-time format, Adr. of first
+;07400  1579	!				char in resultant format array.
+;07500  1580	!
+;07600  1581	! ROUTINE VALUE:
+;07700  1582	!
+;07800  1583	!	Address of LUB/ISB/RAB
+;07900  1584	!
+;08000  1585	! SIDE EFFECTS:
+;08100  1586	!
+;08200  1587	!	Allocates LUB/ISB/RAB if not already allocated for
+;08300  1588	!	this unit. Opens logical unit if not already open. 
+;08400  1589	!	Pushes down old current LUB/ISB/RAB (if any) and sets
+;08500  1590	!	OTS$$AA_CUR_LUB to new current LUB/ISB/RAB.
+;08600  1591	!	SIGNAL STOPs (actually RESIGNAL) many error detected by
+;08700  1592	!	unwinding to user-program frame with ERR= PC. Also
+;08800  1593	!	SIGNAL STOPs or error jumps the following errors:
+;08900  1594	!
+;09000  1595	!	FOR$_RECNUMOUT	(25 = 'RECORD NUMBER OUT OF RANGE')
+;09100  1596	!	FOR$_OPEDEFREQ	(26 = 'OPEN OR DEFINE FILE REQUIRED FOR DIRACT ACCESS')
+;09200  1597	!	FOR$_INVLOGUNI	(32 = 'INVALID LOGICAL UNIT NUMBER')
+;09300  1598	!	FOR$_MIXFILACC	(31 = 'MIXED FILE ACCESS MODES')
+;09400  1599	!	FOR$_WRIREAFIL	(47 = 'WRITE TO READONLY FILE')
+;09500  1600	!	FOR$_RECIO_OPE	(40 = 'RECURSIVE I/O OPERATION')
+;09600  1601	!
+;09700  1602	! Note:	The unwinding strategy depends on the fact that the callers in this module all are
+;09800  1603	!	single level, i.e., there are no frames between FOR$$IO_BEG and user frame.
+;09900  1604	!--
+;10000  1605	    BEGIN
+;10300  1606	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-2
+;
+;10400  1607	    GLOBAL REGISTER
+;10500  1608		CCB = K_CCB_REG: REF BLOCK[, BYTE];
+;10600  1609	
+;10700  1610	    BUILTIN
+;10800  1611		AP;			! Reference to the "caller" argument list
+;10900  1612	
+;11000  1613	    LOCAL			! The first 4 locals are used by error-processing routines:
+;11100  1614		L_UNWIND_ACTION: VOLATILE,	! Unwind action code (FOR$K_UNWIND{POP or NOP}
+;11200  1615		A_END_ADR: VOLATILE,		! User-program supplied END= address  (0 if none)
+;11300  1616		A_ERR_ADR: VOLATILE,		! User-program supplied ERR= address  (0 if none)
+;11400  1617		L_UNWIND_DEPTH: VOLATILE,	! No. of additional frames to unwind if error
+;11500  1618	
+;11600  1619		A_FORMAT_ADR,		! adr. of format array whether
+;11700  1620					! produced at compiled time or object time
+;11800  1621		PARAMS: VECTOR[3],	! used to accumulate args passed to our caller
+;11900  1622		FLAGS;			! Local copy of control flags from "caller"
+;12000  1623	
+;12100  1624	    ENABLE			! Establish error handler and provide arguments:
+;12200  1625					!   UNWIND action code, depth to unwind (0)
+;12300  1626					!   ERR= and END= addresses from caller
+;12400  1627	
+;12500  1628		FOR$$ERR_ENDHND (L_UNWIND_ACTION, A_ERR_ADR, A_END_ADR, L_UNWIND_DEPTH);
+;12600  1629	
+;12700  1630	    !+
+;12800  1631	    ! Copy flags argument passed by "caller" in R0
+;12900  1632	    !-
+;13000  1633	
+;13100  1634	    FLAGS = .FLAGS_ARG;
+;13200  1635	
+;13300  1636	    !+
+;13400  1637	    ! Set cleanup action on UNWIND to no-operation (since
+;13500  1638	    ! LUB/ISB/RAB not pushed down yet).
+;13600  1639	    ! Also set L_UNWIND_DEPTH to additional no. of stack frames between
+;13700  1640	    ! establisher and user program to be unwound in order to
+;13800  1641	    ! get back to user program.
+;13900  1642	    !-
+;14000  1643	
+;14100  1644	    L_UNWIND_ACTION = FOR$K_UNWINDNOP;
+;14200  1645	    L_UNWIND_DEPTH = 0;
+;14300  1646	
+;14400  1647	    !+
+;14500  1648	    ! Using the "parameter present" bits in FLAGS, get the parameters
+;14600  1649	    ! passed to our caller.  Certain parameters will default to a value
+;14700  1650	    ! if the caller doesn't give us the parameter.
+;14800  1651	    ! Setup LOCAL A_ERR_ADR and A_END_ADR to pass to error handler
+;14900  1652	    ! in case of a SIGNAL.
+;15000  1653	    !-
+;15100  1654	
+;15200  1655		BEGIN
+;15300  1656		LOCAL
+;15400  1657		    I,			! Local counter
+;15500  1658		    P: REF VECTOR[];	! Pointer to caller's argument list
+;15600  1659	
+;15700  1660		!+
+;15800  1661		! Set defaults for items not passed to our caller:
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-3
+;
+;15900  1662		! FMT_ADR - calls from formatted I/O routines will supply the real value
+;16000  1663		!-
+;16100  1664	
+;16200  1665		PARAMS[FOR$K_FMT_ADR] = 0;
+;16300  1666	
+;16400  1667		!+
+;16500  1668		! Copy variable arguments from caller's list to PARAMS vector.
+;16600  1669		!-
+;16700  1670	
+;16800  1671		P = .AP + 8;
+;16900  1672		INCR I FROM FOR$K_REC_NO TO FOR$K_USR_BUF DO
+;17000  1673		    IF .FLAGS<.I, 1>
+;17100  1674		    THEN
+;17200  1675			BEGIN
+;17300  1676			PARAMS[.I] = .P[0];
+;17400  1677			P = .P + 4;
+;17500  1678			END;
+;17600  1679	
+;17700  1680		!+
+;17800  1681		! Determine whether there are ERR= and END= arguments and copy them.
+;17900  1682		!-
+;18000  1683	
+;18100  1684		A_ERR_ADR = 0;
+;18200  1685		A_END_ADR = 0;
+;18300  1686	
+;18400  1687		I = (.P - .AP) ^ (-2);
+;18500  1688		I = .I - .(.AP)<0,8>;
+;18600  1689	
+;18700  1690		IF .I LEQ 0
+;18800  1691		THEN
+;18900  1692		    BEGIN
+;19000  1693		    IF .I LSS 0
+;19100  1694		    THEN
+;19200  1695			A_END_ADR = .P[1];
+;19300  1696	
+;19400  1697		    A_ERR_ADR = .P[0];
+;19500  1698		    END;
+;19600  1699	
+;19700  1700		END;
+;19800  1701	
+;19900  1702	    !+
+;20000  1703	    ! Treat list-directed I/O as semi-formatted
+;20100  1704	    !-
+;20200  1705	
+;20300  1706	    IF .FLAGS<FOR$K_LIST_DIR, 1>
+;20400  1707	    THEN
+;20500  1708		PARAMS[FOR$K_FMT_ADR] = -1;
+;20600  1709	
+;20700  1710	    !+
+;20800  1711	    ! Allocate LUB/ISB/RAB for unit (-5:-1, 0:99) if not already setup
+;20900  1712	    ! Push down active I/O if on another unit. If unit already
+;21000  1713	    ! has active I/O, SIGNAL STOP FOR$_RECIO_OPE
+;21100  1714	    ! (40 = 'RECURSIVE I/O OPERATION')
+;21200  1715	    ! Stores new LUB/ISB/RAB address in OTS Common OTS$$A_CUR_LUB.
+;21300  1716	    ! If unit number out of range (OPEN$K_DLUN_MIN:OPEN$K_LUN_MAX)
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-4
+;
+;21400  1717	    ! SIGNAL_STOP FOR$_INVLOGUNI (32='INVALID LOGICAL UNIT NUMBER')
+;21500  1718	    ! Store signed unit number in LUB$B_LUN.
+;21600  1719	    ! Finally indicate that UNWIND cleanup action is to be to
+;21700  1720	    ! pop current LUB/ISB/RAB since it has now been successfully pushed.
+;21800  1721	    ! On return, CCB points to the current control block.
+;21900  1722	    !-
+;22000  1723	
+;22100  1724	    IF .FLAGS<FOR$K_USR_BUF,1> EQL 0
+;22200  1725	    THEN
+;22300  1726		FOR$$CB_PUSH(.UNIT, OPEN$K_DLUN_MIN)
+;22400  1727	    ELSE
+;22500  1728		FOR$$CB_PUSH(OPEN$K_LUN_ENCD, OPEN$K_LUN_ENCD);
+;22600  1729	
+;22700  1730	    L_UNWIND_ACTION = FOR$K_UNWINDPOP;
+;22800  1731	
+;22900  1732	    !+
+;23000  1733	    ! Store away ERR= and END= address for duration of I/O
+;23100  1734	    ! statement. Store away record number if one was passed.
+;23200  1735	    ! Store I/O statement type code for
+;23300  1736	    ! future dispatching to other levels of abstraction during
+;23400  1737	    ! this I/O statement.
+;23500  1738	    ! Clear last continuable error byte in ISB.
+;23600  1739	    !-
+;23700  1740	
+;23800  1741	    CCB[ISB$A_ERR_EQUAL] = .A_ERR_ADR;
+;23900  1742	    CCB[ISB$A_END_EQUAL] = .A_END_ADR;
+;24000  1743	    CCB[ISB$B_ERR_NO] = 0;
+;24100  1744	
+;24200  1745	    CCB[ISB$B_STTM_TYPE] = .FLAGS<8,8>;
+;24300  1746	
+;24400  1747	    !+
+;24500  1748	    ! If this is an object-time format (OBJ_TIME_FMT bit set in FLAGS),
+;24600  1749	    ! compile format and store address and length in ISB.
+;24700  1750	    ! Will be deallocated at end of I/O list (FOR$IO_END).
+;24800  1751	    ! Otherwise clear run-time format length (ISB$W_FMT_LEN).
+;24900  1752	    ! It is used as flag to indicate whether run-time format or not.
+;25000  1753	    !-
+;25100  1754	
+;25200  1755	    IF .FLAGS<FOR$K_OBJ_FMT, 1>
+;25300  1756	    THEN
+;25400  1757		BEGIN
+;25500  1758		FOR$$FMT_COMPIL (.PARAMS[FOR$K_FMT_ADR], CCB[ISB$W_FMT_LEN], CCB[ISB$A_FMT_BEG]);
+;25600  1759		A_FORMAT_ADR = .CCB[ISB$A_FMT_BEG];
+;25700  1760		END
+;25800  1761	    ELSE
+;25900  1762		BEGIN
+;26000  1763		A_FORMAT_ADR = .PARAMS[FOR$K_FMT_ADR];
+;26100  1764		CCB[ISB$W_FMT_LEN] = 0;
+;26300  1765		END;
+;26400  1766	
+;26500  1767	    !+
+;26600  1768	    ! Perform checking for improper mixing of I/O statements
+;26700  1769	    ! SIGNAL_STOP FOR$_OPEDEFREQ (26 = 'OPEN OR DEFINE FILE REQUIRED FOR DIRECT ACCESS')
+;26800  1770	    ! if this is a direct access I/O statement on a unit which
+;26900  1771	    ! has not been either OPENed with ACCESS = 'DIRECT' nor
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-5
+;
+;27000  1772	    ! DEFINE FILE used.
+;27100  1773	    ! Signal_stop FOR$_MIXFILACC (31 = 'MIXED FILE ACCESS MODES') if
+;27200  1774	    ! this is a sequential access I/O
+;27300  1775	    ! statement on a unit which has either OPENed with
+;27400  1776	    ! ACCESS = 'DIRECT' or DEFINE FILE used; also if this is
+;27500  1777	    ! formatted I/O statement on a unit which has been specified
+;27600  1778	    ! to be unformatted by OPEN TYPE = 'UNFORMATTED', OPEN default,
+;27700  1779	    ! DEFINE FILE, or default OPEN or if this is an unformatted
+;27800  1780	    ! I/O statement on a unit which has been specified to be
+;27900  1781	    ! formatted by OPEN TYPE = 'FORMATTED', OPEN default, or default OPEN.
+;28000  1782	    ! SIGNAL STOP FOR$_WRIREADFIL (47 = 'WRITE TO READONLY FILE')
+;28100  1783	    ! if this is a WRITE statement for a unit which has
+;28200  1784	    ! been specified read-only by OPEN READONLY or CALL FDBSET.
+;28300  1785	    ! Note: READONLY is not an attribute of the file, only
+;28400  1786	    ! the current OPEN.
+;28500  1787	
+;28600  1788	    IF .FLAGS<FOR$K_REC_NO, 1> AND NOT .CCB[LUB$V_DIRECT]
+;28700  1789	    THEN 
+;28800  1790		( FOR$$SIGNAL_STO (FOR$K_OPEDEFREQ); RETURN );
+;28900  1791	
+;29000  1792	    IF	.FLAGS<FOR$K_REC_NO,1> EQL 0 AND .CCB[LUB$V_DIRECT] OR
+;29100  1793		.PARAMS[FOR$K_FMT_ADR] EQL 0 AND .CCB[LUB$V_FORMATTED] OR
+;29200  1794		.PARAMS[FOR$K_FMT_ADR] NEQ 0 AND .CCB[LUB$V_UNFORMAT]
+;29300  1795	    THEN
+;29400  1796		( FOR$$SIGNAL_STO (FOR$K_MIXFILACC); RETURN );
+;29500  1797	
+;29600  1798	    IF .CCB[LUB$V_READ_ONLY] AND .FLAGS<FOR$K_WRITE,1>
+;29700  1799	    THEN
+;29800  1800		( FOR$$SIGNAL_STO (FOR$K_WRIREAFIL); RETURN );
+;29900  1801	
+;30000  1802	    !+
+;30100  1803	    ! If this is a DECODE or ENCODE statement, do not do
+;30200  1804	    ! an OPEN. Instead set the pertinent LUB control block
+;30300  1805	    ! status bits to indicate formatted (LUB$V_FORMATTED),
+;30400  1806	    ! indicate no RMS channel (ISB$V_DE_ENCODE), and set buffer
+;30500  1807	    ! pointers (a record level routine should do this but it
+;30600  1808	    ! would be difficult to pass it the info needed).
+;30700  1809	    !-
+;30800  1810	
+;30900  1811	    IF .FLAGS<FOR$K_USR_BUF, 1>
+;31000  1812	    THEN
+;31100  1813		BEGIN
+;31200  1814		CCB[LUB$V_FORMATTED] = 1;
+;31300  1815		CCB[ISB$V_DE_ENCODE] = 1;
+;31400  1816		CCB[ISB$A_BUF_PTR] = .PARAMS[FOR$K_USR_BUF];
+;31500  1817		CCB[ISB$A_BUF_END] = .PARAMS[FOR$K_USR_BUF] + .UNIT;
+;31600  1818		END
+;31700  1819	
+;31800  1820		!+
+;31900  1821		! If unit not already open, perform a default OPEN: Set
+;32000  1822		! ACCESS depending on whether this is a sequential or
+;32100  1823		! direct (.REC_NO > 0) access I/O statement
+;32200  1824		! Set FORM depending on whether this is a formatted or
+;32300  1825		! unformatted (.FORMAT_ADR = 0) I/O statement. Set
+;32400  1826		! TYPE to 'NEW' or 'OLD' depending on whether this is
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-6
+;
+;32500  1827		! a write or read I/O statement. Note: Write statement type
+;32600  1828		! codes are true, read are false. Any OPEN errors are
+;32700  1829		! signaled.
+;32800  1830		!-
+;32900  1831	
+;33000  1832	    ELSE
+;33100  1833		IF NOT .CCB[LUB$V_OPENED]
+;33200  1834		THEN
+;33300  1835		    BEGIN
+;33400  1836		    L_UNWIND_ACTION = FOR$K_UNWINDRET;
+;33500  1837	
+;33600  1838		    FOR$$OPEN_DEFLT (
+;33700  1839			! ACCESS = 'SEQUENTIAL' or 'DIRECT'
+;33800  1840			!
+;33900  1841			( IF .FLAGS<FOR$K_REC_NO,1> THEN OPEN$K_ACC_DIR ELSE OPEN$K_ACC_SEQ ),
+;34000  1842	
+;34100  1843			! TYPE = 'OLD' or 'NEW'
+;34200  1844			!
+;34300  1845			( IF .FLAGS<FOR$K_WRITE,1> THEN OPEN$K_TYP_NEW ELSE OPEN$K_TYP_OLD ),
+;34400  1846	
+;34500  1847			! FORM = 'FORMATTED' or 'UNFORMATTED'
+;34600  1848			!
+;34700  1849			( IF .PARAMS[FOR$K_FMT_ADR] EQL 0 THEN OPEN$K_FOR_UNF ELSE OPEN$K_FOR_FOR) );
+;34800  1850	
+;34900  1851		    L_UNWIND_ACTION = FOR$K_UNWINDPOP;
+;34904  1852		    END
+;34908  1853	
+;34912  1854		ELSE			! File already opened
+;34913  1855	
+;34914  1856		    !+
+;34915  1857		    ! If file was opened by default for ENDFILE,
+;34916  1858		    ! finish specifying defaults if this the first I/O statement
+;34917  1859		    ! after that default open.
+;34918  1860		    !-
+;34919  1861	
+;34920  1862		    IF TESTBITSC (CCB[LUB$V_ENDFILOPN])
+;34924  1863		    THEN
+;34928  1864			BEGIN			! Finish defaults now
+;34932  1865			IF .FLAGS<FOR$K_FMT_ADR,1>
+;34936  1866			THEN
+;34940  1867			    CCB[LUB$V_FORMATTED] = 1
+;34944  1868			ELSE
+;34948  1869			    BEGIN		! unformatted
+;34952  1870			    CCB[LUB$V_UNFORMAT] = 1;
+;34956  1871			    CCB[LUB$V_SEGMENTED] = 1;
+;34960  1872			    END
+;34964  1873			END;
+;34968  1874	
+;35100  1875	
+;35200  1876	    !+
+;35300  1877	    ! If this is a direct access type I/O statement,
+;35400  1878	    ! make sure the (unsigned) record number is non-zero.  Store the
+;35500  1879	    ! record number into the LUB.
+;35600  1880	    ! SIGNAL_STOP FOR$_RECNUMOUT (25='RECORD NUMBER OUT OF RANGE') if error.
+;35700  1881	    !-
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-7
+;
+;35800  1882	
+;35900  1883	    IF .FLAGS<FOR$K_REC_NO, 1>
+;36000  1884	    THEN
+;36100  1885		BEGIN
+;36200  1886		IF .PARAMS[FOR$K_REC_NO] EQLU 0 OR
+;36300  1887		    (.CCB[LUB$L_REC_MAX] NEQ 0 AND .PARAMS[FOR$K_REC_NO] GTRU .CCB[LUB$L_REC_MAX])
+;36400  1888		THEN
+;36500  1889		     ( FOR$$SIGNAL_STO (FOR$K_RECNUMOUT); RETURN );
+;36600  1890		CCB[LUB$L_LOG_RECNO] = .PARAMS[FOR$K_REC_NO];
+;36700  1891		END;
+;36800  1892	
+;36900  1893	    !+
+;37000  1894	    ! Call appropriate User data formatted level of abstraction
+;37100  1895	    ! (UDF level = level 2) initialization routine. Pass
+;37200  1896	    ! address of compiled format statement or 0 or -1.
+;37300  1897	    !-
+;37400  1898	
+;37500  1899	    JSB_UDF0  (FOR$$AA_UDF_PR0 + .FOR$$AA_UDF_PR0[.CCB[ISB$B_STTM_TYPE]], .A_FORMAT_ADR);
+;37600  1900	
+;37700  1901	
+;37800  1902	    END;	! End of FOR$$IO_BEG routine
+
+
+							    .TITLE  FOR$$IO_BEG
+							    .IDENT  \0-51\
+
+							    .PSECT  FOR$CODE,NOWRT,  SHR,  PIC,2
+
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00000 FOR$$AA_UDF_PR0::
+							    .WORD   <FOR$$UDF_RF0-FOR$$AA_UDF_PR0>, <FOR$$UDF_WF0--	      ;
+		0000* 0000* 0000* 0000* 0000* 0000E		    FOR$$AA_UDF_PR0>, <FOR$$UDF_RU0-FOR$$AA_UDF_PR0>, -       ;
+								    <FOR$$UDF_WU0-FOR$$AA_UDF_PR0>, <FOR$$UDF_RF0--	      ;
+								    FOR$$AA_UDF_PR0>, <FOR$$UDF_WF0-FOR$$AA_UDF_PR0>, -       ;
+								    <FOR$$UDF_RU0-FOR$$AA_UDF_PR0>, <FOR$$UDF_WU0--	      ;
+								    FOR$$AA_UDF_PR0>, <FOR$$UDF_RL0-FOR$$AA_UDF_PR0>, -       ;
+								    <FOR$$UDF_WL0-FOR$$AA_UDF_PR0>, <FOR$$UDF_RF0--	      ;
+								    FOR$$AA_UDF_PR0>, <FOR$$UDF_WF0-FOR$$AA_UDF_PR0>	      ;
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00018 FOR$$AA_UDF_PR1::
+							    .WORD   <FOR$$UDF_RF1-FOR$$AA_UDF_PR1>, <FOR$$UDF_WF1--	      ;
+		0000* 0000* 0000* 0000* 0000* 00026		    FOR$$AA_UDF_PR1>, <FOR$$UDF_RU1-FOR$$AA_UDF_PR1>, -       ;
+								    <FOR$$UDF_WU1-FOR$$AA_UDF_PR1>, <FOR$$UDF_RF1--	      ;
+								    FOR$$AA_UDF_PR1>, <FOR$$UDF_WF1-FOR$$AA_UDF_PR1>, -       ;
+								    <FOR$$UDF_RU1-FOR$$AA_UDF_PR1>, <FOR$$UDF_WU1--	      ;
+								    FOR$$AA_UDF_PR1>, <FOR$$UDF_RL1-FOR$$AA_UDF_PR1>, -       ;
+								    <FOR$$UDF_WL1-FOR$$AA_UDF_PR1>, <FOR$$UDF_RF1--	      ;
+								    FOR$$AA_UDF_PR1>, <FOR$$UDF_WF1-FOR$$AA_UDF_PR1>	      ;
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00030 FOR$$AA_UDF_PR9::
+							    .WORD   <FOR$$UDF_RF9-FOR$$AA_UDF_PR9>, <FOR$$UDF_WF9--	      ;
+		0000* 0000* 0000* 0000* 0000* 0003E		    FOR$$AA_UDF_PR9>, <FOR$$UDF_RU9-FOR$$AA_UDF_PR9>, -       ;
+								    <FOR$$UDF_WU9-FOR$$AA_UDF_PR9>, <FOR$$UDF_RF9--	      ;
+								    FOR$$AA_UDF_PR9>, <FOR$$UDF_WF9-FOR$$AA_UDF_PR9>, -       ;
+								    <FOR$$UDF_RU9-FOR$$AA_UDF_PR9>, <FOR$$UDF_WU9--	      ;
+								    FOR$$AA_UDF_PR9>, <FOR$$UDF_RL9-FOR$$AA_UDF_PR9>, -       ;
+								    <FOR$$UDF_WL9-FOR$$AA_UDF_PR9>, <FOR$$UDF_RF9--	      ;
+								    FOR$$AA_UDF_PR9>, <FOR$$UDF_WF9-FOR$$AA_UDF_PR9>	      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-8
+;
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00048 FOR$$AA_REC_PR0::
+							    .WORD   <FOR$$REC_RSF0-FOR$$AA_REC_PR0>, <FOR$$REC_WSF0--	      ;
+		0000* 0000* 0000* 0000* 0000* 00056		    FOR$$AA_REC_PR0>, <FOR$$REC_RSU0-FOR$$AA_REC_PR0>, -      ;
+								    <FOR$$REC_WSU0-FOR$$AA_REC_PR0>, <FOR$$REC_RD0--	      ;
+								    FOR$$AA_REC_PR0>, <FOR$$REC_WD0-FOR$$AA_REC_PR0>, -       ;
+								    <FOR$$REC_RD0-FOR$$AA_REC_PR0>, <FOR$$REC_WD0--	      ;
+								    FOR$$AA_REC_PR0>, <FOR$$REC_RSL0-FOR$$AA_REC_PR0>, -      ;
+								    <FOR$$REC_WSL0-FOR$$AA_REC_PR0>, <FOR$$REC_RMF0--	      ;
+								    FOR$$AA_REC_PR0>, <FOR$$REC_WMF0-FOR$$AA_REC_PR0>	      ;
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00060 FOR$$AA_REC_PR1::
+							    .WORD   <FOR$$REC_RSF1-FOR$$AA_REC_PR1>, <FOR$$REC_WSF1--	      ;
+		0000* 0000* 0000* 0000* 0000* 0006E		    FOR$$AA_REC_PR1>, <FOR$$REC_RSU1-FOR$$AA_REC_PR1>, -      ;
+								    <FOR$$REC_WSU1-FOR$$AA_REC_PR1>, <FOR$$REC_RD1--	      ;
+								    FOR$$AA_REC_PR1>, <FOR$$REC_WD1-FOR$$AA_REC_PR1>, -       ;
+								    <FOR$$REC_RD1-FOR$$AA_REC_PR1>, <FOR$$REC_WD1--	      ;
+								    FOR$$AA_REC_PR1>, <FOR$$REC_RSL1-FOR$$AA_REC_PR1>, -      ;
+								    <FOR$$REC_WSL1-FOR$$AA_REC_PR1>, <FOR$$REC_RMF1--	      ;
+								    FOR$$AA_REC_PR1>, <FOR$$REC_WMF1-FOR$$AA_REC_PR1>	      ;
+    0000* 0000* 0000* 0000* 0000* 0000* 0000* 00078 FOR$$AA_REC_PR9::
+							    .WORD   <FOR$$REC_RSF9-FOR$$AA_REC_PR9>, <FOR$$REC_WSF9--	      ;
+		0000* 0000* 0000* 0000* 0000* 00086		    FOR$$AA_REC_PR9>, <FOR$$REC_RSU9-FOR$$AA_REC_PR9>, -      ;
+								    <FOR$$REC_WSU9-FOR$$AA_REC_PR9>, <FOR$$REC_RD9--	      ;
+								    FOR$$AA_REC_PR9>, <FOR$$REC_WD9-FOR$$AA_REC_PR9>, -       ;
+								    <FOR$$REC_RD9-FOR$$AA_REC_PR9>, <FOR$$REC_WD9--	      ;
+								    FOR$$AA_REC_PR9>, <FOR$$REC_RSL9-FOR$$AA_REC_PR9>, -      ;
+								    <FOR$$REC_WSL9-FOR$$AA_REC_PR9>, <FOR$$REC_RMF9--	      ;
+								    FOR$$AA_REC_PR9>, <FOR$$REC_WMF9-FOR$$AA_REC_PR9>	      ;
+
+							    .EXTRN  FOR$$CB_PUSH, FOR$$FMT_COMPIL, FOR$$ERR_ENDHND
+							    .EXTRN  FOR$$SIGNAL_STO, FOR$$OPEN_DEFLT, FOR$$UDF_RF0
+							    .EXTRN  FOR$$UDF_RF1, FOR$$UDF_RF9, FOR$$UDF_WF0, FOR$$UDF_WF1
+							    .EXTRN  FOR$$UDF_WF9, FOR$$UDF_RU0, FOR$$UDF_RU1, FOR$$UDF_RU9
+							    .EXTRN  FOR$$UDF_WU0, FOR$$UDF_WU1, FOR$$UDF_WU9, FOR$$UDF_RL0
+							    .EXTRN  FOR$$UDF_RL1, FOR$$UDF_RL9, FOR$$UDF_WL0, FOR$$UDF_WL1
+							    .EXTRN  FOR$$UDF_WL9, FOR$$REC_RSF0, FOR$$REC_RSF1, FOR$$REC_RSF9
+							    .EXTRN  FOR$$REC_WSF0, FOR$$REC_WSF1, FOR$$REC_WSF9, FOR$$REC_RSU0
+							    .EXTRN  FOR$$REC_RSU1, FOR$$REC_RSU9, FOR$$REC_WSU0, FOR$$REC_WSU1
+							    .EXTRN  FOR$$REC_WSU9, FOR$$REC_RD0, FOR$$REC_RD1, FOR$$REC_RD9
+							    .EXTRN  FOR$$REC_WD0, FOR$$REC_WD1, FOR$$REC_WD9, FOR$$REC_RSL0
+							    .EXTRN  FOR$$REC_RSL1, FOR$$REC_RSL9, FOR$$REC_WSL0, FOR$$REC_WSL1
+							    .EXTRN  FOR$$REC_WSL9, FOR$$REC_RMF0, FOR$$REC_RMF1, FOR$$REC_RMF9
+							    .EXTRN  FOR$$REC_WMF0, FOR$$REC_WMF1, FOR$$REC_WMF9
+
+					 083C 00090 	    .ENTRY  FOR$$IO_BEG, Save R2,R3,R4,R5,R11			      ; 1497
+		         5E 	       1C  C2 00092 	    SUBL2   #28, SP						      ;
+				  0C   AE  D4 00095 	    CLRL    L_UNWIND_DEPTH					      ; 1605
+				  14   AE  D4 00098 	    CLRL    A_END_ADR						      ;
+				  10   AE  D4 0009B 	    CLRL    A_ERR_ADR						      ;
+				  18   AE  D4 0009E 	    CLRL    L_UNWIND_ACTION					      ;
+		         6D 0000015D   EF  DE 000A1 	    MOVAL   32$, (FP)						      ;
+		         54 	       50  D0 000A8 	    MOVL    FLAGS_ARG, FLAGS					      ; 1634
+		    18   AE	       01  D0 000AB 	    MOVL    #1, L_UNWIND_ACTION					      ; 1644
+				  0C   AE  D4 000AF 	    CLRL    L_UNWIND_DEPTH					      ; 1645
+				  04   AE  D4 000B2 	    CLRL    PARAMS+4						      ; 1665
+		         51 	  08   AC  9E 000B5 	    MOVAB   8(AP), P						      ; 1671
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-9
+;
+				       50  D4 000B9 	    CLRL    I							      ; 1672
+	   04 	         54 	       50  E1 000BB 1$:     BBC     I, FLAGS, 2$					      ; 1673
+		       6E40 	       81  D0 000BF 	    MOVL    (P)+, PARAMS[I]					      ; 1676
+	   F4 	         50 	       02  F3 000C3 2$:     AOBLEQ  #2, I, 1$						      ; 1672
+				  10   AE  D4 000C7 	    CLRL    A_ERR_ADR						      ; 1684
+				  14   AE  D4 000CA 	    CLRL    A_END_ADR						      ; 1685
+	   50 	         51 	       5C  C3 000CD 	    SUBL3   AP, P, R0						      ; 1687
+	   50 	         50 	  FE   8F  78 000D1 	    ASHL    #-2, R0, I						      ;
+		         52 	       6C  9A 000D6 	    MOVZBL  (AP), R2						      ; 1688
+		         50 	       52  C2 000D9 	    SUBL2   R2, I						      ;
+				       0B  14 000DC 	    BGTR    4$							      ; 1690
+				       05  18 000DE 	    BGEQ    3$							      ; 1693
+		    14   AE	  04   A1  D0 000E0 	    MOVL    4(P), A_END_ADR					      ; 1695
+		    10   AE	       61  D0 000E5 3$:     MOVL    (P), A_ERR_ADR					      ; 1697
+	   04 	         54 	       06  E1 000E9 4$:     BBC     #6, FLAGS, 5$					      ; 1706
+		    04   AE	       01  CE 000ED 	    MNEGL   #1, PARAMS+4					      ; 1708
+	   09 	         54 	       02  E0 000F1 5$:     BBS     #2, FLAGS, 6$					      ; 1724
+		         52 	  04   AC  D0 000F5 	    MOVL    UNIT, R2						      ; 1726
+		         50 	       04  CE 000F9 	    MNEGL   #4, R0						      ;
+				       06  11 000FC 	    BRB     7$							      ;
+		         52 	       05  CE 000FE 6$:     MNEGL   #5, R2						      ; 1728
+		         50 	       05  CE 00101 	    MNEGL   #5, R0						      ;
+				     0000G 30 00104 7$:     BSBW    FOR$$CB_PUSH					      ;
+				  18   AE  D4 00107 	    CLRL    L_UNWIND_ACTION					      ; 1730
+		    AC   AB	  10   AE  D0 0010A 	    MOVL    A_ERR_ADR, -84(CCB)					      ; 1741
+		    B0   AB	  14   AE  D0 0010F 	    MOVL    A_END_ADR, -80(CCB)					      ; 1742
+				  A4   AB  94 00114 	    CLRB    -92(CCB)						      ; 1743
+	   54 	         08 	       08  EF 00117 	    EXTZV   #8, #8, FLAGS, R0					      ; 1745
+				       50     0011B									      ;
+		    A5   AB	       50  90 0011C 	    MOVB    R0, -91(CCB)					      ;
+		         53 	  04   AE  D0 00120 	    MOVL    PARAMS+4, R3					      ; 1758
+	   13 	         54 	       07  E1 00124 	    BBC     #7, FLAGS, 8$					      ; 1755
+				  B4   AB  9F 00128 	    PUSHAB  -76(CCB)						      ; 1758
+				  A6   AB  9F 0012B 	    PUSHAB  -90(CCB)						      ;
+				       53  DD 0012E 	    PUSHL   R3							      ;
+		  0000G  CF	       03  FB 00130 	    CALLS   #3, FOR$$FMT_COMPIL					      ;
+		         55 	  B4   AB  D0 00135 	    MOVL    -76(CCB), A_FORMAT_ADR				      ; 1759
+				       06  11 00139 	    BRB     9$							      ; 1755
+		         55 	       53  D0 0013B 8$:     MOVL    R3, A_FORMAT_ADR					      ; 1763
+				  A6   AB  B4 0013E 	    CLRW    -90(CCB)						      ; 1764
+		         0C 	       54  E9 00141 9$:     BLBC    FLAGS, 11$						      ; 1788
+	   04 	    FC   AB	       04  E0 00144 	    BBS     #4, -4(CCB), 10$					      ;
+				       1A  DD 00149 	    PUSHL   #26							      ; 1790
+				       29  11 0014B 	    BRB     16$							      ;
+		         05 	       54  E8 0014D 10$:    BLBS    FLAGS, 12$						      ; 1792
+	   0F 	    FC   AB	       04  E0 00150 11$:    BBS     #4, -4(CCB), 14$					      ;
+				       53  D5 00155 12$:    TSTL    R3							      ; 1793
+				       04  12 00157 	    BNEQ    13$							      ;
+		         07 	  FD   AB  E8 00159 	    BLBS    -3(CCB), 14$					      ;
+				       09  13 0015D 13$:    BEQL    15$							      ; 1794
+	   04 	    FD   AB	       01  E1 0015F 	    BBC     #1, -3(CCB), 15$					      ;
+				       1F  DD 00164 14$:    PUSHL   #31							      ; 1796
+				       7F  11 00166 	    BRB     29$							      ;
+		         52 	  FC   AB  9E 00168 15$:    MOVAB   -4(CCB), R2						      ; 1798
+	   08 	         62 	       02  E1 0016C 	    BBC     #2, (R2), 17$					      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-10
+;
+	   04 	         54 	       08  E1 00170 	    BBC     #8, FLAGS, 17$					      ;
+				       2F  DD 00174 	    PUSHL   #47							      ; 1800
+				       6F  11 00176 16$:    BRB     29$							      ;
+	   16 	         54 	       02  E1 00178 17$:    BBC     #2, FLAGS, 18$					      ; 1811
+		    01   A2	       01  88 0017C 	    BISB2   #1, 1(R2)						      ; 1814
+		    D7   AB	       10  88 00180 	    BISB2   #16, -41(CCB)					      ; 1815
+		    B8   AB	  08   AE  D0 00184 	    MOVL    PARAMS+8, -72(CCB)					      ; 1816
+      BC   AB	    08   AE	  04   AC  C1 00189 	    ADDL3   UNIT, PARAMS+8, -68(CCB)				      ; 1817
+				       40  11 00190 	    BRB     27$							      ; 1811
+		         2B 	       62  E8 00192 18$:    BLBS    (R2), 25$						      ; 1833
+		    18   AE	       02  D0 00195 	    MOVL    #2, L_UNWIND_ACTION					      ; 1836
+				       53  D5 00199 	    TSTL    R3							      ; 1849
+				       04  12 0019B 	    BNEQ    19$							      ;
+				       02  DD 0019D 	    PUSHL   #2							      ;
+				       02  11 0019F 	    BRB     20$							      ;
+				       01  DD 001A1 19$:    PUSHL   #1							      ;
+	   04 	         54 	       08  E1 001A3 20$:    BBC     #8, FLAGS, 21$					      ; 1845
+				       02  DD 001A7 	    PUSHL   #2							      ;
+				       02  11 001A9 	    BRB     22$							      ;
+				       01  DD 001AB 21$:    PUSHL   #1							      ;
+		         04 	       54  E9 001AD 22$:    BLBC    FLAGS, 23$						      ; 1841
+				       01  DD 001B0 	    PUSHL   #1							      ;
+				       02  11 001B2 	    BRB     24$							      ;
+				       02  DD 001B4 23$:    PUSHL   #2							      ;
+		  0000G  CF	       03  FB 001B6 24$:    CALLS   #3, FOR$$OPEN_DEFLT					      ; 1838
+				  18   AE  D4 001BB 	    CLRL    L_UNWIND_ACTION					      ; 1851
+				       12  11 001BE 	    BRB     27$							      ; 1833
+	   0E 	         62 	       11  E5 001C0 25$:    BBCC    #17, (R2), 27$					      ; 1862
+	   06 	         54 	       01  E1 001C4 	    BBC     #1, FLAGS, 26$					      ; 1865
+		    01   A2	       01  88 001C8 	    BISB2   #1, 1(R2)						      ; 1867
+				       04  11 001CC 	    BRB     27$							      ; 1864
+		    01   A2	       0A  88 001CE 26$:    BISB2   #10, 1(R2)						      ; 1871
+		         1C 	       54  E9 001D2 27$:    BLBC    FLAGS, 31$						      ; 1883
+		         52 	       6E  D0 001D5 	    MOVL    PARAMS, R2						      ; 1886
+				       0B  13 001D8 	    BEQL    28$							      ;
+				  E4   AB  D5 001DA 	    TSTL    -28(CCB)						      ; 1887
+				       0E  13 001DD 	    BEQL    30$							      ;
+		    E4   AB	       52  D1 001DF 	    CMPL    R2, -28(CCB)					      ;
+				       08  1B 001E3 	    BLEQU   30$							      ;
+				       19  DD 001E5 28$:    PUSHL   #25							      ; 1889
+		  0000G  CF	       01  FB 001E7 29$:    CALLS   #1, FOR$$SIGNAL_STO					      ;
+					   04 001EC 	    RET     							      ;
+		    E0   AB	       52  D0 001ED 30$:    MOVL    R2, -32(CCB)					      ; 1890
+		         50 	  A5   AB  9A 001F1 31$:    MOVZBL  -91(CCB), R0					      ; 1899
+		         50 	FE06 CF40  32 001F5 	    CVTWL   FOR$$AA_UDF_PR0[R0], R0				      ;
+		         52 	       55  D0 001FB 	    MOVL    A_FORMAT_ADR, R2					      ;
+				FDFD CF40  16 001FE 	    JSB     FOR$$AA_UDF_PR0[R0]					      ;
+					   04 00203 	    RET     							      ; 1497
+					 0000 00204 32$:    .WORD   Save nothing					      ; 1605
+		         50 	  08   AC  D0 00206 	    MOVL    8(AP), R0						      ;
+		         50 	  04   A0  D0 0020A 	    MOVL    4(R0), R0						      ;
+				  F0   A0  9F 0020E 	    PUSHAB  L_UNWIND_DEPTH					      ;
+				  F8   A0  9F 00211 	    PUSHAB  A_END_ADR						      ;
+				  F4   A0  9F 00214 	    PUSHAB  A_ERR_ADR						      ;
+				  FC   A0  9F 00217 	    PUSHAB  L_UNWIND_ACTION					      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:19:29	DBB3:[RTL.SRC]FIOBEG.B32;15					Page 8-11
+;
+				       04  DD 0021A 	    PUSHL   #4							      ;
+				       5E  DD 0021C 	    PUSHL   SP							      ;
+		         7E 	  04   AC  7D 0021E 	    MOVQ    4(AP), -(SP)					      ;
+		  0000G  CF	       03  FB 00222 	    CALLS   #3, FOR$$ERR_ENDHND					      ;
+					   04 00227 	    RET     							      ;
+
+; Routine Size:  408 bytes
+
+
+;37900  1903	
+;38000  1904	END		! End of FOR$$IO_BEG module
+;38100  1905	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  FOR$CODE       	   552  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+
+
+
+
+
+; Size:		408 code + 144 data bytes
+; Run Time:	00:20.1
+; Elapsed Time:	00:38.5
+; Memory Used:	179 pages
+; Compilation Complete

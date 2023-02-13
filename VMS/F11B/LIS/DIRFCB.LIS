@@ -1,0 +1,270 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 1
+;
+;	0001	MODULE DIRFCB (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'B0003'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine makes the necessary adjustments to the FCP data
+;	0033	!	base to make an FCB useful for directory operations.
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET operating system, including privileged system services
+;	0037	!	and internal exec routines. This routine must be called
+;	0038	!	in kernel mode.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  2-Jan-1977  23:37
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 4-Nov-1977  14:56
+;	0048	!   X0002 - Remove EOF setup (done in INIFCB)
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 14-Dec-1977  14:52
+;	0051	!   X0003 - Modify for structure level 2
+;	0052	!
+;	0053	!**
+;	0054	
+;	0055	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 1-1
+;
+;	0056	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0057	REQUIRE 'SRC$:FCPDEF.B32';
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 2
+;
+;	0406	GLOBAL ROUTINE MAKE_DIR_FCB (FCB) : NOVALUE =
+;	0407	
+;	0408	!++
+;	0409	!
+;	0410	! FUNCTIONAL DESCRIPTION:
+;	0411	!
+;	0412	!	This routine makes the necessary adjustments to the FCP data
+;	0413	!	base to make an FCB useful for directory operations.
+;	0414	!
+;	0415	! CALLING SEQUENCE:
+;	0416	!	MAKE_DIR_FCB (ARG1)
+;	0417	!
+;	0418	! INPUT PARAMETERS:
+;	0419	!	ARG1: address of FCB
+;	0420	!
+;	0421	! IMPLICIT INPUTS:
+;	0422	!	CURRENT_VCB: address of VCB of volume in process
+;	0423	!
+;	0424	! OUTPUT PARAMETERS:
+;	0425	!	NONE
+;	0426	!
+;	0427	! IMPLICIT OUTPUTS:
+;	0428	!	NONE
+;	0429	!
+;	0430	! ROUTINE VALUE:
+;	0431	!	NONE
+;	0432	!
+;	0433	! SIDE EFFECTS:
+;	0434	!	FCB may be linked into FCB list
+;	0435	!	oldest FCB LRU entry may be gone
+;	0436	!
+;	0437	!--
+;	0438	
+;	0439	BEGIN
+;	0440	
+;	0441	MAP
+;	0442		FCB		: REF BBLOCK;	! FCB argument
+;	0443	
+;	0444	LOCAL
+;	0445		DUMMY,				! dummy destination for REMQUE
+;	0446		P		: REF BBLOCK;	! random pointer
+;	0447	
+;	0448	EXTERNAL
+;	0449		CURRENT_VCB	: REF BBLOCK;	! volume VCB
+;	0450	
+;	0451	EXTERNAL ROUTINE
+;	0452		DEALLOCATE;			! deallocate block
+;	0453	
+;	0454	
+;	0455	! If the FCB represents a contiguous file, and it is not accessed,
+;	0456	! hook it into the directory LRU list, if it is not already there.
+;	0457	!
+;	0458	
+;	0459	IF .FCB[FCB$W_ACNT] EQL 0
+;	0460	AND .CURRENT_VCB[VCB$B_LRU_LIM] GEQ 0
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 2-1
+;
+;	0461	THEN
+;	0462	    BEGIN
+;	0463	    IF NOT .FCB[FCB$V_DIR]
+;	0464	    THEN
+;	0465		BEGIN
+;	0466		CURRENT_VCB[VCB$B_LRU_LIM] = .CURRENT_VCB[VCB$B_LRU_LIM] - 1;
+;	0467	
+;	0468	! If we just overflowed the LRU, search the FCB list for the first
+;	0469	! (and therefore oldest) directory FCB and dump it.
+;	0470	!
+;	0471	
+;	0472		IF .CURRENT_VCB[VCB$B_LRU_LIM] LSS 0
+;	0473		THEN
+;	0474		    BEGIN
+;	0475		    P = .CURRENT_VCB[VCB$L_FCBFL];
+;	0476		    IF NOT
+;	0477			(
+;	0478			WHILE .P NEQ .CURRENT_VCB DO
+;	0479			    BEGIN
+;	0480			    IF .P[FCB$V_DIR] THEN EXITLOOP 0;
+;	0481			    P = .P[FCB$L_FCBFL];
+;	0482			    END
+;	0483			)
+;	0484		    THEN			! FCB found
+;	0485			BEGIN
+;	0486			REMQUE (.P, DUMMY);	! remove FCB from list
+;	0487			DEALLOCATE (.P);	! deallocate the block
+;	0488			CURRENT_VCB[VCB$B_LRU_LIM] = .CURRENT_VCB[VCB$B_LRU_LIM] + 1;
+;	0489			END
+;	0490		    ELSE			! FCB not found - LRU not in use
+;	0491			CURRENT_VCB[VCB$B_LRU_LIM] = -1;
+;	0492		    END;
+;	0493	
+;	0494	! If the LRU is not disabled (now indicated by a negative count value),
+;	0495	! insert the FCB into the list and mark it as a directory FCB.
+;	0496	!
+;	0497	
+;	0498		IF .CURRENT_VCB[VCB$B_LRU_LIM] GEQ 0
+;	0499		THEN
+;	0500		    BEGIN
+;	0501		    FCB[FCB$V_DIR] = 1;
+;	0502		    INSQUE (.FCB, .CURRENT_VCB[VCB$L_FCBBL]);
+;	0503		    END;
+;	0504	
+;	0505	! If the FCB was already in the LRU, move it to the end of the FCB list
+;	0506	! to indicate its new use.
+;	0507	!
+;	0508	
+;	0509		END
+;	0510	    ELSE
+;	0511		BEGIN
+;	0512		REMQUE (.FCB, DUMMY);
+;	0513		INSQUE (.FCB, .CURRENT_VCB[VCB$L_FCBBL]);
+;	0514		END;
+;	0515	    END;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 2-2
+;
+;	0516	
+;	0517	END;					! end of routine MAKE_DIR_ACCESS
+
+
+							    .TITLE  DIRFCB
+							    .IDENT  \B0003\
+
+							    .EXTRN  CURRENT_VCB, DEALLOCATE
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 000C 00000 	    .ENTRY  MAKE_DIR_FCB, Save R2,R3				      ; 0406
+		         53 	0000G  CF  9E 00002 	    MOVAB   CURRENT_VCB, R3					      ;
+		         51 	  04   AC  D0 00007 	    MOVL    FCB, R1						      ; 0459
+				  18   A1  B5 0000B 	    TSTW    24(R1)						      ;
+				       5B  12 0000E 	    BNEQ    6$							      ;
+		         50 	       63  D0 00010 	    MOVL    CURRENT_VCB, R0					      ; 0460
+				  49   A0  95 00013 	    TSTB    73(R0)						      ;
+				       53  19 00016 	    BLSS    6$							      ;
+		         44 	  1E   A1  E8 00018 	    BLBS    30(R1), 5$						      ; 0463
+		         50 	       63  D0 0001C 	    MOVL    CURRENT_VCB, R0					      ; 0466
+				  49   A0  97 0001F 	    DECB    73(R0)						      ;
+				       27  18 00022 	    BGEQ    4$							      ; 0472
+		         51 	       60  D0 00024 	    MOVL    (R0), P						      ; 0475
+		         50 	       51  D1 00027 1$:     CMPL    P, R0						      ; 0478
+				       1B  13 0002A 	    BEQL    3$							      ;
+		         05 	  1E   A1  E8 0002C 	    BLBS    30(P), 2$						      ; 0480
+		         51 	       61  D0 00030 	    MOVL    (P), P						      ; 0481
+				       F2  11 00033 	    BRB     1$							      ; 0478
+		         52 	       61  0F 00035 2$:     REMQUE  (P), DUMMY						      ; 0486
+				       51  DD 00038 	    PUSHL   P							      ; 0487
+		  0000G  CF	       01  FB 0003A 	    CALLS   #1, DEALLOCATE					      ;
+		         50 	       63  D0 0003F 	    MOVL    CURRENT_VCB, R0					      ; 0488
+				  49   A0  96 00042 	    INCB    73(R0)						      ;
+				       04  11 00045 	    BRB     4$							      ; 0476
+		    49   A0	       01  8E 00047 3$:     MNEGB   #1, 73(R0)						      ; 0491
+		         50 	       63  D0 0004B 4$:     MOVL    CURRENT_VCB, R0					      ; 0498
+				  49   A0  95 0004E 	    TSTB    73(R0)						      ;
+				       18  19 00051 	    BLSS    6$							      ;
+		         51 	  04   AC  D0 00053 	    MOVL    FCB, R1						      ; 0501
+		    1E   A1	       01  88 00057 	    BISB2   #1, 30(R1)						      ;
+		    04   B0	       61  0E 0005B 	    INSQUE  (R1), @4(R0)					      ; 0502
+					   04 0005F 	    RET     							      ; 0463
+		         52 	       61  0F 00060 5$:     REMQUE  (R1), DUMMY						      ; 0512
+		         50 	       63  D0 00063 	    MOVL    CURRENT_VCB, R0					      ; 0513
+		    04   B0	  04   BC  0E 00066 	    INSQUE  @FCB, @4(R0)					      ;
+					   04 0006B 6$:     RET     							      ; 0406
+
+; Routine Size:  108 bytes
+
+
+;	0518	
+;	0519	END
+;	0520	ELUDOM
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:06	DBB3:[F11B.SRC]DIRFCB.B32;6					Page 2-3
+;
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   108  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        13         0       230
+
+
+
+
+
+; Size:		108 code + 0 data bytes
+; Run Time:	00:05.3
+; Elapsed Time:	00:12.9
+; Memory Used:	274 pages
+; Compilation Complete

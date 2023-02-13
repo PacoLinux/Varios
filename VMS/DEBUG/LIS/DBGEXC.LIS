@@ -1,0 +1,4070 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGEXC (	ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000097') =
+;	0003	BEGIN
+;	0004	
+;	0005	! Copyright (C) 1976
+;	0006	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0007	!
+;	0008	! This software is furnished under a license for use only on a
+;	0009	! single computer system and may be copied only with the inclusion
+;	0010	! of the above copyright notice. This software, or any
+;	0011	! other copies thereof, may not be provided or otherwise made
+;	0012	! available to any other person except for use on such system
+;	0013	! and to one who agrees to these license terms. Title to and
+;	0014	! ownership of the software shall at all times remain in DEC.
+;	0015	!
+;	0016	! The information in this software is subject to change without
+;	0017	! notice and should not be construed as a commitment by Digital
+;	0018	! Equipment Corporation.
+;	0019	!
+;	0020	! DEC assumes no responsibility for the use or reliability of
+;	0021	! its software on equipment which is not supplied by DEC.
+;	0022	!
+;	0023	! FACILITY:	DEBUG
+;	0024	!
+;	0025	!++
+;	0026	! FUNCTIONAL DESCRIPTION:
+;	0027	!	EXCEPTION HANDLER FOR DEBUG FACILITY UNDER STARLET
+;	0028	!
+;	0029	! Version:	97
+;	0030	!
+;	0031	! History:
+;	0032	!	Author:
+;	0033	!		Carol Peters, 05 Oct 1976: Version 01
+;	0034	!
+;	0035	!	Modified by:
+;	0036	!		Dale Roedger, 11 August 1978:	97
+;	0037	!
+;	0038	! Revision history:
+;	0039	!	19	08-03-77	CP	FAO fixed ASCII strings moved into control strings.
+;	0040	!					changed PLIT of exception values to UNSIGNED.
+;	0041	!	20	21-03-77	CP	diagnostic in COMMAND_PROC to find bug in first
+;	0042	!					input line. if only CR, causes invalid character message.
+;	0043	!	21	30-03-77	CP	changed program restarting procedure. no longer
+;	0044	!					use START_PROGRAM context bit. now do special
+;	0045	!					handling for continuing from breakpoints. in all
+;	0046	!					other cases, just continue from the pc stored
+;	0047	!					in the global DBG$GL_START_AD.
+;	0048	!					reset start address at beginning
+;	0049	!					of USER_PROC.
+;	0050	!	22	31-03-77	CP	delete references to STEP_PROGRAM
+;	0051	!					context bit.
+;	0052	!	23	04-APR-77	KGP	-ADDED ROUTINE ANNOUNCE_TRACE SO THAT
+;	0053	!					IT CAN CALL THE MACHINE OUTPUT 
+;	0054	!					ROUTINE WHEN A STEP COUNT GOES TO 0.
+;	0055	!	24	05-apr-77	kgp	-announce_trace now does output
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					by the new routine, DBG$OUT_PUT.
+;	0057	!	25	11-04-77	CP	change word in ANNOUNCE_TRACE to
+;	0058	!					"stop" from "halt", per
+;	0059	!					suggestion of Jud Leonard.
+;	0060	!	26	11-04-77	CP	Change terminal read in routine
+;	0061	!					COMMAND_PROC to do an RMS $GET
+;	0062	!					instead of a QIO.
+;	0063	!	27	12-04-77	CP	in FINAL_HANDL, call the primary
+;	0064	!					handler (that lives in DBGSTART.MAR)
+;	0065	!					instead of the handler called by
+;	0066	!					that primary handler. Do an UNWIND
+;	0067	!					as well back to the routine
+;	0068	!					DBG$START_DEBUG that declared the
+;	0069	!					primary handler. Also, before
+;	0070	!					returning from the handler to
+;	0071	!					continue the user program, restore
+;	0072	!					the PSL from the user register
+;	0073	!					storage area.
+;	0074	!	28	14-04-77	CP	turn T-bit off in the PSL while
+;	0075	!					user has control.
+;	0076	!	29	19-04-77	CP	When the user gains control because
+;	0077	!					a STEP command is exhausted (the
+;	0078	!					count is reduced to zero), turn the
+;	0079	!					STEPPING context bit off.
+;	0080	!	30	20-04-77	CP	Remove CR-LF before "at pc" in
+;	0081	!					EXCEP_ERROR output. In FINAL_HANDL,
+;	0082	!					set DBG$GB_DEBUG to false so that
+;	0083	!					control reinitializes through main
+;	0084	!					handler. Change VAXDEB.BEG to be
+;	0085	!					named DBGGEN.BEG. Also add
+;	0086	!					DBGPCT.BEG for PSECT declarations.
+;	0087	!	31	21-04-77	CP	Add diagnostic information in
+;	0088	!					FINAL_HANDL. Change FINAL_HANDL so
+;	0089	!					that it only UNWINDs if the exception
+;	0090	!					occurred in DEBUG. Fix bug in INCR
+;	0091	!					loop in EXCEP_ERROR. Add check for
+;	0092	!					SS$_UNWIND exception in FINAL_HANDL.
+;	0093	!					If it occurs, just resignal.
+;	0094	!	32	29-04-77	CP	Remove setting of DBG$GB_PARS_MOR
+;	0095	!					in FP_EXC_HANDL since it doesn't
+;	0096	!					have any effect anyway.
+;	0097	!	33	03-05-77	CP	Modify COMMAND_PROC to check
+;	0098	!					the status returned from RMS.
+;	0099	!					If it is RMS$_EOF, then set the
+;	0100	!					exit flag and turn off the
+;	0101	!					command taking flag so that DEBUG
+;	0102	!					will exit.
+;	0103	!	34	13-05-77	CP	Change DEBUG exception from
+;	0104	!					DBG$_INIT to SS$_DEBUG.
+;	0105	!	35	18-05-77	CP	Add SS$_DEBUG to the list of
+;	0106	!					recognized exceptions in the
+;	0107	!					EXCEPTN_TABLE.
+;	0108	!	36	25-05-77	CP	Bug in DBG$EXC_HANDLER. In tracing
+;	0109	!					all CALL and RET instructions,
+;	0110	!					the forcing
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!					on of the T-bit in the PSL must
+;	0112	!					be done to the incarnation of the
+;	0113	!					user PSL on the exception stack,
+;	0114	!					not in the user register own area.
+;	0115	!					Likewise, if stepping continues
+;	0116	!					because the step count is not
+;	0117	!					exhausted, then the T-bit must
+;	0118	!					be forced on, but this occurs in
+;	0119	!					the MARS routine.
+;	0120	!	37	10-06-77	CP	When doing a SYS$EXIT, send an
+;	0121	!					appropriate status value.
+;	0122	!	38	23-06-77	CP	Replace FP_EXC_HANDLER with
+;	0123	!					small code additions to FINAL_
+;	0124	!					HANDL. In COMMAND_PROC, declare
+;	0125	!					FINAL_HANDL instead of FP_HANDL.
+;	0126	!					In EXC_HANDL, put INS_OPCODES
+;	0127	!					first, before analysis of the
+;	0128	!					exception condition. Move that
+;	0129	!					code out of USER_PROC.
+;	0130	!	39	05-07-77	CP	Change REQUIRE files for
+;	0131	!					system definitions and RMS
+;	0132	!					definitions to come from
+;	0133	!					NEW:, STARLE and STARDE.REQ.
+;	0134	!					On a $GET to RMS, just see whether
+;	0135	!					a success status code was
+;	0136	!					returned instead of insisting
+;	0137	!					on RMS$_NORMAL. Cancel control-o
+;	0138	!					on terminal write when stopping
+;	0139	!					at a breakpoint, a trace trap,
+;	0140	!					a tracepoint, or an unhandled
+;	0141	!					exception. Replace calls to
+;	0142	!					dbg$error_reprt in exc_handler
+;	0143	!					with calls to excep_error.
+;	0144	!	40	07-07-77	CP	Before every ss$_resignal
+;	0145	!					return in exc_handlr, replace
+;	0146	!					all breakpoints. Otherwise, a
+;	0147	!					breakpoint set in a user exception
+;	0148	!					handler is not handled correctly.
+;	0149	!					Move dbg$gb_debug setting out
+;	0150	!					of user_proc and into prim_handl
+;	0151	!					since too much code occurs in
+;	0152	!					DEBUG control before the switch
+;	0153	!					is set, thus allowing errors in
+;	0154	!					DEBUG code to be reported as
+;	0155	!					user errors.
+;	0156	!	41	22-07-77	CP	Turn off v_cco bit in output
+;	0157	!					rab before letting command
+;	0158	!					processor take over. This permits
+;	0159	!					control-O toggling by the user.
+;	0160	!					Delete final_handl and fp_handler.
+;	0161	!					Final_handl is now in MARS. Also,
+;	0162	!					make excep_error a global
+;	0163	!					routine.
+;	0164	!	42	07-09-77	CP	Change REQUIRE declarations to
+;	0165	!					LIBRARY declarations for system-
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	!					wide files.
+;	0167	!	43	20-09-77	CP	Add a word to the message output
+;	0168	!					when a user program begins to execute.
+;	0169	!					Change start and stop messages to
+;	0170	!					display PC information in current
+;	0171	!					radix instead of always hex.
+;	0172	!	44	04-10-77	CP	In command_proc, allow multiple
+;	0173	!					continued input lines each ending
+;	0174	!					in hyphen.
+;	0175	!	45	11-10-77	CP	Change call to error_reprt in
+;	0176	!					excep_error to a SIGNAL. Also,
+;	0177	!					change error codes passed.
+;	0178	!					Remove all traces of excep_error.
+;	0179	!					Replace with report_msg.
+;	0180	!	46	17-10-77	CP	Write report_msg to use
+;	0181	!					GETMSG.
+;	0182	!	47	24-oct-77	KGP	-changed calls to DBG$OUT_VALUE
+;	0183	!					 to be to DBG$OUT_SYM_VAL to effect
+;	0184	!					 the 5X08 val_to_sym intergration.
+;	0185	!	48	26-10-77	CP	Turn off the purge type ahead
+;	0186	!					bit in the input RAB after the
+;	0187	!					first read in command_proc.
+;	0188	!	49	27-10-77	CP	Remove unneeded external declaration
+;	0189	!					for end_of_cmd.
+;	0190	!	50	01-11-77	CP	Get dbg$k_trace_all from DBGMSG.BEG.
+;	0191	!	51	02-11-77	CP	Change all occurrences of start_ad
+;	0192	!					to dbg$gl_uregs [offset_to_pc].
+;	0193	!					Remove dbg$gb_bpt_ok.
+;	0194	!	52	2-nov-77	KGP	-Changed calling sequence to
+;	0195	!					 DBG$INS_DECODE to facilitate multi-line
+;	0196	!					 output.
+;	0197	!	53	07-11-77	CP	Get local run context from based
+;	0198	!					structure pointed to by gl_runframe.
+;	0199	!	54	12-12-77	CP	Missing a level of indirection
+;	0200	!					in checking for trace all.
+;	0201	!	55	21-12-77	CP	Add handling for watchpoints.
+;	0202	!	56	27-12-77	CP	Set inhibit message bit in
+;	0203	!					return status if exiting because
+;	0204	!					of end of file.
+;	0205	!	57	29-12-77	CP	Add another argument to the calls
+;	0206	!					to tbit_handlr.
+;	0207	!	58	24-jan-78	KGP	-Announcing "start PC" makes a special
+;	0208	!					 case out of DBG>call <expr> because
+;	0209	!					 otherwise we announce a useless PC
+;	0210	!					 somewhere within DEBUG instead of what
+;	0211	!					 the user expected.
+;	0212	!	59	28-FEB-78	DAR	Do $EXIT(code=SS$_NORMAL) when ctrl-Z
+;	0213	!					is encountered, instead of SIGNAL.
+;	0214	!					Also took out extra CRLF directives
+;	0215	!					from FAO control strings.
+;	0216	!	60	08-MAR-78	DAR	In DBG$EXC_HANDLER changed ss$_accvio
+;	0217	!					state to not re-load the BPT at the PC,
+;	0218	!					if a break was set there, before continuing.
+;	0219	!					This is accomplished by parameterizing
+;	0220	!					DBG$REM_OPCODES to have either 0 or the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-4
+; Digital Equipment Corporation
+;
+;	0221	!					address of the current PC.
+;	0222	!	61	9-mar-78	KGP	-Changed REPORT_MSG to announce that
+;	0223	!					 an EXC BReak has happened.
+;	0224	!	62	13-MAR-78	DAR	Modified USER_PROC to step over BPT's
+;	0225	!					if the runframe flag "dbg$v_at_break" is
+;	0226	!					set and the user's PC has not changed.
+;	0227	!	63	21-MAR-78	DAR	Added global routine DBG$PUTMSG to look
+;	0228	!					at the exception name and determine if it
+;	0229	!					was a HARDWARE or SOFTWARE exception. If
+;	0230	!					the exception was SOFTWARE 2 is subtracted
+;	0231	!					from the argument count before SYS$PUTMSG
+;	0232	!					is called.
+;	0233	!	64	22-MAR-78	DAR	Modified REPORT_MSG to call DBG$PUTMSG,
+;	0234	!					instead of GETMSG, FAO, and PUT.
+;	0235	!	65	24-MAR-78	KGP	-"start PC", and "trace/break at"
+;	0236	!					 messages now know about whether 
+;	0237	!					 they are "routine" or not.
+;	0238	!	66	05-apr-78	KGP	-Put in support for /after breakpoints.
+;	0239	!	67	06-apr-78	KGP	-We now detect STEPping off the end of
+;	0240	!					 a DBG>CALLed routine just like we do it
+;	0241	!					 for stepping off the end of the user prog.
+;	0242	!	68	10-apr-78	KGP	-The STEP/TRACE announcement is now
+;	0243	!					 properly differentiated.
+;	0244	!					-We don't say "start PC is ..." when
+;	0245	!					 we stop at a tracepoint.
+;	0246	!	69	14-apr-78	KGP	-Pass back new PSL before returning
+;	0247	!					 from EXC_HANDLER in the /after section
+;	0248	!					 of code for BPT exceptions.
+;	0249	!	70	20-apr-78	KGP	-Add routine to implement STEP /OVER
+;	0250	!	71	21-apr-78	KGP	-USER_PROC now gets a BPT table entry
+;	0251	!					 pointer rather than a command buffer
+;	0252	!					 so that it can look after deleting
+;	0253	!					 /AFTER:0 BPTs after it has executed
+;	0254	!					 an associated action buffer.
+;	0255	!	72	24-apr-78	KGP	-Added routine RESET_USER which will
+;	0256	!					 replace the old MARS version of
+;	0257	!					 dbg$reset_user
+;	0258	!	73	03-may-78	KGP	-Modified require and library directives
+;	0259	!					 for native build. (a retro-fit)
+;	0260	!	74	04-may-78	KGP	-RESET_USER now knows about SET TRACE
+;	0261	!					 /CALL, /BRANCH, etc.
+;	0262	!	75	04-may-78	KPG	-Added TBIT_HANDLER, a re-write of
+;	0263	!					 the old MARS DBG$TBIT_HANDLER
+;	0264	!					-Put code in-line for what used to be a
+;	0265	!					 call to DBG$WATCH_HANDL so that we  
+;	0266	!					 can now throw away DBGBREAK.MAR
+;	0267	!					-Re-organized SS$_TBIT case of EXC_HANDLER
+;	0268	!					 so that we now announce "stepped to ..."
+;	0269	!					 ONLY when a step finishes on a CALLS.
+;	0270	!					 (We used to announce "stepped to ..." and
+;	0271	!					  "trace at...").
+;	0272	!	76	08-may-78	KGP	-Once we are stepping OVER via a temp
+;	0273	!					 break, we must stop looking to see if
+;	0274	!					 and inner 'called' routines need
+;	0275	!					 to be stepped over.  
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-5
+; Digital Equipment Corporation
+;
+;	0276	!	77	09-may-78	KGP	-A previously-unused field in the runframe
+;	0277	!					 now holds the temp break address for
+;	0278	!					 /OVER steps so that we can disable this
+;	0279	!					 BPT when stepping stops before completing.
+;	0280	!					-Added DECREMENT_STEP routine for
+;	0281	!					 FORTRAN %line stepping.
+;	0282	!	78	10-may-78	KGP	-COMMAND_PROC now looks after deleting
+;	0283	!					 the /over temp break so that it goes
+;	0284	!					 away no matter how we get control.
+;	0285	!	79	11-may-78	KGP	-Expanded the call and step-over
+;	0286	!					 instruction sets.
+;	0287	!					-New routine called DBG$SHO_OPTRACE.
+;	0288	!					 It reports on opcode tracing for
+;	0289	!					 the DBG>SHOW TRACE command.
+;	0290	!	80	12-may-78	KGP	-COMMAND_PROC now resets the
+;	0291	!					 step level at the beginning of
+;	0292	!					 accepting each new command.
+;	0293	!					-new routine set_optrace
+;	0294	!	81	15-may-78	KGP	-TBIT handler case in EXC_HANDLER
+;	0295	!					 now uses the new TRACE_OPCODES
+;	0296	!					 structure to implement /CALL and /BRANCH
+;	0297	!					 opcode tracing.
+;	0298	!	82	17-MAY-78	DAR	TBIT_HANDLER does not clear DBG$V_IN_A_WPT
+;	0299	!					flag properly.  Also trace anouncing code
+;	0300	!					does not get executed unless TBIT_HANDLER
+;	0301	!					returns a 1 and the trace all flag is set
+;	0302	!					in the runframe.
+;	0303	!	83	17-may-78	KGP	-decrement_step routine checks for
+;	0304	!					 stp mode being LINE vs INSTRUCTION
+;	0305	!	84	18-may-78	KGP	-Fixed bug: we now announce "routine
+;	0306	!					 start PC is" properly for the special
+;	0307	!					 case of DBG>CALL rtn
+;	0308	!	85	26-MAY-78	DAR	In DBG$EXC_HANDLER for ss$_tbit exceptions
+;	0309	!					the T-BIT in the user runframe psl is now
+;	0310	!					always turned off.
+;	0311	!	86	31-may-78	KGP	-All calls to out_typ_val now give the
+;	0312	!					 new 2nd parameter.
+;	0313	!	87	09-JUN-78	DAR	-Fix to CHECK_STEP so we don't try
+;	0314	!					to step/over while in system space.
+;	0315	!					-Fix to DBG$EXC_HANDLER  [SS$_TBIT] so
+;	0316	!					that stepping is turned off when a
+;	0317	!					watchpoint occurs while stepping.
+;	0318	!					-Fix to RESET_USER also look at dbg$v_stepping
+;	0319	!					if we are trying to step around a BREAK.
+;	0320	!	88	12-JUN-78	DAR	The t-bit is not turned back on if the
+;	0321	!					PC is dbg$term_handl or prim_handl_2.
+;	0322	!					This fixes SYSTEM-F-TBIT errors while
+;	0323	!					stepping or tracing.
+;	0324	!	89	19-JUN-78	DAR	Fixed problem with stepping over to a
+;	0325	!					location with a breakpoint already there
+;	0326	!	90	21-JUN-78	DAR	Fixed bug in CHECK_STEP.  Stepping over
+;	0327	!					with "nosystem" produces a message if
+;	0328	!					a CALL inst. is found in system space.
+;	0329	!	91	28-JUN-78	DAR	If stepping over and step count not zero,
+;	0330	!					dbg$l_bpt_pc is not cleared until the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 1-6
+; Digital Equipment Corporation
+;
+;	0331	!					return point.
+;	0332	!	92	06-JUL-78	DAR	Watchpoint length field holds length-1.
+;	0333	!	93	10-JUL-78	DAR	When an access violation occurs, we save
+;	0334	!					the address of the reference instead of
+;	0335	!					the address of the watchpoint.
+;	0336	!	94	21-JUL-78	DAR	When the new value of a watchpoint is
+;	0337	!					reported the step count is cleared.
+;	0338	!	95	27-JUL-78	DAR	Fixed a bug in the breakpoint logic
+;	0339	!					that prohibitted the user from getting
+;	0340	!					a breakpoint fault.
+;	0341	!	96	01-AUG-78	DAR	In CHECK_STEP try to write the opcode
+;	0342	!					back into the I-stream before setting up
+;	0343	!					to step over a 'CALL'.
+;	0344	!	97	11-AUG-78	DAR	In DBG$PUTMSG we should subtract 2 from
+;	0345	!					SIG_ARG_LIST count if the exception code
+;	0346	!					is not found in the table of hardware
+;	0347	!					exceptions.
+;	0348	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 2
+; Digital Equipment Corporation
+;
+;	0349	! TABLE OF CONTENTS
+;	0350	!--
+;	0351	FORWARD ROUTINE
+;	0352		dbg$sho_optrace,			! Report on opcode tracing.
+;	0353		dbg$set_optrace,			! init/set/cancel opcode tracing
+;	0354		list_opcodes : NOVALUE,			! used by SHO_OPTRACE
+;	0355		decrement_step,				! See if a whole step has been done.
+;	0356		tbit_handler,				! validates tbit halt
+;	0357		check_step,				! Check for stepping.
+;	0358		reset_user,				! Start up user program
+;	0359		announce_trace : NOVALUE,		! announce that the step count has
+;	0360							! gone to zero.
+;	0361		command_proc : NOVALUE,			! accepts a command from the user
+;	0362		dbg$exc_handler,			! handles DEBUG set exception conditions
+;	0363		DBG$PUTMSG : NOVALUE,			! checks exception type before calling SYS$PUTMSG
+;	0364		report_msg : NOVALUE,			! outputs a message from system message file
+;	0365		user_proc;				! controls command processing
+;	0366	
+;	0367	!+
+;	0368	! Require and Library files:
+;	0369	!--
+;	0370	
+;	0371	%IF %VARIANT		! True for TEN
+;     L 0372	%THEN
+;     U 0373	LIBRARY 'NEW:STARLE';
+;     U 0374	
+;     U 0375	REQUIRE 'DBGPCT.REQ';
+;     U 0376	REQUIRE 'VXSMAC.REQ';
+;     U 0377	REQUIRE 'DBGMSG.REQ';
+;     U 0378	REQUIRE 'COMTER.REQ';
+;     U 0379	REQUIRE 'VXPALT.REQ';
+;     U 0380	REQUIRE 'SYSLIT.REQ';
+;     U 0381	REQUIRE 'DBGGEN.REQ';
+;     U 0382	REQUIRE 'VAXOPS.REQ';
+;     U 0383	REQUIRE 'BSTRUC.REQ';
+;     U 0384	REQUIRE 'DLLNAM.REQ';
+;     U 0385	REQUIRE 'SYSSER.REQ';
+;     U 0386	%ELSE
+;	0387	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0388	
+;	0389	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0401	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0441	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0720	REQUIRE 'SRC$:COMTER.REQ';
+;	0812	REQUIRE 'SRC$:VXPALT.REQ';
+;	0836	REQUIRE 'SRC$:SYSLIT.REQ';
+;	0859	REQUIRE 'SRC$:DBGGEN.REQ';
+;	1109	REQUIRE 'SRC$:VAXOPS.REQ';
+;	1297	REQUIRE 'SRC$:BSTRUC.REQ';
+;	1348	REQUIRE 'SRC$:DLLNAM.REQ';
+;	1399	REQUIRE 'SRC$:SYSSER.REQ';
+;      R1402	SWITCHES LIST (SOURCE);
+;      R1403	
+;      R1404	EXTERNAL ROUTINE
+;      R1405		dbg$fao_out;				! formats a line and outputs to the terminal
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]SYSSER.REQ;5					Page 2-1
+; Digital Equipment Corporation
+;
+;      R1406	
+;      R1407	SWITCHES LIST (NOSOURCE);
+;	1452	%FI
+;	1453	
+;	1454	
+;	1455	EXTERNAL ROUTINE
+;	1456		dbg$init_step : NOVALUE,		! Reset step level to what is
+;	1457		dbg$set_stp_lvl : NOVALUE,		!  needed at begin_of_command
+;	1458		dbg$conv_r_50,				! Convert rad50 to ascii
+;	1459		dbg$get_lineno,				! FORTRAN %line Stepping.
+;	1460		dbg$cancel_bpt : NOVALUE,		! Delete a breakpoint
+;	1461		DBG$IS_IT_ENTRY,			! MATCH ADDRESS TO ROUTINE SYMBOL.
+;	1462		dbg$pseudo_prog,			! DBGSTART code to implement CALL
+;	1463		dbg$fao_put : NOVALUE,			! build an output buffer full of data
+;	1464		dbg$final_handl,			! call frame exception handler
+;	1465		dbg$save_bpt : NOVALUE,			! sets a breakpoint
+;	1466		dbg$find_bpt,				! searches for one breakpoint
+;	1467		dbg$find_watch,				! identifies watchpoints and their pages
+;	1468		dbg$freerelease,			! releases free storage
+;	1469		dbg$freez,				! allocates free storage
+;	1470		dbg$ins_decode,				! turn hex instruction into ASCII
+;	1471		dbg$ins_opcodes,			! removes breakpoints and inserts opcodes
+;	1472		dbg$out_message : NOVALUE,		! writes string descriptor message
+;	1473							! to DBG$OUTPUT
+;	1474		dbg$out_put : NOVALUE,			! output a buffer to output device
+;	1475		dbg$out_num_val,			! outputs an absolute value
+;	1476		dbg$out_sym_val : NOVALUE,		! Output numeric or symbolic values.
+;	1477		dbg$out_typ_val,			! outputs typed value.
+;	1478		dbg$pars_a_line,			! parses a line of input text
+;	1479		dbg$rem_opcodes,			! inserts breakpoints in user code
+;	1480		dbg$write_mem,				! Writes data to user program
+;	1481		SYS$PUTMSG : ADDRESSING_MODE (GENERAL);	! system output message routine
+;	1482	
+;	1483	BUILTIN
+;	1484		FP;					! register 14
+;	1485	
+;	1486	EXTERNAL
+;	1487		dbg$gb_opinfo : blockvector[ maxopcode, optsize, byte],
+;	1488		dbg$cp_inp_str : BLOCK [, BYTE],	! points to input string descriptor
+;	1489		dbg$cp_out_str : REF VECTOR[,BYTE],	! pointer to current output buffer
+;	1490		dbg$gb_exit_dbg: BYTE,			! exit flag
+;	1491		dbg$gb_stp_ptr : REF VECTOR [, BYTE],	! pointer to current STEP type
+;	1492		dbg$gb_mod_ptr : REF VECTOR [, BYTE],	! pointer to current mode settings
+;	1493		dbg$gb_resignal : BYTE,			! flag that says resignal all exceptions
+;	1494		dbg$gb_take_cmd: BYTE,			! flag that controls command taking
+;	1495		dbg$gl_buf_siz,				! Holds count of output buffer
+;	1496		dbg$gl_context: BITVECTOR,		! DEBUG command context word
+;	1497		dbg$gl_inprab: BLOCK [, BYTE],		! RAB for 'INPUT'
+;	1498		dbg$gl_outprab: BLOCK [, BYTE],		! RAB for 'OUTPUT'
+;	1499		dbg$gl_runframe : REF BLOCK [, BYTE],	! pointer to current run context
+;	1500		dbg$gl_step_num,			! number of steps to single step
+;	1501		dbg$pseudo_exit,			! Label in pseudo code (for CALL) 
+;	1502		dbg$term_handlr,			! Label in termination handler
+;	1503		prim_handl_2,				! Label in primary handler
+;	1504		dbg$user_exit;				! Label in exit code
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 2-2
+; Digital Equipment Corporation
+;
+;	1505	
+;	1506	LITERAL
+;	1507		signal_arg_coun	= 0,			! offset in exception call frame
+;	1508		exception_name	= 1,			! ditto, offset to exception name
+;	1509		add_sig_arg_one	= 2,			! first additional argument
+;	1510		add_sig_arg_two	= 3,			! second additional argument
+;	1511	
+;	1512		try_read	= 0,			! attempt to read
+;	1513		try_write	= 1,			! attempt to write
+;	1514		inhibit_msg	= 1^28;			! inhibit message bit
+;	1515	
+;	1516	MACRO
+;	1517		dbg$_noinfo	= 0 %,			! For FORTRAN %LINE stepping.
+;	1518	
+;	1519		TBIT		= 0,4,1,0 %,		! Trace bit is PSL
+;	1520	
+;	1521		intended_accs	= 2, 2, 1, 0%;		! bit in first additional argument
+;	1522							! that says whether a read or write
+;	1523							! was attempted in the access violation.
+;	1524	
+;	1525	LITERAL
+;	1526		dbg_exc		= 0,			! general debugging purposes
+;	1527		dbg_exc1	= 0,			! collecting command strings
+;	1528		dbg_exc2	= 0,			! diagnostics in REPORT_MESSAGE
+;	1529		dbg_exc3	= 0,			! having to do with breakpoints.
+;	1530		dbg_exc4	= 0,			! having to do with stepping.
+;	1531		dbg_exc5	= 0,			! opcode tracing.
+;	1532		dbg_exc6	= 0;			! having to do with watchpoints.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 3
+; Digital Equipment Corporation
+;
+;	1533	!++
+;	1534	! The data structure for opcode tracing is defined herein
+;	1535	! because no other module in DEBUG knows about it.
+;	1536	! It consists of two logical parts which are virtually contiguous:
+;	1537	!
+;	1538	!	1) a sequence of fixed two-longword entries, the first
+;	1539	!	   word of which is a pointer to the name of the
+;	1540	!	   opcode set, and the second word of which is (later) set
+;	1541	!	   to point to the opcode structure which defines the set.
+;	1542	!	   (one which is built with MAKE_OPCODE_TBL, below)
+;	1543	!	   If this second longword is 0, then this set of opcodes
+;	1544	!	   is not being traced.
+;	1545	!
+;	1546	!	** There are NUM_OPCODE_SETS of these opcode sets.
+;	1547	!
+;	1548	!	2) a 1-word entry which is either 0 or a pointer to some
+;	1549	!	   structure which defines user-given opcode lists.
+;	1550	!	   (Probably a linked version of the above 2-longword entries).
+;	1551	!	   Currently this word is always 0 because we have not
+;	1552	!	   yet implemented user-given opcode lists.  (It will be
+;	1553	!	   done via something like DBG>SET TRACE/INSTRUCT opcode_list).
+;	1554	!
+;	1555	!--
+;	1556	
+;	1557	!+
+;	1558	! Currently there are only 2 pre-defined opcode lists.
+;	1559	!-
+;	1560	
+;	1561	LITERAL
+;	1562		NUM_OPCODE_SETS	= 2;
+;	1563	
+;	1564	OWN
+;	1565				! We need 2 entries for each opcode set,
+;	1566				! and 1 entry at the end to point to
+;	1567				! user-given sets.
+;	1568	
+;	1569		trace_opcodes : vector[ NUM_OPCODE_SETS*2 +1, LONG];
+;	1570	
+;	1571	!++
+;	1572	! Macro for STEP/OVER and for SET TRACE/CALL and /BRANCH.
+;	1573	! It builds a fixed byte sequences which contains a count
+;	1574	! byte at the beginning, and a sequence of opcodes
+;	1575	! following that.  These structures are those pointed
+;	1576	! to in the TRACE_OPCODES structure, described above.
+;	1577	!--
+;	1578	
+;	1579	MACRO
+;	1580		make_opcode_tbl( table_name )[] =
+;     M 1581			BIND table_name = UPLIT BYTE (%LENGTH-1, %REMAINING)
+;     M 1582				: VECTOR [, BYTE]%;
+;	1583	
+;	1584	!++
+;	1585	! The command SET TRACE /CALL causes a trace
+;	1586	! to be output to the output device every time one of the
+;	1587	! following instructions is about to be executed.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 3-1
+; Digital Equipment Corporation
+;
+;	1588	!--
+;	1589	
+;	1590	make_opcode_tbl( trace_opc,
+;     P 1591			%X'FB',	! CALLS
+;     P 1592			%X'FA',	! CALLG
+;     P 1593			%X'30',	! BSBW
+;     P 1594			%X'10',	! BSBB
+;     P 1595			%X'16',	! JSB
+;     P 1596			%X'05',	! RSB
+;     P 1597			%X'04'	! RET
+;     P 1598		);
+;	1599	!++
+;	1600	! The command SET TRACE /BRANCH causes a trace
+;	1601	! to be output to the output device every time one of the
+;	1602	! following instructions is about to be executed.
+;	1603	!--
+;	1604	
+;	1605	make_opcode_tbl( branch_opc,
+;     P 1606			%X'12',	! BNEQ or BNEQU
+;     P 1607			%X'13',	! BEQL or BEQLU
+;     P 1608			%X'14',	! BGTR
+;     P 1609			%X'15',	! BLEQ
+;     P 1610			%X'18',	! BGEQ
+;     P 1611			%X'19',	! BLSS
+;     P 1612			%X'1A',	! BGTRU
+;     P 1613			%X'1B',	! BLEQU
+;     P 1614			%X'1C',	! BVC
+;     P 1615			%X'1D',	! BVS
+;     P 1616			%X'1E',	! BGEQU or BCC
+;     P 1617			%X'1F',	! BLSSU or BCS
+;     P 1618			%X'11',	! BRB
+;     P 1619			%X'31',	! BRW
+;     P 1620			%X'17',	! JMP
+;     P 1621			%X'E0',	! BBS
+;     P 1622			%X'E1',	! BBC
+;     P 1623			%X'E2',	! BBSS
+;     P 1624			%X'E3',	! BBCS
+;     P 1625			%X'E4',	! BBSC
+;     P 1626			%X'E5',	! BBCC
+;     P 1627			%X'E6',	! BBSSI
+;     P 1628			%X'E7',	! BBCCI
+;     P 1629			%X'E8',	! BLBS
+;     P 1630			%X'E9',	! BLBC
+;     P 1631			%X'9D',	! ACBB
+;     P 1632			%X'3D',	! ACBW
+;     P 1633			%X'F1',	! ACBL
+;     P 1634			%X'4F',	! ACBF
+;     P 1635			%X'6F',	! ACBD
+;     P 1636			%X'F3',	! AOBLEQ
+;     P 1637			%X'F2',	! AOBLSS
+;     P 1638			%X'F4',	! SOBGEQ
+;     P 1639			%X'F5',	! SOBGTR
+;     P 1640			%X'8F',	! CASEB
+;     P 1641			%X'AF',	! CASEW
+;     P 1642			%X'CF'	! CASEL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 3-2
+; Digital Equipment Corporation
+;
+;     P 1643		);
+;	1644	
+;	1645	!++
+;	1646	!	We step /OVER any instruction which begins
+;	1647	!	with an opcode which is in the following structure.
+;	1648	!--
+;	1649	
+;	1650	make_opcode_tbl( step_over_set,
+;     P 1651			%X'FB',	! CALLS
+;     P 1652			%X'FA',	! CALLG
+;     P 1653			%X'30',	! BSBW
+;     P 1654			%X'10',	! BSBB
+;     P 1655			%X'16'	! JSB
+;     P 1656		);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 4
+; Digital Equipment Corporation
+;
+;	1657	GLOBAL ROUTINE DBG$SET_OPTRACE (SET_TOKEN) =
+;	1658	!++
+;	1659	! Functional Description:
+;	1660	!	This routine is called for one of 3 reasons:
+;	1661	!	1) to initialize the data structure needed for any type
+;	1662	!	   of opcode tracing.
+;	1663	!	2) to SET TRACE /CALL or /BRANCH.
+;	1664	!	3) to CANCEL TRACE /CALL or /BRANCH.
+;	1665	!
+;	1666	!	This routine is in this module so that all of the
+;	1667	!	opcode tracing structures, etc, can remain local to it.
+;	1668	!	
+;	1669	! Formal Parameters:
+;	1670	!
+;	1671	!	SET_TOKEN	0 => this is the initialize call
+;	1672	!			otherwise, this should be BRANCH_TOKEN (=> /branch)
+;	1673	!			or CALLS_TOKEN (=> /call)
+;	1674	!
+;	1675	! Implicit Inputs:
+;	1676	!	The context bit which says whether we are SETting or CANcelling
+;	1677	!	the indicated opcode tracing is used when this is NOT
+;	1678	!	the initialization call to this routine.
+;	1679	!
+;	1680	!	We assume that an outer routine has already checked that
+;	1681	!	the SET_TOKEN corresponds to /CALLS or /BRANCH.
+;	1682	!
+;	1683	! Routine Value:
+;	1684	!	NOVALUE - on the initialize call,
+;	1685	!	TRUE or FALSE, otherwise.  TRUE => there is
+;	1686	!		still some opcode tracing happening,
+;	1687	!		FALSE => otherwise.
+;	1688	!
+;	1689	!--
+;	1690	BEGIN
+;	1691		LOCAL
+;	1692			set_pointer,
+;	1693			index;
+;	1694	
+;	1695		!+
+;	1696		! First check to see if this was the initialization call.
+;	1697		!-
+;	1698	
+;	1699		IF( .set_token eql 0 )
+;	1700		then
+;	1701			begin
+;	1702	
+;	1703			! Initially there is no opcode tracing in
+;	1704			! effect.  The opcode set names must always 
+;	1705			! be there, though.  They never change.
+;	1706			! We assume that the initial TRACE_OPCODES structure
+;	1707			! is all 0s, so that the pointers are null.
+;	1708	
+;	1709			trace_opcodes[1] = uplit( %ascic '/CALL' );
+;	1710			trace_opcodes[3] = uplit( %ascic '/BRANCH' );
+;	1711			return;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 4-1
+; Digital Equipment Corporation
+;
+;	1712			end;
+;	1713	
+;	1714		!+
+;	1715		! Whether or not this call is to cancel or set the
+;	1716		! indicated opcode tracing, the index into the
+;	1717		! trace_opcodes table will be the same.  While we're
+;	1718		! at it, pick up the address of the fixed opcode list
+;	1719		! which defines the set of opcodes we will trace.
+;	1720		!-
+;	1721	
+;	1722		IF( .set_token EQL CALLS_TOKEN )
+;	1723		THEN
+;	1724			BEGIN
+;	1725	
+;	1726			! We 'build in' the fact that the 0th
+;	1727			! entry is for the /CALL set.
+;	1728	
+;	1729			index = 0;
+;	1730			set_pointer = trace_opc;
+;	1731			END
+;	1732		ELSE
+;	1733			BEGIN
+;	1734	
+;	1735			! Assume that SET_TOKEN is EQL BRANCH_TOKEN.
+;	1736			! We 'build in' the fact that the next
+;	1737			! entry is for the /BRANCH set.
+;	1738	
+;	1739			index = 2;
+;	1740			set_pointer = branch_opc;
+;	1741			END;
+;	1742	
+;	1743		!+
+;	1744		! If we are not cancelling the tracing,
+;	1745		! then we must be setting it.
+;	1746		!-
+;	1747	
+;	1748		IF( .dbg$gl_context[ DBG$K_CANCEL ] )
+;	1749		then
+;	1750			trace_opcodes[.index] = 0
+;	1751		else
+;	1752			trace_opcodes[.index] = .set_pointer;
+;	1753	
+;	1754		! Return an indication of whether or not there
+;	1755		! is still any opcode tracing in effect.
+;	1756	
+;	1757		RETURN( .TRACE_OPCODES[0] NEQA 0
+;	1758		       OR
+;	1759			.TRACE_OPCODES[2] NEQA 0
+;	1760		      );
+;	1761	END;
+
+
+							    .TITLE  DBGEXC
+							    .IDENT  \000097\
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 4-2
+; Digital Equipment Corporation
+;
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   7, -5, -6, 48, 16, 22, 5, 4				      ;
+					      00008 P.AAB:  .BYTE   37, 18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 17, - ;
+								    49, 23, -32, -31, -30, -29, -28, -27, -26, -25, -24, -    ;
+								    -23, -99, 61, -15, 79, 111, -13, -14, -12, -11, -113, -   ;
+								    -81, -49						      ;
+					      0002E	    .BLKB   2
+					      00030 P.AAC:  .BYTE   5, -5, -6, 48, 16, 22				      ;
+					      00036	    .BLKB   2
+					      00038 P.AAD:  .ASCII  <5>\/CALL\<0><0>					      ;
+					      00040 P.AAE:  .ASCII  <7>\/BRANCH\					      ;
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 TRACE_OPCODES:
+							    .BLKB   20
+
+						    TRACE_OPC=		P.AAA
+						    BRANCH_OPC=		P.AAB
+						    STEP_OVER_SET=	P.AAC
+							    .GLOBL  DBG$FAO_OUT, DBG$INIT_STEP, DBG$SET_STP_LVL, DBG$CONV_R_50
+							    .GLOBL  DBG$GET_LINENO, DBG$CANCEL_BPT, DBG$IS_IT_ENTRY
+							    .GLOBL  DBG$PSEUDO_PROG, DBG$FAO_PUT, DBG$FINAL_HANDL
+							    .GLOBL  DBG$SAVE_BPT, DBG$FIND_BPT, DBG$FIND_WATCH, DBG$FREERELEASE
+							    .GLOBL  DBG$FREEZ, DBG$INS_DECODE, DBG$INS_OPCODES, DBG$OUT_MESSAGE
+							    .GLOBL  DBG$OUT_PUT, DBG$OUT_NUM_VAL, DBG$OUT_SYM_VAL
+							    .GLOBL  DBG$OUT_TYP_VAL, DBG$PARS_A_LINE, DBG$REM_OPCODES
+							    .GLOBL  DBG$WRITE_MEM, SYS$PUTMSG, DBG$GB_OPINFO, DBG$CP_INP_STR
+							    .GLOBL  DBG$CP_OUT_STR, DBG$GB_EXIT_DBG, DBG$GB_STP_PTR
+							    .GLOBL  DBG$GB_MOD_PTR, DBG$GB_RESIGNAL, DBG$GB_TAKE_CMD
+							    .GLOBL  DBG$GL_BUF_SIZ, DBG$GL_CONTEXT, DBG$GL_INPRAB
+							    .GLOBL  DBG$GL_OUTPRAB, DBG$GL_RUNFRAME, DBG$GL_STEP_NUM
+							    .GLOBL  DBG$PSEUDO_EXIT, DBG$TERM_HANDLR, PRIM_HANDL_2
+							    .GLOBL  DBG$USER_EXIT
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0C00 00000 	    .ENTRY  DBG$SET_OPTRACE, Save R10,R11			      ; 1657
+		         5A 00000000'  EF  9E 00002 	    MOVAB   P.AAD, R10						      ;
+		         5B 00000000'  EF  9E 00009 	    MOVAB   TRACE_OPCODES, R11					      ;
+				  04   AC  D5 00010 	    TSTL    SET_TOKEN						      ; 1699
+				       0B  12 00013 	    BNEQ    1$							      ;
+		    04   AB	       6A  9E 00015 	    MOVAB   P.AAD, TRACE_OPCODES+4				      ; 1709
+		    0C   AB	  08   AA  9E 00019 	    MOVAB   P.AAE, TRACE_OPCODES+12				      ; 1710
+				       3B  11 0001E 	    BRB     8$							      ; 1711
+		         09	  04   AC  D1 00020 1$:     CMPL    SET_TOKEN, #9					      ; 1722
+				       08  12 00024 	    BNEQ    2$							      ;
+				       50  D4 00026 	    CLRL    INDEX						      ; 1729
+		         51	  C8   AA  9E 00028 	    MOVAB   TRACE_OPC, SET_POINTER				      ; 1657
+				       07  11 0002C 	    BRB     3$							      ; 1722
+		         50	       02  D0 0002E 2$:     MOVL    #2, INDEX						      ; 1739
+		         51	  D0   AA  9E 00031 	    MOVAB   BRANCH_OPC, SET_POINTER				      ; 1657
+	   05 00000000G  EF	       05  E1 00035 3$:     BBC     #5, DBG$GL_CONTEXT, 4$				      ; 1748
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 4-3
+; Digital Equipment Corporation
+;
+				     6B40  D4 0003D 	    CLRL    TRACE_OPCODES[INDEX]				      ; 1750
+				       04  11 00040 	    BRB     5$							      ; 1748
+		       6B40	       51  D0 00042 4$:     MOVL    SET_POINTER, TRACE_OPCODES[INDEX]			      ; 1752
+				       51  D4 00046 5$:     CLRL    R1							      ; 1757
+				       6B  D5 00048 	    TSTL    TRACE_OPCODES					      ;
+				       02  13 0004A 	    BEQL    6$							      ;
+				       51  D6 0004C 	    INCL    R1							      ;
+				       50  D4 0004E 6$:     CLRL    R0							      ; 1759
+				  08   AB  D5 00050 	    TSTL    TRACE_OPCODES+8					      ;
+				       02  13 00053 	    BEQL    7$							      ;
+				       50  D6 00055 	    INCL    R0							      ;
+		         50	       51  C8 00057 7$:     BISL2   R1, R0						      ; 1757
+					   04 0005A 	    RET     							      ;
+				       50  D4 0005B 8$:     CLRL    R0							      ; 1657
+					   04 0005D 	    RET     							      ;
+
+; Routine Size:  94 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 5
+; Digital Equipment Corporation
+;
+;	1762	GLOBAL ROUTINE DBG$SHO_OPTRACE =
+;	1763	!++
+;	1764	! Functional Description:
+;	1765	!	Produce a report of which type of opcode tracing
+;	1766	!	is in effect.
+;	1767	!
+;	1768	!	This routine is in this module so that all of the
+;	1769	!	opcode tracing structures, etc, can remain local to it.
+;	1770	!	
+;	1771	! Implicit Inputs:
+;	1772	!
+;	1773	!	The structure and manipulation of the TRACE_OPCODES structure.
+;	1774	!
+;	1775	! Routine Value:
+;	1776	!	TRUE, if some display is produced,
+;	1777	!	FALSE, otherwise.
+;	1778	!--
+;	1779	BEGIN
+;	1780		LOCAL
+;	1781			one_set_found;
+;	1782	
+;	1783		!+
+;	1784		! No matter what the TRACE_OPCODES data structure
+;	1785		! says, no opcode tracing is in effect if the runframe
+;	1786		! bit that makes this happen in not set.
+;	1787		!-
+;	1788	
+;	1789		IF( NOT .dbg$gl_runframe[DBG$V_TRACE_ALL] )
+;	1790		then
+;	1791			return(false);
+;	1792	
+;	1793		!+
+;	1794		! Loop around displaying each built-in opcode
+;	1795		! set that is currently known about and enabled.
+;	1796		! Maintain a flag which indicates if any set
+;	1797		! has been found.
+;	1798		!-
+;	1799	
+;	1800		one_set_found = FALSE;
+;	1801	
+;	1802		INCR i FROM 0 TO (NUM_OPCODE_SETS*2) -1 BY 2
+;	1803			DO
+;	1804	
+;	1805			! It is the opcode set pointer field of each record
+;	1806			! being or not being 0 which indicates whether or not
+;	1807			! the indicated set is being traced.
+;	1808	
+;	1809			IF( .trace_opcodes[.i] NEQ 0 )
+;	1810			then
+;	1811				begin
+;	1812				one_set_found = TRUE;
+;	1813	
+;	1814				! Pass on the name of the opcode set and a pointer to
+;	1815				! a counted byte stream of opcodes in that set.
+;	1816	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 5-1
+; Digital Equipment Corporation
+;
+;	1817				list_opcodes( .trace_opcodes[.i+1], .trace_opcodes[.i] );
+;	1818				end;
+;	1819	
+;	1820		! Now we can display any user-given opcode sets,
+;	1821		! once this has been implemented.  The check for this will
+;	1822		! be whether or not TRACE_OPCODES[ NUM_OPCODE_SETS *2 ] is
+;	1823		! 0 or not.  A non-zero value will point to a linked 2-word structure
+;	1824		! just like those displayed above.
+;	1825	
+;	1826	
+;	1827		! Return an indicator of whether or not any
+;	1828		! opcode tracing is in effect.
+;	1829	
+;	1830		return(.one_set_found);
+;	1831	END;
+
+
+
+
+
+					 000C 0005E 	    .ENTRY  DBG$SHO_OPTRACE, Save R2,R3				      ; 1762
+		         50 00000000G  EF  D0 00060 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 1789
+	   27	    48   A0	       02  E1 00067 	    BBC     #2, 72(R0), 3$					      ;
+				       52  7C 0006C 	    CLRQ    I							      ; 1802
+		         50 00000000'EF42  D0 0006E 1$:     MOVL    TRACE_OPCODES[I], R0				      ; 1809
+				       11  13 00076 	    BEQL    2$							      ;
+		         53	       01  D0 00078 	    MOVL    #1, ONE_SET_FOUND					      ; 1812
+				       50  DD 0007B 	    PUSHL   R0							      ; 1817
+			    00000000'EF42  DD 0007D 	    PUSHL   TRACE_OPCODES+4[I]					      ;
+		  0000V  CF	       02  FB 00084 	    CALLS   #2, LIST_OPCODES					      ;
+	   52	         02	       03  F1 00089 2$:     ACBL    #3, #2, I, 1$					      ; 1802
+				     FFDF     0008D									      ;
+		         50	       53  D0 0008F 	    MOVL    ONE_SET_FOUND, R0					      ; 1830
+					   04 00092 	    RET     							      ;
+				       50  D4 00093 3$:     CLRL    R0							      ; 1762
+					   04 00095 	    RET     							      ;
+
+; Routine Size:  56 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 6
+; Digital Equipment Corporation
+;
+;	1832	ROUTINE LIST_OPCODES ( list_name, list_pointer ) : novalue =
+;	1833	!++
+;	1834	! Functional Description:
+;	1835	!	Produce a report of which type of opcode tracing
+;	1836	!	is in effect.
+;	1837	!
+;	1838	!	This routine is in this module so that all of the
+;	1839	!	opcode tracing structures, etc, can remain local to it.
+;	1840	!	
+;	1841	! Implicit Inputs:
+;	1842	!
+;	1843	!	The structure and manipulation of the TRACE_OPCODES structure.
+;	1844	!
+;	1845	! Routine Value:
+;	1846	!	NOVALUE
+;	1847	!--
+;	1848	BEGIN
+;	1849		MAP
+;	1850			list_name : ref vector[,byte],
+;	1851			list_pointer : ref vector[,byte];
+;	1852		local
+;	1853			output_buffer : vector[ tty_out_width, byte];
+;	1854	
+;	1855		! Set up to do standard DEBUG I/O.
+;	1856	
+;	1857		dbg$cp_out_str = output_buffer+1;
+;	1858		dbg$gl_buf_siz = 0;
+;	1859	
+;	1860		dbg$fao_put( UPLIT( %ASCIC 'tracing !AC instructions: '),.list_name);
+;	1861	
+;	1862		! Display the actual opcodes in the list.  The structure
+;	1863		! expected here is one made by MAKE_OPCODE_TBL, described
+;	1864		! at the beginning of this module.
+;	1865	
+;	1866		INCR I from 1 to .list_pointer[0] 
+;	1867			do
+;	1868			BEGIN
+;	1869			local
+;	1870				op_size;
+;	1871	
+;	1872			! Each time around the loop we add one more opcode
+;	1873			! to the list we are building.
+;	1874	
+;	1875			op_size = dbg$conv_r_50( .dbg$gb_opinfo[ .list_pointer[.i], OP_NAME], .dbg$cp_out_str );
+;	1876			dbg$cp_out_str = .dbg$cp_out_str + .op_size;
+;	1877			dbg$gl_buf_siz = .dbg$gl_buf_siz + .op_size;
+;	1878	
+;	1879			IF( .i eql .list_pointer[0] )
+;	1880			then
+;	1881				! No more opcodes to list.
+;	1882				exitloop;
+;	1883	
+;	1884			! Separate or terminate the list.
+;	1885	
+;	1886			IF( .I neq .list_pointer[0] -1 )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 6-1
+; Digital Equipment Corporation
+;
+;	1887			then
+;	1888				dbg$fao_put( UPLIT(%ASCIC ', '))
+;	1889			else
+;	1890				dbg$fao_put( UPLIT(%ASCIC ' and '));
+;	1891	
+;	1892			! Watch out for line overflow due to large opcode sets.
+;	1893	
+;	1894			IF( .dbg$cp_out_str GTRA output_buffer+72 )
+;	1895			then
+;	1896				begin
+;	1897	
+;	1898				! Flush the partial message and set up
+;	1899				! to fill the buffer again with the rest of it.
+;	1900	
+;	1901				dbg$out_put( output_buffer );
+;	1902				dbg$cp_out_str = output_buffer+1;
+;	1903				dbg$gl_buf_siz = 0;
+;	1904				dbg$fao_put( UPLIT(%ASCIC '!8AC'),uplit(%ascic' '));
+;	1905				end;
+;	1906			END;
+;	1907	
+;	1908		! The list has been exhausted.
+;	1909		! Flush the message and we're done.
+;	1910	
+;	1911		dbg$out_put( output_buffer );
+;	1912	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00048 P.AAF:  .ASCII  <26>\tracing !AC instructions: \<0>			      ;
+					      00064 P.AAG:  .ASCII  <2>\, \<0>						      ;
+					      00068 P.AAH:  .ASCII  <5>\ and \<0><0>					      ;
+					      00070 P.AAI:  .ASCII  <4>\!8AC\<0><0><0>					      ;
+					      00078 P.AAJ:  .ASCII  <1>\ \<0><0>					      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0F8C 00096 LIST_OPCODES:
+							    .WORD   Save R2,R3,R7,R8,R9,R10,R11				      ; 1832
+		         57 00000000G  EF  9E 00098 	    MOVAB   DBG$OUT_PUT, R7					      ;
+		         58 00000000G  EF  9E 0009F 	    MOVAB   DBG$FAO_PUT, R8					      ;
+		         59 00000000G  EF  9E 000A6 	    MOVAB   DBG$GL_BUF_SIZ, R9					      ;
+		         5A 00000000G  EF  9E 000AD 	    MOVAB   DBG$CP_OUT_STR, R10					      ;
+		         5B 00000000'  EF  9E 000B4 	    MOVAB   P.AAF, R11						      ;
+		         5E	FF7C   CE  9E 000BB 	    MOVAB   -132(SP), SP					      ;
+		         6A	  01   AE  9E 000C0 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 1857
+				       69  D4 000C4 	    CLRL    DBG$GL_BUF_SIZ					      ; 1858
+				  04   AC  DD 000C6 	    PUSHL   LIST_NAME						      ; 1860
+				       5B  DD 000C9 	    PUSHL   R11							      ;
+		         68	       02  FB 000CB 	    CALLS   #2, DBG$FAO_PUT					      ;
+		         53	  08   BC  9A 000CE 	    MOVZBL  @LIST_POINTER, R3					      ; 1866
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 6-2
+; Digital Equipment Corporation
+;
+				       52  D4 000D2 	    CLRL    I							      ;
+				       5B  11 000D4 	    BRB     4$							      ;
+				       6A  DD 000D6 1$:     PUSHL   DBG$CP_OUT_STR					      ; 1875
+		         50	  08 BC42  9A 000D8 	    MOVZBL  @LIST_POINTER[I], R0				      ;
+		         50	       06  C4 000DD 	    MULL2   #6, R0						      ;
+			    00000000GEF40  9F 000E0 	    PUSHAB  DBG$GB_OPINFO[R0]					      ;
+				       9E  DD 000E7 	    PUSHL   @(SP)+						      ;
+	      00000000G  EF	       02  FB 000E9 	    CALLS   #2, DBG$CONV_R_50					      ;
+		         6A	       50  C0 000F0 	    ADDL2   OP_SIZE, DBG$CP_OUT_STR				      ; 1876
+		         69	       50  C0 000F3 	    ADDL2   OP_SIZE, DBG$GL_BUF_SIZ				      ; 1877
+      08   BC	         08	       00  ED 000F6 	    CMPZV   #0, #8, @LIST_POINTER, I				      ; 1879
+				       52     000FB									      ;
+				       37  13 000FC 	    BEQL    5$							      ;
+		         50	  08   BC  9A 000FE 	    MOVZBL  @LIST_POINTER, R0					      ; 1886
+				       50  D7 00102 	    DECL    R0							      ;
+		         50	       52  D1 00104 	    CMPL    I, R0						      ;
+				       05  13 00107 	    BEQL    2$							      ;
+				  1C   AB  9F 00109 	    PUSHAB  P.AAG						      ; 1888
+				       03  11 0010C 	    BRB     3$							      ;
+				  20   AB  9F 0010E 2$:     PUSHAB  P.AAH						      ; 1890
+		         68	       01  FB 00111 3$:     CALLS   #1, DBG$FAO_PUT					      ;
+		         50	  48   AE  9E 00114 	    MOVAB   OUTPUT_BUFFER+72, R0				      ; 1894
+		         50	       6A  D1 00118 	    CMPL    DBG$CP_OUT_STR, R0					      ;
+				       14  1B 0011B 	    BLEQU   4$							      ;
+				       5E  DD 0011D 	    PUSHL   SP							      ; 1901
+		         67	       01  FB 0011F 	    CALLS   #1, DBG$OUT_PUT					      ;
+		         6A	  01   AE  9E 00122 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 1902
+				       69  D4 00126 	    CLRL    DBG$GL_BUF_SIZ					      ; 1903
+				  30   AB  9F 00128 	    PUSHAB  P.AAJ						      ; 1904
+				  28   AB  9F 0012B 	    PUSHAB  P.AAI						      ;
+		         68	       02  FB 0012E 	    CALLS   #2, DBG$FAO_PUT					      ;
+	   A1	         52	       53  F3 00131 4$:     AOBLEQ  R3, I, 1$						      ; 1866
+				       5E  DD 00135 5$:     PUSHL   SP							      ; 1911
+		         67	       01  FB 00137 	    CALLS   #1, DBG$OUT_PUT					      ;
+					   04 0013A 	    RET     							      ; 1832
+
+; Routine Size:  165 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 7
+; Digital Equipment Corporation
+;
+;	1913	ROUTINE TBIT_HANDLER ( psl_ptr, at_pc ) =
+;	1914	!++
+;	1915	! Functional Description:
+;	1916	!
+;	1917	!	Decide why a trace trap has occurred, and return
+;	1918	!	an indicator to tell an outer routine (EXC_HANDLER)
+;	1919	!	what to do about it.
+;	1920	!
+;	1921	! Formal Parameters:
+;	1922	!	
+;	1923	!	PSL_PTR	-A pointer to the supposed PSL that we set or
+;	1924	!		 clear the TBIT in.
+;	1925	!	AT_PC	-PC of current exception.
+;	1926	!
+;	1927	! Return Value:
+;	1928	!
+;	1929	!	0	=> pass control back to get commands,
+;	1930	!		   i.e. STEPping is over
+;	1931	!	1	=> continue STEPping
+;	1932	!	2	=> found a watchpoint while STEPping.
+;	1933	!
+;	1934	! Side Effects:
+;	1935	!
+;	1936	!--
+;	1937	BEGIN
+;	1938		MAP
+;	1939			PSL_PTR : REF BLOCK[ %upval, BYTE];
+;	1940		LOCAL
+;	1941			status;
+;	1942	
+;	1943		!+
+;	1944		! Start by assuming that the result will be that
+;	1945		! the TBIT should be turned off and flagged
+;	1946		! as not begin an expected thing to happen.
+;	1947		!-
+;	1948	
+;	1949		PSL_PTR[ TBIT ] = FALSE;
+;	1950		dbg$gl_runframe[ dbg$V_tbit_ok ] = FALSE;
+;	1951		dbg$gl_runframe[ dbg$V_in_a_bpt ] = FALSE;
+;	1952	
+;	1953		!+
+;	1954		! If we have watchpoint mucking to do,
+;	1955		! let EXC_HANDLER look after it.
+;	1956		!-
+;	1957	
+;	1958		IF ( .dbg$gl_runframe[ DBG$V_IN_A_WPT ] )
+;	1959		THEN
+;	1960			BEGIN
+;	1961			dbg$gl_runframe[ DBG$V_IN_A_WPT ] = FALSE;
+;	1962			IF ( .dbg$gl_runframe[ DBG$V_REAL_WPT ] )
+;	1963			THEN	! Found a watchpoint while stepping.
+;	1964	
+;	1965				RETURN(2);
+;	1966			END;
+;	1967	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 7-1
+; Digital Equipment Corporation
+;
+;	1968		!+
+;	1969		! If there are no steps to take, then
+;	1970		! we will continue the user program
+;	1971		! in non-step mode.  STEP_NUM should never
+;	1972		! get below 0, but we include negative numbers
+;	1973		! here in the test which implies "no steps left
+;	1974		! to do".
+;	1975		!-
+;	1976	
+;	1977		IF( .dbg$gl_step_num LEQ 0 )
+;	1978		then
+;	1979			! Continue the user program in non-step mode.
+;	1980			! The TBIT, etc, has already been disabled.
+;	1981	
+;	1982			return(1);
+;	1983		
+;	1984		!+
+;	1985		! If we are in the middle of stepping /OVER a routine
+;	1986		! call, then there should be no TBIT setting (for step,
+;	1987		! anyways), until the temporary breakpoint for the /OVER step
+;	1988		! is hit.
+;	1989		!-
+;	1990	
+;	1991		if( .dbg$gl_runframe[ DBG$V_STEP_OVER ] )
+;	1992		then
+;	1993			! Continue the user program in non-step mode
+;	1994			! until the temporary (/OVER) breakpoint is hit.
+;	1995	
+;	1996			return(1);
+;	1997		
+;	1998		!+
+;	1999		! If we are in the step mode where we ignore steps
+;	2000		! in system space, then we turn on the TBIT and
+;	2001		! continue stepping WITHOUT decrementing the step
+;	2002		! count since none of the times when the PC is left
+;	2003		! in system space is supposed to count as a step.
+;	2004		!-
+;	2005	
+;	2006		IF( .dbg$gb_stp_ptr[ step_nosystem ]
+;	2007		   AND
+;	2008		    .at_pc GEQA SYSTEM_SPACE
+;	2009		  )
+;	2010		THEN
+;	2011			BEGIN
+;	2012	
+;	2013			! Skip thru system space, TBIT trapping but
+;	2014			! ignoring the traps as long as we're
+;	2015			! still in system space.
+;	2016	
+;	2017			psl_ptr[ TBIT ] = TRUE;
+;	2018			dbg$gl_runframe[ DBG$V_TBIT_OK ] = TRUE;
+;	2019			RETURN(1);
+;	2020			END;
+;	2021	
+;	2022		!+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 7-2
+; Digital Equipment Corporation
+;
+;	2023		! Check for FORTRAN stepping by lines.
+;	2024		!-
+;	2025	
+;	2026		IF( decrement_step(.at_pc) LEQ 0 )
+;	2027		THEN
+;	2028			! Done stepping => now take commands.
+;	2029	
+;	2030			RETURN(0);
+;	2031		!+
+;	2032		! If we get here, then we have decided to
+;	2033		! continue stepping.
+;	2034		!-
+;	2035	
+;	2036		psl_ptr[ TBIT ] = TRUE;
+;	2037		dbg$gl_runframe[ DBG$V_TBIT_OK ] = TRUE;
+;	2038	
+;	2039		RETURN(1);
+;	2040	END;
+
+
+
+
+
+					 0800 0013B TBIT_HANDLER:
+							    .WORD   Save R11						      ; 1913
+		         5B 00000000G  EF  9E 0013D 	    MOVAB   DBG$GL_RUNFRAME, R11				      ;
+		    04   BC	       10  8A 00144 	    BICB2   #16, @PSL_PTR					      ; 1949
+		         50	       6B  D0 00148 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 1950
+		         51	  48   A0  9E 0014B 	    MOVAB   72(R0), R1						      ;
+		         61	  C0   8F  8A 0014F 	    BICB2   #192, (R1)						      ; 1951
+		         0C	  01   A1  E9 00153 	    BLBC    1(R1), 1$						      ; 1958
+		    01   A1	       01  8A 00157 	    BICB2   #1, 1(R1)						      ; 1961
+	   04	         61	       09  E1 0015B 	    BBC     #9, (R1), 1$					      ; 1962
+		         50	       02  D0 0015F 	    MOVL    #2, R0						      ; 1965
+					   04 00162 	    RET     							      ;
+			    00000000G  EF  D5 00163 1$:     TSTL    DBG$GL_STEP_NUM					      ; 1977
+				       3B  15 00169 	    BLEQ    3$							      ;
+	   37	         61	       0A  E0 0016B 	    BBS     #10, (R1), 3$					      ; 1991
+		         50 00000000G  EF  D0 0016F 	    MOVL    DBG$GB_STP_PTR, R0					      ; 2006
+		         14	  01   A0  E9 00176 	    BLBC    1(R0), 2$						      ;
+	      80000000   8F	  08   AC  D1 0017A 	    CMPL    AT_PC, #-2147483648					      ; 2008
+				       0A  1F 00182 	    BLSSU   2$							      ;
+		    04   BC	       10  88 00184 	    BISB2   #16, @PSL_PTR					      ; 2017
+		         61	  80   8F  88 00188 	    BISB2   #128, (R1)						      ; 2018
+				       18  11 0018C 	    BRB     3$							      ; 2019
+				  08   AC  DD 0018E 2$:     PUSHL   AT_PC						      ; 2026
+		  0000V  CF	       01  FB 00191 	    CALLS   #1, DECREMENT_STEP					      ;
+				       50  D5 00196 	    TSTL    R0							      ;
+				       10  15 00198 	    BLEQ    4$							      ;
+		    04   BC	       10  88 0019A 	    BISB2   #16, @PSL_PTR					      ; 2036
+		         50	       6B  D0 0019E 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2037
+		    48   A0	  80   8F  88 001A1 	    BISB2   #128, 72(R0)					      ;
+		         50	       01  D0 001A6 3$:     MOVL    #1, R0						      ; 2039
+					   04 001A9 	    RET     							      ;
+				       50  D4 001AA 4$:     CLRL    R0							      ; 1913
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 7-3
+; Digital Equipment Corporation
+;
+					   04 001AC 	    RET     							      ;
+
+; Routine Size:  114 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 8
+; Digital Equipment Corporation
+;
+;	2041	ROUTINE DECREMENT_STEP ( at_pc ) =
+;	2042	!++
+;	2043	! Functional Description:
+;	2044	!
+;	2045	!	See if the given PC corresponds to a FORTRAN %line
+;	2046	!	number so that we can properly decrement the STEP
+;	2047	!	count while stepping.
+;	2048	!
+;	2049	!	It is in this routine that the decision is made about
+;	2050	!	how step types LINE and INSTRUCTION relate with regard
+;	2051	!	to whether or not there exists PC-correlation tables
+;	2052	!	for the routine that we are currently stopped in.
+;	2053	!
+;	2054	! Formal Parameters:
+;	2055	!	
+;	2056	!	AT_PC	-PC of current exception.
+;	2057	!
+;	2058	! Implicit Outputs:
+;	2059	!
+;	2060	!	The assignment is made to DBG$GL_STEP_NUM
+;	2061	!
+;	2062	! Return Value:
+;	2063	!
+;	2064	!	The new value which we have stored in DBG$GL_STEP_NUM
+;	2065	!
+;	2066	! Side Effects:
+;	2067	!
+;	2068	!--
+;	2069	BEGIN
+;	2070		LOCAL
+;	2071			status;
+;	2072	
+;	2073		! Assume that we either won't be stepping by %LINEs,
+;	2074		! or that if we are, there won't be enough information
+;	2075		! available to do so.
+;	2076	
+;	2077		status = DBG$_NOINFO;
+;	2078	
+;	2079		!+
+;	2080		! Check for FORTRAN stepping by lines if the
+;	2081		! step mode indicates this is desired.
+;	2082		!-
+;	2083	
+;	2084		IF( .dbg$gb_stp_ptr[ STEP_LINE ] )
+;	2085		THEN
+;	2086			IF( (status = dbg$get_lineno(.at_pc)) )
+;	2087			then
+;	2088				! One step has been done.
+;	2089		
+;	2090				IF( (dbg$gl_step_num = .dbg$gl_step_num -1) LEQ 0 )
+;	2091				THEN
+;	2092					! Done stepping => now take commands.
+;	2093		
+;	2094					RETURN(0);
+;	2095		!+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 8-1
+; Digital Equipment Corporation
+;
+;	2096		! If the status, above, says that no information is
+;	2097		! available which pertains to FORTRAN line numbers,
+;	2098		! then we equate 1 step to 1 instruction.
+;	2099		!-
+;	2100	
+;	2101		IF( .status EQL DBG$_NOINFO )
+;	2102		then
+;	2103			! One step has been done.
+;	2104	
+;	2105			IF( (dbg$gl_step_num = .dbg$gl_step_num -1) LEQ 0 )
+;	2106			THEN
+;	2107				! Done stepping => now take commands.
+;	2108	
+;	2109				RETURN(0);
+;	2110		!+
+;	2111		! If we get here, then the PC is in the
+;	2112		! the middle of a %LINE number.  We don't
+;	2113		! alter DBG$GL_STEP_NUM but instead return its
+;	2114		! current value.
+;	2115	
+;	2116		RETURN(.dbg$gl_step_num);
+;	2117	end;
+
+
+
+
+
+					 0804 001AD DECREMENT_STEP:
+							    .WORD   Save R2,R11						      ; 2041
+		         5B 00000000G  EF  9E 001AF 	    MOVAB   DBG$GL_STEP_NUM, R11				      ;
+				       52  D4 001B6 	    CLRL    STATUS						      ; 2077
+		         14 00000000G  FF  E9 001B8 	    BLBC    @DBG$GB_STP_PTR, 1$					      ; 2084
+				  04   AC  DD 001BF 	    PUSHL   AT_PC						      ; 2086
+	      00000000G  EF	       01  FB 001C2 	    CALLS   #1, DBG$GET_LINENO					      ;
+		         52	       50  D0 001C9 	    MOVL    R0, STATUS						      ;
+		         04	       52  E9 001CC 	    BLBC    STATUS, 1$						      ;
+				       6B  D7 001CF 	    DECL    DBG$GL_STEP_NUM					      ; 2090
+				       0C  15 001D1 	    BLEQ    3$							      ;
+				       52  D5 001D3 1$:     TSTL    STATUS						      ; 2101
+				       04  12 001D5 	    BNEQ    2$							      ;
+				       6B  D7 001D7 	    DECL    DBG$GL_STEP_NUM					      ; 2105
+				       04  15 001D9 	    BLEQ    3$							      ;
+		         50	       6B  D0 001DB 2$:     MOVL    DBG$GL_STEP_NUM, R0					      ; 2116
+					   04 001DE 	    RET     							      ;
+				       50  D4 001DF 3$:     CLRL    R0							      ; 2041
+					   04 001E1 	    RET     							      ;
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 9
+; Digital Equipment Corporation
+;
+;	2118	ROUTINE ANNOUNCE_TRACE ( at_pc ) : NOVALUE =
+;	2119	!++
+;	2120	! FUNCTIONAL DESCRIPTION:
+;	2121	!	Inform user that the program has stopped at a tracepoint
+;	2122	!	and display next instruction that will be executed.
+;	2123	!
+;	2124	! CALLING SEQUENCE:
+;	2125	!	announce_trace ()
+;	2126	!
+;	2127	! INPUTS:
+;	2128	!	at_pc	- the address of the next instruction to be executed
+;	2129	!
+;	2130	! IMPLICIT INPUTS:
+;	2131	!	none
+;	2132	!
+;	2133	! OUTPUTS:
+;	2134	!	The message is printed. Either it includes the symbolic instruction
+;	2135	!	or its hex equivalent.
+;	2136	!
+;	2137	! IMPLICIT OUTPUTS:
+;	2138	!	none
+;	2139	!
+;	2140	! ROUTINE VALUE.
+;	2141	!	novalue
+;	2142	!
+;	2143	! SIDE EFFECTS:
+;	2144	!	none
+;	2145	!--
+;	2146		BEGIN
+;	2147		MAP
+;	2148			at_pc : REF VECTOR[,BYTE];
+;	2149		LOCAL
+;	2150			announce_pc,
+;	2151			entry_cs,
+;	2152			output_buffer : VECTOR[ tty_out_width, BYTE ],
+;	2153			backup_count,
+;	2154			backup_ptr : REF VECTOR[,BYTE];
+;	2155	
+;	2156		! Set up to do standard DEBUG I/O.
+;	2157	
+;	2158		dbg$cp_out_str = output_buffer + 1;
+;	2159		dbg$gl_buf_siz = 0;
+;	2160	
+;	2161		! If the PC value is on a routine boundary,
+;	2162		! (actually, 2 after the value bound to a routine
+;	2163		! symbol - due to the entry mask), then we
+;	2164		! announce "routine" in front of the
+;	2165		! rest of the message and print or symbolize a PC
+;	2166		! value which is actually 2 less than what the PC value
+;	2167		! really is.  This is because we consistently try to cover
+;	2168		! up the entry-mask muckiness.
+;	2169	
+;	2170		entry_cs = uplit( %ascic '' );
+;	2171		announce_pc = .at_pc;
+;	2172	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 9-1
+; Digital Equipment Corporation
+;
+;	2173		IF( DBG$IS_IT_ENTRY(.ANNOUNCE_PC -2) )
+;	2174		THEN
+;	2175			BEGIN
+;	2176			ENTRY_CS = UPLIT( %ASCIC 'routine ');
+;	2177			announce_pc = .announce_pc -2;
+;	2178			end;
+;	2179	
+;	2180		! The announcement is different depending on whether
+;	2181		! we have stopped because of a trace point of because
+;	2182		! the step count has gone to 0.
+;	2183	
+;	2184		IF( .DBG$GL_RUNFRAME[dbg$V_stepping] )
+;	2185		then
+;	2186			dbg$fao_put ( UPLIT ( %ASCIC 'stepped to !ACpc = ' ), .ENTRY_CS)
+;	2187		else
+;	2188			dbg$fao_put ( UPLIT ( %ASCIC '!ACtrace at pc = ' ), .ENTRY_CS);
+;	2189		dbg$out_sym_val (.announce_pc, 0, 0);
+;	2190	
+;	2191		!+
+;	2192		! WE HOPE TO BE ABLE TO DECODE THE INSTRUCTION, BUT
+;	2193		! WILL PRINT OUT SUCCESSIVE BYTES @PC IF WE CAN'T.
+;	2194		! WE START BY BUILDING THE OUTPUT MESSAGE IN A LOCAL BUFFER.
+;	2195		!-
+;	2196		
+;	2197		dbg$fao_put (UPLIT (%ASCIC ': '));
+;	2198		backup_ptr = .dbg$cp_out_str;
+;	2199		backup_count = .dbg$gl_buf_siz;
+;	2200	
+;	2201		! THEN TRY TO DO THE SYMBOLIC DECODING.
+;	2202	
+;	2203		IF( dbg$ins_decode( .at_pc, output_buffer ) EQL 0 )
+;	2204		THEN
+;	2205			BEGIN
+;	2206			! WRITE OVER WHATEVER dbg$ins_decode MAY HAVE
+;	2207			!  WRITTEN, AND JUST DISPLAY THE VALUES.
+;	2208			! **** This will not work if the instruction we
+;	2209			!      failed on was a CASE, and if we failed after
+;	2210			!       INS_DECODE already output a few lines.
+;	2211	
+;	2212			dbg$cp_out_str = .backup_ptr;
+;	2213			dbg$gl_buf_siz = .backup_count;
+;	2214			DECR I FROM 3 TO 0
+;	2215			DO
+;	2216				dbg$fao_put ( UPLIT( %ASCIC ' !XB' ), .at_pc[.I] );
+;	2217			END;
+;	2218	
+;	2219		! WRITE OUT THE MESSAGE AND WE'RE DONE.
+;	2220	
+;	2221		dbg$out_put( output_buffer );
+;	2222		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 9-2
+; Digital Equipment Corporation
+;
+					      0007C P.AAK:  .ASCII  <0><0><0><0>					      ;
+					      00080 P.AAL:  .ASCII  <8>\routine \<0><0><0>				      ;
+					      0008C P.AAM:  .ASCII  <19>\stepped to !ACpc = \				      ;
+					      000A0 P.AAN:  .ASCII  <17>\!ACtrace at pc = \<0><0>			      ;
+					      000B4 P.AAO:  .ASCII  <2>\: \<0>						      ;
+					      000B8 P.AAP:  .ASCII  <4>\ !XB\<0><0><0>					      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0F0C 001E2 ANNOUNCE_TRACE:
+							    .WORD   Save R2,R3,R8,R9,R10,R11				      ; 2118
+		         58 00000000G  EF  9E 001E4 	    MOVAB   DBG$CP_OUT_STR, R8					      ;
+		         59 00000000G  EF  9E 001EB 	    MOVAB   DBG$FAO_PUT, R9					      ;
+		         5A 00000000G  EF  9E 001F2 	    MOVAB   DBG$GL_BUF_SIZ, R10					      ;
+		         5B 00000000'  EF  9E 001F9 	    MOVAB   P.AAK, R11						      ;
+		         5E	FF7C   CE  9E 00200 	    MOVAB   -132(SP), SP					      ;
+		         68	  01   AE  9E 00205 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 2158
+				       6A  D4 00209 	    CLRL    DBG$GL_BUF_SIZ					      ; 2159
+		         52	       6B  9E 0020B 	    MOVAB   P.AAK, ENTRY_CS					      ; 2170
+		         53	  04   AC  D0 0020E 	    MOVL    AT_PC, ANNOUNCE_PC					      ; 2171
+				  FE   A3  9F 00212 	    PUSHAB  -2(ANNOUNCE_PC)					      ; 2173
+	      00000000G  EF	       01  FB 00215 	    CALLS   #1, DBG$IS_IT_ENTRY					      ;
+		         07	       50  E9 0021C 	    BLBC    R0, 1$						      ;
+		         52	  04   AB  9E 0021F 	    MOVAB   P.AAL, ENTRY_CS					      ; 2176
+		         53	       02  C2 00223 	    SUBL2   #2, ANNOUNCE_PC					      ; 2177
+		         50 00000000G  EF  D0 00226 1$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2184
+	   07	    48   A0	       03  E1 0022D 	    BBC     #3, 72(R0), 2$					      ;
+				       52  DD 00232 	    PUSHL   ENTRY_CS						      ; 2186
+				  10   AB  9F 00234 	    PUSHAB  P.AAM						      ;
+				       05  11 00237 	    BRB     3$							      ;
+				       52  DD 00239 2$:     PUSHL   ENTRY_CS						      ; 2188
+				  24   AB  9F 0023B 	    PUSHAB  P.AAN						      ;
+		         69	       02  FB 0023E 3$:     CALLS   #2, DBG$FAO_PUT					      ;
+				       7E  7C 00241 	    CLRQ    -(SP)						      ; 2189
+				       53  DD 00243 	    PUSHL   ANNOUNCE_PC						      ;
+	      00000000G  EF	       03  FB 00245 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+				  38   AB  9F 0024C 	    PUSHAB  P.AAO						      ; 2197
+		         69	       01  FB 0024F 	    CALLS   #1, DBG$FAO_PUT					      ;
+		         53	       68  D0 00252 	    MOVL    DBG$CP_OUT_STR, BACKUP_PTR				      ; 2198
+		         52	       6A  D0 00255 	    MOVL    DBG$GL_BUF_SIZ, BACKUP_COUNT			      ; 2199
+				       5E  DD 00258 	    PUSHL   SP							      ; 2203
+				  04   AC  DD 0025A 	    PUSHL   AT_PC						      ;
+	      00000000G  EF	       02  FB 0025D 	    CALLS   #2, DBG$INS_DECODE					      ;
+				       50  D5 00264 	    TSTL    R0							      ;
+				       17  12 00266 	    BNEQ    5$							      ;
+		         68	       53  D0 00268 	    MOVL    BACKUP_PTR, DBG$CP_OUT_STR				      ; 2212
+		         6A	       52  D0 0026B 	    MOVL    BACKUP_COUNT, DBG$GL_BUF_SIZ			      ; 2213
+		         52	       03  D0 0026E 	    MOVL    #3, I						      ; 2214
+		         7E	  04 BC42  9A 00271 4$:     MOVZBL  @AT_PC[I], -(SP)					      ; 2216
+				  3C   AB  9F 00276 	    PUSHAB  P.AAP						      ;
+		         69	       02  FB 00279 	    CALLS   #2, DBG$FAO_PUT					      ;
+		         F2	       52  F4 0027C 	    SOBGEQ  I, 4$						      ; 2214
+				       5E  DD 0027F 5$:     PUSHL   SP							      ; 2221
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 9-3
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       01  FB 00281 	    CALLS   #1, DBG$OUT_PUT					      ;
+					   04 00288 	    RET     							      ; 2118
+
+; Routine Size:  167 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 10
+; Digital Equipment Corporation
+;
+;	2223	ROUTINE CHECK_STEP =
+;	2224	!++
+;	2225	! Functional Description:
+;	2226	!
+;	2227	!	Determine if the user program should be started up
+;	2228	!	in such a way as DEBUG will regain control
+;	2229	!	after it has executed only one instruction.
+;	2230	!	This is not quite the same as stepping because that is
+;	2231	!	not always done by trapping on each instruction.
+;	2232	!
+;	2233	! Routine Value:
+;	2234	!
+;	2235	!	TRUE - if the TIBT should be turned on,
+;	2236	!	FALSE, otherwise.
+;	2237	!--
+;	2238	BEGIN
+;	2239		LOCAL
+;	2240			next_pc : ref vector[,byte],
+;	2241			current_pc : ref vector[,byte];
+;	2242	
+;	2243		!+
+;	2244		! If we are in the middle of stepping over a routine
+;	2245		! call, then we are essentially not stepping insofar
+;	2246		! as setting the TBIT and planting temporary breakpoints
+;	2247		! is concerned.  This is the meaning of the DBG$V_STEP_OVER
+;	2248		! bit in the runframe.
+;	2249		!-
+;	2250	
+;	2251		IF ( .dbg$gl_runframe[ DBG$V_STEP_OVER ] )
+;	2252		THEN
+;	2253			RETURN (FALSE);
+;	2254	
+;	2255		!+
+;	2256		! Even if we are stepping, there must be some
+;	2257		! steps to do or there is something wrong.
+;	2258		!-
+;	2259	
+;	2260		IF ( .dbg$gl_step_num LEQ 0 )
+;	2261		THEN
+;	2262			RETURN (FALSE);
+;	2263	
+;	2264		!+
+;	2265		! If the current STEP type is not OVER
+;	2266		! we have nothing further to do here.
+;	2267		!-
+;	2268	
+;	2269		IF ( NOT .dbg$gb_stp_ptr[ step_over ] )
+;	2270		THEN
+;	2271			RETURN (TRUE);
+;	2272		
+;	2273		!+
+;	2274		! Check for /OVER stepping.
+;	2275		!
+;	2276		! Given the current pc, pick up the next opcode
+;	2277		! that will be executed and see if it is one of
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 10-1
+; Digital Equipment Corporation
+;
+;	2278		! those that we want to step over.
+;	2279		!-
+;	2280		current_pc = .dbg$gl_runframe[ DBG$L_USER_PC ];
+;	2281	
+;	2282	%IF DBG_EXC4
+;     L 2283	%THEN
+;     U 2284		$fao_tt_out('check for /over step: PC = !XL:!XB',.current_pc,.current_pc[0]);
+;     U 2285	%FI
+;	2286		!+
+;	2287		! /OVER steps are nothing special if the current
+;	2288		! opcode does not belong to the step_over opcode set.
+;	2289		! The first entry in the table is the size of the set.
+;	2290		!-
+;	2291		IF (INCR i FROM 1 TO .step_over_set[0]
+;	2292			DO
+;	2293			BEGIN
+;	2294			IF ( .step_over_set[.i] EQL .current_pc[0] )
+;	2295			THEN
+;	2296				EXITLOOP(false);	! Found the matching element.
+;	2297			END)
+;	2298		THEN
+;	2299			RETURN (TRUE);			! Nothing further to do.
+;	2300	
+;	2301		!+
+;	2302		! If we get this far, we will try to implement /OVER.
+;	2303		! First, get the address of the instruction following
+;	2304		! the current one by calling the instruction decoder.
+;	2305		!-
+;	2306		next_pc = dbg$ins_decode (.current_pc,0);
+;	2307	
+;	2308		IF (.next_pc GEQA system_space) AND (.dbg$gb_stp_ptr[ step_nosystem ])
+;	2309		THEN
+;	2310		    RETURN (TRUE);
+;	2311		IF (.next_pc EQL 0) OR (.next_pc GEQA system_space)
+;	2312		THEN
+;	2313		    BEGIN
+;	2314		    SIGNAL (DBG$_STEPINTO, 1, .current_pc);
+;	2315		    RETURN (TRUE);
+;	2316		    END;
+;	2317	%IF DBG_EXC4
+;     L 2318	%THEN
+;     U 2319		$fao_tt_out('next instruction is at !XL',.next_pc);
+;     U 2320	%FI
+;	2321		!+
+;	2322		! Insure that the breakpoint can be placed in the I-stream
+;	2323		! before saving the opcode and the address.
+;	2324		!-
+;	2325		IF NOT dbg$write_mem (.next_pc, .next_pc, 1)	! DST_ADR, SRC_ADR, LEN
+;	2326		THEN
+;	2327		    BEGIN
+;	2328		    SIGNAL (DBG$_STEPINTO, 1, .current_pc);
+;	2329		    RETURN (TRUE);
+;	2330		    END;
+;	2331		!+
+;	2332		! Save the opcode byte where the temporary breakpoint will be placed,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 10-2
+; Digital Equipment Corporation
+;
+;	2333		! the address of the temporary breakpoint and set the runframe bit that
+;	2334		! indicates a step over is in progress.
+;	2335		!-
+;	2336		dbg$gl_runframe[dbg$b_bpt_ins] = .next_pc[0];
+;	2337		dbg$gl_runframe[dbg$l_bpt_pc] = .next_pc;
+;	2338		dbg$gl_runframe[dbg$v_step_over] = TRUE;
+;	2339	
+;	2340	%IF DBG_EXC4
+;     L 2341	%THEN
+;     U 2342		$fao_tt_out('temporary break set at !XL',.next_pc);
+;     U 2343	%FI
+;	2344		!+
+;	2345		! Cause the TBIT to be turned OFF so that trapping
+;	2346		! stops until the temporary breakpoint is hit.
+;	2347		!-
+;	2348		RETURN (FALSE);
+;	2349	END;
+
+
+
+
+
+					 0E0C 00289 CHECK_STEP:
+							    .WORD   Save R2,R3,R9,R10,R11				      ; 2223
+		         59 00000000G  EF  9E 0028B 	    MOVAB   DBG$GL_RUNFRAME, R9					      ;
+		         5A 00000000'  EF  9E 00292 	    MOVAB   STEP_OVER_SET, R10					      ;
+		         5B 00000000G  EF  9E 00299 	    MOVAB   DBG$GB_STP_PTR, R11					      ;
+		         51	       69  D0 002A0 	    MOVL    DBG$GL_RUNFRAME, R1					      ; 2251
+	   03	    49   A1	       02  E1 002A3 	    BBC     #2, 73(R1), 1$					      ;
+				     0083  31 002A8 	    BRW     9$							      ;
+			    00000000G  EF  D5 002AB 1$:     TSTL    DBG$GL_STEP_NUM					      ; 2260
+				       7B  15 002B1 	    BLEQ    9$							      ;
+		         50	       6B  D0 002B3 	    MOVL    DBG$GB_STP_PTR, R0					      ; 2269
+		         61	  02   A0  E9 002B6 	    BLBC    2(R0), 7$						      ;
+		         53	  40   A1  D0 002BA 	    MOVL    64(R1), CURRENT_PC					      ; 2280
+		         51	       6A  9A 002BE 	    MOVZBL  STEP_OVER_SET, R1					      ; 2291
+				       50  D4 002C1 	    CLRL    I							      ;
+				       06  11 002C3 	    BRB     3$							      ;
+		         63	     6A40  91 002C5 2$:     CMPB    STEP_OVER_SET[I], (CURRENT_PC)			      ; 2294
+				       06  13 002C9 	    BEQL    4$							      ;
+	   F6	         50	       51  F3 002CB 3$:     AOBLEQ  R1, I, 2$						      ; 2291
+				       4A  11 002CF 	    BRB     7$							      ; 2299
+				       7E  D4 002D1 4$:     CLRL    -(SP)						      ; 2306
+				       53  DD 002D3 	    PUSHL   CURRENT_PC						      ;
+	      00000000G  EF	       02  FB 002D5 	    CALLS   #2, DBG$INS_DECODE					      ;
+		         52	       50  D0 002DC 	    MOVL    R0, NEXT_PC						      ;
+				       51  D4 002DF 	    CLRL    R1							      ; 2308
+	      80000000   8F	       52  D1 002E1 	    CMPL    NEXT_PC, #-2147483648				      ;
+				       09  1F 002E8 	    BLSSU   5$							      ;
+				       51  D6 002EA 	    INCL    R1							      ;
+		         50	       6B  D0 002EC 	    MOVL    DBG$GB_STP_PTR, R0					      ;
+		         28	  01   A0  E8 002EF 	    BLBS    1(R0), 7$						      ;
+				       52  D5 002F3 5$:     TSTL    NEXT_PC						      ; 2311
+				       13  13 002F5 	    BEQL    6$							      ;
+		         10	       51  E8 002F7 	    BLBS    R1, 6$						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 10-3
+; Digital Equipment Corporation
+;
+				       01  DD 002FA 	    PUSHL   #1							      ; 2325
+				       52  DD 002FC 	    PUSHL   NEXT_PC						      ;
+				       52  DD 002FE 	    PUSHL   NEXT_PC						      ;
+	      00000000G  EF	       03  FB 00300 	    CALLS   #3, DBG$WRITE_MEM					      ;
+		         15	       50  E8 00307 	    BLBS    R0, 8$						      ;
+				       53  DD 0030A 6$:     PUSHL   CURRENT_PC						      ; 2328
+				       01  DD 0030C 	    PUSHL   #1							      ;
+			    00028083   8F  DD 0030E 	    PUSHL   #163971						      ;
+	      00000000G  00	       03  FB 00314 	    CALLS   #3, LIB$SIGNAL					      ;
+		         50	       01  D0 0031B 7$:     MOVL    #1, R0						      ; 2329
+					   04 0031E 	    RET     							      ;
+		         50	       69  D0 0031F 8$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2336
+		    60   A0	       62  90 00322 	    MOVB    (NEXT_PC), 96(R0)					      ;
+		    4A   A0	       52  D0 00326 	    MOVL    NEXT_PC, 74(R0)					      ; 2337
+		    49   A0	       04  88 0032A 	    BISB2   #4, 73(R0)						      ; 2338
+				       50  D4 0032E 9$:     CLRL    R0							      ; 2223
+					   04 00330 	    RET     							      ;
+
+; Routine Size:  168 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 11
+; Digital Equipment Corporation
+;
+;	2350	ROUTINE RESET_USER( skip_pc, psl_ptr ) =
+;	2351	!++
+;	2352	! Functional Description:
+;	2353	!
+;	2354	!	This routine is called when we are about to turn over
+;	2355	!	control to the user program and we have to decide
+;	2356	!	whether or not this should be done with the TBIT turned on.
+;	2357	!
+;	2358	! Formal Parameters:
+;	2359	!
+;	2360	!	SKIP_PC		-The PC which REM_OPCODES will NOT
+;	2361	!			 remove.
+;	2362	!	PSL_PTR		-The address of where the PSL that we should
+;	2363	!			 modify is stored.
+;	2364	!
+;	2365	! Implicit Inputs:
+;	2366	!
+;	2367	!	If SKIP_PC is not 0, then we are skipping over an
+;	2368	!	instruction which we have to later put a BPT at.
+;	2369	!
+;	2370	! Implicit Inputs:
+;	2371	!
+;	2372	!	The _IN_A_BPT runframe bit gets set if SKIP_IC
+;	2373	!	is not 0.
+;	2374	!
+;	2375	! Routine VALUE:
+;	2376	!	SS$_CONTINUE
+;	2377	!
+;	2378	! Side Effects:
+;	2379	!	The TBIT in the supposed PSL we are passed a pointer
+;	2380	!	to is turned on if this routine decides it should be.
+;	2381	!	The RUNFRAME's V_TBIT_OK bit is also set accordingly.
+;	2382	!--
+;	2383	
+;	2384	BEGIN
+;	2385		MAP
+;	2386			PSL_PTR : REF BLOCK[ %upval, BYTE];
+;	2387	
+;	2388		!+
+;	2389		! If we are in the state where an outer routine has 
+;	2390		! decided that we need to 'step around a BPT instruction',
+;	2391		! then we just do so.
+;	2392		!-
+;	2393	
+;	2394		IF( .skip_pc NEQ 0 )
+;	2395		THEN
+;	2396			BEGIN
+;	2397	
+;	2398			PSL_PTR[ TBIT ] = TRUE;
+;	2399			DBG$GL_RUNFRAME[ DBG$V_TBIT_OK ] = TRUE;
+;	2400			DBG$GL_RUNFRAME[ DBG$V_IN_A_BPT ] = TRUE;
+;	2401			END;
+;	2402	
+;	2403		!+
+;	2404		! There may be special processing
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 11-1
+; Digital Equipment Corporation
+;
+;	2405		! for stepping.
+;	2406		!-
+;	2407	
+;	2408		IF( .dbg$gl_runframe[ DBG$V_STEPPING ] )
+;	2409		THEN
+;	2410			BEGIN
+;	2411	
+;	2412			! Check for stepping - i.e. set the TBIT
+;	2413			! for all STEPs except /OVER ones.
+;	2414		
+;	2415			IF( (PSL_PTR[ TBIT ] = check_step()) )
+;	2416			then
+;	2417				DBG$GL_RUNFRAME[ DBG$V_TBIT_OK ] = TRUE;
+;	2418			END;
+;	2419		!+
+;	2420		! If we are doing any kind of opcode tracing, then
+;	2421		! we have to turn the TBIT on after every instruction,
+;	2422		! no matter what.
+;	2423		!-
+;	2424	
+;	2425		IF( .DBG$GL_RUNFRAME[ DBG$V_TRACE_ALL ] )
+;	2426		THEN
+;	2427			BEGIN
+;	2428	
+;	2429			PSL_PTR[ TBIT ] = TRUE;
+;	2430			DBG$GL_RUNFRAME[ DBG$V_TBIT_OK ] = TRUE;
+;	2431			END;
+;	2432	
+;	2433		! Just before finally letting the user program
+;	2434		! take over control, we take out all the opcodes
+;	2435		! stored at what will become breakpoint locations, and
+;	2436		! put breakpoint instructions in their place.
+;	2437		! If there is an exception to this list of PCs, it
+;	2438		! is passed on to us, and is because we sometimes 
+;	2439		! want to leave the real instruction in place.
+;	2440	
+;	2441		dbg$rem_opcodes( .skip_pc );
+;	2442	
+;	2443	%if dbg_exc4
+;     L 2444	%then
+;     U 2445		$fao_tt_out('reset_user: with TBIT !AC, PC=!XL, about to continue',
+;     U 2446			(if .psl_ptr[tbit]
+;     U 2447			 then uplit(%ascic 'ON')
+;     U 2448			 else uplit( %ascic 'OFF' )
+;     U 2449			),.dbg$gl_runframe[dbg$l_user_pc]);
+;     U 2450	%FI
+;	2451		return( SS$_CONTINUE);
+;	2452	END;
+
+
+
+
+
+					 0800 00331 RESET_USER:
+							    .WORD   Save R11						      ; 2350
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 11-2
+; Digital Equipment Corporation
+;
+		         5B 00000000G  EF  9E 00333 	    MOVAB   DBG$GL_RUNFRAME, R11				      ;
+				  04   AC  D5 0033A 	    TSTL    SKIP_PC						      ; 2394
+				       0C  13 0033D 	    BEQL    1$							      ;
+		    08   BC	       10  88 0033F 	    BISB2   #16, @PSL_PTR					      ; 2398
+		         50	       6B  D0 00343 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2399
+		    48   A0	  C0   8F  88 00346 	    BISB2   #192, 72(R0)					      ; 2400
+		         50	       6B  D0 0034B 1$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2408
+	   16	    48   A0	       03  E1 0034E 	    BBC     #3, 72(R0), 2$					      ;
+		  FF31   CF	       00  FB 00353 	    CALLS   #0, CHECK_STEP					      ; 2415
+	   01	         04	       50  F0 00358 	    INSV    R0, #4, #1, @PSL_PTR				      ;
+				  08   BC     0035C									      ;
+		         08	       50  E9 0035E 	    BLBC    R0, 2$						      ;
+		         50	       6B  D0 00361 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2417
+		    48   A0	  80   8F  88 00364 	    BISB2   #128, 72(R0)					      ;
+		         50	       6B  D0 00369 2$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2425
+	   09	    48   A0	       02  E1 0036C 	    BBC     #2, 72(R0), 3$					      ;
+		    08   BC	       10  88 00371 	    BISB2   #16, @PSL_PTR					      ; 2429
+		    48   A0	  80   8F  88 00375 	    BISB2   #128, 72(R0)					      ; 2430
+				  04   AC  DD 0037A 3$:     PUSHL   SKIP_PC						      ; 2441
+	      00000000G  EF	       01  FB 0037D 	    CALLS   #1, DBG$REM_OPCODES					      ;
+		         50	       01  D0 00384 	    MOVL    #1, R0						      ; 2451
+					   04 00387 	    RET     							      ; 2350
+
+; Routine Size:  87 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12
+; Digital Equipment Corporation
+;
+;	2453	ROUTINE command_proc (buffer_desc) : NOVALUE =
+;	2454	!++
+;	2455	! FUNCTIONAL DESCRIPTION:
+;	2456	!	Accepts a single (possibly multiple through the use of
+;	2457	!	continuation lines) command sequence from the user at DEBUG
+;	2458	!	command level. If the argument buffer_desc holds a value other
+;	2459	!	than a zero, then the command comes from this buffer.
+;	2460	!	Otherwise a command is read from the input device.
+;	2461	!
+;	2462	!	This routine declares an exception vector. Exceptions
+;	2463	!	encountered from this point generally cause an unwind, and then
+;	2464	!	this routine is called again by user_proc. They are generally
+;	2465	!	caused by user typing errors.
+;	2466	!
+;	2467	!	If the command read from the device INPUT is interpreted by
+;	2468	!	RMS as EOF, or any other nonsuccessful return from RMS is seen,
+;	2469	!	then set the exit flag, cancel the command
+;	2470	!	taking flag, and return.
+;	2471	!
+;	2472	! CALLING SEQUENCE:
+;	2473	!	command_proc ()
+;	2474	!
+;	2475	! INPUTS:
+;	2476	!	buffer_desc	- string descriptor of command line or zero
+;	2477	!
+;	2478	! IMPLICIT INPUTS:
+;	2479	!	The name of the DEBUG command level exception handler that is
+;	2480	!	declared within the context of this routine.
+;	2481	!
+;	2482	!	The fact that if the DBG$_L_BPT_PC field in the runframe
+;	2483	!	has a non-zero value then it must be the address
+;	2484	!	of a "temporary" breakpoint which DEBUG set to implement
+;	2485	!	step /OVER.
+;	2486	!
+;	2487	! OUTPUTS:
+;	2488	!	none
+;	2489	!
+;	2490	! IMPLICIT OUTPUTS:
+;	2491	!	none
+;	2492	!
+;	2493	! ROUTINE VALUE:
+;	2494	!	novalue
+;	2495	!
+;	2496	! SIDE EFFECTS:
+;	2497	!	The parser is called with the contents of the input buffer.
+;	2498	!--
+;	2499	
+;	2500		BEGIN
+;	2501	
+;	2502		BUILTIN
+;	2503			FP;
+;	2504	
+;	2505		LITERAL
+;	2506			null_byte_loc	= 1;
+;	2507	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12-1
+; Digital Equipment Corporation
+;
+;	2508		BIND
+;	2509			pmt_string_1	= UPLIT BYTE 
+;	2510				(%ASCII %STRING (%CHAR (carriage_ret), %CHAR (linefeed), 'DBG>')),
+;	2511			pmt_size_1	= %CHARCOUNT
+;     L 2512				(%ASCII %STRING (%CHAR (carriage_ret), %CHAR (linefeed), 'DBG>')),
+;	2513			pmt_string_2	= UPLIT BYTE
+;	2514				(%ASCII %STRING (%CHAR (carriage_ret), %CHAR (linefeed), '_')),
+;	2515			pmt_size_2	= %CHARCOUNT
+;     L 2516				(%ASCII %STRING (%CHAR (carriage_ret), %CHAR (linefeed), '_'));
+;	2517	
+;	2518		LOCAL
+;	2519			input_buffer: VECTOR [no_of_inp_chars + %UPVAL, BYTE],
+;	2520			prev_count,				! current character count
+;	2521			old_pointer,				! pointer to previous buffer
+;	2522			new_pointer : REF VECTOR [, BYTE],	! pointer to current buffer
+;	2523			status,					! status returned by $GET operation
+;	2524			stg_desc: BLOCK [8, BYTE];		! string descriptor for parser
+;	2525	
+;	2526		!+
+;	2527		! Enable a condition handler as described above.
+;	2528		!-
+;	2529	
+;	2530		.FP = dbg$final_handl;
+;	2531	
+;	2532		!+
+;	2533		! Delete all record of a "step over" breakpoint. It has
+;	2534		! already been removed from the I-stream by DBG$INS_OPCODES.
+;	2535		!-
+;	2536		dbg$gl_runframe[ DBG$L_BPT_PC ] = 0;
+;	2537		dbg$gl_runframe[ DBG$B_BPT_INS ] = 0;
+;	2538	
+;	2539		!+
+;	2540		! Reset the level in the STP type structure so that we forget about
+;	2541		! any kind of "override" type stepping we may have been doing.
+;	2542		!-
+;	2543		dbg$init_step( override_step, user_def_step );
+;	2544		dbg$set_stp_lvl( user_def_step );
+;	2545	
+;	2546		!++
+;	2547		! If the routine was called with a buffer, then process it only.
+;	2548		!--
+;	2549		IF .buffer_desc NEQ 0
+;	2550		THEN
+;	2551			BEGIN
+;	2552			dbg$pars_a_line (.buffer_desc);
+;	2553			RETURN
+;	2554			END;
+;	2555	
+;	2556		!++
+;	2557		! Must collect an entire command line before calling the parser.
+;	2558		! Enter a loop that collects multiple lines of input, ceasing
+;	2559		! only when a line ends with other than a hyphen ("-"), which
+;	2560		! is the line continuation character. Buffer the possibly
+;	2561		! multiple lines into free storage.
+;	2562		!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12-2
+; Digital Equipment Corporation
+;
+;	2563		prev_count = 0;
+;	2564		old_pointer = 0;
+;	2565		dbg$gl_inprab [rab$l_pbf] = pmt_string_1;
+;	2566		dbg$gl_inprab [rab$b_psz] = pmt_size_1;
+;	2567		dbg$gl_inprab [rab$l_ubf] = input_buffer;
+;	2568		status = $GET (RAB = dbg$gl_inprab);
+;	2569	
+;	2570	%IF dbg_exc1
+;     L 2571	%THEN
+;     U 2572			$fao_tt_out ('string is "!AD"', .dbg$gl_inprab [rab$w_rsz], input_buffer);
+;     U 2573			$fao_tt_out ('last character is "!AD"', 1, input_buffer [.dbg$gl_inprab [rab$w_rsz] - 1]);
+;     U 2574	%FI
+;	2575	
+;	2576		IF NOT .status
+;	2577		THEN
+;	2578			BEGIN
+;	2579	
+;	2580			!++
+;	2581			! The $GET failed. Set status so
+;	2582			! that DEBUG returns to CLI.
+;	2583			!--
+;	2584			dbg$gb_exit_dbg = TRUE;
+;	2585			IF .status EQL rms$_eof
+;	2586			THEN $EXIT (code = SS$_NORMAL);
+;	2587			END;
+;	2588	
+;	2589		dbg$gl_inprab [rab$v_pta] = FALSE;
+;	2590		dbg$gl_inprab [rab$l_pbf] = pmt_string_2;
+;	2591		dbg$gl_inprab [rab$b_psz] = pmt_size_2;
+;	2592	
+;	2593		REPEAT
+;	2594			BEGIN
+;	2595	
+;	2596			LOCAL
+;	2597				cont_line;		! boolean test for end of line character
+;	2598	
+;	2599			IF .input_buffer [.dbg$gl_inprab [rab$w_rsz] - 1] EQL '-'
+;	2600			THEN
+;	2601				BEGIN
+;	2602				dbg$gl_inprab [rab$w_rsz] = .dbg$gl_inprab [rab$w_rsz] - 1;
+;	2603				cont_line = TRUE;
+;	2604				END
+;	2605			ELSE cont_line = FALSE;
+;	2606	
+;	2607			!++
+;	2608			! Allocate space for this buffer plus all previous buffers.
+;	2609			! If the space can be found, write the old and new buffers
+;	2610			! into the new space.
+;	2611			!--
+;	2612			new_pointer = dbg$freez ((.prev_count + null_byte_loc +
+;	2613				.dbg$gl_inprab [rab$w_rsz] + 3) / 4);
+;	2614	
+;	2615			IF .old_pointer NEQ 0
+;	2616			THEN
+;	2617				BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12-3
+; Digital Equipment Corporation
+;
+;	2618				ch$move (.prev_count, .old_pointer, .new_pointer);
+;	2619				dbg$freerelease (.old_pointer, (.prev_count + null_byte_loc + 3) / 4);
+;	2620				END;
+;	2621			ch$move (.dbg$gl_inprab [rab$w_rsz], input_buffer,
+;	2622					ch$plus (.new_pointer, .prev_count));
+;	2623			prev_count = .prev_count + .dbg$gl_inprab [rab$w_rsz];
+;	2624			new_pointer [.prev_count] = 0;
+;	2625			old_pointer = .new_pointer;
+;	2626	
+;	2627			!++
+;	2628			! See whether this line ends with a continuation character.
+;	2629			! If so, get another line.
+;	2630			!--
+;	2631			IF NOT .cont_line
+;	2632			THEN EXITLOOP;
+;	2633			status = $GET (RAB = dbg$gl_inprab);
+;	2634	
+;	2635	%IF dbg_exc1
+;     L 2636	%THEN
+;     U 2637			$fao_tt_out ('string is "!AD"', .dbg$gl_inprab [rab$w_rsz], input_buffer);
+;     U 2638			$fao_tt_out ('last character is "!AD"', 1, input_buffer [.dbg$gl_inprab [rab$w_rsz] - 1]);
+;     U 2639	%FI
+;	2640	
+;	2641			IF NOT .status
+;	2642			THEN
+;	2643				BEGIN
+;	2644	
+;	2645				!++
+;	2646				! The $GET failed. Set status so
+;	2647				! that DEBUG returns to CLI.
+;	2648				!--
+;	2649				dbg$gb_exit_dbg = TRUE;
+;	2650				SIGNAL (.status OR fatal_bit);
+;	2651				RETURN
+;	2652				END;
+;	2653			END;
+;	2654	
+;	2655		!++
+;	2656		! A complete line has been collected. Call the parser with
+;	2657		! the address of a string descriptor that describes the
+;	2658		! concatenated input string.
+;	2659		!--
+;	2660	
+;	2661	%IF dbg_exc1
+;     L 2662	%THEN
+;     U 2663		$fao_tt_out ('input line is !AD', .prev_count, .new_pointer);
+;     U 2664	%FI
+;	2665	
+;	2666		stg_desc [dsc$w_length] = .prev_count;
+;	2667		stg_desc [dsc$a_pointer] = .new_pointer;
+;	2668		dbg$cp_inp_str [dsc$w_length] = .prev_count + 1;
+;	2669		dbg$cp_inp_str [dsc$a_pointer] = .new_pointer;
+;	2670		dbg$pars_a_line (stg_desc);
+;	2671		END;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12-4
+; Digital Equipment Corporation
+;
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      000C0 P.AAQ:  .ASCII  <13><10>\DBG>\					      ;
+					      000C6	    .BLKB   2
+					      000C8 P.AAR:  .ASCII  <13><10>\_\						      ;
+					      000CB	    .BLKB   1
+
+						    PMT_STRING_1=	P.AAQ
+						    PMT_SIZE_1=		6
+						    PMT_STRING_2=	P.AAR
+						    PMT_SIZE_2=		3
+							    .GLOBL  SYS$GET, SYS$EXIT
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 00388 COMMAND_PROC:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 2453
+		         5B 00000000G  EF  9E 0038A 	    MOVAB   DBG$GL_INPRAB+34, R11				      ;
+		         5E	FF70   CE  9E 00391 	    MOVAB   -144(SP), SP					      ;
+		         6D 00000000G  EF  9E 00396 	    MOVAB   DBG$FINAL_HANDL, (FP)				      ; 2530
+		         50 00000000G  EF  D0 0039D 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2536
+				  4A   A0  D4 003A4 	    CLRL    74(R0)						      ;
+				  60   A0  94 003A7 	    CLRB    96(R0)						      ; 2537
+				       01  DD 003AA 	    PUSHL   #1							      ; 2543
+				       02  DD 003AC 	    PUSHL   #2							      ;
+	      00000000G  EF	       02  FB 003AE 	    CALLS   #2, DBG$INIT_STEP					      ;
+				       01  DD 003B5 	    PUSHL   #1							      ; 2544
+	      00000000G  EF	       01  FB 003B7 	    CALLS   #1, DBG$SET_STP_LVL					      ;
+				  04   AC  D5 003BE 	    TSTL    BUFFER_DESC						      ; 2549
+				       06  13 003C1 	    BEQL    1$							      ;
+				  04   AC  DD 003C3 	    PUSHL   BUFFER_DESC						      ; 2552
+				     00E7  31 003C6 	    BRW     8$							      ;
+				       58  D4 003C9 1$:     CLRL    PREV_COUNT						      ; 2563
+				       5A  D4 003CB 	    CLRL    OLD_POINTER						      ; 2564
+		    0E   AB 00000000'  EF  9E 003CD 	    MOVAB   PMT_STRING_1, DBG$GL_INPRAB+48			      ; 2453
+		    12   AB	       06  90 003D5 	    MOVB    #6, DBG$GL_INPRAB+52				      ; 2566
+		    02   AB	  08   AE  9E 003D9 	    MOVAB   INPUT_BUFFER, DBG$GL_INPRAB+36			      ; 2567
+				  DE   AB  9F 003DE 	    PUSHAB  DBG$GL_INPRAB					      ; 2568
+	      00000000G  9F	       01  FB 003E1 	    CALLS   #1, @#SYS$GET					      ;
+		         57	       50  D0 003E8 	    MOVL    R0, STATUS						      ;
+		         19	       57  E8 003EB 	    BLBS    STATUS, 2$						      ; 2576
+	      00000000G  EF	       01  90 003EE 	    MOVB    #1, DBG$GB_EXIT_DBG					      ; 2584
+	      0001827A   8F	       57  D1 003F5 	    CMPL    STATUS, #98938					      ; 2585
+				       09  12 003FC 	    BNEQ    2$							      ;
+				       01  DD 003FE 	    PUSHL   #1							      ; 2586
+	      00000000G  9F	       01  FB 00400 	    CALLS   #1, @#SYS$EXIT					      ;
+		    E5   AB	       20  8A 00407 2$:     BICB2   #32, DBG$GL_INPRAB+7				      ; 2589
+		    0E   AB 00000000'  EF  9E 0040B 	    MOVAB   PMT_STRING_2, DBG$GL_INPRAB+48			      ; 2453
+		    12   AB	       03  90 00413 	    MOVB    #3, DBG$GL_INPRAB+52				      ; 2591
+		         50	  08   AE  9E 00417 3$:     MOVAB   INPUT_BUFFER, R0					      ; 2599
+		         51	       6B  3C 0041B 	    MOVZWL  DBG$GL_INPRAB+34, R1				      ;
+		         50	       51  C0 0041E 	    ADDL2   R1, R0						      ;
+		         2D	  FF   A0  91 00421 	    CMPB    -1(R0), #45						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 12-5
+; Digital Equipment Corporation
+;
+				       07  12 00425 	    BNEQ    4$							      ;
+				       6B  B7 00427 	    DECW    DBG$GL_INPRAB+34					      ; 2602
+		         59	       01  D0 00429 	    MOVL    #1, CONT_LINE					      ; 2603
+				       02  11 0042C 	    BRB     5$							      ; 2599
+				       59  D4 0042E 4$:     CLRL    CONT_LINE						      ; 2605
+		         50	       6B  3C 00430 5$:     MOVZWL  DBG$GL_INPRAB+34, R0				      ; 2612
+		         50	       58  C0 00433 	    ADDL2   PREV_COUNT, R0					      ;
+		         50	       04  C0 00436 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 00439 	    DIVL3   #4, R0, -(SP)					      ; 2613
+	      00000000G  EF	       01  FB 0043D 	    CALLS   #1, DBG$FREEZ					      ; 2612
+		         56	       50  D0 00444 	    MOVL    R0, NEW_POINTER					      ;
+				       5A  D5 00447 	    TSTL    OLD_POINTER						      ; 2615
+				       15  13 00449 	    BEQL    6$							      ;
+	   66	         6A	       58  28 0044B 	    MOVC3   PREV_COUNT, (OLD_POINTER), (NEW_POINTER)		      ; 2618
+	   50	         58	       04  C1 0044F 	    ADDL3   #4, PREV_COUNT, R0					      ; 2619
+	   7E	         50	       04  C7 00453 	    DIVL3   #4, R0, -(SP)					      ;
+				       5A  DD 00457 	    PUSHL   OLD_POINTER						      ;
+	      00000000G  EF	       02  FB 00459 	    CALLS   #2, DBG$FREERELEASE					      ;
+	 6846	    08   AE	       6B  28 00460 6$:     MOVC3   DBG$GL_INPRAB+34, INPUT_BUFFER, (PREV_COUNT)[NEW_POINTER] ; 2621
+		         50	       6B  3C 00466 	    MOVZWL  DBG$GL_INPRAB+34, R0				      ; 2623
+		         58	       50  C0 00469 	    ADDL2   R0, PREV_COUNT					      ;
+				     6846  94 0046C 	    CLRB    (PREV_COUNT)[NEW_POINTER]				      ; 2624
+		         5A	       56  D0 0046F 	    MOVL    NEW_POINTER, OLD_POINTER				      ; 2625
+		         23	       59  E9 00472 	    BLBC    CONT_LINE, 7$					      ; 2631
+				  DE   AB  9F 00475 	    PUSHAB  DBG$GL_INPRAB					      ; 2633
+	      00000000G  9F	       01  FB 00478 	    CALLS   #1, @#SYS$GET					      ;
+		         57	       50  D0 0047F 	    MOVL    R0, STATUS						      ;
+		         92	       57  E8 00482 	    BLBS    STATUS, 3$						      ; 2641
+	      00000000G  EF	       01  90 00485 	    MOVB    #1, DBG$GB_EXIT_DBG					      ; 2649
+	   7E	         57	       04  C9 0048C 	    BISL3   #4, STATUS, -(SP)					      ; 2650
+	      00000000G  00	       01  FB 00490 	    CALLS   #1, LIB$SIGNAL					      ;
+					   04 00497 	    RET     							      ; 2651
+		         6E	       58  B0 00498 7$:     MOVW    PREV_COUNT, STG_DESC				      ; 2666
+		    04   AE	       56  D0 0049B 	    MOVL    NEW_POINTER, STG_DESC+4				      ; 2667
+00000000G  EF	         58	       01  A1 0049F 	    ADDW3   #1, PREV_COUNT, DBG$CP_INP_STR			      ; 2668
+	      00000000G  EF	       56  D0 004A7 	    MOVL    NEW_POINTER, DBG$CP_INP_STR+4			      ; 2669
+				       5E  DD 004AE 	    PUSHL   SP							      ; 2670
+	      00000000G  EF	       01  FB 004B0 8$:     CALLS   #1, DBG$PARS_A_LINE					      ;
+					   04 004B7 	    RET     							      ; 2453
+
+; Routine Size:  304 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13
+; Digital Equipment Corporation
+;
+;	2672	GLOBAL ROUTINE dbg$exc_handler (signal_arg_ptr, mechan_arg_ptr) =
+;	2673	!++
+;	2674	! FUNCTIONAL DESCRIPTION:
+;	2675	!	Exception analyzer called by the primary vector exception handler,
+;	2676	!	which is a MARS routine found in DBGSTART.MAR. The MARS routine
+;	2677	!	immediately resignals if the user program was not running. Otherwise
+;	2678	!	it saves the registers of the user program and disables ASTs for
+;	2679	!	the time that DEBUG is running.
+;	2680	!
+;	2681	!	Then it calls this routine, where the exception is analyzed for
+;	2682	!	the type of exception. Breakpoints and trace traps are given
+;	2683	!	special handling, which usually ends with control being passed
+;	2684	!	to the user. If the breakpoint or trace trap was illegal, then
+;	2685	!	the exception is resignaled unless the user has asked for control
+;	2686	!	on every exception.
+;	2687	!
+;	2688	!	Some trace traps cause an interim halt that requires some action,
+;	2689	!	but doesn't pass control back to the user. After checking the
+;	2690	!	validity of these trace traps, the value ss$_continue is returned.
+;	2691	!
+;	2692	!	After the exception is analyzed and it is determined that immediate
+;	2693	!	resignaling or continuing is not desired, the user_proc routine is
+;	2694	!	called. This routine accepts user commands either from prespecified
+;	2695	!	action commands from breakpoints, or interactively from the terminal.
+;	2696	!	Eventually, a command is given that either causes the user program
+;	2697	!	to continue or DEBUG to exit. If the user program is to continue,
+;	2698	!	the value returned from user_proc is ss$_continue, and that value
+;	2699	!	is passed back to the MARS handler.
+;	2700	!
+;	2701	! 	If an exception occurs during DEBUG processing, the exception
+;	2702	!	handler is final_handl, not this routine.
+;	2703	!
+;	2704	! CALLING SEQUENCE:
+;	2705	!	dbg$exc_handler ()
+;	2706	!
+;	2707	! INPUTS:
+;	2708	!	signal_arg_ptr	- address of block that contains at least four longwords.
+;	2709	!			  THE PERTINENT WORDS ARE THE EXCEPTION NAME, THE
+;	2710	!			  PC AT THE TIME OF THE EXCEPTION, AND THE PSL AT
+;	2711	!			  THE TIME OF THE EXCEPTION. THE NAME IS ALWAYS
+;	2712	!			  THE SECOND LONGWORD, THE PC AND THE PSL THE NEXT
+;	2713	!			  TO LAST AND LAST RESPECTIVELY.
+;	2714	!	mechan_arg_ptr	- address of block that contains five longwords.
+;	2715	!			  THE PERTINENT WORDS ARE THE SAVED R0 AND R1.
+;	2716	!			  THEY ARE IN THE FOURTH AND FIFTH LONGWORDS RESPECTIVELY.
+;	2717	!			  NEITHER IS USED AT THIS TIME.
+;	2718	!
+;	2719	! IMPLICIT INPUTS:
+;	2720	!	SOME VARIABLE NUMBER OF ADDITIONAL ARGUMENTS MAY EXIST BETWEEN THE EXCEPTION
+;	2721	!	NAME AND THE PC. FLAGS INDICATING THE VALIDITY OF TBITS AND BREAKPOINTS
+;	2722	!	ARE REFERENCED. THE FLAG DBG$GB_RESIGNAL CAUSES ILLEGAL EXCEPTIONS TO
+;	2723	!	BE RESIGNALED IF THE FLAG IS SET TO TRUE.
+;	2724	!
+;	2725	! OUTPUTS:
+;	2726	!	ss$_resignal OR ss$_continue (DEFINED IN SYSVECTOR)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-1
+; Digital Equipment Corporation
+;
+;	2727	!
+;	2728	! IMPLICIT OUTPUTS:
+;	2729	!	THE PC AND PSL MAY BE OVERWRITTEN BY THIS HANDLER
+;	2730	!
+;	2731	! ROUTINE VALUE:
+;	2732	!	ss$_resignal OR ss$_continue FOR RESIGNALING AND CONTINUING
+;	2733	!	RESPECTIVELY.
+;	2734	!
+;	2735	! SIDE EFFECTS:
+;	2736	!	ANY NUMBER OF THINGS.
+;	2737	!--
+;	2738	
+;	2739		BEGIN
+;	2740	
+;	2741		MAP
+;	2742			signal_arg_ptr : REF VECTOR;
+;	2743	
+;	2744		LOCAL
+;	2745			output_buffer	: VECTOR [tty_out_width, BYTE],
+;	2746			sig_arg_count;
+;	2747	
+;	2748		!++
+;	2749		! SAVE THE NUMBER OF ARGUMENTS IN THE SIGNAL ARGUMENT LIST SO
+;	2750		! THAT LATER REFERENCING TO PC AND PSL IS SIMPLIFIED.
+;	2751		! NOTE THAT THE PSL IS THE LAST ARGUMENT, AND THUS ITS OFFSET IN
+;	2752		! THE LIST IS THE SAME AS THE count. THE PC IS THE NEXT TO LAST ARGUMENT,
+;	2753		! AND ITS OFFSET THE count MINUS 1.
+;	2754		!--
+;	2755		sig_arg_count = .signal_arg_ptr [signal_arg_coun];
+;	2756	
+;	2757		!+
+;	2758		! RE-INSERT REAL OPCODES FOR EACH USER-SET BREAKPOINT.
+;	2759		!-
+;	2760		dbg$ins_opcodes (all_bpts);
+;	2761	
+;	2762		!+
+;	2763		! ANALYZE THE TYPE OF EXCEPTION. THE BASIC STRATEGY IS TO
+;	2764		! ACCEPT BPT, TBIT, AND ss$_debug, AND TO RESIGNAL ALL OTHERS
+;	2765		! (UNLESS THE USER HAS SET BREAK ON EXCEPTION).
+;	2766		!-
+;	2767		SELECTONE .signal_arg_ptr [exception_name] OF
+;	2768	
+;	2769			SET
+;	2770	
+;	2771			[ss$_break]:
+;	2772				BEGIN
+;	2773				LOCAL
+;	2774					at_pc,
+;	2775					entry_cs,
+;	2776					entry;
+;	2777	%IF dbg_exc3
+;     L 2778	%THEN
+;     U 2779		$fao_tt_out ('breakpoint at !XL, step/over break = !XL, step num = !SL',
+;     U 2780			.dbg$gl_runframe[dbg$l_user_pc], .dbg$gl_runframe[dbg$l_bpt_pc], .dbg$gl_step_num);
+;     U 2781	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-2
+; Digital Equipment Corporation
+;
+;	2782				!+
+;	2783				! No matter what the reason for the breakpoint,
+;	2784				! we can no longer be in the state where we are
+;	2785				! TBITting to get around an instruction that is
+;	2786				! usually replaced with a BPT.
+;	2787				!-
+;	2788	
+;	2789				dbg$gl_runframe[ dbg$V_in_a_bpt ] = FALSE;
+;	2790	
+;	2791				!+
+;	2792				! SEE IF THE BREAKPOINT IS STORED. IF IT IS, LOOK FOR
+;	2793				! AN ACTION BUFFER ADDRESS TO PASS TO THE COMMAND
+;	2794				! PROCESSING HANDLER.
+;	2795				!-
+;	2796				entry = dbg$find_bpt (.dbg$gl_runframe[dbg$l_user_pc]);
+;	2797	%IF dbg_exc3
+;     L 2798	%THEN
+;     U 2799				$fao_tt_out ('dbg$find_bpt returned !XL', .entry);
+;     U 2800	%FI
+;	2801				IF .entry NEQ 0
+;	2802				THEN
+;	2803					BEGIN
+;	2804	
+;	2805					at_pc = .dbg$gl_runframe[ DBG$L_USER_PC ];	! Pick up the PC where the BPT happened.
+;	2806	
+;	2807					!+
+;	2808					! THE BREAKPOINT IS REALLY ACCOUNTED FOR.  If
+;	2809					! this was also A TRACEPOINT, SET THE APPROPRIATE
+;	2810					! flag.  In any case, set the at_a_break flag.
+;	2811					! For breaks, then see if we are to stop at
+;	2812					! this break yet.
+;	2813					!-
+;	2814					dbg$gl_runframe [dbg$v_at_break] = TRUE;
+;	2815	
+;	2816					IF .bpt_type (.entry) EQL trace_point
+;	2817					THEN
+;	2818					    dbg$gl_runframe [dbg$v_at_trace] = TRUE;
+;	2819					!+
+;	2820					! For breakpoints, we must first
+;	2821					! decrement the after count.
+;	2822					!-
+;	2823					IF ( (bpt_aftc(.entry) = .bpt_aftc(.entry) - 1) LEQ 0)
+;	2824					THEN
+;	2825						BEGIN
+;	2826						!+
+;	2827						! If the after count gets to 0, but 
+;	2828						! does not go below, then we put it back
+;	2829						! to 1 and continue to announce the break.
+;	2830						!
+;	2831						! Temporary breakpoints (/AFTER:0) are
+;	2832						! removed by "USER_PROC".
+;	2833						!-
+;	2834						IF ( .bpt_aftc(.entry) EQL 0 ) 
+;	2835						THEN
+;	2836							bpt_aftc(.entry) = 1;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-3
+; Digital Equipment Corporation
+;
+;	2837						!+
+;	2838						! We actually stop for this break/trace point.
+;	2839						! Therefore we make sure we forget about any
+;	2840						! stepping we may have been doing.
+;	2841						!-
+;	2842						dbg$gl_runframe[ DBG$V_STEPPING ] = FALSE;
+;	2843						dbg$gl_runframe[ DBG$V_STEP_OVER ] = FALSE;
+;	2844						dbg$gl_runframe[ DBG$V_TBIT ] = FALSE;
+;	2845						dbg$gl_step_num = 0;
+;	2846	
+;	2847						!+
+;	2848						! Announce whether this is a break or
+;	2849						! trace point, its location, and whether
+;	2850						! or not it is on a routine.  If the
+;	2851						! latter is ture, we actually announce a PC
+;	2852						! 2 less than what it really is so that the
+;	2853						! "routine..." and PC match.
+;	2854						!-
+;	2855						dbg$gl_outprab [rab$v_cco] = TRUE;
+;	2856						dbg$cp_out_str = output_buffer + 1;
+;	2857						dbg$gl_buf_siz = 0;
+;	2858	
+;	2859						ENTRY_CS = UPLIT(%ASCIC '');
+;	2860						IF( DBG$IS_IT_ENTRY(.at_pc -2 ) )
+;	2861						THEN
+;	2862							begin
+;	2863							ENTRY_CS = UPLIT(%ASCIC 'routine ' );
+;	2864							at_pc = .at_pc -2;
+;	2865							end;
+;	2866						dbg$fao_put (UPLIT (%ASCIC '!AC!AC at pc = '),.ENTRY_CS,
+;	2867							(IF .bpt_type (.entry) EQL trace_point
+;	2868							 THEN (UPLIT (%ASCIC 'trace'))
+;	2869							 ELSE (UPLIT (%ASCIC 'break'))));
+;	2870						dbg$out_sym_val(.at_pc,0,0);
+;	2871						dbg$out_put (output_buffer);
+;	2872	
+;	2873						!+
+;	2874						! Call the command processor with the
+;	2875						! address of this BPT table entry so that it
+;	2876						! can execute the action buffer, if there is
+;	2877						! one, and so that it can delete the BPT entry
+;	2878						! from the table if it was a temporary one.
+;	2879						!-
+;	2880						RETURN user_proc (.signal_arg_ptr, .sig_arg_count, .entry)
+;	2881						END;
+;	2882					END;
+;	2883	
+;	2884				IF (.dbg$gl_runframe[dbg$l_bpt_pc] EQL .dbg$gl_runframe[dbg$l_user_pc])
+;	2885				THEN
+;	2886				    BEGIN
+;	2887				    !+
+;	2888				    ! We have hit the temporary breakpoint used
+;	2889				    ! to implement stepping over routine calls.
+;	2890				    !-
+;	2891	%IF DBG_EXC4
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-4
+; Digital Equipment Corporation
+;
+;     L 2892	%THEN
+;     U 2893				    $fao_tt_out('temp break hit at !XL',.dbg$gl_runframe[dbg$l_user_pc]);
+;     U 2894	%FI
+;	2895				    dbg$gl_runframe[ DBG$V_STEP_OVER ] = FALSE;
+;	2896				    decrement_step (.dbg$gl_runframe[dbg$l_user_pc]);
+;	2897	
+;	2898				    IF ( .dbg$gl_step_num EQL 0 )
+;	2899				    THEN
+;	2900					BEGIN
+;	2901					!+
+;	2902					! The step count has reached 0, give the
+;	2903					! user control after announcing the step.
+;	2904					!-
+;	2905					dbg$gl_outprab[rab$v_cco] = true;
+;	2906					announce_trace (.dbg$gl_runframe[dbg$l_user_pc]);
+;	2907					dbg$gl_runframe[ dbg$v_stepping ] = false;
+;	2908					dbg$gl_runframe[ dbg$V_TBIT ] = false;
+;	2909					dbg$gl_runframe[dbg$b_bpt_ins] = 0;
+;	2910					dbg$gl_runframe[dbg$l_bpt_pc] = 0;
+;	2911					!+
+;	2912					! Return accepting user commands.
+;	2913					!-
+;	2914					RETURN ( user_proc (.signal_arg_ptr,.sig_arg_count,0));
+;	2915					END;
+;	2916				    END;
+;	2917	
+;	2918				IF .entry NEQ 0
+;	2919				THEN
+;	2920				    BEGIN
+;	2921				    !+
+;	2922				    ! This is an /AFTER break for which 
+;	2923				    ! the count has not yet run out.
+;	2924				    !
+;	2925				    ! Before continuing we have to
+;	2926				    ! put back all the BPTs except
+;	2927				    ! the one that just caused us to
+;	2928				    ! stop.  It doesn't go back, and
+;	2929				    ! we turn on the TBIT, so that we
+;	2930				    ! can then execute and 'walk thru'
+;	2931				    ! the instruction that IS there.
+;	2932				    ! The TBIT is turned on so that we regain
+;	2933				    ! control later so that we can then insert
+;	2934				    ! the BPT we have just left out.
+;	2935				    !-
+;	2936	%if dbg_exc3
+;     L 2937	%then
+;     U 2938				    $fao_tt_out('at PC !XL, ignore break, aftc is now !XL',
+;     U 2939								.at_pc,.bpt_aftc(.entry));
+;     U 2940	%FI
+;	2941				    dbg$gl_runframe[dbg$b_bpt_ins] = 0;
+;	2942				    dbg$gl_runframe[dbg$l_bpt_pc] = 0;
+;	2943				    RETURN RESET_USER (.at_pc, signal_arg_ptr[.sig_arg_count]);
+;	2944				    END;
+;	2945	
+;	2946				IF .dbg$gl_runframe[dbg$l_bpt_pc] EQL .dbg$gl_runframe[dbg$l_user_pc]
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-5
+; Digital Equipment Corporation
+;
+;	2947				THEN
+;	2948				    BEGIN
+;	2949				    !+
+;	2950				    ! Still stepping, let the user program continue running.
+;	2951				    !-
+;	2952				    dbg$gl_runframe[dbg$b_bpt_ins] = 0;
+;	2953				    dbg$gl_runframe[dbg$l_bpt_pc] = 0;
+;	2954				    RETURN RESET_USER (0, signal_arg_ptr[.sig_arg_count]);
+;	2955				    END;
+;	2956	
+;	2957				!+
+;	2958				! THIS BREAKPOINT IS NOT ONE SET BY THE USER.
+;	2959				! RESIGNAL IF SO DIRECTED. OTHERWISE, ANNOUNCE
+;	2960				! SCREW UP AND ACCEPT COMMANDS.
+;	2961				!-
+;	2962				dbg$gl_step_num = 0;		! Zero step count
+;	2963				IF .dbg$gb_resignal
+;	2964				THEN
+;	2965				    BEGIN
+;	2966				    ! Put the BPTs back into the user program
+;	2967				    ! and refuse to handle this exception.
+;	2968	
+;	2969				    dbg$rem_opcodes (0);
+;	2970				    RETURN ss$_resignal
+;	2971				    END
+;	2972				ELSE
+;	2973				    BEGIN
+;	2974				    report_msg (.signal_arg_ptr);
+;	2975				    RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0);
+;	2976				    END;
+;	2977	
+;	2978				END;
+;	2979	
+;	2980	
+;	2981			[ss$_tbit]:
+;	2982				BEGIN
+;	2983	
+;	2984				!++
+;	2985				! See if the trace trap is a valid one.
+;	2986				! If not, tell user if the user has asked to see
+;	2987				! all exceptions. Otherwise resignal.
+;	2988				! The stack handler will catch this exception
+;	2989				! again if the user does not handle it.
+;	2990				!--
+;	2991				IF NOT .dbg$gl_runframe [dbg$v_tbit_ok]
+;	2992				THEN
+;	2993	
+;	2994					!++
+;	2995					! Invalid trace trap halt. Resignal or
+;	2996					! tell user and give command control.
+;	2997					!--
+;	2998					BEGIN
+;	2999					IF .dbg$gb_resignal
+;	3000					THEN
+;	3001						BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-6
+; Digital Equipment Corporation
+;
+;	3002						dbg$rem_opcodes (0);
+;	3003						RETURN ss$_resignal
+;	3004						END
+;	3005					ELSE
+;	3006						BEGIN
+;	3007						report_msg (.signal_arg_ptr);
+;	3008						RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0);
+;	3009						END;
+;	3010					END
+;	3011				ELSE
+;	3012					BEGIN
+;	3013	
+;	3014					!+
+;	3015					! Take care of valid t-bit trap
+;	3016					!-
+;	3017					LOCAL
+;	3018						status;
+;	3019	%IF dbg_exc
+;     L 3020	%THEN
+;     U 3021					$fao_tt_out ('tbit trap: step_num is !SL', .dbg$gl_step_num);
+;     U 3022	%FI
+;	3023					dbg$gl_runframe [dbg$v_tbit] = FALSE;	! Turn off t-bit in user's PSL
+;	3024					!++
+;	3025					! See whether user program has run to
+;	3026					! end, or if a DBG>CALLed routine has run to
+;	3027					! end. If it has, turn off the tbit and
+;	3028					! set the step count to 0 to stop stepping.
+;	3029					! Returning continue then causes DEBUG
+;	3030					! to simulate a sys$exit, thus indicating
+;	3031					! to the user that the program has run to
+;	3032					! the end, in the former case, or do the
+;	3033					! end of CALL processing, in the latter.
+;	3034					!--
+;	3035					IF (.dbg$gl_runframe [dbg$l_user_pc] EQLA dbg$user_exit
+;	3036					    OR .dbg$gl_runframe [dbg$l_user_pc] EQLA dbg$pseudo_exit
+;	3037					    OR .dbg$gl_runframe [dbg$l_user_pc] EQLA dbg$term_handlr
+;	3038					    OR .dbg$gl_runframe [dbg$l_user_pc] EQLA prim_handl_2
+;	3039					   )
+;	3040					THEN
+;	3041						BEGIN
+;	3042	%if dbg_exc
+;     L 3043	%then
+;     U 3044						$fao_tt_out('at entrance to DEBUG');
+;     U 3045	%fi
+;	3046						signal_arg_ptr [.sig_arg_count] = .dbg$gl_runframe [dbg$l_user_psl];
+;	3047						dbg$gl_runframe [dbg$v_trace_all] = FALSE;
+;	3048						dbg$gl_runframe [dbg$v_stepping] = FALSE;
+;	3049						dbg$gl_step_num = 0;
+;	3050						dbg$gl_runframe [dbg$v_tbit_ok] = FALSE;
+;	3051						dbg$gl_outprab [rab$v_cco] = TRUE;
+;	3052						RETURN ss$_continue
+;	3053						END;
+;	3054					!+
+;	3055					! Call a routine to  evaluate the cause
+;	3056					! of the t-bit trap
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-7
+; Digital Equipment Corporation
+;
+;	3057					!-
+;	3058					status = tbit_handler (signal_arg_ptr [.sig_arg_count],
+;	3059							.dbg$gl_runframe[dbg$l_user_pc]);
+;	3060	%if dbg_exc4
+;     L 3061	%then
+;     U 3062					$fao_tt_out('status returned from tbit_handler is !XL',.status);
+;     U 3063	%FI
+;	3064					!++
+;	3065					! IF the user has dbg$v_trace_all on (because
+;	3066					! all occurrences of a certain set of
+;	3067					! instructions are being monitored), then
+;	3068					! see whether the next instruction to
+;	3069					! to be executed is one of those special
+;	3070					! instructions. If so, display the trace
+;	3071					! on the output device and then continue
+;	3072					! the user program. Otherwise, just
+;	3073					! reset the tbit and continue.
+;	3074					! This section is skipped unless the TBIT_HANDLER
+;	3075					! routine returns a code which says to continue
+;	3076					! running (1).
+;	3077					!--
+;	3078					IF .dbg$gl_runframe [dbg$v_trace_all] AND .status EQL 1
+;	3079					THEN
+;	3080						BEGIN
+;	3081						LOCAL
+;	3082							opcode_found,	! A flag
+;	3083							stepping,	! A flag
+;	3084							user_pc : REF VECTOR [, BYTE];
+;	3085	
+;	3086						LITERAL
+;	3087							opcode_byte	= 0;
+;	3088	
+;	3089						user_pc = .dbg$gl_runframe[dbg$l_user_pc];
+;	3090						stepping = .dbg$gl_runframe[ DBG$V_STEPPING ];
+;	3091	%IF dbg_exc5
+;     L 3092	%THEN
+;     U 3093						$fao_tt_out ('opcode is !XB', .user_pc [opcode_byte]);
+;     U 3094	%FI
+;	3095						!+
+;	3096						! Loop around checking each built-in opcode
+;	3097						! set that is currently known about and enabled.
+;	3098						! Maintain a flag which indicates if any matching
+;	3099						! opcode has been found.
+;	3100						!-
+;	3101					
+;	3102						opcode_found = FALSE;
+;	3103					
+;	3104						INCR i FROM 0 TO (NUM_OPCODE_SETS*2) -1 BY 2
+;	3105							DO
+;	3106					
+;	3107							! For each set of opcodes currently
+;	3108							! enabled for tracing (pointed to
+;	3109							! in the TRACE_OPCODES structure),
+;	3110							! see if the current opcode is in
+;	3111							! that set.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-8
+; Digital Equipment Corporation
+;
+;	3112					
+;	3113							IF( .trace_opcodes[.i] NEQ 0 )
+;	3114							then
+;	3115								begin
+;	3116								LOCAL
+;	3117									opcode_set : ref vector[,byte];
+;	3118	
+;	3119								! Loop thru the counted byte
+;	3120								! stream of opcodes.
+;	3121	
+;	3122								opcode_set = .trace_opcodes[.i];
+;	3123	
+;	3124								INCR j from 1 to .opcode_set[0]
+;	3125									do
+;	3126									begin
+;	3127									if( .opcode_set[.j] EQL .user_pc[0] )
+;	3128									then
+;	3129										begin
+;	3130										opcode_found = TRUE;
+;	3131										exitloop;
+;	3132										end;
+;	3133									END;
+;	3134					
+;	3135								! It doesn't matter in what
+;	3136								! set an opcode is found.  If
+;	3137								! it is anywhere, we're done.
+;	3138	
+;	3139								IF( .opcode_found )
+;	3140								then
+;	3141									exitloop;
+;	3142								end;
+;	3143					
+;	3144						! At this point OPCODE_FOUND says whether
+;	3145						! or not we should announce the trace.
+;	3146						! The rest of the processing is the same
+;	3147						! in either case.
+;	3148	
+;	3149						IF( .opcode_found )
+;	3150						THEN
+;	3151							begin
+;	3152	
+;	3153							! Pretend we're not stepping because
+;	3154							! otherwise the trace will be announced
+;	3155							! as a step completion.
+;	3156	
+;	3157							dbg$gl_runframe[ dbg$v_stepping ] = FALSE;
+;	3158							announce_trace(.dbg$gl_runframe[dbg$l_user_pc]);
+;	3159							end;
+;	3160						dbg$gl_runframe [dbg$v_tbit] = TRUE;
+;	3161						dbg$gl_runframe [dbg$v_tbit_ok] = TRUE;
+;	3162						signal_arg_ptr [.sig_arg_count] = .dbg$gl_runframe[dbg$l_user_psl];
+;	3163						dbg$gl_runframe[dbg$v_stepping] = .stepping;
+;	3164	
+;	3165						IF( NOT .stepping )
+;	3166						THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-9
+; Digital Equipment Corporation
+;
+;	3167							BEGIN
+;	3168							dbg$rem_opcodes (0);
+;	3169							RETURN ss$_continue
+;	3170							END;
+;	3171						END;
+;	3172					!+
+;	3173					! Now take action depending on what
+;	3174					! TBIT_HANDLER, above, has determined.
+;	3175					!-
+;	3176					IF .status
+;	3177					THEN
+;	3178						BEGIN
+;	3179	%IF dbg_exc
+;     L 3180	%THEN
+;     U 3181						$fao_tt_out ('exc_handler: continue stepping via reset user');
+;     U 3182	%FI
+;	3183						return reset_user( 0, signal_arg_ptr[.sig_arg_count]);
+;	3184						END;
+;	3185	
+;	3186					!+
+;	3187					! Step count was reduced to zero. Tell user
+;	3188					! of position of halt. Status of zero means
+;	3189					! this was a normal tracepoint. Status
+;	3190					! of 2 means it is a watchpoint.
+;	3191					!-
+;	3192					dbg$gl_outprab[rab$v_cco] = TRUE;	! Purge type ahead
+;	3193					IF .status EQL 0
+;	3194					THEN
+;	3195						BEGIN
+;	3196						announce_trace (.dbg$gl_runframe[dbg$l_user_pc]);
+;	3197						dbg$gl_runframe[dbg$v_at_break] = FALSE;
+;	3198						dbg$gl_runframe[dbg$v_stepping] = FALSE;
+;	3199						END
+;	3200					ELSE	IF .dbg$gl_runframe[dbg$v_real_wpt]
+;	3201						THEN
+;	3202						BEGIN
+;	3203						dbg$gl_runframe[dbg$v_real_wpt] = FALSE;
+;	3204						dbg$gl_runframe[dbg$v_stepping] = FALSE;
+;	3205						dbg$gl_step_num = 0;
+;	3206						dbg$cp_out_str = output_buffer + 1;
+;	3207						dbg$gl_buf_siz = 0;
+;	3208	
+;	3209						dbg$fao_put (UPLIT (%ASCIC '!_new value = !XL'),
+;	3210							.(.dbg$gl_runframe[dbg$l_watchpt]));
+;	3211						dbg$out_put (output_buffer);
+;	3212						END;
+;	3213					END;
+;	3214	
+;	3215				!+
+;	3216				! Call the user command processor with a buffer address 
+;	3217				! of zero so that commands are taken from the terminal.
+;	3218				! The value returned from this routine is returned to
+;	3219				! the outer handler.
+;	3220				!-
+;	3221				RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-10
+; Digital Equipment Corporation
+;
+;	3222				END;
+;	3223	
+;	3224	
+;	3225			[ss$_accvio]:
+;	3226				BEGIN
+;	3227				LOCAL
+;	3228					PSL_PTR : ref block[ %upval, BYTE];
+;	3229	
+;	3230				!+
+;	3231				! Look at the location of the access violation. If
+;	3232				! it is on a page that has a watchpoint on it,
+;	3233				! then the access violation is caused by DEBUG's
+;	3234				! deliberate protection of that page. If the location
+;	3235				! is the location being watched, report it. Then,
+;	3236				! restore the original protection of the page, turn
+;	3237				! on the tbit, execute one instruction, reprotect
+;	3238				! the page, and proceed. If the location is not
+;	3239				! being watched, do all of the above except don't
+;	3240				! report it.
+;	3241				!-
+;	3242				LOCAL
+;	3243					entry;
+;	3244	
+;	3245	%IF dbg_exc
+;     L 3246	%THEN
+;     U 3247				$fao_tt_out ('access violation at !XL, type !XL, pc is !XL',
+;     U 3248					.signal_arg_ptr [add_sig_arg_two],
+;     U 3249					.signal_arg_ptr [add_sig_arg_one],
+;     U 3250					.dbg$gl_runframe[dbg$l_user_pc]);
+;     U 3251	%FI
+;	3252	
+;	3253				IF NOT dbg$find_watch (.signal_arg_ptr [add_sig_arg_two], entry)
+;	3254				THEN
+;	3255					BEGIN
+;	3256	%IF dbg_exc6
+;     L 3257	%THEN
+;     U 3258					$fao_tt_out ('find_watch failed');
+;     U 3259	%FI
+;	3260	
+;	3261					IF .dbg$gb_resignal
+;	3262					THEN
+;	3263						BEGIN
+;	3264	
+;	3265						!+
+;	3266						! This is normal state. We didn't
+;	3267						! cause the access violation. The
+;	3268						! user doesn't want DEBUG to intercept
+;	3269						! any user handlers, so just resignal.
+;	3270						!-
+;	3271						dbg$rem_opcodes (0);
+;	3272						RETURN ss$_resignal
+;	3273						END
+;	3274					ELSE
+;	3275						BEGIN
+;	3276	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-11
+; Digital Equipment Corporation
+;
+;	3277						!+
+;	3278						! User wants to see all exceptions.
+;	3279						! Report access violation and
+;	3280						! give user control.
+;	3281						!-
+;	3282						report_msg (.signal_arg_ptr);
+;	3283						RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0);
+;	3284						END;
+;	3285					END;
+;	3286	
+;	3287				!+
+;	3288				! If this is an actual watchpoint match, report 
+;	3289				! it to user.
+;	3290				!-
+;	3291				IF .bpt_addr(.entry) LEQA .signal_arg_ptr [add_sig_arg_two]
+;	3292				AND .signal_arg_ptr [add_sig_arg_two] LEQA (.bpt_addr(.entry) + .bpt_leng(.entry))
+;	3293				THEN
+;	3294					BEGIN
+;	3295	
+;	3296					BIND
+;	3297						signal_arg_blk	= signal_arg_ptr : REF BLOCK;
+;	3298	
+;	3299					dbg$gl_runframe[dbg$v_real_wpt] = TRUE;
+;	3300					dbg$gl_outprab [rab$v_cco] = TRUE;
+;	3301	
+;	3302					dbg$cp_out_str = output_buffer + 1;
+;	3303					dbg$gl_buf_siz = 0;
+;	3304					dbg$fao_put (UPLIT (%ASCIC 'write to '));
+;	3305					dbg$out_sym_val (.signal_arg_ptr [add_sig_arg_two], 0, 0);
+;	3306					dbg$fao_put (UPLIT (%ASCIC ' at PC = '));
+;	3307					dbg$out_sym_val (.dbg$gl_runframe[dbg$l_user_pc], 0, 0);
+;	3308					dbg$out_put (output_buffer);
+;	3309	
+;	3310					dbg$cp_out_str = output_buffer + 1;
+;	3311					dbg$gl_buf_siz = 0;
+;	3312					dbg$fao_put (UPLIT (%ASCIC '!_old value = !XL'),
+;	3313						.(.signal_arg_ptr [add_sig_arg_two]));
+;	3314					dbg$out_put (output_buffer);
+;	3315	
+;	3316	%IF dbg_exc6
+;     L 3317	%THEN
+;     U 3318					$fao_tt_out ('saved protections are !SL and !SL',
+;     U 3319						.bpt_pro1 (.entry), .bpt_pro2 (.entry));
+;     U 3320	%FI
+;	3321					END
+;	3322	%IF dbg_exc6
+;     L 3323	%THEN
+;     U 3324				ELSE
+;     U 3325					BEGIN
+;     U 3326					$fao_tt_out ('access violation on watchpoint page, not watchpoint itself');
+;     U 3327					$fao_tt_out ('protections will be reset to user read/write');
+;     U 3328					END
+;     U 3329	%FI
+;	3330	
+;	3331				;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-12
+; Digital Equipment Corporation
+;
+;	3332	
+;	3333				!+
+;	3334				! Now change the protection to its original
+;	3335				! state, turn on the tbit, and REI.
+;	3336				!-
+;	3337				dbg$gl_runframe[dbg$l_watchpt] = .signal_arg_ptr[add_sig_arg_two];
+;	3338				dbg$gl_runframe[dbg$b_prev_pro1] = .bpt_pro1 (.entry);
+;	3339				dbg$gl_runframe[dbg$b_prev_pro2] = .bpt_pro2 (.entry);
+;	3340				psl_ptr = signal_arg_ptr [.sig_arg_count];
+;	3341				psl_ptr[ TBIT ] = TRUE;
+;	3342				dbg$gl_runframe[ DBG$V_IN_A_WPT ] = TRUE;
+;	3343				dbg$gl_runframe[ DBG$V_tbit_ok ] = TRUE;
+;	3344	
+;	3345	%IF dbg_exc6
+;     L 3346	%THEN
+;     U 3347				$fao_tt_out ('write to watched address !XL',
+;     U 3348					.dbg$gl_runframe[dbg$l_watchpt]);
+;     U 3349	%FI
+;	3350	
+;	3351				!+
+;	3352				! reinsert all the break/trace points and reset
+;	3353				! the protections on all watchpoints. Then unset
+;	3354				! the protection on this watchpoint.
+;	3355				!-
+;	3356				dbg$rem_opcodes (.dbg$gl_runframe[dbg$l_user_pc]); ! except for one that
+;	3357										   ! may be at this location
+;	3358				dbg$ins_opcodes (.bpt_addr(.entry));		   ! undo protection
+;	3359				RETURN ss$_continue
+;	3360				END;
+;	3361	
+;	3362	
+;	3363			[ss$_debug]:
+;	3364				BEGIN
+;	3365	
+;	3366				!+
+;	3367				! This is the phony way into the user control. This
+;	3368				! exception name is passed by the DEBUG startup
+;	3369				! routine, and by the final handler when an exception
+;	3370				! condition in a user program has not been handled
+;	3371				! by anyone, and the user is passed control in order
+;	3372				! to fix up the instruction that caused the problem.
+;	3373				! Just call the user command processor and return
+;	3374				! the value it returns to the outer handler.
+;	3375				!-
+;	3376	
+;	3377	%IF dbg_exc
+;     L 3378	%THEN
+;     U 3379				$fao_tt_out ('special DEBUG exception');
+;     U 3380	%FI
+;	3381	
+;	3382				RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0)
+;	3383				END;
+;	3384	
+;	3385	
+;	3386			[OTHERWISE]:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-13
+; Digital Equipment Corporation
+;
+;	3387				BEGIN
+;	3388	
+;	3389				!+
+;	3390				! Some exception in the user program besides BPT,
+;	3391				! trace trap, or initialization. If resignaling,
+;	3392				! just resignal; otherwise, announce the
+;	3393				! problem and pass control to the user.
+;	3394				!-
+;	3395	
+;	3396	%IF dbg_exc
+;     L 3397	%THEN
+;     U 3398				$fao_tt_out ('unfielded user exception');
+;     U 3399	%FI
+;	3400	
+;	3401				IF .dbg$gb_resignal
+;	3402				THEN
+;	3403					BEGIN
+;	3404					dbg$rem_opcodes (0);
+;	3405					RETURN ss$_resignal
+;	3406					END
+;	3407				ELSE
+;	3408					BEGIN
+;	3409					report_msg (.signal_arg_ptr);
+;	3410					RETURN user_proc (.signal_arg_ptr, .sig_arg_count, 0);
+;	3411					END;
+;	3412				END;
+;	3413	
+;	3414			TES;
+;	3415	
+;	3416		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      000CC P.AAS:  .ASCII  <0><0><0><0>					      ;
+					      000D0 P.AAT:  .ASCII  <8>\routine \<0><0><0>				      ;
+					      000DC P.AAU:  .ASCII  <15>\!AC!AC at pc = \				      ;
+					      000EC P.AAV:  .ASCII  <5>\trace\<0><0>					      ;
+					      000F4 P.AAW:  .ASCII  <5>\break\<0><0>					      ;
+					      000FC P.AAX:  .ASCII  <17>\!_new value = !XL\<0><0>			      ;
+					      00110 P.AAY:  .ASCII  <9>\write to \<0><0>				      ;
+					      0011C P.AAZ:  .ASCII  <9>\ at PC = \<0><0>				      ;
+					      00128 P.ABA:  .ASCII  <17>\!_old value = !XL\<0><0>			      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 004B8 	    .ENTRY  DBG$EXC_HANDLER, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 2672
+		         5E	FF78   CE  9E 004BA 	    MOVAB   -136(SP), SP					      ;
+		         54	  04   AC  D0 004BF 	    MOVL    SIGNAL_ARG_PTR, R4					      ; 2755
+		         53	       64  D0 004C3 	    MOVL    (R4), SIG_ARG_COUNT					      ;
+		         7E	       01  CE 004C6 	    MNEGL   #1, -(SP)						      ; 2760
+	      00000000G  EF	       01  FB 004C9 	    CALLS   #1, DBG$INS_OPCODES					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-14
+; Digital Equipment Corporation
+;
+		         5B	  04   A4  D0 004D0 	    MOVL    4(R4), R11						      ; 2767
+	      00000414   8F	       5B  D1 004D4 	    CMPL    R11, #1044						      ;
+				       03  13 004DB 	    BEQL    1$							      ;
+				     0166  31 004DD 	    BRW     14$							      ;
+		         50 00000000G  EF  D0 004E0 1$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2789
+		    48   A0	  40   8F  8A 004E7 	    BICB2   #64, 72(R0)						      ;
+				  40   A0  DD 004EC 	    PUSHL   64(R0)						      ; 2796
+	      00000000G  EF	       01  FB 004EF 	    CALLS   #1, DBG$FIND_BPT					      ;
+		         52	       50  D0 004F6 	    MOVL    R0, ENTRY						      ;
+				       57  D4 004F9 	    CLRL    R7							      ; 2801
+				       52  D5 004FB 	    TSTL    ENTRY						      ;
+				       03  12 004FD 	    BNEQ    3$							      ;
+				     00BB  31 004FF 2$:     BRW     9$							      ;
+				       57  D6 00502 3$:     INCL    R7							      ;
+		         50 00000000G  EF  D0 00504 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2805
+		         55	  40   A0  D0 0050B 	    MOVL    64(R0), AT_PC					      ;
+		    48   A0	       01  88 0050F 	    BISB2   #1, 72(R0)						      ; 2814
+      12   A2	         02	       01  ED 00513 	    CMPZV   #1, #2, 18(ENTRY), #2				      ; 2816
+				       02     00518									      ;
+				       04  12 00519 	    BNEQ    4$							      ;
+		    48   A0	       10  88 0051B 	    BISB2   #16, 72(R0)						      ; 2818
+		         51	  0C   A2  32 0051F 4$:     CVTWL   12(ENTRY), R1					      ; 2823
+				       51  D7 00523 	    DECL    R1							      ;
+		    0C   A2	       51  B0 00525 	    MOVW    R1, 12(ENTRY)					      ;
+				       51  D5 00529 	    TSTL    R1							      ;
+				       D2  14 0052B 	    BGTR    2$							      ;
+				  0C   A2  B5 0052D 	    TSTW    12(ENTRY)						      ; 2834
+				       04  12 00530 	    BNEQ    5$							      ;
+		    0C   A2	       01  B0 00532 	    MOVW    #1, 12(ENTRY)					      ; 2836
+		    48   A0	0408   8F  AA 00536 5$:     BICW2   #1032, 72(R0)					      ; 2843
+		    44   A0	       10  8A 0053C 	    BICB2   #16, 68(R0)						      ; 2844
+			    00000000G  EF  D4 00540 	    CLRL    DBG$GL_STEP_NUM					      ; 2845
+	      00000000G  EF	  80   8F  88 00546 	    BISB2   #128, DBG$GL_OUTPRAB+7				      ; 2855
+	      00000000G  EF	  05   AE  9E 0054E 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 2856
+			    00000000G  EF  D4 00556 	    CLRL    DBG$GL_BUF_SIZ					      ; 2857
+		         56 00000000'  EF  9E 0055C 	    MOVAB   P.AAS, ENTRY_CS					      ; 2859
+				  FE   A5  9F 00563 	    PUSHAB  -2(AT_PC)						      ; 2860
+	      00000000G  EF	       01  FB 00566 	    CALLS   #1, DBG$IS_IT_ENTRY					      ;
+		         0A	       50  E9 0056D 	    BLBC    R0, 6$						      ;
+		         56 00000000'  EF  9E 00570 	    MOVAB   P.AAT, ENTRY_CS					      ; 2863
+		         55	       02  C2 00577 	    SUBL2   #2, AT_PC						      ; 2864
+      12   A2	         02	       01  ED 0057A 6$:     CMPZV   #1, #2, 18(ENTRY), #2				      ; 2867
+				       02     0057F									      ;
+				       09  12 00580 	    BNEQ    7$							      ;
+		         50 00000000'  EF  9E 00582 	    MOVAB   P.AAV, R0						      ; 2868
+				       07  11 00589 	    BRB     8$							      ; 2867
+		         50 00000000'  EF  9E 0058B 7$:     MOVAB   P.AAW, R0						      ; 2869
+				       50  DD 00592 8$:     PUSHL   R0							      ; 2867
+				       56  DD 00594 	    PUSHL   ENTRY_CS						      ; 2866
+			    00000000'  EF  9F 00596 	    PUSHAB  P.AAU						      ;
+	      00000000G  EF	       03  FB 0059C 	    CALLS   #3, DBG$FAO_PUT					      ;
+				       7E  7C 005A3 	    CLRQ    -(SP)						      ; 2870
+				       55  DD 005A5 	    PUSHL   AT_PC						      ;
+	      00000000G  EF	       03  FB 005A7 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+				  04   AE  9F 005AE 	    PUSHAB  OUTPUT_BUFFER					      ; 2871
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-15
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       01  FB 005B1 	    CALLS   #1, DBG$OUT_PUT					      ;
+				       52  DD 005B8 	    PUSHL   ENTRY						      ; 2880
+				     0324  31 005BA 	    BRW     42$							      ;
+		         50 00000000G  EF  D0 005BD 9$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 2884
+		    40   A0	  4A   A0  D1 005C4 	    CMPL    74(R0), 64(R0)					      ;
+				       43  12 005C9 	    BNEQ    10$							      ;
+		    49   A0	       04  8A 005CB 	    BICB2   #4, 73(R0)						      ; 2895
+				  40   A0  DD 005CF 	    PUSHL   64(R0)						      ; 2896
+		  FBD6   CF	       01  FB 005D2 	    CALLS   #1, DECREMENT_STEP					      ;
+			    00000000G  EF  D5 005D7 	    TSTL    DBG$GL_STEP_NUM					      ; 2898
+				       2F  12 005DD 	    BNEQ    10$							      ;
+	      00000000G  EF	  80   8F  88 005DF 	    BISB2   #128, DBG$GL_OUTPRAB+7				      ; 2905
+		         50 00000000G  EF  D0 005E7 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2906
+				  40   A0  DD 005EE 	    PUSHL   64(R0)						      ;
+		  FBEC   CF	       01  FB 005F1 	    CALLS   #1, ANNOUNCE_TRACE					      ;
+		         50 00000000G  EF  D0 005F6 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2907
+		    48   A0	       08  8A 005FD 	    BICB2   #8, 72(R0)						      ;
+		    44   A0	       10  8A 00601 	    BICB2   #16, 68(R0)						      ; 2908
+				  60   A0  94 00605 	    CLRB    96(R0)						      ; 2909
+				  4A   A0  D4 00608 	    CLRL    74(R0)						      ; 2910
+				     02D1  31 0060B 	    BRW     41$							      ; 2914
+		         15	       57  E9 0060E 10$:    BLBC    R7, 11$						      ; 2918
+		         50 00000000G  EF  D0 00611 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2941
+				  60   A0  94 00618 	    CLRB    96(R0)						      ;
+				  4A   A0  D4 0061B 	    CLRL    74(R0)						      ; 2942
+				     6443  DF 0061E 	    PUSHAL  (R4)[SIG_ARG_COUNT]					      ; 2943
+				       55  DD 00621 	    PUSHL   AT_PC						      ;
+				     0125  31 00623 	    BRW     27$							      ;
+		         50 00000000G  EF  D0 00626 11$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 2946
+		    40   A0	  4A   A0  D1 0062D 	    CMPL    74(R0), 64(R0)					      ;
+				       09  12 00632 	    BNEQ    12$							      ;
+				  60   A0  94 00634 	    CLRB    96(R0)						      ; 2952
+				  4A   A0  D4 00637 	    CLRL    74(R0)						      ; 2953
+				     0109  31 0063A 	    BRW     26$							      ; 2954
+			    00000000G  EF  D4 0063D 12$:    CLRL    DBG$GL_STEP_NUM					      ; 2962
+				     027C  31 00643 13$:    BRW     39$							      ; 2963
+	      00000464   8F	       5B  D1 00646 14$:    CMPL    R11, #1124						      ; 2767
+				       03  13 0064D 	    BEQL    15$							      ;
+				     0163  31 0064F 	    BRW     31$							      ;
+		         52 00000000G  EF  D0 00652 15$:    MOVL    DBG$GL_RUNFRAME, R2					      ; 2991
+	   E5	    48   A2	       07  E1 00659 	    BBC     #7, 72(R2), 13$					      ;
+		    44   A2	       10  8A 0065E 	    BICB2   #16, 68(R2)						      ; 3023
+		         50	  40   A2  D0 00662 	    MOVL    64(R2), R0						      ; 3035
+		         51 00000000G  EF  9E 00666 	    MOVAB   DBG$USER_EXIT, R1					      ;
+		         51	       50  D1 0066D 	    CMPL    R0, R1						      ;
+				       24  13 00670 	    BEQL    16$							      ;
+		         51 00000000G  EF  9E 00672 	    MOVAB   DBG$PSEUDO_EXIT, R1					      ; 3036
+		         51	       50  D1 00679 	    CMPL    R0, R1						      ;
+				       18  13 0067C 	    BEQL    16$							      ;
+		         51 00000000G  EF  9E 0067E 	    MOVAB   DBG$TERM_HANDLR, R1					      ; 3037
+		         51	       50  D1 00685 	    CMPL    R0, R1						      ;
+				       0C  13 00688 	    BEQL    16$							      ;
+		         51 00000000G  EF  9E 0068A 	    MOVAB   PRIM_HANDL_2, R1					      ; 3038
+		         51	       50  D1 00691 	    CMPL    R0, R1						      ;
+				       1F  12 00694 	    BNEQ    17$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-16
+; Digital Equipment Corporation
+;
+		       6443	  44   A2  D0 00696 16$:    MOVL    68(R2), (R4)[SIG_ARG_COUNT]				      ; 3046
+		    48   A2	       0C  8A 0069B 	    BICB2   #12, 72(R2)						      ; 3048
+			    00000000G  EF  D4 0069F 	    CLRL    DBG$GL_STEP_NUM					      ; 3049
+		    48   A2	  80   8F  8A 006A5 	    BICB2   #128, 72(R2)					      ; 3050
+	      00000000G  EF	  80   8F  88 006AA 	    BISB2   #128, DBG$GL_OUTPRAB+7				      ; 3051
+				     0200  31 006B2 	    BRW     37$							      ; 3052
+				       50  DD 006B5 17$:    PUSHL   R0							      ; 3058
+				     6443  DF 006B7 	    PUSHAL  (R4)[SIG_ARG_COUNT]					      ;
+		  FA7C   CF	       02  FB 006BA 	    CALLS   #2, TBIT_HANDLER					      ;
+		         57	       50  D0 006BF 	    MOVL    R0, STATUS						      ;
+		         50 00000000G  EF  D0 006C2 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3078
+	   75	    48   A0	       02  E1 006C9 	    BBC     #2, 72(R0), 25$					      ;
+		         01	       57  D1 006CE 	    CMPL    STATUS, #1						      ;
+				       70  12 006D1 	    BNEQ    25$							      ;
+		         59	  40   A0  D0 006D3 	    MOVL    64(R0), USER_PC					      ; 3089
+      48   A0	         01	       03  EF 006D7 	    EXTZV   #3, #1, 72(R0), STEPPING				      ; 3090
+				       5A     006DC									      ;
+				       56  D4 006DD 	    CLRL    OPCODE_FOUND					      ; 3102
+				       51  D4 006DF 	    CLRL    I							      ; 3104
+		         52 00000000'EF41  D0 006E1 18$:    MOVL    TRACE_OPCODES[I], R2				      ; 3113
+				       19  13 006E9 	    BEQL    22$							      ;
+		         58	       62  9A 006EB 	    MOVZBL  (OPCODE_SET), R8					      ; 3124
+				       55  D4 006EE 	    CLRL    J							      ;
+				       0B  11 006F0 	    BRB     20$							      ;
+		         69	     6542  91 006F2 19$:    CMPB    (J)[OPCODE_SET], (USER_PC)				      ; 3127
+				       05  12 006F6 	    BNEQ    20$							      ;
+		         56	       01  D0 006F8 	    MOVL    #1, OPCODE_FOUND					      ; 3130
+				       04  11 006FB 	    BRB     21$							      ; 3131
+	   F1	         55	       58  F3 006FD 20$:    AOBLEQ  R8, J, 19$						      ; 3124
+		         09	       56  E8 00701 21$:    BLBS    OPCODE_FOUND, 23$					      ; 3139
+	   51	         02	       03  F1 00704 22$:    ACBL    #3, #2, I, 18$					      ; 3104
+				     FFD7     00708									      ;
+		         0C	       56  E9 0070A 	    BLBC    OPCODE_FOUND, 24$					      ; 3149
+		    48   A0	       08  8A 0070D 23$:    BICB2   #8, 72(R0)						      ; 3157
+				  40   A0  DD 00711 	    PUSHL   64(R0)						      ; 3158
+		  FAC9   CF	       01  FB 00714 	    CALLS   #1, ANNOUNCE_TRACE					      ;
+		         50 00000000G  EF  D0 00719 24$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 3160
+		    44   A0	       10  88 00720 	    BISB2   #16, 68(R0)						      ;
+		    48   A0	  80   8F  88 00724 	    BISB2   #128, 72(R0)					      ; 3161
+		       6443	  44   A0  D0 00729 	    MOVL    68(R0), (R4)[SIG_ARG_COUNT]				      ; 3162
+	   01	         03	       5A  F0 0072E 	    INSV    STEPPING, #3, #1, 72(R0)				      ; 3163
+				  48   A0     00732									      ;
+		         0C	       5A  E8 00734 	    BLBS    STEPPING, 25$					      ; 3165
+				       7E  D4 00737 	    CLRL    -(SP)						      ; 3168
+	      00000000G  EF	       01  FB 00739 	    CALLS   #1, DBG$REM_OPCODES					      ;
+				     0172  31 00740 	    BRW     37$							      ; 3169
+		         0B	       57  E9 00743 25$:    BLBC    STATUS, 28$						      ; 3176
+				     6443  DF 00746 26$:    PUSHAL  (R4)[SIG_ARG_COUNT]					      ; 3183
+				       7E  D4 00749 	    CLRL    -(SP)						      ;
+		  FBE1   CF	       02  FB 0074B 27$:    CALLS   #2, RESET_USER					      ;
+					   04 00750 	    RET     							      ;
+	      00000000G  EF	  80   8F  88 00751 28$:    BISB2   #128, DBG$GL_OUTPRAB+7				      ; 3192
+		         55 00000000G  EF  D0 00759 	    MOVL    DBG$GL_RUNFRAME, R5					      ; 3196
+				       57  D5 00760 	    TSTL    STATUS						      ; 3193
+				       15  12 00762 	    BNEQ    29$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-17
+; Digital Equipment Corporation
+;
+				  40   A5  DD 00764 	    PUSHL   64(R5)						      ; 3196
+		  FA76   CF	       01  FB 00767 	    CALLS   #1, ANNOUNCE_TRACE					      ;
+		         50 00000000G  EF  D0 0076C 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3197
+		    48   A0	       09  8A 00773 	    BICB2   #9, 72(R0)						      ; 3198
+				       39  11 00777 	    BRB     30$							      ; 3193
+	   34	    49   A5	       01  E1 00779 29$:    BBC     #1, 73(R5), 30$					      ; 3200
+		    48   A5	0208   8F  AA 0077E 	    BICW2   #520, 72(R5)					      ; 3203
+			    00000000G  EF  D4 00784 	    CLRL    DBG$GL_STEP_NUM					      ; 3205
+	      00000000G  EF	  05   AE  9E 0078A 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 3206
+			    00000000G  EF  D4 00792 	    CLRL    DBG$GL_BUF_SIZ					      ; 3207
+				  56   B5  DD 00798 	    PUSHL   @86(R5)						      ; 3209
+			    00000000'  EF  9F 0079B 	    PUSHAB  P.AAX						      ;
+	      00000000G  EF	       02  FB 007A1 	    CALLS   #2, DBG$FAO_PUT					      ;
+				  04   AE  9F 007A8 	    PUSHAB  OUTPUT_BUFFER					      ; 3211
+	      00000000G  EF	       01  FB 007AB 	    CALLS   #1, DBG$OUT_PUT					      ;
+				     012A  31 007B2 30$:    BRW     41$							      ; 3221
+		         0C	       5B  D1 007B5 31$:    CMPL    R11, #12						      ; 2767
+				       03  13 007B8 	    BEQL    32$							      ;
+				     00FC  31 007BA 	    BRW     38$							      ;
+				       5E  DD 007BD 32$:    PUSHL   SP							      ; 3253
+		         55	  0C   A4  D0 007BF 	    MOVL    12(R4), R5						      ;
+				       55  DD 007C3 	    PUSHL   R5							      ;
+	      00000000G  EF	       02  FB 007C5 	    CALLS   #2, DBG$FIND_WATCH					      ;
+		         03	       50  E8 007CC 	    BLBS    R0, 33$						      ;
+				     00F0  31 007CF 	    BRW     39$							      ;
+		         52	       6E  D0 007D2 33$:    MOVL    ENTRY, R2						      ; 3291
+		         55	  08   A2  D1 007D5 	    CMPL    8(R2), R5						      ;
+				       0B  1A 007D9 	    BGTRU   34$							      ;
+		         50	  10   A2  9A 007DB 	    MOVZBL  16(R2), R0						      ; 3292
+		         50	  08   A2  C0 007DF 	    ADDL2   8(R2), R0						      ;
+		         50	       55  D1 007E3 	    CMPL    R5, R0						      ;
+				       03  1B 007E6 34$:    BLEQU   35$							      ;
+				     008A  31 007E8 	    BRW     36$							      ;
+		         50 00000000G  EF  D0 007EB 35$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 3299
+		    49   A0	       02  88 007F2 	    BISB2   #2, 73(R0)						      ;
+	      00000000G  EF	  80   8F  88 007F6 	    BISB2   #128, DBG$GL_OUTPRAB+7				      ; 3300
+	      00000000G  EF	  05   AE  9E 007FE 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 3302
+			    00000000G  EF  D4 00806 	    CLRL    DBG$GL_BUF_SIZ					      ; 3303
+			    00000000'  EF  9F 0080C 	    PUSHAB  P.AAY						      ; 3304
+	      00000000G  EF	       01  FB 00812 	    CALLS   #1, DBG$FAO_PUT					      ;
+				       7E  7C 00819 	    CLRQ    -(SP)						      ; 3305
+				       55  DD 0081B 	    PUSHL   R5							      ;
+	      00000000G  EF	       03  FB 0081D 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+			    00000000'  EF  9F 00824 	    PUSHAB  P.AAZ						      ; 3306
+	      00000000G  EF	       01  FB 0082A 	    CALLS   #1, DBG$FAO_PUT					      ;
+				       7E  7C 00831 	    CLRQ    -(SP)						      ; 3307
+		         50 00000000G  EF  D0 00833 	    MOVL    DBG$GL_RUNFRAME, R0					      ;
+				  40   A0  DD 0083A 	    PUSHL   64(R0)						      ;
+	      00000000G  EF	       03  FB 0083D 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+				  04   AE  9F 00844 	    PUSHAB  OUTPUT_BUFFER					      ; 3308
+	      00000000G  EF	       01  FB 00847 	    CALLS   #1, DBG$OUT_PUT					      ;
+	      00000000G  EF	  05   AE  9E 0084E 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 3310
+			    00000000G  EF  D4 00856 	    CLRL    DBG$GL_BUF_SIZ					      ; 3311
+				       65  DD 0085C 	    PUSHL   (R5)						      ; 3312
+			    00000000'  EF  9F 0085E 	    PUSHAB  P.ABA						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 13-18
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       02  FB 00864 	    CALLS   #2, DBG$FAO_PUT					      ;
+				  04   AE  9F 0086B 	    PUSHAB  OUTPUT_BUFFER					      ; 3314
+	      00000000G  EF	       01  FB 0086E 	    CALLS   #1, DBG$OUT_PUT					      ;
+		         50 00000000G  EF  D0 00875 36$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 3337
+		    56   A0	       55  D0 0087C 	    MOVL    R5, 86(R0)						      ;
+      13   A2	         04	       00  EF 00880 	    EXTZV   #0, #4, 19(R2), R1					      ; 3338
+				       51     00885									      ;
+		    5E   A0	       51  90 00886 	    MOVB    R1, 94(R0)						      ;
+      13   A2	         04	       04  EF 0088A 	    EXTZV   #4, #4, 19(R2), R1					      ; 3339
+				       51     0088F									      ;
+		    5F   A0	       51  90 00890 	    MOVB    R1, 95(R0)						      ;
+		         51	     6443  DE 00894 	    MOVAL   (R4)[SIG_ARG_COUNT], PSL_PTR			      ; 3340
+		         61	       10  88 00898 	    BISB2   #16, (PSL_PTR)					      ; 3341
+		    48   A0	0180   8F  A8 0089B 	    BISW2   #384, 72(R0)					      ; 3342
+				  40   A0  DD 008A1 	    PUSHL   64(R0)						      ; 3356
+	      00000000G  EF	       01  FB 008A4 	    CALLS   #1, DBG$REM_OPCODES					      ;
+				  08   A2  DD 008AB 	    PUSHL   8(R2)						      ; 3358
+	      00000000G  EF	       01  FB 008AE 	    CALLS   #1, DBG$INS_OPCODES					      ;
+		         50	       01  D0 008B5 37$:    MOVL    #1, R0						      ; 3359
+					   04 008B8 	    RET     							      ;
+	      0000046C   8F	       5B  D1 008B9 38$:    CMPL    R11, #1132						      ; 2767
+				       1D  13 008C0 	    BEQL    41$							      ;
+		         0F 00000000G  EF  E9 008C2 39$:    BLBC    DBG$GB_RESIGNAL, 40$				      ; 3401
+				       7E  D4 008C9 	    CLRL    -(SP)						      ; 3404
+	      00000000G  EF	       01  FB 008CB 	    CALLS   #1, DBG$REM_OPCODES					      ;
+		         50	0918   8F  3C 008D2 	    MOVZWL  #2328, R0						      ; 3405
+					   04 008D7 	    RET     							      ;
+				       54  DD 008D8 40$:    PUSHL   R4							      ; 3409
+		  0000V  CF	       01  FB 008DA 	    CALLS   #1, REPORT_MSG					      ;
+				       7E  D4 008DF 41$:    CLRL    -(SP)						      ; 3410
+				       53  DD 008E1 42$:    PUSHL   SIG_ARG_COUNT					      ;
+				       54  DD 008E3 	    PUSHL   R4							      ;
+		  0000V  CF	       03  FB 008E5 	    CALLS   #3, USER_PROC					      ;
+					   04 008EA 	    RET     							      ; 2672
+
+; Routine Size:  1075 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 14
+; Digital Equipment Corporation
+;
+;	3417	GLOBAL ROUTINE DBG$PUTMSG (sig_arg_list) : NOVALUE =
+;	3418	!++
+;	3419	! Functional description:
+;	3420	!	Reports a message by calling SYS$PUTMSG with an action routine
+;	3421	!	address of a routine to write the formatted string to DBG$OUTPUT.
+;	3422	!	This routine checks the exception name to see if the exception is not
+;	3423	!	a hardware exception.  If it is not a hardware exception 2 is subtracted
+;	3424	!	from the signal argument list count before calling SYS$PUTMSG.
+;	3425	!	After SYS$PUTMSG returns the original count is restored.
+;	3426	!
+;	3427	! Inputs:
+;	3428	!	sig_arg_list	- the address of the signal argument list.
+;	3429	!
+;	3430	! Implicit inputs:
+;	3431	!	NONE
+;	3432	!
+;	3433	! Outputs:
+;	3434	!	none
+;	3435	!
+;	3436	! Implicit outputs:
+;	3437	!	none
+;	3438	!
+;	3439	! Routine value:
+;	3440	!	novalue
+;	3441	!
+;	3442	! Side effects:
+;	3443	!	The message is output to DBG$OUTPUT.
+;	3444	!--
+;	3445	
+;	3446		BEGIN
+;	3447	
+;	3448		LOCAL
+;	3449			orig_arg_count,
+;	3450			index,
+;	3451			excep_name : BLOCK [%UPVAL, BYTE],
+;	3452			table_value : BLOCK [%UPVAL, BYTE];
+;	3453	
+;	3454		MAP
+;	3455			sig_arg_list : REF VECTOR;
+;	3456	
+;	3457		BIND
+;	3458			hardware_excep = UPLIT WORD (ss$_accvio, ss$_artres, ss$_intovf,
+;	3459					ss$_intdiv, ss$_fltovf, ss$_fltdiv, ss$_fltund,
+;	3460					ss$_decovf, ss$_subrng, ss$_astflt, ss$_break,
+;	3461					ss$_cmodsupr, ss$_cmoduser, ss$_compat,
+;	3462					ss$_debug, ss$_opccus, ss$_opcdec, ss$_pagrderr,
+;	3463					ss$_radrmod, ss$_roprand, ss$_ssfail, ss$_tbit,
+;	3464					0) : VECTOR [, WORD];
+;	3465	
+;	3466		orig_arg_count = .sig_arg_list[0];		! Get orignial arg. count
+;	3467		excep_name = .sig_arg_list[1];			! Get exception name
+;	3468		IF (.excep_name[STS$V_FAC_NO] NEQ 0)		! Not SYSTEM facility
+;	3469		THEN
+;	3470			BEGIN
+;	3471			sig_arg_list[0] = .sig_arg_list[0] - 2;	! update argument count
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 14-1
+; Digital Equipment Corporation
+;
+;	3472			END
+;	3473		ELSE
+;	3474			BEGIN
+;	3475			index = 0;
+;	3476			!+
+;	3477			! This loop will exit with -1 if the exception name is not found.
+;	3478			! In that case we must subtract 2 from the signal argument list
+;	3479			! argument count before calling SYS$PUTMSG.
+;	3480			!-
+;	3481			IF (WHILE (.hardware_excep[.index] NEQ 0)
+;	3482			    DO
+;	3483			    BEGIN
+;	3484			    table_value = .hardware_excep[.index]; ! pick up next value
+;	3485			    IF (.excep_name[STS$V_CODE] EQL .table_value[STS$V_CODE])
+;	3486			    THEN
+;	3487				EXITLOOP 0;
+;	3488	
+;	3489			    index = .index + 1;
+;	3490			    END)
+;	3491			THEN
+;	3492			    sig_arg_list[0] = .sig_arg_list[0] - 2;
+;	3493			END;
+;	3494		SYS$PUTMSG (.sig_arg_list, DBG$OUT_MESSAGE, 0);
+;	3495		sig_arg_list[0] = .orig_arg_count;
+;	3496	
+;	3497		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      0013C P.ABB:  .WORD   12, 1140, 1148, 1156, 1164, 1172, 1180, 1188, 1196, -     ;
+								    1036, 1044, 1052, 1060, 1068, 1132, 1076, 1084, 1092, -   ;
+								    1100, 1108, 1116, 1124, 0				      ;
+					      0016A	    .BLKB   2
+
+						    HARDWARE_EXCEP=	P.ABB
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 083C 008EB 	    .ENTRY  DBG$PUTMSG, Save R2,R3,R4,R5,R11			      ; 3417
+		         5B 00000000'  EF  9E 008ED 	    MOVAB   HARDWARE_EXCEP, R11					      ;
+		         52	  04   AC  D0 008F4 	    MOVL    SIG_ARG_LIST, R2					      ; 3466
+		         54	       62  D0 008F8 	    MOVL    (R2), ORIG_ARG_COUNT				      ;
+		         51	  04   A2  D0 008FB 	    MOVL    4(R2), EXCEP_NAME					      ; 3467
+	   51	         0C	       10  ED 008FF 	    CMPZV   #16, #12, EXCEP_NAME, #0				      ; 3468
+				       00     00903									      ;
+				       1B  12 00904 	    BNEQ    2$							      ;
+				       50  D4 00906 	    CLRL    INDEX						      ; 3475
+				     6B40  B5 00908 1$:     TSTW    HARDWARE_EXCEP[INDEX]				      ; 3481
+				       14  13 0090B 	    BEQL    2$							      ;
+		         53	     6B40  3C 0090D 	    MOVZWL  HARDWARE_EXCEP[INDEX], TABLE_VALUE			      ; 3484
+	   53	         0C	       03  EF 00911 	    EXTZV   #3, #12, TABLE_VALUE, R5				      ; 3485
+				       55     00915									      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 14-2
+; Digital Equipment Corporation
+;
+	   51	         0C	       03  ED 00916 	    CMPZV   #3, #12, EXCEP_NAME, R5				      ;
+				       55     0091A									      ;
+				       07  13 0091B 	    BEQL    3$							      ;
+				       50  D6 0091D 	    INCL    INDEX						      ; 3489
+				       E7  11 0091F 	    BRB     1$							      ; 3481
+		         62	       02  C2 00921 2$:     SUBL2   #2, (R2)						      ; 3492
+				       7E  D4 00924 3$:     CLRL    -(SP)						      ; 3494
+			    00000000G  EF  9F 00926 	    PUSHAB  DBG$OUT_MESSAGE					      ;
+				       52  DD 0092C 	    PUSHL   R2							      ;
+	      00000000G  00	       03  FB 0092E 	    CALLS   #3, SYS$PUTMSG					      ;
+		         62	       54  D0 00935 	    MOVL    ORIG_ARG_COUNT, (R2)				      ; 3495
+					   04 00938 	    RET     							      ; 3417
+
+; Routine Size:  78 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 15
+; Digital Equipment Corporation
+;
+;	3498	ROUTINE report_msg ( sig_arg_list ) : NOVALUE =
+;	3499	
+;	3500	!++
+;	3501	! Functional description:
+;	3502	!	This routine reports the exception message and then announces
+;	3503	!	the EXCEPTION break at the user's location counter.
+;	3504	!
+;	3505	! Inputs:
+;	3506	!	sig_arg_list	- Address of the signal argument list
+;	3507	!
+;	3508	! Implicit inputs:
+;	3509	!	DBG$GL_RUNFRAME	- The address of the user's runframe.
+;	3510	!
+;	3511	! Outputs:
+;	3512	!	none
+;	3513	!
+;	3514	! Implicit outputs:
+;	3515	!	none
+;	3516	!
+;	3517	! Routine value:
+;	3518	!	novalue
+;	3519	!
+;	3520	! Side effects:
+;	3521	!	A message is output to DBG$OUTPUT.
+;	3522	!
+;	3523	!--
+;	3524	
+;	3525		BEGIN
+;	3526	
+;	3527		MAP
+;	3528			sig_arg_list : REF VECTOR;
+;	3529	
+;	3530		LITERAL
+;	3531			buffer_size	= 256,
+;	3532			dsc_size	= 0,
+;	3533			dsc_address	= 1,
+;	3534			msg_flags	= 15;
+;	3535	
+;	3536		LOCAL
+;	3537			outbuf: VECTOR [buffer_size, BYTE],
+;	3538			outbufdesc : VECTOR [2, LONG];
+;	3539	
+;	3540	%IF dbg_exc2
+;     L 3541	%THEN
+;     U 3542		$fao_tt_out ('in report_msg, code is !XL', .sig_arg_list[1]);
+;     U 3543	%FI
+;	3544		dbg$putmsg (.sig_arg_list);		! format and output message.
+;	3545	
+;	3546		! Announce the exc break in the standard way.
+;	3547	
+;	3548		dbg$cp_out_str = outbuf + 1;
+;	3549		dbg$gl_buf_siz = 0;
+;	3550		dbg$fao_put (UPLIT (%ASCIC 'exception break at pc = '));
+;	3551		dbg$out_sym_val (.dbg$gl_runframe [dbg$l_user_pc], 0, 0);
+;	3552		dbg$out_put (outbuf);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 15-1
+; Digital Equipment Corporation
+;
+;	3553	
+;	3554		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      0016C P.ABC:  .ASCII  <24>\exception break at pc = \<0><0><0>		      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0000 00939 REPORT_MSG:
+							    .WORD   Save nothing					      ; 3498
+		         5E	FEF8   CE  9E 0093B 	    MOVAB   -264(SP), SP					      ;
+				  04   AC  DD 00940 	    PUSHL   SIG_ARG_LIST					      ; 3544
+		    A4   AF	       01  FB 00943 	    CALLS   #1, DBG$PUTMSG					      ;
+	      00000000G  EF	  09   AE  9E 00947 	    MOVAB   OUTBUF+1, DBG$CP_OUT_STR				      ; 3548
+			    00000000G  EF  D4 0094F 	    CLRL    DBG$GL_BUF_SIZ					      ; 3549
+			    00000000'  EF  9F 00955 	    PUSHAB  P.ABC						      ; 3550
+	      00000000G  EF	       01  FB 0095B 	    CALLS   #1, DBG$FAO_PUT					      ;
+				       7E  7C 00962 	    CLRQ    -(SP)						      ; 3551
+		         50 00000000G  EF  D0 00964 	    MOVL    DBG$GL_RUNFRAME, R0					      ;
+				  40   A0  DD 0096B 	    PUSHL   64(R0)						      ;
+	      00000000G  EF	       03  FB 0096E 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+				  08   AE  9F 00975 	    PUSHAB  OUTBUF						      ; 3552
+	      00000000G  EF	       01  FB 00978 	    CALLS   #1, DBG$OUT_PUT					      ;
+					   04 0097F 	    RET     							      ; 3498
+
+; Routine Size:  71 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16
+; Digital Equipment Corporation
+;
+;	3555	ROUTINE user_proc (signal_arg_ptr, sig_arg_count, bpt_table_entry) =
+;	3556	
+;	3557	!++
+;	3558	! FUNCTIONAL DESCRIPTION:
+;	3559	!	ROUTINE CALLED AFTER THE USER PROGRAM HALTS BECAUSE OF A DEBUG
+;	3560	!	CAUSED EXCEPTION (SUCH AS INITIALIZATION, BREAKPOINT, OR TRACE TRAP).
+;	3561	!
+;	3562	!	AN OUTER HANDLER DETERMINES THAT THE HALT IS LEGAL. THEN THIS ROUTINE
+;	3563	!	PROCESSES USER COMMANDS (BOTH PREDEFINED AND INTERACTIVE) UNTIL
+;	3564	!	SOME COMMAND CAUSES THE USER PROGRAM TO BE CONTINUED
+;	3565	!	OR RESTARTED.
+;	3566	!
+;	3567	!	THEN THIS ROUTINE TRIES TO CONTINUE OR RESTART THE PROGRAM. IF EVERY
+;	3568	!	THING WORKS OKAY, THE VALUE OF ss$_continue IS RETURNED TO THE OUTER
+;	3569	!	HANDLER AND THIS VALUE IS PASSED BACK TO THE OPERATING SYSTEM.
+;	3570	!
+;	3571	!	OTHERWISE, THE dbg$gb_exit_dbg FLAG IS SET TO TRUE, AND A SYS$EXIT
+;	3572	!	IS TAKEN BECAUSE SOME IRRECOVERABLE ERROR HAS OCCURRED.
+;	3573	!
+;	3574	! CALLING SEQUENCE :
+;	3575	!	user_proc ()
+;	3576	!
+;	3577	! INPUTS:
+;	3578	!	signal_arg_ptr	- ADDRESS OF BLOCK WHICH CONTAINS FOUR LONGWORDS.
+;	3579	!			  THE PERTINENT WORDS ARE THE EXCEPTION NAME, THE
+;	3580	!			  PC AT THE TIME OF THE EXCEPTION, AND THE PSL AT
+;	3581	!			  THE TIME OF THE EXCEPTION. THE NAME IS ALWAYS
+;	3582	!			  THE SECOND LONGWORD, THE PC AND THE PSL THE NEXT
+;	3583	!			  TO LAST AND LAST RESPECTIVELY.
+;	3584	!	sig_arg_count	- THE NUMBER OF ARGUMENTS IN THE SIGNAL ARGUMENT
+;	3585	!			  LIST.
+;	3586	!	bpt_table_entry - the address of the BPT table entry for the
+;	3587	!			  break/trace point we are stopped at.
+;	3588	!
+;	3589	! IMPLICIT INPUTS:
+;	3590	!	none
+;	3591	!
+;	3592	! OUTPUTS:
+;	3593	!	ss$_continue TELLS THE OUTER HANDLER TO CONTINUE THE USER PROGRAM.
+;	3594	!
+;	3595	! IMPLICIT OUTPUTS:
+;	3596	!	DEBUG COMMANDS ARE EXECUTED. THE PC AND PSL MAY BE OVERWRITTEN.
+;	3597	!	IF AN IRRECOVERABLE ERROR OCCURS, DEBUG EXITS TO THE COMMAND
+;	3598	!	LINE INTERPRETER.
+;	3599	!
+;	3600	! ROUTINE VALUE:
+;	3601	!	ss$_continue
+;	3602	!
+;	3603	! SIDE EFFECTS:
+;	3604	!	ANY NUMBER OF THINGS
+;	3605	!--
+;	3606	
+;	3607	BEGIN
+;	3608	
+;	3609		MAP
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-1
+; Digital Equipment Corporation
+;
+;	3610			signal_arg_ptr : REF VECTOR;
+;	3611	
+;	3612		LOCAL
+;	3613			ENTRY_CS,
+;	3614			start_pc_is,
+;	3615			output_buffer : VECTOR [tty_out_width, BYTE];
+;	3616	
+;	3617		!++
+;	3618		! Turn off RMS cancel control-O bit so
+;	3619		! that user can toggle control-O in the normal fashion.
+;	3620		!--
+;	3621		dbg$gl_outprab [rab$v_cco] = FALSE;
+;	3622	
+;	3623		!++
+;	3624		! Set the dbg$gb_take_cmd flag to true. This says that user
+;	3625		! commands can be executed. This flag is turned off by a start,
+;	3626		! step, continue, or exit command.
+;	3627		!--
+;	3628		dbg$gb_take_cmd = TRUE;
+;	3629	
+;	3630	%IF dbg_exc1
+;     L 3631	%THEN
+;     U 3632		$fao_tt_out ('now taking commands');
+;     U 3633	%FI
+;	3634		!++
+;	3635		! If an action command was specified for the breakpoint at which
+;	3636		! the program is halted, then execute the action command.
+;	3637		! The presence of the action command is a non-zero address value
+;	3638		! in the APTR field of the given BPT table entry.
+;	3639		!
+;	3640		! If the point we're stopped at is a temporary breakpoint, then
+;	3641		! delete this entry from the BPT table now cause we must be
+;	3642		! done with it.
+;	3643		!--
+;	3644		IF .bpt_table_entry NEQA 0
+;	3645		THEN
+;	3646			BEGIN
+;	3647			LOCAL
+;	3648				cmd_buffer : ref vector[,byte];
+;	3649	%if dbg_exc3
+;     L 3650	%then
+;     U 3651			$fao_tt_out('user_proc: bpt table entry = !XL',.bpt_table_entry);
+;     U 3652	%FI
+;	3653			!+
+;	3654			! See if there is an action buffer associated with
+;	3655			! the stopped-at breakpoint.
+;	3656			!-
+;	3657	
+;	3658			IF( (cmd_buffer = .bpt_aptr(.bpt_table_entry)) NEQA 0 )
+;	3659			then
+;	3660				BEGIN
+;	3661				local
+;	3662					stg_desc : BLOCK [8, BYTE];
+;	3663	
+;	3664				! Build a string descriptor for the action buffer
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-2
+; Digital Equipment Corporation
+;
+;	3665				! and pass this on to have executed as a
+;	3666				! DEBUG command string.
+;	3667	
+;	3668				stg_desc [dsc$w_length] = .cmd_buffer [0];
+;	3669				stg_desc [dsc$a_pointer] = cmd_buffer [1];
+;	3670	
+;	3671				command_proc (stg_desc);
+;	3672	%IF dbg_exc3
+;     L 3673	%THEN
+;     U 3674				$fao_tt_out ('breakpoint actions complete');
+;     U 3675				$fao_tt_out ('take command flag is !SB', .dbg$gb_take_cmd);
+;     U 3676	%FI
+;	3677				END;
+;	3678	
+;	3679			! Whether or not there was an action buffer, see if
+;	3680			! this is a temporary breakpoint.  Note that the 
+;	3681			! following check is why the AFTC field must be signed.
+;	3682	
+;	3683			IF( .BPT_AFTC(.BPT_TABLE_ENTRY) LEQ 0 )
+;	3684			then
+;	3685				begin
+;	3686	%if dbg_exc3
+;     L 3687	%then
+;     U 3688				$fao_tt_out('delete temp break at !XL',	.bpt_addr(.bpt_table_entry));
+;     U 3689	%FI
+;	3690				! Delete the breakpoint entry from the BPT table.
+;	3691	
+;	3692				dbg$gl_context[ DBG$K_BREAK ] = TRUE;
+;	3693				dbg$cancel_bpt(.bpt_addr(.bpt_table_entry));
+;	3694				dbg$gl_context[ DBG$K_BREAK ] = FALSE;
+;	3695				END;
+;	3696			END;
+;	3697	
+;	3698		!++
+;	3699		! If this was a tracepoint, then the at_a_trace flag will be on.
+;	3700		! Turn off the take command flag so that no further commands
+;	3701		! are processed.
+;	3702		!
+;	3703		! Since this branch is here, actions stored at tracepoints
+;	3704		! can be implemented easily at any time.
+;	3705		!--
+;	3706		IF .dbg$gl_runframe [dbg$v_at_trace]
+;	3707		THEN dbg$gb_take_cmd = FALSE;
+;	3708	
+;	3709		!++
+;	3710		! As long as no commands in the action buffer caused the
+;	3711		! program to continue (or restart), the command taking flag
+;	3712		! will still be turned on, and further commands can be
+;	3713		! processed from the input device. Otherwise, the while loop
+;	3714		! below does not execute at all.
+;	3715		!--
+;	3716		WHILE .dbg$gb_take_cmd DO
+;	3717			command_proc (0);
+;	3718	
+;	3719		!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-3
+; Digital Equipment Corporation
+;
+;	3720		! Unless we have stopped at a tracepoint, we
+;	3721		! now print out a message to say we're starting again.
+;	3722		!-
+;	3723	
+;	3724		IF( NOT .DBG$GL_RUNFRAME[ DBG$V_AT_TRACE ] )
+;	3725		THEN
+;	3726			BEGIN
+;	3727	
+;	3728			! If the reason we are starting is because of
+;	3729			! the DEBUG command CALL, we report the address
+;	3730			! of the routine the user CALLed as the start PC,
+;	3731			! not the real start PC because this is a "canned"
+;	3732			! piece of code within DEBUG.
+;	3733			!--
+;	3734			dbg$cp_out_str = output_buffer + 1;
+;	3735			dbg$gl_buf_siz = 0;
+;	3736		
+;	3737			IF ( (start_pc_is = .dbg$gl_runframe[dbg$l_user_pc]) EQL DBG$PSEUDO_PROG )
+;	3738			THEN
+;	3739				start_pc_is = .DBG$GL_RUNFRAME[DBG$L_CALL_ADDR] +2;
+;	3740		
+;	3741			! Lie about the PC if it falls directly on a routine
+;	3742			! entry point.  This is for consistency with SET B and CAN B, etc.
+;	3743		
+;	3744			entry_cs = uplit( %ascic '' );
+;	3745		
+;	3746			if( dbg$is_it_entry( .start_pc_is -2 ) )
+;	3747			then
+;	3748				begin
+;	3749				entry_cs = uplit( %ascic 'routine ' );
+;	3750				start_pc_is = .start_pc_is -2;
+;	3751				end;
+;	3752			dbg$fao_put (UPLIT (%ASCIC '!ACstart pc is '),.entry_cs);
+;	3753			dbg$out_sym_val (.START_PC_IS, 0, 0);
+;	3754			dbg$out_put (output_buffer);
+;	3755			END;
+;	3756	
+;	3757		!++
+;	3758		! See whether the PC that is being REI'd to has a breakpoint
+;	3759		! which we have already 'hit' at where it points to.
+;	3760		! If so, remove this breakpoint for one instruction, turn
+;	3761		! on the tbit, and continue. This causes the instruction to be
+;	3762		! executed, and then the breakpoint reinserted for the next time
+;	3763		! through.  We use START_PC_IS to tell RESET_USER about this.
+;	3764		!--
+;	3765	
+;	3766		IF ( (dbg$find_bpt(.dbg$gl_runframe[dbg$l_user_pc]) NEQ 0)
+;	3767		    AND	(.dbg$gl_runframe[dbg$v_at_break])
+;	3768		    AND	(.dbg$gl_runframe[dbg$l_user_pc] EQL .signal_arg_ptr[.sig_arg_count - 1]) )
+;	3769		THEN
+;	3770			BEGIN
+;	3771			!++
+;	3772			! The breakpoint is still active. Therefore, take out
+;	3773			! all opcodes and insert BPTs for all breakpoints EXCEPT
+;	3774			! the one we're currently looking at.  Then turn
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-4
+; Digital Equipment Corporation
+;
+;	3775			! on the TBIT and continue so that we can 'step around' 
+;	3776			! this instruction.
+;	3777			!--
+;	3778			start_pc_is = .dbg$gl_runframe [dbg$l_user_pc];
+;	3779			END
+;	3780		ELSE
+;	3781			BEGIN
+;	3782			!++
+;	3783			! If no break/tracepoint or watchpoint was found, then 
+;	3784			! this is a normal continue.  The TBIT gets set only
+;	3785			! if we are stepping.
+;	3786			!--
+;	3787			start_pc_is = 0;
+;	3788			END;
+;	3789	
+;	3790		!++
+;	3791		! Before continuing the program, turn off two context bits.
+;	3792		!--
+;	3793		dbg$gl_runframe [dbg$v_at_break] = FALSE;
+;	3794		dbg$gl_runframe [dbg$v_at_trace] = FALSE;
+;	3795	
+;	3796		!++
+;	3797		! Since the user may have changed PC or the PSL, and these registers
+;	3798		! are not reloaded in any other routines, reload them
+;	3799		! into the exception call frame here.
+;	3800		!--
+;	3801		signal_arg_ptr [.sig_arg_count - 1] = .dbg$gl_runframe [dbg$l_user_pc];
+;	3802		signal_arg_ptr [.sig_arg_count] = .dbg$gl_runframe [dbg$l_user_psl];
+;	3803	
+;	3804		RETURN( RESET_USER( .start_pc_is, signal_arg_ptr [.sig_arg_count] ));
+;	3805	
+;	3806	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00188 P.ABD:  .ASCII  <0><0><0><0>					      ;
+					      0018C P.ABE:  .ASCII  <8>\routine \<0><0><0>				      ;
+					      00198 P.ABF:  .ASCII  <15>\!ACstart pc is \				      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0F0C 00980 USER_PROC:
+							    .WORD   Save R2,R3,R8,R9,R10,R11				      ; 3555
+		         58 00000000G  EF  9E 00982 	    MOVAB   DBG$GL_CONTEXT, R8					      ;
+		         59 00000000'  EF  9E 00989 	    MOVAB   P.ABD, R9						      ;
+		         5A 00000000G  EF  9E 00990 	    MOVAB   DBG$GB_TAKE_CMD, R10				      ;
+		         5B 00000000G  EF  9E 00997 	    MOVAB   DBG$GL_RUNFRAME, R11				      ;
+		         5E	FF74   CE  9E 0099E 	    MOVAB   -140(SP), SP					      ;
+	      00000000G  EF	  80   8F  8A 009A3 	    BICB2   #128, DBG$GL_OUTPRAB+7				      ; 3621
+		         6A	       01  90 009AB 	    MOVB    #1, DBG$GB_TAKE_CMD					      ; 3628
+		         52	  0C   AC  D0 009AE 	    MOVL    BPT_TABLE_ENTRY, R2					      ; 3644
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-5
+; Digital Equipment Corporation
+;
+				       2A  13 009B2 	    BEQL    2$							      ;
+		         50	  14   A2  D0 009B4 	    MOVL    20(R2), CMD_BUFFER					      ; 3658
+				       0F  13 009B8 	    BEQL    1$							      ;
+		         6E	       60  9B 009BA 	    MOVZBW  (CMD_BUFFER), STG_DESC				      ; 3668
+      04   AE	         50	       01  C1 009BD 	    ADDL3   #1, CMD_BUFFER, STG_DESC+4				      ; 3669
+				       5E  DD 009C2 	    PUSHL   SP							      ; 3671
+		  F9BF   CF	       01  FB 009C4 	    CALLS   #1, COMMAND_PROC					      ;
+				  0C   A2  B5 009C9 1$:     TSTW    12(R2)						      ; 3683
+				       10  14 009CC 	    BGTR    2$							      ;
+		         68	       04  88 009CE 	    BISB2   #4, DBG$GL_CONTEXT					      ; 3692
+				  08   A2  DD 009D1 	    PUSHL   8(R2)						      ; 3693
+	      00000000G  EF	       01  FB 009D4 	    CALLS   #1, DBG$CANCEL_BPT					      ;
+		         68	       04  8A 009DB 	    BICB2   #4, DBG$GL_CONTEXT					      ; 3694
+		         50	       6B  D0 009DE 2$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 3706
+	   02	    48   A0	       04  E1 009E1 	    BBC     #4, 72(R0), 3$					      ;
+				       6A  94 009E6 	    CLRB    DBG$GB_TAKE_CMD					      ; 3707
+		         09	       6A  E9 009E8 3$:     BLBC    DBG$GB_TAKE_CMD, 4$					      ; 3716
+				       7E  D4 009EB 	    CLRL    -(SP)						      ; 3717
+		  F996   CF	       01  FB 009ED 	    CALLS   #1, COMMAND_PROC					      ;
+				       F4  11 009F2 	    BRB     3$							      ; 3716
+		         50	       6B  D0 009F4 4$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 3724
+	   5B	    48   A0	       04  E0 009F7 	    BBS     #4, 72(R0), 7$					      ;
+	      00000000G  EF	  09   AE  9E 009FC 	    MOVAB   OUTPUT_BUFFER+1, DBG$CP_OUT_STR			      ; 3734
+			    00000000G  EF  D4 00A04 	    CLRL    DBG$GL_BUF_SIZ					      ; 3735
+		         53	  40   A0  D0 00A0A 	    MOVL    64(R0), START_PC_IS					      ; 3737
+		         51 00000000G  EF  9E 00A0E 	    MOVAB   DBG$PSEUDO_PROG, R1					      ;
+		         51	       53  D1 00A15 	    CMPL    START_PC_IS, R1					      ;
+				       05  12 00A18 	    BNEQ    5$							      ;
+	   53	    52   A0	       02  C1 00A1A 	    ADDL3   #2, 82(R0), START_PC_IS				      ; 3739
+		         52	       69  9E 00A1F 5$:     MOVAB   P.ABD, ENTRY_CS					      ; 3744
+				  FE   A3  9F 00A22 	    PUSHAB  -2(START_PC_IS)					      ; 3746
+	      00000000G  EF	       01  FB 00A25 	    CALLS   #1, DBG$IS_IT_ENTRY					      ;
+		         07	       50  E9 00A2C 	    BLBC    R0, 6$						      ;
+		         52	  04   A9  9E 00A2F 	    MOVAB   P.ABE, ENTRY_CS					      ; 3749
+		         53	       02  C2 00A33 	    SUBL2   #2, START_PC_IS					      ; 3750
+				       52  DD 00A36 6$:     PUSHL   ENTRY_CS						      ; 3752
+				  10   A9  9F 00A38 	    PUSHAB  P.ABF						      ;
+	      00000000G  EF	       02  FB 00A3B 	    CALLS   #2, DBG$FAO_PUT					      ;
+				       7E  7C 00A42 	    CLRQ    -(SP)						      ; 3753
+				       53  DD 00A44 	    PUSHL   START_PC_IS						      ;
+	      00000000G  EF	       03  FB 00A46 	    CALLS   #3, DBG$OUT_SYM_VAL					      ;
+				  08   AE  9F 00A4D 	    PUSHAB  OUTPUT_BUFFER					      ; 3754
+	      00000000G  EF	       01  FB 00A50 	    CALLS   #1, DBG$OUT_PUT					      ;
+		         50	       6B  D0 00A57 7$:     MOVL    DBG$GL_RUNFRAME, R0					      ; 3766
+				  40   A0  DD 00A5A 	    PUSHL   64(R0)						      ;
+	      00000000G  EF	       01  FB 00A5D 	    CALLS   #1, DBG$FIND_BPT					      ;
+				       50  D5 00A64 	    TSTL    R0							      ;
+				       23  13 00A66 	    BEQL    8$							      ;
+		         50	       6B  D0 00A68 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3767
+		         1C	  48   A0  E9 00A6B 	    BLBC    72(R0), 8$						      ;
+		         51	       6B  D0 00A6F 	    MOVL    DBG$GL_RUNFRAME, R1					      ; 3768
+		         50	  08   AC  D0 00A72 	    MOVL    SIG_ARG_COUNT, R0					      ;
+		         50	  04 BC40  DE 00A76 	    MOVAL   @SIGNAL_ARG_PTR[R0], R0				      ;
+		    FC   A0	  40   A1  D1 00A7B 	    CMPL    64(R1), -4(R0)					      ;
+				       09  12 00A80 	    BNEQ    8$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 16-6
+; Digital Equipment Corporation
+;
+		         50	       6B  D0 00A82 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3778
+		         53	  40   A0  D0 00A85 	    MOVL    64(R0), START_PC_IS					      ;
+				       02  11 00A89 	    BRB     9$							      ; 3766
+				       53  D4 00A8B 8$:     CLRL    START_PC_IS						      ; 3787
+		         51	       6B  D0 00A8D 9$:     MOVL    DBG$GL_RUNFRAME, R1					      ; 3793
+		    48   A1	       11  8A 00A90 	    BICB2   #17, 72(R1)						      ; 3794
+		         50	  08   AC  D0 00A94 	    MOVL    SIG_ARG_COUNT, R0					      ; 3801
+		         52	  04 BC40  DE 00A98 	    MOVAL   @SIGNAL_ARG_PTR[R0], R2				      ;
+		    FC   A2	  40   A1  D0 00A9D 	    MOVL    64(R1), -4(R2)					      ;
+		    04 BC40	  44   A1  D0 00AA2 	    MOVL    68(R1), @SIGNAL_ARG_PTR[R0]				      ; 3802
+				  04 BC40  DF 00AA8 	    PUSHAL  @SIGNAL_ARG_PTR[R0]					      ; 3804
+				       53  DD 00AAC 	    PUSHL   START_PC_IS						      ;
+		  F87E   CF	       02  FB 00AAE 	    CALLS   #2, RESET_USER					      ;
+					   04 00AB3 	    RET     							      ; 3555
+
+; Routine Size:  308 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:17:36	DBB3:[DEBUG.SRC]DBGEXC.B32;11					Page 17
+; Digital Equipment Corporation
+;
+;	3807	END
+;	3808	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$OWN        	    20    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$PLIT       	   424  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$CODE       	  2740  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        42         1       124
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	     1134	00:52.4		01:36.8
+;	FLOWAN	       90	00:11.2		00:20.0
+;	DELAY	       50	00:04.0		00:06.7
+;	TNBIND	      111	00:07.1		00:12.2
+;	CODE	      118	00:15.7		00:29.4
+;	FINAL	      255	00:19.1		00:32.4
+;	Total	     1758	01:49.6		03:17.5
+
+; Size:		2740 code + 444 data bytes
+; Run Time:	01:50.3
+; Elapsed Time:	03:18.6
+; Memory Used:	467 pages
+; Compilation Complete

@@ -1,0 +1,3877 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGBLD ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000058'
+;	0003			) =
+;	0004	BEGIN
+;	0005	
+;	0006	!			  COPYRIGHT (c) 1977 BY
+;	0007	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0008	!
+;	0009	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0010	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0011	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0012	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0013	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0014	! TRANSFERRED.
+;	0015	!
+;	0016	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0017	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0018	! CORPORATION.
+;	0019	!
+;	0020	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0021	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0022	!
+;	0023	
+;	0024	!++
+;	0025	! FACILITY:
+;	0026	!	DEBUG
+;	0027	!
+;	0028	! ABSTRACT:
+;	0029	!	Initialize and build the Runtime Symbol Table (RST) data structures.
+;	0030	!
+;	0031	!
+;	0032	! ENVIRONMENT:
+;	0033	!	This module runs on VAX under STARLET, user mode, non-AST level.
+;	0034	!
+;	0035	! Author:
+;	0036	!	Kevin Pammett, August 12, 1977.
+;	0037	!
+;	0038	! Version:	58
+;	0039	!
+;	0040	! MODIFIED BY:
+;	0041	!		Dale Roedger, 24 July 1978:	58
+;	0042	!
+;	0043	!  01	12-aug-77	KGP	-Initial version of this module as
+;	0044	!				 part of DEBUG.
+;	0045	!  02	15-AUG-77	KGP	-Added the action routine, DBG$SHOW_SCOPE.
+;	0046	!
+;	0047	!  03	18-aug-77	KGP	-Added code for DSC$K_DTYPE_Z in routine
+;	0048	!				 BUILD_MC so that we can accomodate BLISS
+;	0049	!				 records in building the MC.  Then I further
+;	0050	!				 changed BUILD_MC and ADD_MODULE for this too.
+;	0051	!  04	02-09-77	CP	When an invalid DST record is encountered,
+;	0052	!				output an optional diagnostic message and
+;	0053	!				proceed. In std_sym_eval, correct coding
+;	0054	!				of algorithm to correspond to specification.
+;	0055	!				In sym_to_val, return FALSE if no path
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!				vector has accumulated.
+;	0057	! 05	08-09-77	CP	Add the REQUIRE file DBGPCT.BEG
+;	0058	!				that sets up the DEBUG PSECTs.
+;	0059	! 06	12-sept-77	KGP	-The old (single) RST module is now
+;	0060	!				 broken up into DBGRST and DBGBLD.
+;	0061	!				 They both begin as version 06.
+;	0062	!				 This version now expects that the global 
+;	0063	!				 RST variables are in DBGSTO.
+;	0064	! 07	19-sept-77	KGP	-Added code to accept the SRM data
+;	0065	!				 types (1-21) when building the RST.
+;	0066	! 08	21-sep-77	KGP	-Changed the skeleton structure of the
+;	0067	!				 LVT/SAT vectors - the 1st word now contains
+;	0068	!				 the # of records therein - not the # of
+;	0069	!				 RST_UNITS the structure occupies.
+;	0070	! 09	26-sept-77	KGP	-Added routines ADD_SAT and ADD_LVT, plus
+;	0071	!				 the calls to them in ADD_MODULE so that
+;	0072	!				 we will soon be able to translate VAL to SYM.
+;	0073	! 10	27-sept-77	KGP	-Added case labels DSC$K_DTYPE_SLB in
+;	0074	!				 2 places so that we can support FORTRAN
+;	0075	!				 (and BLISS) LABELs.  This is 5X07.
+;	0076	! 11	27-sep-77	KGP	-The compilation-control variables for
+;	0077	!				 diagnostic modules are now DBG_BLDxxx
+;	0078	!				 to conform to the convention.  
+;	0079	!				-SORT_SAT_LVT has been added to sort the
+;	0080	!				 SAT and LVT into ascending order.
+;	0081	! 12	03-oct-77	KGP	-Minor fix in SAT build because I had
+;	0082	!				 recorded the UB value for ROUTINEs as
+;	0083	!				 1 too large.
+;	0084	! 13	05-oct-77	KGP	-Moved SORT_SAT_LVT invocation code to
+;	0085	!				 after the globals have been added.
+;	0086	! 14	14-oct-77	KGP	-Added carol's new routine,
+;	0087	!				 DBG$GET_BOUNDS, and used it to fix up the
+;	0088	!				 fact that we entered ARRAYS into the SAT
+;	0089	!				 with the wrong LB and UB addresses.
+;	0090	!				 This meant adding the REQUIRE files
+;	0091	!				 new:starde.l32, dscdef.beg, and dbgmsg.beg.
+;	0092	! 14	17-oct-77	KGP	-Fixed bug in ADD_MODULE which was that
+;	0093	!				 we have to stack SAT pointers to ROUTINE
+;	0094	!				 records, in the same way that we have to
+;	0095	!				 stack NT pointers for UP_SCOPE, because we
+;	0096	!				 have to fix up SAT UB entries for ROUTINE
+;	0097	!				 when we get the EOR DST record (since that is
+;	0098	!				 the only way we get ROUTINE length).
+;	0099	! 16	21-oct-77	KGP	-Changed over to using the new dynamic
+;	0100	!				 DEBUG diagnostic facility defined
+;	0101	!				 in DBGDBG.BEG
+;	0102	! 17	25-oct-77	KGP	-Added the conditional facility of being
+;	0103	!				 able to gather statics about the RST.
+;	0104	!				-Moved REQUIRE which declares the P-sects
+;	0105	!				 to be before DBGDBG.BEG because it declares
+;	0106	!				 OWNs which otherwise end up in a non-DEBUG P-sect.
+;	0107	! 18	27-oct-77	KGP	-Changed DBG$INIT_RST so that a 'dummy'
+;	0108	!				 MC record is built before the real ones.
+;	0109	!				 We will use this to 'hang' the GLOBALs off,
+;	0110	!				 and so that we can run successfully when there
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!				 are no DSTs at all.
+;	0112	!				-Added code to initialize modules which are marked
+;	0113	!				 MC_IN_RST only up till we've used up a given
+;	0114	!				 amount of space.
+;	0115	! 19	28-oct-77	KGP	-We now encode the source language into the
+;	0116	!				 MC.  For now, this is only for the benefit
+;	0117	!				 of DBG$SHOW_MODULE.  Later we will need this
+;	0118	!				 for other purposes, though.
+;	0119	!  20	07-11-77	CP	Change references to registers to
+;	0120	!				go through the pointer in gl_runframe.
+;	0121	!  21	7-nov-77	KGP	-Added call to DBG$MODULE_SIZE in add_module()
+;	0122	!				 so that we don't try to add a module 
+;	0123	!				 unless we know that doing so will 
+;	0124	!				 leave us a certain amount of free storage.
+;	0125	!  22	8-nov-77	KGP	-Added INIT_VEC_STORE and GET_VEC_STORAGE and
+;	0126	!				 code in dbg$INIT_RST for the global MC init.
+;	0127	!				 This is to set up so that storage for
+;	0128	!				 GLOBALS is allocated before the rest of
+;	0129	!				 the RST is initialized.
+;	0130	!  23	9-nov-77	KGP	-Added DBG$SET_MODULE and DBG$CANC_MODULE
+;	0131	!				 in their initial form so that we can soon
+;	0132	!				 implement "SET MODUle x,y,z" etc.
+;	0133	!  24	10-nov-77	KGP	-Added OK_TO_ADD( module ), and took the
+;	0134	!				 code for this out of the beginning of
+;	0135	!				 ADD_MODULE.  This is because there is yet
+;	0136	!				 more of this code to add, and I wanted to
+;	0137	!				 localize it and make ADD_MODULE shorter.
+;	0138	!				 Some of this code also came from BUILD_RST,
+;	0139	!				 since SET_MODULE will call ADD_MODULE and we
+;	0140	!				 want the same checks to be made as when
+;	0141	!				 BUILD_RST calls it.
+;	0142	!				-Changed BUILD_RST so that it produces a warning 
+;	0143	!				 message when the modules we are supposed
+;	0144	!				 to add, ("MC_IN_RST", as set up by BUILD_MC),
+;	0145	!				 cannot be automatically initialized into the RST.
+;	0146	!  25	14-nov-77	KGP	-NT chains are now doubly-linked.
+;	0147	!				 The records are also now variable-sized.
+;	0148	!  26	15-nov-77	KGP	-Added routines to support CANcel MODUle
+;	0149	!				 and SET MODUle.
+;	0150	!  27	16-nov-77	KGP	-Chaned RENEW to realize that it has to ask
+;	0151	!				 for space for the LVT/SAT overhead as well
+;	0152	!				 as the given number of records.
+;	0153	!				-Threw away the old notion of SAT_COUNT being
+;	0154	!				 a field of SAT_RECORDs.
+;	0155	!  28	18-nov-77	KGP	-Changed functions which access SAT/LVT to
+;	0156	!				 do so now with an accessing function, not
+;	0157	!				 by knowing what the table's structure is.
+;	0158	!  29	21-nov-77	KGP	-Disabled the code to deduce if a module 
+;	0159	!				 contained the PC start address because
+;	0160	!				 SYSVECTOR has a "$$$0000" P-sect which foils 
+;	0161	!				 they way we were deducing it.  Now we
+;	0162	!				 only initialize the first module in the DST.
+;	0163	!				(Conditionally compile in the old code
+;	0164	!				 by setting DBG_MC_IS_MAIN to 1).
+;	0165	!  30	21-nov-77	KGP	-Changed several routines so that now LVT and
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	!				 SAT storage is allocated on a per-module basis.
+;	0167	!  31	28-nov-77	KGP	-Took away compres_sat_lvt and added the new
+;	0168	!				 routine, empty_sat_lvt
+;	0169	!  32	29-nov-77	KGP	-Changed sort routine to be a bubble sort
+;	0170	!				 instead of a shell sort because this takes
+;	0171	!				 advantage of preordered data.
+;	0172	!  33	1-dec-77	KGP	-Fix bug in SRM_LENGTHs calculation of fortran
+;	0173	!				 SAT_UB values.  (was off by -1)
+;	0174	!				-Changed add_nt so that the merging of GSTs and
+;	0175	!				 DSTs is consistent.  Changed loop structure in ADD_NT.
+;	0176	!  34	7-dec-77	KGP	-Fixed up OK_TO_ADD so that it positions the
+;	0177	!				 DST via the new INTerface routine DBG$POSITON_DST
+;	0178	!  35	9-DEC-77	KGP	-BROKE THIS MODULE INTO DBGVEC.B32, DBGREB.B32,
+;	0179	!				 AND DBGBLD.B32
+;	0180	!  36	13-dec-77	KGP	-ADD_SAT changed to set NT_IS_BOUNDED bit.
+;	0181	!  37	19-dec-77	KGP	-Fix bug in ADD_MODULE which is that we must
+;	0182	!				 set the NT_IS_BOUNDED bit once we
+;	0183	!				 'bound' _RTN names - not before, since we don't  
+;	0184	!				 get to do this in MARS.
+;	0185	!  38	20-DEC-77	KGP	-DBG$DST_VALUE now distinguishes between
+;	0186	!				 what it can't evaluate because there has been some
+;	0187	!				 error, and what it can't evaluate simply because
+;	0188	!				 the given context (register set) is inappropriate.
+;	0189	!  39	30-dec-77	KGP	-Error messages NOGLOBALS and NOTALLSYM
+;	0190	!				 are now produced properly.
+;	0191	!				-All global routines are now DBG$
+;	0192	!  40	31-jan-78	KGP	-RSTINIT message, and SCope, MODUle
+;	0193	!				 get set to that of first DST module.
+;	0194	!  41	02-feb-78	KGP	-Logic in BUILD_MC to ignore the rest
+;	0195	!				 of the DST if > 50% of the RST space has been
+;	0196	!				 taken up for MCs only.
+;	0197	!  42	15-feb-78	KGP	-Upgrade in ADD_MODULE to handle new format
+;	0198	!				 of FORTRAN array descriptor locating.
+;	0199	!  43	20-FEB-78	KGP	-Upgrade to handle descriptor type _CLASS_S,
+;	0200	!				 since FORTRAN sends this for type CHARACTER.
+;	0201	!  44	02-MAR-78	DAR	Removed extra CRLF directives from FAO control
+;	0202	!				strings, and forced setting of language to
+;	0203	!				MACRO if the first module is BLISS.
+;	0204	!  45	20-mar-78	KGP	-Language names now come out in upper case.
+;	0205	!  46	20-mar-78	KGP	-Took out fakery for DBG$_INITIAL message
+;	0206	!				 as it is now in the system.
+;	0207	!				-Began re-work of how GLOBALs fit into the
+;	0208	!				 whole scheme.  Now they are no longer added
+;	0209	!				 to the RST but are instead mapped
+;	0210	!				 in and we look at them like a GST.
+;	0211	!  47	21-mar-78	KGP	-Took out stuff in ADD_SAT which used to be
+;	0212	!				 necessary to NOT add a SAT for a symbol which
+;	0213	!				 was already there.  Now that globals are not 
+;	0214	!				 added, this can never be the case.
+;	0215	!  48	23-mar-78	KGP	-The new field, MC_GBL_LOCKED is initialized
+;	0216	!				 in INIT_MC_GLOBALS.
+;	0217	!  49	24-mar-78	KGP	-Parameterized message SIGNALs now require
+;	0218	!				 the count to be given explicitly.
+;	0219	!				 Took out fakery for LONGDST message.
+;	0220	!  50	03-apr-78	KGP	-Moved code in INIT_RST which 'knows' about
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 1-4
+; Digital Equipment Corporation
+;
+;	0221	!				 the language name out and replaced it with
+;	0222	!				 a call to the new routine which localizes this info.
+;	0223	!  51	12-apr-78	KGP	-INIT_MC_GLOBALs now sets the
+;	0224	!				 MC_IN_RST bit to false for the special
+;	0225	!				 global MC.  This is necessary because the
+;	0226	!				 SAT/LVT access functions may look there
+;	0227	!				 but there are no storage descriptors.
+;	0228	!  52	27-APR-78	DAR	Modified the require and library directives for
+;	0229	!				the native build.
+;	0230	!  53	01-MAY-78	DAR	Changed call to dbg$set_lang, the first
+;	0231	!				parameter is now zero.
+;	0232	!  54	30-MAY-78	DAR	In DBG$BUILD_MC we now check for duplicate
+;	0233	!				module name, and if found skip until the next
+;	0234	!				end-of-module record.
+;	0235	!  55	1-jun-78	KGP	-New routine (dbg$srm_typ_len) which maps
+;	0236	!				 SRM-defined types to their length, in bytes.
+;	0237	!  56	06-jun-78	KGP	-Some BLISS type 0 symbols get added to the 
+;	0238	!				 SAT or LVT in add_module.
+;	0239	!  57	07-jun-78	KGP	-Fixed bug: the BLZ (bliss type 0) record
+;	0240	!				 structres must now use the new sub-fields
+;	0241	!				 (of BLZ_ACCESS), which are NOT equivalent
+;	0242	!				 to looking at the corresponding DSTR_ACCESS
+;	0243	!				 sub-fields.  (the latter are only
+;	0244	!				 valid for non-type 0 DST records).
+;	0245	!  58	24-JUL-78	DAR	Routine DBG$ADD_MODULE makes a name table entry
+;	0246	!				for dynamic array descriptors.
+;	0247	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 2
+; Digital Equipment Corporation
+;
+;	0248	! TABLE OF CONTENTS:
+;	0249	!
+;	0250	
+;	0251	FORWARD ROUTINE
+;	0252		dbg$srm_typ_len,		! map standard types to corresponding lengths
+;	0253		DBG$INIT_RST : NOVALUE,		! Do the RST initialization.
+;	0254		INIT_MC_GLOBALS : novalue,	! Initialize the MC chain.
+;	0255		DBG$BUILD_MC,			! Build the Module Chain (MC).
+;	0256		DBG$BUILD_RST,			! Initialize the RST so that it
+;	0257						!  contains a given set of modules.
+;	0258		OK_TO_ADD,			! Check, initialize, and set up to ADD_MODULE
+;	0259		DBG$ADD_MODULE,			! Add a module to the RST.
+;	0260		ADD_NT,				! Add a DST symbol to the RST.
+;	0261		ADD_SAT,			! Make a SAT entry for a symbol.
+;	0262		ADD_LVT,			! Make an LVT entry for a symbol.
+;	0263		DBG$GET_BOUNDS : NOVALUE;	! Calculate the bounds of an array.
+;	0264	
+;	0265	!+
+;	0266	! literals required by DBGDBG.REQ
+;	0267	!-
+;	0268	LITERAL
+;	0269		DBG_MC_IS_MAIN	= 0,	! Whether or not we try to deduce whether a
+;	0270					!  or not a given module contains the transfer
+;	0271					!  address in one of its P-sects.
+;	0272		DBG_DYNAMIC	= 0,	! Allow for us turning diagnostics on and
+;	0273					! off at DEBUG time.
+;	0274		DBG_ALL		= 0,	! Turns on all DBG_RST? diagnostics.
+;	0275		DBG_ERRORS	= 0;	! More elaborate error reporting is done
+;	0276					! if this is ON.  Otherwise, innter routines
+;	0277					! (supposedly) report what went wrong, and outer
+;	0278					! routines simply do RETURNs all the way out.
+;	0279	
+;	0280	
+;	0281	!
+;	0282	! INCLUDE FILES:
+;	0283	!
+;	0284	%IF %VARIANT		! True for TEN
+;     L 0285	%THEN
+;     U 0286	LIBRARY 'NEW:LIB';
+;     U 0287	
+;     U 0288	REQUIRE	'DBGPCT.REQ';
+;     U 0289	REQUIRE 'DBGGEN.REQ';
+;     U 0290	REQUIRE 'DBGMSG.REQ';
+;     U 0291	REQUIRE 'VXSMAC.REQ';
+;     U 0292	REQUIRE 'DBGRST.REQ';
+;     U 0293	REQUIRE 'SYSSER.REQ';
+;     U 0294	REQUIRE 'DBGDBG.REQ';
+;     U 0295	%ELSE
+;	0296	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0297	
+;	0298	REQUIRE	'SRC$:DBGPCT.REQ';
+;	0310	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0560	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0839	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0879	REQUIRE 'SRC$:DBGRST.REQ';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 2-1
+; Digital Equipment Corporation
+;
+;	2026	REQUIRE 'SRC$:SYSSER.REQ';
+;      R2029	SWITCHES LIST (SOURCE);
+;      R2030	
+;      R2031	EXTERNAL ROUTINE
+;      R2032		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2033	
+;      R2034	SWITCHES LIST (NOSOURCE);
+;	2079	REQUIRE 'SRC$:DBGDBG.REQ';
+;	2426	%FI
+;	2427	
+;	2428	!
+;	2429	! MACROS:
+;	2430	!
+;	2431	
+;	2432	!
+;	2433	! EQUATED SYMBOLS:
+;	2434	!
+;	2435	
+;	2436		DBG_DIAG( BLD,		0,	'Standard BLD output'		 );
+;	2437		DBG_DIAG( BLD1,		0,	'More detailed DEBUGging output' );
+;	2438		DBG_DIAG( BLD2,		0,	'dump DST records in hex'	);
+;	2439		DBG_DIAG( BLD3,		0,	'selective dump of DST records'	);
+;	2440		DBG_DIAG( BLD4,		0,	'Building the SAT or LVT'	);
+;	2441		DBG_DIAG( BLD5,		0,	'storage (de)allocation'	);
+;	2442		DBG_DIAG( BLD6,		0,	'SAT building wrt ROUTINEs'	);
+;	2443		DBG_DIAG( BLD12,	0,	'rst statistics'		);
+;	2444	
+;	2445	!
+;	2446	! FORWARD ROUTINEs which are used for diagnostics only
+;	2447	! must be declared as routines, even if we don't want
+;	2448	! them and won't ever call them.
+;	2449	!
+;	2450	
+;	2451	%IF DBG_ANY
+;     L 2452	%THEN
+;     U 2453		FORWARD ROUTINE
+;     U 2454			PR_CS : NOVALUE;		! Print a counted string.
+;     U 2455	%ELSE
+;	2456		BIND ROUTINE
+;	2457			PR_CS = 0;
+;	2458	%FI
+;	2459	
+;	2460	!+
+;	2461	! Declare the things necessary for the
+;	2462	! so-called RST statistics gathering facility.
+;	2463	!-
+;	2464	%IF LIT_BLD12
+;     L 2465	%THEN
+;     U 2466		FORWARD ROUTINE
+;     U 2467			RST_STATISTICS;			! Print out RST statistics.
+;     U 2468		OWN
+;     U 2469			NUM_CHAINS,			! Number of hash chains.
+;     U 2470			NUM_MC_ENTRIES,			! Number of modules successfully 
+;     U 2471							!  added to the RST.
+;     U 2472			NUM_GL_ENTRIES,			! Number of GLOBALS added to RST.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 2-2
+; Digital Equipment Corporation
+;
+;     U 2473			NUM_NT_ENTRIES,			! Total number of NT entries so far.
+;     U 2474			NUM_SAT_ENTRIES,		! Total number of SAT entries so far.
+;     U 2475			NUM_LVT_ENTRIES;		! Total number of LVT entries so far.
+;     U 2476	%ELSE
+;	2477		! The data must still be declared, even
+;	2478		! though the compiler will throw it all away.
+;	2479	
+;	2480		BIND ROUTINE
+;	2481			RST_STATISTICS = 0;
+;	2482		BIND
+;	2483			NUM_CHAINS	= 0,
+;	2484			NUM_GL_ENTRIES = 0,
+;	2485			NUM_MC_ENTRIES = 0,
+;	2486			NUM_NT_ENTRIES = 0,
+;	2487			NUM_SAT_ENTRIES = 0,
+;	2488			NUM_LVT_ENTRIES = 0;
+;	2489	%FI
+;	2490	
+;	2491	
+;	2492	!
+;	2493	! EXTERNAL REFERENCES:
+;	2494	!
+;	2495	
+;	2496	EXTERNAL
+;	2497				! Pointer to the Module Chain (MC).
+;	2498		DBG$GL_MC_PTR	: REF MC_RECORD,
+;	2499	
+;	2500				! Pointer to the name table (NT) hash vector.
+;	2501		DBG$GL_NT_HASH	: REF RST_POINTER,
+;	2502	
+;	2503				! pointer to current user run frame, holds register values
+;	2504		dbg$gl_runframe : REF BLOCK [, BYTE];
+;	2505	
+;	2506	
+;	2507	EXTERNAL ROUTINE
+;	2508		dbg$language,		! Deduce a given language name.
+;	2509		DBG$FIND_MODULE,	! Scan module chain to look for module name.
+;	2510		DBG$BUILD_PATH,		! Stash away pathvectors
+;	2511		DBG$SAVE_SCOPE,		! Install a (new) CSP.
+;	2512		DBG$SET_LANG,		! Set default DEBUG language
+;	2513		DBG$SORT_SA_LVT : NOVALUE,	! Sort the SAT or LVT
+;	2514		DBG$VS_INIT : NOVALUE,		! Initialize a vector storage area.
+;	2515		DBG$VS_GET,			! Allocate records from a so-called
+;	2516						!  "vector storage" vector.
+;	2517		DBG$VS_FREE : NOVALUE,		! Release vector storage.
+;	2518		DBG$VS_SHRINK : NOVALUE,	! Free up unused vector storage.
+;	2519		DBG$MODULE_SIZE,		! Deduce how much RST space adding
+;	2520						!   a module will take.
+;	2521		DBG$DST_VALUE,			! Evaluate a DST
+;	2522		DBG$SYMBOL_VALU,		! Evaluate a symbol given its NT_PTR.
+;	2523		DBG$NT_HASH_FCN,		! Hashing function for calculating 
+;	2524						!   dispersal of NT entries.
+;	2525		DBG$POSITON_DST,		! Make a certain DST record available
+;	2526						!   and 'position' the DST for GET_NXT_DST.
+;	2527		DBG$GET_NXT_DST,		! Make the next DST record available.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 2-3
+; Digital Equipment Corporation
+;
+;	2528		DBG$GET_NXT_GST,		! Make the next GST record available.
+;	2529	
+;	2530		DBG$GET_NXT_SAT,		! Sequential access to the SAT.
+;	2531		DBG$GET_NXT_LVT,		! Sequential access to the LVT.
+;	2532	
+;	2533		! We use two storage allocators - one when we want to allocate or
+;	2534		! free up storage we want to address via RST-pointers, and one when
+;	2535		! we deal with free storage in the same way that the rest
+;	2536		! of DEBUG does.
+;	2537	
+;	2538		DBG$FREEZ,		! Allocate and zero a block of ordinary storage.
+;	2539		DBG$RST_FREEZ,		! Allocate and zero RST-pointer storage.
+;	2540		DBG$REPORT_FREE;	! Report on remaining available RST storage.
+;	2541	
+;	2542	!
+;	2543	! OWN STORAGE:
+;	2544	!
+;	2545	
+;	2546	!++
+;	2547	! We maintain a pointer to the MC record
+;	2548	! for the module we are currently (de)allocating
+;	2549	! vector storage for.  This is done simply to
+;	2550	! avoid passing this parameter around.
+;	2551	!--
+;	2552	
+;	2553	OWN
+;	2554		CURRENT_MODULE : REF MC_RECORD;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 3
+; Digital Equipment Corporation
+;
+;	2555	GLOBAL ROUTINE DBG$INIT_RST : novalue =
+;	2556	
+;	2557	!++
+;	2558	! FUNCTIONAL DESCRIPTION:
+;	2559	!
+;	2560	!	Do the once-only initialization of DEBUG's
+;	2561	!	Runtime Symbol Table (RST) data structures.
+;	2562	!
+;	2563	! FORMAL PARAMETERS:
+;	2564	!	none
+;	2565	!
+;	2566	! IMPLICIT INPUTS:
+;	2567	!
+;	2568	!	In general, we expect that error reporting is done at
+;	2569	!	the innermost level.  This means that we simply
+;	2570	!	return bad status codes all the way out, without saying
+;	2571	!	anything.
+;	2572	!
+;	2573	! IMPLICIT OUTPUTS:
+;	2574	!
+;	2575	!	NONE
+;	2576	!
+;	2577	! ROUTINE VALUE:
+;	2578	! COMPLETION CODES:
+;	2579	!
+;	2580	!	NOVALUE - the only thing which can go wrong that we
+;	2581	!		  don't handle is running out of free storage
+;	2582	!		  when we ask for it blindly (i.e. not checking
+;	2583	!		  that there is enough before we ask for it).
+;	2584	!		- This must fail because we only assume that we
+;	2585	!		  have enough storage for the NT hash vector and
+;	2586	!		  a 1-element MC chain.  If there is really
+;	2587	!		  not enough for this, DEBUG is surely in trouble.
+;	2588	!		- The storage manager doesn't return control to us
+;	2589	!		  in any case...
+;	2590	!
+;	2591	! SIDE EFFECTS:
+;	2592	!
+;	2593	!	The RST gets initialized.
+;	2594	!	If the first module in the DST gets initialized,
+;	2595	!	the language that that module is written in is
+;	2596	!	the language that DEBUG comes up speaking, and the
+;	2597	!	initial <scope> is set to that module name.
+;	2598	!
+;	2599	!--
+;	2600	
+;	2601	BEGIN
+;	2602	
+;	2603	    LOCAL
+;	2604		MC_PTR : REF MC_RECORD,
+;	2605		LIST_ALL,
+;	2606		PTR	: REF VECTOR[,BYTE];
+;	2607	
+;	2608	IF_DIAG( BLD12 )
+;	2609		
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 3-1
+; Digital Equipment Corporation
+;
+;	2610		! Initialize the RST statistics gathering variables.
+;	2611	
+;	2612		NUM_CHAINS = 0;
+;	2613		NUM_MC_ENTRIES = 0;
+;	2614		NUM_GL_ENTRIES = 0;
+;	2615		NUM_NT_ENTRIES = 0;
+;	2616		NUM_SAT_ENTRIES = 0;
+;	2617		NUM_LVT_ENTRIES = 0;
+;	2618	END_DIAG;
+;	2619	
+;	2620		! Before we can do much we must have the
+;	2621		! NT hash vector.  It is a fixed size and
+;	2622		! gets allocated once-and-for-all.
+;	2623	
+;	2624		DBG$GL_NT_HASH = DBG$FREEZ( RST_UNITS(NT_HASH_SIZE * %SIZE(NT_HASH_RECORD)));
+;	2625	
+;	2626		! Add the global symbol definitions MC to the RST structures,
+;	2627		! i.e. start off the module chain with the 'fake' MC record
+;	2628		! reserved to 'hang' globals off of.
+;	2629	
+;	2630		INIT_MC_GLOBALS();
+;	2631	
+;	2632		! Build the Module Chain, giving up if it doesn't work.
+;	2633		! Pass on the users' PC so that the BUILD
+;	2634		! routine can find out which module contains the
+;	2635		! transfer address.
+;	2636	
+;	2637		! Note that this routine only works when the 'next' record,
+;	2638		! as defined by DBG$GET_NXT_DST, is the first record
+;	2639		! in the DST.  If we really wanted to do some manipulating
+;	2640		! of the DST before building the module chain,
+;	2641		! we would have to invent a fake REWIND_DST or something,
+;	2642		! or pass DBG$BUILD_MC the ID of where to start.  This would
+;	2643		! mean that DBG$BUILD_MC would have to 'special-case' the first
+;	2644		! record instead of just calling 'next' for them all.
+;	2645	
+;	2646		IF( NOT DBG$BUILD_MC( .dbg$gl_runframe [dbg$l_user_pc] ) )
+;	2647		THEN
+;	2648			BEGIN
+;	2649	%IF DBG_ERRORS
+;     L 2650	%THEN
+;     U 2651			$FAO_TT_OUT('Unable to Build MC.' );
+;     U 2652	%FI
+;	2653			RETURN;
+;	2654			END
+;	2655		ELSE
+;	2656	IF_DIAG( BLD1 )
+;	2657			$FAO_TT_OUT('Module Chain Built OK.' )
+;	2658	END_DIAG;
+;	2659			;
+;	2660	
+;	2661		! Build an RST that contains those modules
+;	2662		! flagged as eligible in the module chain.
+;	2663		! We also pass on the estimate of the
+;	2664		! number of globals that the RST will contain.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 3-2
+; Digital Equipment Corporation
+;
+;	2665		
+;	2666		IF( NOT DBG$BUILD_RST() )
+;	2667		THEN
+;	2668			BEGIN
+;	2669	%IF DBG_ERRORS
+;     L 2670	%THEN
+;     U 2671			$FAO_TT_OUT('RST INIT FAILURE.');
+;     U 2672	%FI
+;	2673			RETURN;
+;	2674			END;
+;	2675			
+;	2676		! Sort the SAT and LVT vectors so that we can
+;	2677		! access them (later) more efficiently.
+;	2678	
+;	2679		DBG$SORT_SA_LVT( DBG$GET_NXT_SAT );
+;	2680		DBG$SORT_SA_LVT( DBG$GET_NXT_LVT );
+;	2681	
+;	2682	IF_DIAG( BLD1 )
+;	2683		$FAO_TT_OUT('RST initialization complete.');
+;	2684	END_DIAG;
+;	2685	
+;	2686		! If we initialized something, warn
+;	2687		! the user.
+;	2688	
+;	2689		IF( (MC_PTR = .DBG$GL_MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	2690		THEN
+;	2691			! If something did get initialized,
+;	2692			! pick up language name and the name
+;	2693			! of the first module.
+;	2694	
+;	2695			IF( .MC_PTR[ MC_IN_RST ] )
+;	2696			THEN
+;	2697				BEGIN
+;	2698				LOCAL
+;	2699					lang_name,
+;	2700							! String descriptor we build
+;	2701							! to set the initial CSP.
+;	2702					CSP_DESC : BLOCK[8,BYTE];
+;	2703	
+;	2704				! Set the current language to that implied
+;	2705				! by the first RST module.  Currently we
+;	2706				! accept 'BLISS' but substitute 'macro'.
+;	2707	
+;	2708				IF( (lang_name = .mc_ptr[ mc_language ]) EQL BLISS_MODULE )
+;	2709				then
+;	2710					lang_name = mars_module;
+;	2711	
+;	2712				DBG$SET_LANG (0, .lang_name );
+;	2713	
+;	2714				! Set the initial SCOPE to that of the
+;	2715				! name of the initialized module.
+;	2716				! To do this, build a string descriptor
+;	2717				! for this name, call build_path to have
+;	2718				! it allocate CSP space for the new CSP,
+;	2719				! and then call SAVE_SCOPE to effect the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 3-3
+; Digital Equipment Corporation
+;
+;	2720				! installation of the new CSP.
+;	2721	
+;	2722				csp_desc[ DSC$W_LENGTH ] = .MC_PTR[ MC_NAME_CS ];
+;	2723				csp_desc[ DSC$A_POINTER ] = MC_PTR[ MC_NAME_ADDR ];
+;	2724				dbg$build_path(csp_desc);
+;	2725				dbg$save_scope(TRUE);
+;	2726	
+;	2727				! Warn the user of what we have done.
+;	2728		
+;	2729				SIGNAL(DBG$_INITIAL, 2, dbg$language(.lang_name), MC_PTR[ MC_NAME_CS ]);
+;	2730				! normal return
+;	2731	
+;	2732				END;
+;	2733	END;
+
+
+							    .TITLE  DBGBLD
+							    .IDENT  \000058\
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 CURRENT_MODULE:
+							    .BLKB   4
+
+						    PR_CS=		0
+						    RST_STATISTICS=	0
+						    NUM_CHAINS=		0
+						    NUM_GL_ENTRIES=	0
+						    NUM_MC_ENTRIES=	0
+						    NUM_NT_ENTRIES=	0
+						    NUM_SAT_ENTRIES=	0
+						    NUM_LVT_ENTRIES=	0
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$GL_MC_PTR, DBG$GL_NT_HASH
+							    .GLOBL  DBG$GL_RUNFRAME, DBG$LANGUAGE, DBG$FIND_MODULE
+							    .GLOBL  DBG$BUILD_PATH, DBG$SAVE_SCOPE, DBG$SET_LANG, DBG$SORT_SA_LVT
+							    .GLOBL  DBG$VS_INIT, DBG$VS_GET, DBG$VS_FREE, DBG$VS_SHRINK
+							    .GLOBL  DBG$MODULE_SIZE, DBG$DST_VALUE, DBG$SYMBOL_VALU
+							    .GLOBL  DBG$NT_HASH_FCN, DBG$POSITON_DST, DBG$GET_NXT_DST
+							    .GLOBL  DBG$GET_NXT_GST, DBG$GET_NXT_SAT, DBG$GET_NXT_LVT
+							    .GLOBL  DBG$FREEZ, DBG$RST_FREEZ, DBG$REPORT_FREE
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 080C 00000 	    .ENTRY  DBG$INIT_RST, Save R2,R3,R11			      ; 2555
+		         5B 00000000G  EF  9E 00002 	    MOVAB   DBG$SORT_SA_LVT, R11				      ;
+		         5E	       08  C2 00009 	    SUBL2   #8, SP						      ;
+		         7E	  80   8F  9A 0000C 	    MOVZBL  #128, -(SP)						      ; 2624
+	      00000000G  EF	       01  FB 00010 	    CALLS   #1, DBG$FREEZ					      ;
+	      00000000G  EF	       50  D0 00017 	    MOVL    R0, DBG$GL_NT_HASH					      ;
+		  0000V  CF	       00  FB 0001E 	    CALLS   #0, INIT_MC_GLOBALS					      ; 2630
+		         50 00000000G  EF  D0 00023 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2646
+				  40   A0  DD 0002A 	    PUSHL   64(R0)						      ;
+		  0000V  CF	       01  FB 0002D 	    CALLS   #1, DBG$BUILD_MC					      ;
+		         05	       50  E9 00032 	    BLBC    R0, 1$						      ;
+		  0000V  CF	       00  FB 00035 	    CALLS   #0, DBG$BUILD_RST					      ; 2666
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 3-4
+; Digital Equipment Corporation
+;
+		         7F	       50  E9 0003A 1$:     BLBC    R0, 3$						      ;
+			    00000000G  EF  9F 0003D 	    PUSHAB  DBG$GET_NXT_SAT					      ; 2679
+		         6B	       01  FB 00043 	    CALLS   #1, DBG$SORT_SA_LVT					      ;
+			    00000000G  EF  9F 00046 	    PUSHAB  DBG$GET_NXT_LVT					      ; 2680
+		         6B	       01  FB 0004C 	    CALLS   #1, DBG$SORT_SA_LVT					      ;
+	   50 00000000G  EF 00000000G  8F  C1 0004F 	    ADDL3   #DBG$_RST_BEGIN, DBG$GL_MC_PTR, R0			      ; 2689
+		         50	       60  3C 0005B 	    MOVZWL  (R0), MC_PTR					      ;
+				       5C  13 0005E 	    BEQL    3$							      ;
+		         52 00000000G  E0  9E 00060 	    MOVAB   DBG$_RST_BEGIN(MC_PTR), R2				      ; 2695
+	   50	    03   A2	       01  E1 00067 	    BBC     #1, 3(R2), 3$					      ;
+      03   A2	         03	       03  EF 0006C 	    EXTZV   #3, #3, 3(R2), LANG_NAME				      ; 2708
+				       53     00071									      ;
+		         02	       53  D1 00072 	    CMPL    LANG_NAME, #2					      ;
+				       02  12 00075 	    BNEQ    2$							      ;
+				       53  D4 00077 	    CLRL    LANG_NAME						      ; 2710
+				       53  DD 00079 2$:     PUSHL   LANG_NAME						      ; 2712
+				       7E  D4 0007B 	    CLRL    -(SP)						      ;
+	      00000000G  EF	       02  FB 0007D 	    CALLS   #2, DBG$SET_LANG					      ;
+		         6E	  0C   A2  9B 00084 	    MOVZBW  12(R2), CSP_DESC					      ; 2722
+      04   AE	         52	       0D  C1 00088 	    ADDL3   #13, R2, CSP_DESC+4					      ; 2723
+				       5E  DD 0008D 	    PUSHL   SP							      ; 2724
+	      00000000G  EF	       01  FB 0008F 	    CALLS   #1, DBG$BUILD_PATH					      ;
+				       01  DD 00096 	    PUSHL   #1							      ; 2725
+	      00000000G  EF	       01  FB 00098 	    CALLS   #1, DBG$SAVE_SCOPE					      ;
+				  0C   A2  9F 0009F 	    PUSHAB  12(R2)						      ; 2729
+				       53  DD 000A2 	    PUSHL   LANG_NAME						      ;
+	      00000000G  EF	       01  FB 000A4 	    CALLS   #1, DBG$LANGUAGE					      ;
+				       50  DD 000AB 	    PUSHL   R0							      ;
+				       02  DD 000AD 	    PUSHL   #2							      ;
+			    00028013   8F  DD 000AF 	    PUSHL   #163859						      ;
+	      00000000G  00	       04  FB 000B5 	    CALLS   #4, LIB$SIGNAL					      ;
+					   04 000BC 3$:     RET     							      ; 2555
+
+; Routine Size:  189 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 4
+; Digital Equipment Corporation
+;
+;	2734	ROUTINE INIT_MC_GLOBALS : novalue =
+;	2735	
+;	2736	!++
+;	2737	! Functional Description:
+;	2738	!
+;	2739	!	Do that part of RST initialization which MUST
+;	2740	!	work if DEBUG is to survive.  i.e. Build the single
+;	2741	!	MC entry which we associate with GLOBALS.
+;	2742	!
+;	2743	! Formal Parameters:
+;	2744	!	none.
+;	2745	!
+;	2746	! Implicit Inputs:
+;	2747	!
+;	2748	!	none.
+;	2749	!
+;	2750	! Routine Value:
+;	2751	!	novalue
+;	2752	!
+;	2753	! Side Effects:
+;	2754	!
+;	2755	!	DBG$GL_MC_PTR gets initialized.
+;	2756	!--
+;	2757	
+;	2758	BEGIN
+;	2759	
+;	2760	IF_DIAG( BLD )
+;	2761		$FAO_TT_OUT('init_mc: globals = !XL',.num_globals);
+;	2762	END_DIAG;
+;	2763	
+;	2764		! Build the single MC record which must always exist.
+;	2765		! This one does NOT correspond to a module, but rather
+;	2766		! we use it to 'hang' the globals off.  The building
+;	2767		! of this record must go OK - the storage manager
+;	2768		! doesn't give us back control.
+;	2769	
+;	2770		DBG$GL_MC_PTR = DBG$RST_FREEZ(RST_UNITS(RST_MC_SIZE));
+;	2771	
+;	2772		! Initialize the few fields which this special MC record
+;	2773		! must have.  We assume the rest of the record is 0.
+;	2774		! The global MC is never marked 'MC_IN_RST' because
+;	2775		! for all intents and purposes the globals are NOT
+;	2776		! in the RST.
+;	2777	
+;	2778		DBG$GL_MC_PTR[ MC_IS_GLOBAL ] = TRUE;
+;	2779		DBG$GL_MC_PTR[ MC_IN_RST ] = FALSE;
+;	2780		DBG$GL_MC_PTR[ MC_TYPE ] = DSC$K_DTYPE_MOD;
+;	2781	
+;	2782		! Permanently allocate the storage which 'hangs'
+;	2783		! off this MC entry.  Since the globals now
+;	2784		! remain in their own data base (the GST), the
+;	2785		! RST needs only 1 NT and 1 SAT record for 'cache'
+;	2786		! use - ie we fill them when we bring a GST entry
+;	2787		! into the RST for a sym_to_val, etc.
+;	2788	  
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 4-1
+; Digital Equipment Corporation
+;
+;	2789		DBG$GL_MC_PTR[ MC_GBL_NT_PTR ] = DBG$RST_FREEZ( RST_UNITS( RST_NT_SIZE ) );
+;	2790		DBG$GL_MC_PTR[ MC_GBL_SAT_PTR ] = DBG$FREEZ( RST_UNITS( RST_SAT_SIZE ) );
+;	2791	
+;	2792		! Sometimes we don't want the GST consulted in a sym_to_val,
+;	2793		! and some other times we have consulted it and don't want
+;	2794		! some other call to overwrite the 2 cache GBL/RST records.
+;	2795		! For this reason, the following field is turned
+;	2796		! on and off to indicate if the GST is 'locked' or not.
+;	2797	
+;	2798		DBG$GL_MC_PTR[ MC_GBL_LOCKED ] = false;
+;	2799		END;
+
+
+
+
+
+					 0E04 000BD INIT_MC_GLOBALS:
+							    .WORD   Save R2,R9,R10,R11					      ; 2734
+		         59 00000000G  EF  9E 000BF 	    MOVAB   DBG$RST_FREEZ, R9					      ;
+		         5A 00000000G  8F  D0 000C6 	    MOVL    #DBG$_RST_BEGIN, R10				      ;
+		         5B 00000000G  EF  9E 000CD 	    MOVAB   DBG$GL_MC_PTR, R11					      ;
+				       0F  DD 000D4 	    PUSHL   #15							      ; 2770
+		         69	       01  FB 000D6 	    CALLS   #1, DBG$RST_FREEZ					      ;
+		         6B	       50  D0 000D9 	    MOVL    R0, DBG$GL_MC_PTR					      ;
+	   52	         6B	       5A  C1 000DC 	    ADDL3   R10, DBG$GL_MC_PTR, R2				      ; 2778
+		    03   A2	       01  88 000E0 	    BISB2   #1, 3(R2)						      ;
+		    03   A2	       02  8A 000E4 	    BICB2   #2, 3(R2)						      ; 2779
+		    02   A2	  BC   8F  90 000E8 	    MOVB    #-68, 2(R2)						      ; 2780
+				       07  DD 000ED 	    PUSHL   #7							      ; 2789
+		         69	       01  FB 000EF 	    CALLS   #1, DBG$RST_FREEZ					      ;
+		    04   A2	       50  B0 000F2 	    MOVW    R0, 4(R2)						      ;
+	   52	         6B	       5A  C1 000F6 	    ADDL3   R10, DBG$GL_MC_PTR, R2				      ; 2790
+				       03  DD 000FA 	    PUSHL   #3							      ;
+	      00000000G  EF	       01  FB 000FC 	    CALLS   #1, DBG$FREEZ					      ;
+		    35   A2	       50  D0 00103 	    MOVL    R0, 53(R2)						      ;
+	   50	         6B	       5A  C1 00107 	    ADDL3   R10, DBG$GL_MC_PTR, R0				      ; 2798
+		    03   A0	       04  8A 0010B 	    BICB2   #4, 3(R0)						      ;
+					   04 0010F 	    RET     							      ; 2734
+
+; Routine Size:  83 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5
+; Digital Equipment Corporation
+;
+;	2800	GLOBAL ROUTINE DBG$BUILD_MC( TRANSFER_ADDR ) =
+;	2801	
+;	2802	!++
+;	2803	! FUNCTIONAL DESCRIPTION:
+;	2804	!	Build the Module Chain (MC) directly from the DST.
+;	2805	!	This is part of a once-only DEBUG initialization
+;	2806	!	procedure.
+;	2807	!
+;	2808	!	If there is no DST (because none of the module
+;	2809	!	were compiled with /debug symbols on), then this
+;	2810	!	routine simply returns(true) when the first attempt
+;	2811	!	it makes to fetch a DST record returns EOF.
+;	2812	!
+;	2813	! FORMAL PARAMETERS:
+;	2814	!
+;	2815	!	TRANSFER_ADDR	-a supposed transfer address.  Actually,
+;	2816	!			 this is just any value that we check for
+;	2817	!			 being within the range of a PSECT.  If we
+;	2818	!			 find such a PSECT, we mark the corresponding
+;	2819	!			 module as MC_IS_MAIN.  If this value is 0,
+;	2820	!			 we make no such check.
+;	2821	!
+;	2822	! IMPLICIT INPUTS:
+;	2823	!
+;	2824	!	-It is assumed that the first call to DBG$GET_NXT_DST
+;	2825	!	that we make will retreive us the first record
+;	2826	!	in the DST.
+;	2827	!
+;	2828	!	-The free-storage manager zeros-out the storage
+;	2829	!	is gives to us.  (We therefore don't bother to zero-out 
+;	2830	!	link fields, etc, in newly-obtained MC records).
+;	2831	!
+;	2832	!	-We assume that DBG$GL_MC_PTR has already been set to
+;	2833	!	 point to the 'dummy' global MC record.
+;	2834	!
+;	2835	! IMPLICIT OUTPUTS:
+;	2836	!
+;	2837	!	The MC is built - it contains a host of implications.
+;	2838	!
+;	2839	! ROUTINE VALUE:
+;	2840	! COMPLETION CODES:
+;	2841	!
+;	2842	!	TRUE, if all goes OK,
+;	2843	!	FALSE, otherwise.
+;	2844	!
+;	2845	! SIDE EFFECTS:
+;	2846	!
+;	2847	!	-The MC is built.
+;	2848	!	-The DST is 'read' straight thru to the end unless
+;	2849	!	 going any further would take too much of the RST just
+;	2850	!	 for MCs.  In this case, the last part of the DST
+;	2851	!	 is henceforth ignored by DEBUG.
+;	2852	!--
+;	2853	
+;	2854	BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-1
+; Digital Equipment Corporation
+;
+;	2855	
+;	2856	    LOCAL
+;	2857		FIRST_MODULE,		! Flag which says whether we are looking at
+;	2858					!  the first module in the DST or not.
+;	2859		SAT_COUNT,		! Count up per-module SAT entries,
+;	2860		LVT_COUNT,		! Count up per-module LVT entries,
+;	2861		NT_COUNT,		! Count up per-module NT entries,
+;	2862		IN_MODULE,		! Flag to say whether we are 'in between'
+;	2863					!  MODULE_BEGIN - MODULE_END pairs.
+;	2864	
+;	2865		DST_REC_ID,		! Record ID passed back by DBG$GET_NXT_DST.
+;	2866	
+;	2867		CURRENT : REF MC_RECORD,! Pointer to the MC record we are
+;	2868					! currently initializing.
+;	2869	
+;	2870		DST_RECRD : REF DST_RECORD; 	! Pointer to the current record
+;	2871						! of the DST we are reading.
+;	2872	
+;	2873	IF_DIAG( BLD )
+;	2874		$FAO_TT_OUT('building MC: Transfer address is !XL', .TRANSFER_ADDR );
+;	2875	END_DIAG;
+;	2876		! Initialize the context flag IN_MODULE,
+;	2877		! and begin going thru the DST sequentially.
+;	2878		! We assume that someone else, namely
+;	2879		! DEBUG's INIT routine, has made sure that the
+;	2880		! DST is available and that the 'next' record
+;	2881		! is the first one.
+;	2882	
+;	2883		! The chain starts off with the 'fake' global MC record.
+;	2884		! We begin adding MCs to it in a forward-linked fashion.
+;	2885	
+;	2886		FIRST_MODULE = TRUE;
+;	2887		CURRENT = .DBG$GL_MC_PTR;
+;	2888		IN_MODULE = FALSE;
+;	2889	
+;	2890		WHILE( (DST_RECRD = DBG$GET_NXT_DST( DST_REC_ID )) NEQ 0 )
+;	2891			DO
+;	2892			BEGIN
+;	2893	
+;	2894			! Process each record depending on its DST type.
+;	2895	IF_DIAG( BLD2 )
+;	2896			! For diagnostic purposes we list out the entire record.
+;	2897	
+;	2898			IF( .DST_RECRD[DSTR_TYPE] EQL DSC$K_DTYPE_MOD)
+;	2899			THEN
+;	2900				BEGIN
+;	2901				$FAO_TT_OUT('MC for module ');
+;	2902				pr_cs(dst_recrd[dstr_name]);
+;	2903				end;
+;	2904			$FAO_TT_OUT( 'MC: Rec Id=!XL, is at !XL, for !UD bytes.',
+;     P 2905				.DST_REC_ID, .DST_RECRD, .DST_RECRD[ DSTR_SIZE ] );
+;	2906	
+;	2907			! Dump the record in bytes.
+;	2908	
+;	2909			INCR I FROM 0 TO .DST_RECRD[ DSTR_SIZE ]
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-2
+; Digital Equipment Corporation
+;
+;	2910				DO
+;	2911				$FAO_TT_OUT('!XB ',.DST_RECRD[ .I, 0, 8, 0 ] );
+;	2912	
+;	2913	END_DIAG;
+;	2914	
+;	2915			CASE .DST_RECRD[ DSTR_TYPE ] FROM DST_DST_LOWEST TO DST_DST_HIGHEST OF
+;	2916	
+;	2917			    SET
+;	2918	
+;	2919			    [DSC$K_DTYPE_MOD]:	! Module Begin Record.
+;	2920	
+;	2921				BEGIN
+;	2922				LOCAL
+;	2923					MOD_NAME_DESC : BLOCK [8,BYTE],
+;	2924					NEW_PTR : REF MC_RECORD;
+;	2925	IF_DIAG( BLD1 )
+;	2926				$FAO_TT_OUT('new module.  remaining size is !XL, will leave !XL',
+;     P 2927					dbg$report_free(),RST_MODU_SIZE);
+;	2928	END_DIAG;
+;	2929				! Check for misplaced MODULE record.
+;	2930	
+;	2931				IF( .IN_MODULE )
+;	2932				THEN
+;	2933					BEGIN
+;	2934					$FAO_TT_OUT( 'Module Begin Phase Error.' );
+;	2935					RETURN(FALSE);
+;	2936					END;
+;	2937	
+;	2938				!+
+;	2939				! Now check to see if this module is already in the
+;	2940				! chain.  If found, skip until the next EOM record.
+;	2941				!-
+;	2942				MOD_NAME_DESC[DSC$W_LENGTH] = .DST_RECRD[DSTR_NAME];
+;	2943				MOD_NAME_DESC[DSC$A_POINTER] = DST_RECRD[DSTR_NAME] + 1;
+;	2944	
+;	2945				IF (DBG$FIND_MODULE (MOD_NAME_DESC, FALSE) NEQ 0)
+;	2946				THEN					! Module found in chain
+;	2947				    DO
+;	2948				    DST_RECRD = DBG$GET_NXT_DST (DST_REC_ID)
+;	2949				    UNTIL .DST_RECRD[DSTR_TYPE] EQL DSC$K_DTYPE_EOM
+;	2950				ELSE
+;	2951				BEGIN
+;	2952	
+;	2953				!+
+;	2954				! See if taking the RST space for this new MC
+;	2955				! record still leaves a reasonable amount
+;	2956				! for subsequent SET MODULEs.  If this is
+;	2957				! not the case we henceforth ignore the
+;	2958				! rest of the DST and get out of this
+;	2959				! loop completely.
+;	2960	
+;	2961				IF( NOT DBG$REPORT_FREE() GTR RST_MODU_SIZE )
+;	2962				THEN
+;	2963					BEGIN
+;	2964	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-3
+; Digital Equipment Corporation
+;
+;	2965					! Message must not cause an UNWIND so that
+;	2966					! this routine returns 'normally'.
+;	2967	
+;	2968					SIGNAL(DBG$_LONGDST);
+;	2969					EXITLOOP;
+;	2970					END;
+;	2971	
+;	2972				! Allocate space for the new MC record.
+;	2973	
+;	2974				IF( (NEW_PTR = DBG$RST_FREEZ(RST_UNITS(RST_MC_SIZE))) EQL 0)
+;	2975				THEN
+;	2976					RETURN(FALSE);
+;	2977	
+;	2978				! Link this one onto the previous one.
+;	2979	
+;	2980				CURRENT[ MC_NEXT ] = .NEW_PTR;
+;	2981	
+;	2982				! Initialize the new 'current' node,
+;	2983				! and those fields belonging to it that
+;	2984				! we know the value of at this point.
+;	2985				! (Some values get initialized only after
+;	2986				!  we have read the DST for this module).
+;	2987	
+;	2988				IN_MODULE = TRUE;
+;	2989				CURRENT = .NEW_PTR;
+;	2990				SAT_COUNT = LVT_COUNT = NT_COUNT = 0;
+;	2991	
+;	2992				CURRENT[ MC_TYPE ] = .DST_RECRD[ DSTR_TYPE ];
+;	2993				CURRENT[ MC_DST_START ] = .DST_REC_ID;
+;	2994				CURRENT[ MC_IS_MAIN ] = FALSE;
+;	2995				CURRENT[ MC_IS_GLOBAL ] = FALSE;
+;	2996	
+;	2997				! Encode the language indicator into 3 bits.
+;	2998				! This only accomodates values 0-7, enough
+;	2999				! for now.  We may have to enlarge this
+;	3000				! field later.
+;	3001	
+;	3002				CURRENT[ MC_LANGUAGE ] = .DST_RECRD[ DSTR_VALUE ];
+;	3003	
+;	3004				! If we want all modules to be IN the RST by
+;	3005				! default, set the following to TRUE.  Otherwise
+;	3006				! set it to FALSE, and make the decision as to
+;	3007				! whether or not we want a module after its
+;	3008				! DST has been read.  (See DSC$K_DTYPE_EOM, below).
+;	3009	
+;	3010				CURRENT[ MC_IN_RST ] = FALSE;
+;	3011	
+;	3012				! Moving the name could cause problems if we change
+;	3013				! the data representation.  Note that here we move  
+;	3014				! both the name-size count as well as the name itself.
+;	3015	
+;	3016				CH$MOVE (.DST_RECRD [DSTR_NAME ] + 1,
+;	3017					DST_RECRD[ DSTR_NAME ],
+;	3018					CURRENT[ MC_NAME_CS ]);
+;	3019				END
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-4
+; Digital Equipment Corporation
+;
+;	3020				END;
+;	3021	
+;	3022			    [DSC$K_DTYPE_EOM]:	! Module End Record.
+;	3023	
+;	3024				BEGIN
+;	3025	
+;	3026				! Check for misplaced END_MODULE record.
+;	3027	
+;	3028				IF( NOT .IN_MODULE )
+;	3029				THEN
+;	3030					BEGIN
+;	3031					$FAO_TT_OUT( 'Module End Phase Error.' );
+;	3032					RETURN(FALSE);
+;	3033					END;
+;	3034	
+;	3035				! Reset the 'in MODULE' context flag, and
+;	3036				! initialize the settings of all MC flag bits.
+;	3037	
+;	3038				IN_MODULE = FALSE;
+;	3039	
+;	3040				! The following code arranges to have the first
+;	3041				! module of the DST always initialized to be
+;	3042				! in the RST.  If this is no longer desired,
+;	3043				! just take it out.
+;	3044	
+;	3045				IF( .FIRST_MODULE )
+;	3046				THEN
+;	3047					! The first module is in the RST by default.
+;	3048	
+;	3049					CURRENT[ MC_IN_RST ] = TRUE;
+;	3050	
+;	3051				FIRST_MODULE = FALSE;
+;	3052	
+;	3053	%IF DBG_MC_IS_MAIN
+;     L 3054	%THEN
+;     U 3055				! The following code arranges to have the
+;     U 3056				! module that contains the program's transfer
+;     U 3057				! address to be initialized into the RST.
+;     U 3058				! If this is no longer desired, take out this
+;     U 3059				! code as well as the code in DSC$K_DTYPE_PCT,
+;     U 3060				! below, which sets the MC_IS_MAIN bit.
+;     U 3061	
+;     U 3062				IF( .CURRENT[ MC_IS_MAIN ] )
+;     U 3063				THEN
+;     U 3064					! MAIN is always initialized into the RST.
+;     U 3065	
+;     U 3066					CURRENT[ MC_IN_RST ] = TRUE;
+;     U 3067	%FI
+;	3068	
+;	3069				! Record the module statistics.
+;	3070	
+;	3071				CURRENT[ MC_STATICS ] = .SAT_COUNT;
+;	3072				CURRENT[ MC_LITERALS ] = .LVT_COUNT;
+;	3073				CURRENT[ MC_NAMES ] = .NT_COUNT;
+;	3074				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-5
+; Digital Equipment Corporation
+;
+;	3075	
+;	3076			    [DSC$K_DTYPE_RTN,		! Routine DSTs.
+;	3077			     DSC$K_DTYPE_SLB]:		! Labels in FORTRAN and BLISS.
+;	3078	
+;	3079				BEGIN
+;	3080	
+;	3081				! Just tally up the needed statistics
+;	3082				! so that we can build the other data 
+;	3083				! structures later.
+;	3084	
+;	3085				NT_COUNT = .NT_COUNT +1;
+;	3086				SAT_COUNT = .SAT_COUNT +1;
+;	3087				END;
+;	3088	
+;	3089			    [DSC$K_DTYPE_EOR,	! BLISS-only End-of-Routine.
+;	3090			     DSC$K_DTYPE_FLD]:	! BLISS-only FIELD records.
+;	3091	
+;	3092				! We can safely ignore these for now.
+;	3093				;
+;	3094	
+;	3095			    [DSC$K_DTYPE_LBL]:		! Label or Literal DSTs. (MACRO only)
+;	3096	
+;	3097				BEGIN
+;	3098	
+;	3099				! This contributes 1 to NT, and another one to
+;	3100				! either LVT or SAT.
+;	3101	
+;	3102				NT_COUNT = .NT_COUNT +1;
+;	3103	
+;	3104				IF( .DST_RECRD[ DSTR_ACCESS ] )
+;	3105				THEN
+;	3106					! The symbol is an ADDRESS.
+;	3107	
+;	3108					SAT_COUNT = .SAT_COUNT + 1
+;	3109				ELSE
+;	3110					! The symbol is a LITERAL.
+;	3111	
+;	3112					LVT_COUNT = .LVT_COUNT +1;
+;	3113	
+;	3114				END;
+;	3115	
+;	3116			    [DSC$K_DTYPE_PCT]:	! PSECT DSTs.
+;	3117	
+;	3118				BEGIN
+;	3119				IF( NOT .IN_MODULE )
+;	3120				THEN
+;	3121					BEGIN
+;	3122					$FAO_TT_OUT('Misplaced PSECT.');
+;	3123					RETURN(FALSE);
+;	3124					END;
+;	3125	%IF DBG_MC_IS_MAIN
+;     L 3126	%THEN
+;     U 3127				! Here we have the chance to see if this
+;     U 3128				! psect contains the transfer address.
+;     U 3129				! If we were passed a 0 transfer address,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-6
+; Digital Equipment Corporation
+;
+;     U 3130				! we ignore DST Psects.
+;     U 3131	
+;     U 3132				! See if this PSECT in in MAIN.
+;     U 3133	
+;     U 3134				IF( .TRANSFER_ADDR NEQ 0 )
+;     U 3135				THEN
+;     U 3136					BEGIN
+;     U 3137	
+;     U 3138					BIND
+;     U 3139					    PSECT_LENGTH
+;     U 3140						=	! Pick up the field length, which
+;     U 3141							! is after the NAME so must be
+;     U 3142							! dynamically located.
+;     U 3143	
+;     U 3144						(.DST_RECRD[ DSTR_NAME ]	! The symbol-name count,
+;     U 3145						+ DST_RECRD[ DSTR_NAME ]	!  plus its address,
+;     U 3146						+ 1 ) : LONG;			!  addresses the LENGTH.
+;     U 3147	
+;     U 3148					! See if the PSECT spans the transfer address.
+;     U 3149	IF_DIAG( BLD1 )
+;     U 3150					$FAO_TT_OUT('PSECT begins: !XL, ends !XL',
+;     U 3151						.DST_RECRD[ DSTR_VALUE ],
+;     U 3152						.DST_RECRD[DSTR_VALUE]+.PSECT_LENGTH+1 );
+;     U 3153	END_DIAG;
+;     U 3154					IF( .TRANSFER_ADDR GEQA .DST_RECRD[ DSTR_VALUE ] )
+;     U 3155					THEN
+;     U 3156						IF( .TRANSFER_ADDR LEQA
+;     U 3157						     (.PSECT_LENGTH + .DST_RECRD[ DSTR_VALUE ])
+;     U 3158						  )
+;     U 3159						THEN
+;     U 3160							BEGIN
+;     U 3161	
+;     U 3162							! Found the PSECT.
+;     U 3163	
+;     U 3164	IF_DIAG( BLD1 )
+;     U 3165							$FAO_TT_OUT('PSECT that spans transfer addr !XL found',
+;     U 3166								.TRANSFER_ADDR );
+;     U 3167	END_DIAG;
+;     U 3168	
+;     U 3169							CURRENT[ MC_IS_MAIN ] = TRUE;
+;     U 3170							END;
+;     U 3171					END;
+;     U 3172	%FI
+;	3173	
+;	3174				! PSECTs also count as a symbol name.
+;	3175	
+;	3176				NT_COUNT = .NT_COUNT +1;
+;	3177				SAT_COUNT = .SAT_COUNT +1;
+;	3178				END;
+;	3179		
+;	3180	
+;	3181			    [INRANGE, OUTRANGE]:
+;	3182	
+;	3183				BEGIN
+;	3184	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-7
+; Digital Equipment Corporation
+;
+;	3185				! The only reason for not making the "SRM types"
+;	3186				! part of the above CASE is because of the huge
+;	3187				! case table which gets generated otherwise.
+;	3188	
+;	3189				IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	3190				THEN
+;	3191					BEGIN
+;	3192	
+;	3193					! BLISS type ZERO records.
+;	3194	IF_DIAG( BLD1 )
+;	3195					$FAO_TT_OUT('ignoring Z record');
+;	3196	END_DIAG;
+;	3197					! Whatever symbol this is, it contributes
+;	3198					! a name, for sure, and either a literal
+;	3199					! or a static.  We assume the worst!
+;	3200	
+;	3201					NT_COUNT = .NT_COUNT +1;
+;	3202					LVT_COUNT = .LVT_COUNT +1;
+;	3203					SAT_COUNT= .SAT_COUNT +1;
+;	3204					END
+;	3205				ELSE
+;	3206				IF( .DST_RECRD[ DSTR_TYPE ] LEQ DST_TYP_HIGHEST )
+;	3207				THEN
+;	3208					BEGIN
+;	3209	
+;	3210					! These types are candidates for
+;	3211					! the LVT and NT tables only.
+;	3212	
+;	3213					NT_COUNT = .NT_COUNT +1;
+;	3214					SAT_COUNT = .SAT_COUNT +1;
+;	3215					END
+;	3216				ELSE
+;	3217					BEGIN
+;	3218	
+;	3219					! Probably an error in the DST data.
+;	3220	IF_DIAG( BLD1 )
+;	3221					$FAO_TT_OUT('Unknown DST record type: !XB',
+;     P 3222						.DST_RECRD[ DSTR_TYPE ] );
+;	3223	END_DIAG;
+;	3224					END;
+;	3225	
+;	3226				END;
+;	3227			    TES;
+;	3228	
+;	3229			! Go back and process the next DST record.
+;	3230	
+;	3231			END;
+;	3232	
+;	3233		! Make sure we didn't run off the end of
+;	3234		! the DST unexpectedly.  This means that we insist
+;	3235		! that EOM be the last record encountered.
+;	3236	
+;	3237		IF( .IN_MODULE )
+;	3238		THEN
+;	3239			BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-8
+; Digital Equipment Corporation
+;
+;	3240			$FAO_TT_OUT('Premature End-of-DST Encountered.' );
+;	3241			RETURN(FALSE);
+;	3242			END;
+;	3243	
+;	3244		!++
+;	3245		! The chain has been built OK.
+;	3246		!--
+;	3247		RETURN( TRUE );
+;	3248	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   25							      ;
+					      00001 	    .ASCII  \Module Begin Phase Error.\				      ;
+					      0001A	    .BLKB   2
+					      0001C P.AAB:  .BYTE   23							      ;
+					      0001D 	    .ASCII  \Module End Phase Error.\				      ;
+					      00034 P.AAC:  .BYTE   16							      ;
+					      00035 	    .ASCII  \Misplaced PSECT.\					      ;
+					      00045	    .BLKB   3
+					      00048 P.AAD:  .BYTE   33							      ;
+					      00049 	    .ASCII  \Premature End-of-DST Encountered.\			      ;
+					      0006A	    .BLKB   2
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 00110 	    .ENTRY  DBG$BUILD_MC, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 2800
+		         5E	       0C  C2 00112 	    SUBL2   #12, SP						      ;
+				       01  DD 00115 	    PUSHL   #1							      ; 2886
+		         57 00000000G  EF  D0 00117 	    MOVL    DBG$GL_MC_PTR, CURRENT				      ; 2887
+				       5B  D4 0011E 	    CLRL    IN_MODULE						      ; 2888
+				  04   AE  9F 00120 1$:     PUSHAB  DST_REC_ID						      ; 2890
+	      00000000G  EF	       01  FB 00123 	    CALLS   #1, DBG$GET_NXT_DST					      ;
+		         56	       50  D0 0012A 	    MOVL    R0, DST_RECRD					      ;
+				       03  12 0012D 	    BNEQ    2$							      ;
+				     0128  31 0012F 	    BRW     21$							      ;
+	   08	    B7   8F	  01   A6  8F 00132 2$:     CASEB   1(DST_RECRD), #183, #8				      ; 2915
+	 0012	       010E	     FFE8     00138 3$:     .WORD   1$-3$,-						      ;
+	 0027	       011B	     0104     0013E		    17$-3$,-						      ;
+	 FFE8	       011B	     00D4     00144		    4$-3$,-						      ;
+								    16$-3$,-						      ;
+								    18$-3$,-						      ;
+								    6$-3$,-						      ;
+								    13$-3$,-						      ;
+								    18$-3$,-						      ;
+								    1$-3$						      ;
+				  01   A6  95 0014A 4$:     TSTB    1(DST_RECRD)					      ; 3189
+				       07  12 0014D 	    BNEQ    5$							      ;
+				       59  D6 0014F 	    INCL    NT_COUNT						      ; 3201
+				       5A  D6 00151 	    INCL    LVT_COUNT						      ; 3202
+				     00FF  31 00153 	    BRW     19$							      ; 3203
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-9
+; Digital Equipment Corporation
+;
+		         17	  01   A6  91 00156 5$:     CMPB    1(DST_RECRD), #23					      ; 3206
+				       C4  1A 0015A 	    BGTRU   1$							      ;
+				     00F4  31 0015C 	    BRW     18$							      ; 3213
+		         0B	       5B  E9 0015F 6$:     BLBC    IN_MODULE, 7$					      ; 2931
+				       7E  D4 00162 	    CLRL    -(SP)						      ; 2934
+			    00000000'  EF  9F 00164 	    PUSHAB  P.AAA						      ;
+				     00F8  31 0016A 	    BRW     22$							      ;
+		    08   AE	  07   A6  9B 0016D 7$:     MOVZBW  7(DST_RECRD), MOD_NAME_DESC				      ; 2942
+		    0C   AE	  08   A6  9E 00172 	    MOVAB   8(DST_RECRD), MOD_NAME_DESC+4			      ; 2943
+				       7E  D4 00177 	    CLRL    -(SP)						      ; 2945
+				  0C   AE  9F 00179 	    PUSHAB  MOD_NAME_DESC					      ;
+	      00000000G  EF	       02  FB 0017C 	    CALLS   #2, DBG$FIND_MODULE					      ;
+				       50  D5 00183 	    TSTL    R0							      ;
+				       16  13 00185 	    BEQL    10$							      ;
+				  04   AE  9F 00187 8$:     PUSHAB  DST_REC_ID						      ; 2948
+	      00000000G  EF	       01  FB 0018A 	    CALLS   #1, DBG$GET_NXT_DST					      ;
+		         56	       50  D0 00191 	    MOVL    R0, DST_RECRD					      ;
+		    BD   8F	  01   A6  91 00194 	    CMPB    1(DST_RECRD), #189					      ; 2949
+				       EC  12 00199 	    BNEQ    8$							      ;
+				       83  11 0019B 9$:     BRB     1$							      ; 2945
+	      00000000G  EF	       00  FB 0019D 10$:    CALLS   #0, DBG$REPORT_FREE					      ; 2961
+	      00007918   8F	       50  D1 001A4 	    CMPL    R0, #31000						      ;
+				       10  14 001AB 	    BGTR    11$							      ;
+			    0002801B   8F  DD 001AD 	    PUSHL   #163867						      ; 2968
+	      00000000G  00	       01  FB 001B3 	    CALLS   #1, LIB$SIGNAL					      ;
+				     009D  31 001BA 	    BRW     21$							      ; 2969
+				       0F  DD 001BD 11$:    PUSHL   #15							      ; 2974
+	      00000000G  EF	       01  FB 001BF 	    CALLS   #1, DBG$RST_FREEZ					      ;
+				       50  D5 001C6 	    TSTL    NEW_PTR						      ;
+				       03  12 001C8 	    BNEQ    12$							      ;
+				     00A5  31 001CA 	    BRW     24$							      ;
+	      00000000G  E7	       50  B0 001CD 12$:    MOVW    NEW_PTR, DBG$_RST_BEGIN(CURRENT)			      ; 2980
+		         5B	       01  D0 001D4 	    MOVL    #1, IN_MODULE					      ; 2988
+		         57	       50  D0 001D7 	    MOVL    NEW_PTR, CURRENT					      ; 2989
+				       59  7C 001DA 	    CLRQ    NT_COUNT						      ; 2990
+				       58  D4 001DC 	    CLRL    SAT_COUNT						      ;
+		         50 00000000G  E7  9E 001DE 	    MOVAB   DBG$_RST_BEGIN(CURRENT), R0				      ; 2992
+		    02   A0	  01   A6  90 001E5 	    MOVB    1(DST_RECRD), 2(R0)					      ;
+		    04   A0	  04   AE  D0 001EA 	    MOVL    DST_REC_ID, 4(R0)					      ; 2993
+		    03   A0	       05  8A 001EF 	    BICB2   #5, 3(R0)						      ; 2995
+	   03	         03	  03   A6  F0 001F3 	    INSV    3(DST_RECRD), #3, #3, 3(R0)				      ; 3002
+				  03   A0     001F8									      ;
+		    03   A0	       02  8A 001FA 	    BICB2   #2, 3(R0)						      ; 3010
+		         51	  07   A6  9A 001FE 	    MOVZBL  7(DST_RECRD), R1					      ; 3016
+				       51  D6 00202 	    INCL    R1							      ;
+      0C   A0	    07   A6	       51  28 00204 	    MOVC3   R1, 7(DST_RECRD), 12(R0)				      ;
+				       8F  11 0020A 	    BRB     9$							      ; 2915
+		         0A	       5B  E8 0020C 13$:    BLBS    IN_MODULE, 14$					      ; 3028
+				       7E  D4 0020F 	    CLRL    -(SP)						      ; 3031
+			    00000000'  EF  9F 00211 	    PUSHAB  P.AAB						      ;
+				       4C  11 00217 	    BRB     22$							      ;
+				       5B  D4 00219 14$:    CLRL    IN_MODULE						      ; 3038
+		         07	       6E  E9 0021B 	    BLBC    FIRST_MODULE, 15$					      ; 3045
+	      00000000G  E7	       02  88 0021E 	    BISB2   #2, DBG$_RST_BEGIN+3(CURRENT)			      ; 3049
+				       6E  D4 00225 15$:    CLRL    FIRST_MODULE					      ; 3051
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 5-10
+; Digital Equipment Corporation
+;
+		         50 00000000G  E7  9E 00227 	    MOVAB   DBG$_RST_BEGIN(CURRENT), R0				      ; 3071
+		    31   A0	       58  D0 0022E 	    MOVL    SAT_COUNT, 49(R0)					      ;
+		    35   A0	       5A  D0 00232 	    MOVL    LVT_COUNT, 53(R0)					      ; 3072
+		    08   A0	       59  D0 00236 	    MOVL    NT_COUNT, 8(R0)					      ; 3073
+				       1B  11 0023A 	    BRB     20$							      ; 2915
+				       59  D6 0023C 16$:    INCL    NT_COUNT						      ; 3102
+		         13	  02   A6  E8 0023E 	    BLBS    2(DST_RECRD), 19$					      ; 3104
+				       5A  D6 00242 	    INCL    LVT_COUNT						      ; 3112
+				       11  11 00244 	    BRB     20$							      ; 2915
+		         0A	       5B  E8 00246 17$:    BLBS    IN_MODULE, 18$					      ; 3119
+				       7E  D4 00249 	    CLRL    -(SP)						      ; 3122
+			    00000000'  EF  9F 0024B 	    PUSHAB  P.AAC						      ;
+				       12  11 00251 	    BRB     22$							      ;
+				       59  D6 00253 18$:    INCL    NT_COUNT						      ; 3176
+				       58  D6 00255 19$:    INCL    SAT_COUNT						      ; 3177
+				     FEC6  31 00257 20$:    BRW     1$							      ; 2890
+		         11	       5B  E9 0025A 21$:    BLBC    IN_MODULE, 23$					      ; 3237
+				       7E  D4 0025D 	    CLRL    -(SP)						      ; 3240
+			    00000000'  EF  9F 0025F 	    PUSHAB  P.AAD						      ;
+	      00000000G  EF	       02  FB 00265 22$:    CALLS   #2, DBG$FAO_OUT					      ;
+				       04  11 0026C 	    BRB     24$							      ; 3241
+		         50	       01  D0 0026E 23$:    MOVL    #1, R0						      ; 3247
+					   04 00271 	    RET     							      ;
+				       50  D4 00272 24$:    CLRL    R0							      ; 2800
+					   04 00274 	    RET     							      ;
+
+; Routine Size:  357 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 6
+; Digital Equipment Corporation
+;
+;	3249	GLOBAL ROUTINE DBG$BUILD_RST =
+;	3250	
+;	3251	!++
+;	3252	! FUNCTIONAL DESCRIPTION:
+;	3253	!	Initialize the RST given a module chain.
+;	3254	!
+;	3255	! FORMAL PARAMETERS:
+;	3256	!
+;	3257	!	none.
+;	3258	!
+;	3259	! IMPLICIT INPUTS:
+;	3260	!
+;	3261	!	DBG$GL_MC_PTR	-is assumed to RST-point (in the sense
+;	3262	!			 that an RST-pointer points) to the beginning
+;	3263	!			 of the MC.  This MC is assumed to contain
+;	3264	!			 all necessary information about those
+;	3265	!			 modules marked elegible to be in the RST.
+;	3266	!
+;	3267	! IMPLICIT OUTPUTS:
+;	3268	!
+;	3269	!	There will be at least RST_AVAIL_SIZE bytes of
+;	3270	!	free storage left after this routine finishes.
+;	3271	!
+;	3272	! ROUTINE VALUE:
+;	3273	! COMPLETION CODES:
+;	3274	!
+;	3275	!	TRUE, if all went OK, FALSE otherwise.
+;	3276	!
+;	3277	! SIDE EFFECTS:
+;	3278	!
+;	3279	!	A warning message is produced if any of the
+;	3280	!	modules marked MC_IN_RST are not added to
+;	3281	!	the RST.  This happens when we don't have
+;	3282	!	enough space.
+;	3283	!
+;	3284	!--
+;	3285	
+;	3286		BEGIN
+;	3287		LOCAL
+;	3288			NOT_ALL_ADDED,	! A flag to tell if we added all the
+;	3289					!  modules we wanted to.
+;	3290	
+;	3291			MC_PTR : REF MC_RECORD;	! Pointer to current MC record.
+;	3292	
+;	3293	!	! Initialize the flag that we use to detect when
+;	3294		! we didn't get to add all modules we wanted to.
+;	3295	
+;	3296		NOT_ALL_ADDED = FALSE;
+;	3297	
+;	3298		! Loop thru the module chain tyring to add the indicated
+;	3299		! modules to the RST.  Note that we purposely don't
+;	3300		! look at the first MC record in the chain because
+;	3301		! is is reserved for globals.
+;	3302	
+;	3303		MC_PTR = .DBG$GL_MC_PTR;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 6-1
+; Digital Equipment Corporation
+;
+;	3304	
+;	3305		WHILE( (MC_PTR = .MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	3306			DO
+;	3307			IF( .MC_PTR[ MC_IN_RST ] )
+;	3308			THEN
+;	3309				! Try to add the module.
+;	3310	
+;	3311				IF( NOT DBG$ADD_MODULE( .MC_PTR ) )
+;	3312				THEN
+;	3313					BEGIN
+;	3314					not_all_added = true;
+;	3315					MC_PTR[ MC_IN_RST ] = FALSE;
+;	3316					END;
+;	3317	
+;	3318		! Produce a warning message if we didn't add all
+;	3319		! those we tried to.
+;	3320	
+;	3321		IF( .NOT_ALL_ADDED ) 
+;	3322		THEN
+;	3323			SIGNAL(DBG$_NOTALLSYM);
+;	3324	
+;	3325	IF_DIAG( BLD )
+;	3326		$FAO_TT_OUT('RST (locals) Initialization Complete' );
+;	3327	END_DIAG;
+;	3328	
+;	3329		! Initialization completed OK.
+;	3330	
+;	3331		RETURN(TRUE);
+;	3332	END;
+
+
+
+
+
+					 081C 00275 	    .ENTRY  DBG$BUILD_RST, Save R2,R3,R4,R11			      ; 3249
+		         5B 00000000G  8F  D0 00277 	    MOVL    #DBG$_RST_BEGIN, R11				      ;
+				       54  D4 0027E 	    CLRL    NOT_ALL_ADDED					      ; 3296
+		         53 00000000G  EF  D0 00280 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3303
+	   52	         53	       5B  C1 00287 	    ADDL3   R11, MC_PTR, R2					      ; 3305
+		         53	       62  3C 0028B 1$:     MOVZWL  (R2), MC_PTR					      ;
+				       1C  13 0028E 	    BEQL    2$							      ;
+	   52	         53	       5B  C1 00290 	    ADDL3   R11, MC_PTR, R2					      ; 3307
+	   F2	    03   A2	       01  E1 00294 	    BBC     #1, 3(R2), 1$					      ;
+				       53  DD 00299 	    PUSHL   MC_PTR						      ; 3311
+		  0000V  CF	       01  FB 0029B 	    CALLS   #1, DBG$ADD_MODULE					      ;
+		         E8	       50  E8 002A0 	    BLBS    R0, 1$						      ;
+		         54	       01  D0 002A3 	    MOVL    #1, NOT_ALL_ADDED					      ; 3314
+		    03   A2	       02  8A 002A6 	    BICB2   #2, 3(R2)						      ; 3315
+				       DF  11 002AA 	    BRB     1$							      ; 3307
+		         0D	       54  E9 002AC 2$:     BLBC    NOT_ALL_ADDED, 3$					      ; 3321
+			    0002807B   8F  DD 002AF 	    PUSHL   #163963						      ; 3323
+	      00000000G  00	       01  FB 002B5 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50	       01  D0 002BC 3$:     MOVL    #1, R0						      ; 3331
+					   04 002BF 	    RET     							      ; 3249
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 6-2
+; Digital Equipment Corporation
+;
+; Routine Size:  75 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7
+; Digital Equipment Corporation
+;
+;	3333	GLOBAL ROUTINE DBG$ADD_MODULE( MODULE_TO_ADD ) =
+;	3334	
+;	3335	!++
+;	3336	! FUNCTIONAL DESCRIPTION:
+;	3337	!	Add the indicated module to the RST data base.
+;	3338	!
+;	3339	! FORMAL PARAMETERS:
+;	3340	!
+;	3341	!	MODULE_TO_ADD	-An RST-pointer to the MC record for
+;	3342	!			 the module we are to initialize.
+;	3343	!			 This is necessary because this module
+;	3344	!			 is scope-wise 'above' all symbols
+;	3345	!			 declared in the outer block of this module.
+;	3346	!
+;	3347	! IMPLICIT INPUTS:
+;	3348	!
+;	3349	!	NONE.
+;	3350	!
+;	3351	! IMPLICIT OUTPUTS:
+;	3352	!
+;	3353	!	NONE
+;	3354	!
+;	3355	! ROUTINE VALUE:
+;	3356	! COMPLETION CODES:
+;	3357	!
+;	3358	!	TRUE, if all goes OK, FALSE otherwise.
+;	3359	!
+;	3360	! SIDE EFFECTS:
+;	3361	!
+;	3362	!	The symbols for the indicated module get added to
+;	3363	!	the various RST data structures.
+;	3364	!
+;	3365	!--
+;	3366		BEGIN
+;	3367		LABEL
+;	3368				! The overall structure of this routine
+;	3369				! is one large loop in which we add
+;	3370				! successive DSTs to the RST.
+;	3371			ADD_DST_LOOP;
+;	3372		MAP
+;	3373			MODULE_TO_ADD : REF MC_RECORD;
+;	3374		LOCAL
+;	3375			DST_REC_ID,	! ID we are passed back so that we can
+;	3376					!  later refer to DST records.
+;	3377	
+;	3378					! Pointer to where a fetched DST record lives.
+;	3379			DST_RECRD : REF DST_RECORD,
+;	3380	
+;	3381					! Pointer to NT records we build.
+;	3382			NT_PTR : REF NT_RECORD;
+;	3383	
+;	3384		!+ 
+;	3385		! A new module must define a new position from which to start
+;	3386		! as far as building in scope structure is concerned.  To do
+;	3387		! this we reinitialize the scope stack, a stack of RST-pointers,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-1
+; Digital Equipment Corporation
+;
+;	3388		! the top one of which points to the NT or MC record that
+;	3389		! corresponds to the symbol (MODULE or ROUTINE) that is
+;	3390		! scope-wise above any symbol currently being added to the
+;	3391		! RST data base.  The reason why we need a stack to keep
+;	3392		! track of this is simply because BLISS allows nested
+;	3393		! ROUTINE declarations.
+;	3394		!
+;	3395		! Likewise we have to stack SAT pointers to ROUTINE SAT records
+;	3396		! so that when we get the corresponding end-of-routine
+;	3397		! we can go to the SAT and fix up the UB value.
+;	3398		!-
+;	3399	
+;	3400		LOCAL
+;	3401			SCOPE_STACK : VECTOR[ MAX_SCOPE_DEPTH +1, %SIZE(RST_POINTER) ],
+;	3402			SAT_RTN_STACK : VECTOR[ MAX_SCOPE_DEPTH +1, %SIZE(SAT_POINTER) ],
+;	3403	
+;	3404			SCOPE_STACK_PTR,	! Index to current top of scope stack.
+;	3405			CURENT_LANGUAGE;	! Per-module source code language indicator.
+;	3406	
+;	3407		! Make sure that we can go ahead and add the
+;	3408		! indicated module.  Also peform any needed
+;	3409		! checks and initializations.
+;	3410	
+;	3411		IF( NOT OK_TO_ADD(.MODULE_TO_ADD, CURENT_LANGUAGE) )
+;	3412		THEN
+;	3413			RETURN(FALSE);
+;	3414	
+;	3415		! Initialize the scope and SAT_RTN stacks.  (See above).
+;	3416		! Since the top-of-stack entry is MODULE,
+;	3417		! the corresponding entry in the SAT_RTN stack
+;	3418		! is not used, in BLISS, always used, in FORTRAN,
+;	3419		! and never used, in MARS.  This is because BLISS
+;	3420		! has 'real' scoping, FORTRAN's scope is only
+;	3421		! 1 level deep, and MARS doesn't give us DST
+;	3422		! entries for end-of-routines.
+;	3423	
+;	3424		SCOPE_STACK_PTR = 0;
+;	3425		CH$FILL(0, %ALLOCATION(SAT_RTN_STACK), SAT_RTN_STACK );
+;	3426		CH$FILL(0, %ALLOCATION(SCOPE_STACK), SCOPE_STACK );
+;	3427		SCOPE_STACK[0] = .MODULE_TO_ADD;
+;	3428	
+;	3429		! Now process the DST record by record, ending
+;	3430		! when we encounter a module_end record, or when
+;	3431		! some error occurs.
+;	3432	
+;	3433		WHILE( (DST_RECRD = DBG$GET_NXT_DST( DST_REC_ID )) NEQ 0 )
+;	3434			DO
+;	3435	
+;	3436		    ADD_DST_LOOP:	! Failure to add a DST => we LEAVE add block.
+;	3437	
+;	3438			BEGIN
+;	3439	IF_DIAG( BLD2 )
+;	3440			! For diagnostic purposes we list out the entire record.
+;	3441	
+;	3442			$FAO_TT_OUT( 'DST Rec Id=!XL, is at !XL, for !UD bytes.',
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-2
+; Digital Equipment Corporation
+;
+;     P 3443				.DST_REC_ID, .DST_RECRD, .DST_RECRD[ DSTR_SIZE ] );
+;	3444	
+;	3445			! Dump the record in bytes.
+;	3446	
+;	3447			INCR I FROM 0 TO .DST_RECRD[ DSTR_SIZE ]
+;	3448				DO
+;	3449				$FAO_TT_OUT('!XB ',.DST_RECRD[ .I, 0, 8, 0 ] );
+;	3450	
+;	3451	END_DIAG;
+;	3452			! We process each record depending on its DST type.
+;	3453	
+;	3454			CASE .DST_RECRD[ DSTR_TYPE ] FROM DST_DST_LOWEST TO DST_DST_HIGHEST OF
+;	3455			    SET
+;	3456	
+;	3457			    [DSC$K_DTYPE_EOM]:	! End module record.
+;	3458				BEGIN
+;	3459	
+;	3460				! This is the ONLY successful way this routine
+;	3461				! can terminate since we insist that a group of
+;	3462				! DST records end with an End Module record.
+;	3463	IF_DIAG( BLD3 )
+;	3464				$FAO_TT_OUT('dbg$add_module: OK EOM encountered.');
+;	3465	END_DIAG;
+;	3466	IF_DIAG( BLD12 )
+;	3467				! Tally up counter for RST statistics gathering.
+;	3468	
+;	3469				NUM_MC_ENTRIES = .NUM_MC_ENTRIES + 1;
+;	3470	END_DIAG;
+;	3471	
+;	3472				! Modules added OK are not about to be deleted.
+;	3473	
+;	3474				MODULE_TO_ADD[ MC_IS_DYING ] = FALSE;
+;	3475	
+;	3476				! See if we can free up some of the vector storage
+;	3477				! allocated for this module.  This will be the case
+;	3478				! when we didn't actually add as many of the NTs, SATs,
+;	3479				! or LVTs as the MC statictics indicated we might.
+;	3480				! (Which is almost always the case because the gathering
+;	3481				!  is not as detailed as it might be).
+;	3482	
+;	3483				DBG$VS_SHRINK( MODULE_TO_ADD[ MC_NT_STORAGE ] );
+;	3484				DBG$VS_SHRINK( MODULE_TO_ADD[ MC_SAT_STORAGE ] );
+;	3485				DBG$VS_SHRINK( MODULE_TO_ADD[ MC_LVT_STORAGE ] );
+;	3486				RETURN(TRUE);
+;	3487				END;
+;	3488	
+;	3489			    [DSC$K_DTYPE_RTN]:	! Begin a ROUTINE record.
+;	3490				BEGIN
+;	3491	IF_DIAG( BLD3 )
+;	3492				$FAO_TT_OUT('dbg$add_module: routine ');
+;	3493				PR_CS( DST_RECRD[ DSTR_NAME ] );
+;	3494	END_DIAG;
+;	3495				! In all languages, a routine name is at least
+;	3496				! a symbol, which must therefore appear in the NT.
+;	3497				! Add the symbol to the NT.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-3
+; Digital Equipment Corporation
+;
+;	3498	
+;	3499				IF( (NT_PTR =
+;	3500					ADD_NT(.DST_RECRD, .SCOPE_STACK[.SCOPE_STACK_PTR])
+;	3501				    ) EQL 0 )
+;	3502				THEN
+;	3503					LEAVE ADD_DST_LOOP;
+;	3504	
+;	3505				! Then, in BLISS, each routine record also 
+;	3506				! implies that we go one level down as far
+;	3507				! as scope is concerned.  This is why we
+;	3508				! maintain the so-called scope stack.
+;	3509	
+;	3510				IF( .CURENT_LANGUAGE EQL BLISS_MODULE )
+;	3511				THEN
+;	3512					BEGIN
+;	3513	
+;	3514					! Check for scope stack overflow.
+;	3515	
+;	3516					IF( (SCOPE_STACK_PTR = .SCOPE_STACK_PTR +1) GTR MAX_SCOPE_DEPTH )
+;	3517					THEN
+;	3518						BEGIN
+;	3519						$FAO_TT_OUT('dbg$add_module: scope depth overflow');
+;	3520						RETURN(FALSE);
+;	3521						END;
+;	3522	
+;	3523					! Push the new scope level onto the scope stack.
+;	3524	
+;	3525					SCOPE_STACK[ .SCOPE_STACK_PTR ] = .NT_PTR;
+;	3526	IF_DIAG( BLD3 )
+;	3527					$FAO_TT_OUT('>>>> new scope stack level=!XL, ',.SCOPE_STACK_PTR);
+;	3528					PR_CS( NT_PTR[ NT_NAME_CS ] );
+;	3529	END_DIAG;
+;	3530					END;
+;	3531	
+;	3532				! Routine symbols also go into the SAT.
+;	3533				! The catch here is that we don't yet know
+;	3534				! the length of the routine, so we have to
+;	3535				! stack a pointer to the SAT record we
+;	3536				! build so that we can fix up this problem
+;	3537				! when we do get the info.
+;	3538	
+;	3539				IF( (SAT_RTN_STACK[ .SCOPE_STACK_PTR ] = 
+;	3540					ADD_SAT( .NT_PTR, .DST_RECRD[ DSTR_VALUE ], 0 ) )
+;	3541				   EQL 0 )
+;	3542				THEN
+;	3543					BEGIN
+;	3544	
+;	3545					! Don't allow the next end_of_routine record
+;	3546					! to overwrite something invalid.
+;	3547	
+;	3548					SAT_RTN_STACK[ .SCOPE_STACK_PTR ] = 0;
+;	3549					RETURN(FALSE);
+;	3550					END;
+;	3551				END;
+;	3552	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-4
+; Digital Equipment Corporation
+;
+;	3553			    [DSC$K_DTYPE_EOR]:	! End of (BLISS and FORTRAN) routine.
+;	3554	
+;	3555				BEGIN
+;	3556	
+;	3557				! This is where we finally get to find out the
+;	3558				! length that the current routine was.  This
+;	3559				! info allows us to complete the building of the
+;	3560				! RST record which corresponds to the routine
+;	3561				! itself.  If we do not have a valid pointer
+;	3562				! to this routine's SAT, some logic error
+;	3563				! has occurred.
+;	3564	
+;	3565				IF( .SAT_RTN_STACK[ .SCOPE_STACK_PTR ] NEQ 0 )
+;	3566				THEN
+;	3567					BEGIN
+;	3568					LOCAL
+;	3569						FIXUP_SAT_PTR : REF SAT_RECORD,
+;	3570						RTN_NT_PTR : REF NT_RECORD;
+;	3571	
+;	3572					! Pickup a pointer to the SAT record
+;	3573					! which corresponds the associated 
+;	3574					! ROUTINE NT record.
+;	3575	
+;	3576					FIXUP_SAT_PTR = .SAT_RTN_STACK[ .SCOPE_STACK_PTR ];
+;	3577	IF_DIAG( BLD6 )
+;	3578					$FAO_TT_OUT('unstacked fixup sat ptr = !XL',
+;     P 3579						.FIXUP_SAT_PTR);
+;	3580	END_DIAG;
+;	3581					! The upper bound for this routine is
+;	3582					! the address at which the code for it ends.
+;	3583					! Note that we have now 'bounded' this symbol.
+;	3584	
+;	3585					FIXUP_SAT_PTR[ SAT_UB ] = .FIXUP_SAT_PTR[ SAT_LB ] 
+;	3586						+ .DST_RECRD[ DSTR_VALUE ] -1;
+;	3587					RTN_NT_PTR = .FIXUP_SAT_PTR[ SAT_NT_PTR ];
+;	3588					RTN_NT_PTR[ NT_IS_BOUNDED ] = TRUE;
+;	3589	IF_DIAG( BLD6 )
+;	3590					$FAO_TT_OUT('routine ');
+;	3591					PR_CS(RTN_NT_PTR[ NT_NAME_CS ]);
+;	3592					$FAO_TT_OUT(' begins at !XL and ends at !XL',
+;     P 3593						.FIXUP_SAT_PTR[SAT_LB], .FIXUP_SAT_PTR[SAT_UB] );
+;	3594	END_DIAG;
+;	3595					SAT_RTN_STACK[ .SCOPE_STACK_PTR ] = 0;
+;	3596					END
+;	3597				ELSE
+;	3598					BEGIN
+;	3599					$FAO_TT_OUT('rtn end without begin');
+;	3600					RETURN(FALSE);
+;	3601					END;
+;	3602	
+;	3603				! Pop a scope level off of the scope stack.
+;	3604	
+;	3605				IF( .CURENT_LANGUAGE EQL BLISS_MODULE )
+;	3606				THEN
+;	3607					! Check for scope stack underflow.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-5
+; Digital Equipment Corporation
+;
+;	3608	
+;	3609					IF( (SCOPE_STACK_PTR = .SCOPE_STACK_PTR -1) LSS 0 )
+;	3610					THEN
+;	3611						BEGIN
+;	3612						$FAO_TT_OUT('add_module: scope depth underflow');
+;	3613						RETURN(FALSE);
+;	3614						END;
+;	3615	IF_DIAG( BLD3 )
+;	3616				$FAO_TT_OUT('<<<< new scope stack level=!XL, ',.SCOPE_STACK_PTR);
+;	3617				NT_PTR = .SCOPE_STACK[ .SCOPE_STACK_PTR ];
+;	3618				PR_CS( NT_PTR[ NT_NAME_CS ] );
+;	3619	END_DIAG;
+;	3620				END;
+;	3621	
+;	3622			    [DSC$K_DTYPE_FLD]: ! BLISS fields.
+;	3623	
+;	3624				BEGIN
+;	3625	IF_DIAG( BLD )
+;	3626				$FAO_TT_OUT('FIELD defn ignored.');
+;	3627	END_DIAG;
+;	3628				END;
+;	3629	
+;	3630			    [DSC$K_DTYPE_LBL,		! Label or Literal DSTs. (MARS only)
+;	3631			     DSC$K_DTYPE_SLB]:		! Labels in FORTRAN and BLISS.
+;	3632				BEGIN
+;	3633	IF_DIAG( BLD3 )
+;	3634				$FAO_TT_OUT('add_module: ');
+;	3635				IF(  (.DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_SLB )
+;	3636				   OR
+;	3637				   ( .DST_RECRD[ DSTR_ACCESS ] ) )
+;	3638				THEN
+;	3639					$FAO_TT_OUT('relocated address')
+;	3640				ELSE
+;	3641					$FAO_TT_OUT('literal value');
+;	3642				$FAO_TT_OUT('=!XL, ', .DST_RECRD[ DSTR_VALUE ] );
+;	3643				PR_CS( DST_RECRD[ DSTR_NAME ] );
+;	3644	END_DIAG;
+;	3645				! Add the symbol to the NT.
+;	3646	
+;	3647				IF( (NT_PTR =
+;	3648					ADD_NT(.DST_RECRD, .SCOPE_STACK[.SCOPE_STACK_PTR])
+;	3649				    ) EQL 0 )
+;	3650				THEN
+;	3651					LEAVE ADD_DST_LOOP;
+;	3652	
+;	3653				! Then, add it to the LVT of SAT, depending
+;	3654				! on whether the symbol is a literal.
+;	3655	
+;	3656				IF(  (.DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_SLB )
+;	3657				   OR
+;	3658				   ( .DST_RECRD[ DSTR_ACCESS ] ) )
+;	3659				THEN
+;	3660					BEGIN
+;	3661					IF( ADD_SAT( .NT_PTR, .DST_RECRD[ DSTR_VALUE ], 0) EQL 0 )
+;	3662					THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-6
+; Digital Equipment Corporation
+;
+;	3663						RETURN(FALSE);
+;	3664					END
+;	3665				ELSE
+;	3666					BEGIN
+;	3667					IF( NOT ADD_LVT( .NT_PTR, .DST_RECRD[ DSTR_VALUE ]) )
+;	3668					THEN
+;	3669						RETURN(FALSE);
+;	3670					END;
+;	3671	
+;	3672				END;
+;	3673	
+;	3674			    [DSC$K_DTYPE_PCT]:	! P-SECT record.
+;	3675				BEGIN
+;	3676				LOCAL
+;	3677					PSECT_LENGTH : REF VECTOR[,LONG];
+;	3678	IF_DIAG( BLD3 )
+;	3679				$FAO_TT_OUT('add_module: PSECT ');
+;	3680				PR_CS( DST_RECRD[ DSTR_NAME ] );
+;	3681	END_DIAG;
+;	3682				! Add the symbol to the NT.
+;	3683	
+;	3684				IF( (NT_PTR =
+;	3685					ADD_NT(.DST_RECRD, .SCOPE_STACK[.SCOPE_STACK_PTR])
+;	3686				    ) EQL 0 )
+;	3687				THEN
+;	3688					LEAVE ADD_DST_LOOP;
+;	3689	
+;	3690				! The symbols also goes into the SAT.
+;	3691				! Since we have to pass on the length of the
+;	3692				! PSECT, we must extract a field which is
+;	3693				! in a variable position within the DST.
+;	3694				! This code must be changed if the psect length
+;	3695				! is not directly after the counted string name.
+;	3696	
+;	3697				PSECT_LENGTH = DST_RECRD[ DSTR_NAME ]
+;	3698						+ .DST_RECRD[ DSTR_NAME ] +1;
+;	3699	
+;	3700	IF_DIAG( BLD3 )
+;	3701				$FAO_TT_OUT('psect length = !XL',.PSECT_LENGTH[0]);
+;	3702	END_DIAG;
+;	3703				IF( ADD_SAT( .NT_PTR,
+;	3704					.DST_RECRD[ DSTR_VALUE ],
+;	3705					.DST_RECRD[ DSTR_VALUE ] + .PSECT_LENGTH[0] )
+;	3706				  EQL 0 )
+;	3707				THEN
+;	3708					RETURN(FALSE);
+;	3709				END;
+;	3710	
+;	3711			    [INRANGE, OUTRANGE]:
+;	3712				BEGIN
+;	3713	
+;	3714				! This should be a separate CASE, but isn't
+;	3715				! due simply to the size of the case table.
+;	3716	
+;	3717				IF( .DST_RECRD[ DSTR_TYPE ] GEQ DSC$K_DTYPE_Z
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-7
+; Digital Equipment Corporation
+;
+;	3718				   AND .DST_RECRD[ DSTR_TYPE ] LEQ DST_TYP_HIGHEST
+;	3719				  )
+;	3720				THEN
+;	3721					BEGIN
+;	3722	IF_DIAG( BLD3 )
+;	3723					IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	3724					THEN
+;	3725						$FAO_TT_OUT('add_module: BLISS Z ')
+;	3726					ELSE
+;	3727						$FAO_TT_OUT('add_module: SRM type !XL',
+;     P 3728							.DST_RECRD[ DSTR_TYPE ] );
+;	3729	END_DIAG;
+;	3730	
+;	3731					! Add the so-called 'SRM standard type' 
+;	3732					! symbol to the NT.
+;	3733		
+;	3734					IF( (NT_PTR =
+;	3735						ADD_NT(.DST_RECRD, .SCOPE_STACK[.SCOPE_STACK_PTR])
+;	3736					    ) EQL 0 )
+;	3737					THEN
+;	3738						LEAVE ADD_DST_LOOP;
+;	3739	
+;	3740					! Most of these symbols should also go into the SAT.
+;	3741					! The ones that shouldn't are the BLISS type 0
+;	3742					! ones which are not static.  Rather than sort
+;	3743					! this out just now, we will simply throw away
+;	3744					! (in a non-error fashion, tho) all BLISS
+;	3745					! type zero records.  This must be changed
+;	3746					! when we support BLISS.
+;	3747		
+;	3748					IF( NOT .DST_RECRD[DSTR_TYPE] EQL DSC$K_DTYPE_Z )
+;	3749					THEN
+;	3750						BEGIN
+;	3751	
+;	3752						! SRM data types.  Processing depends
+;	3753						! on whether the datum is scalar or not.
+;	3754	
+;	3755						IF( .DST_RECRD[DSTR_ACCES_TYPE] NEQ ACCS_DESCRIPTOR)
+;	3756						THEN
+;	3757							BEGIN
+;	3758	
+;	3759							! For scalars, it is simply a
+;	3760							! matter of adding them to the SAT.
+;	3761	
+;	3762							LOCAL
+;	3763								upper_bound;
+;	3764	
+;	3765							! If the size of this element is
+;	3766							! known, we can deduce the upper
+;	3767							! bound address which is bound to
+;	3768							! the symbol.
+;	3769	
+;	3770							upper_bound = dbg$srm_typ_len(.dst_recrd[DSTR_TYPE]);
+;	3771							IF( .upper_bound NEQ 0 )
+;	3772							then
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-8
+; Digital Equipment Corporation
+;
+;	3773								upper_bound = .DST_RECRD[ DSTR_VALUE ] -1 +
+;	3774										.upper_bound;
+;	3775		
+;	3776							! Add the symbols known to be static to the SAT.
+;	3777		
+;	3778							IF( ADD_SAT(.NT_PTR, .DST_RECRD[ DSTR_VALUE ], .upper_bound) EQL 0 )
+;	3779							THEN
+;	3780								RETURN(FALSE);
+;	3781		
+;	3782							END ! scalars
+;	3783						ELSE
+;	3784							BEGIN
+;	3785		
+;	3786							! Array types are more complicated
+;	3787							! than scalars because we must do
+;	3788							! more work to calculate the 
+;	3789							! lower and upper address bounds.
+;	3790		
+;	3791							LOCAL
+;	3792								DESC_ADDRESS,
+;	3793								BOUNDS : ARRAY_BNDS_DESC;
+;	3794		
+;	3795							! Get the address of the array
+;	3796							! descriptor and use it to build
+;	3797							! our own 'bounds descriptor'.
+;	3798		
+;	3799							IF (DBG$DST_VALUE (.DST_RECRD, DESC_ADDRESS) EQL 1 )
+;	3800							THEN
+;	3801							    BEGIN
+;	3802							    DBG$GET_BOUNDS (.DESC_ADDRESS, BOUNDS);
+;	3803							    !+
+;	3804							    ! The end of an array is
+;	3805							    ! computed by adding its length
+;	3806							    ! (in bytes) to its starting
+;	3807							    ! address.
+;	3808							    ! So we can make an SAT entry.
+;	3809							    !-
+;	3810							    IF (ADD_SAT (.NT_PTR,
+;	3811								.BOUNDS[ARRAY_ADDRESS],
+;	3812								.BOUNDS[ARRAY_ADDRESS]+ 
+;	3813								.BOUNDS[ARRAY_LENGTH]-1)
+;	3814							    EQL 0)
+;	3815							    THEN
+;	3816								RETURN(FALSE);
+;	3817							    END;
+;	3818		
+;	3819							END ! array types
+;	3820						END ! SRM data types
+;	3821					ELSE
+;	3822						BEGIN
+;	3823						BIND
+;	3824								! BLISS type 0 records
+;	3825								! have their own format.
+;	3826							blz_recrd = dst_recrd
+;	3827								  : REF BLZ_RECORD;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-9
+; Digital Equipment Corporation
+;
+;	3828	
+;	3829						! We don't try to handle any symbols
+;	3830						! which add_nt doesn't handle.  Namely,
+;	3831						! fixed-size records which match the BLZ_
+;	3832						! structure only.  We also purposely
+;	3833						! exclude routine formals because of
+;	3834						! their dynamic nature.
+;	3835	
+;	3836						IF( (.blz_recrd[ BLZ_TYP_SIZ ] eql 3)
+;	3837						   AND
+;	3838						    (.blz_recrd[ BLZ_TYPE ] eql BLISS_Z_SYMBOL)
+;	3839						  )
+;	3840						THEN
+;	3841							BEGIN
+;	3842	
+;	3843							! Add it to the LVT of SAT, depending
+;	3844							! on whether the symbol is a literal.
+;	3845	
+;	3846							IF( .BLZ_RECRD[BLZ_ACCES_TYPE] EQL ACCS_LITERAL )
+;	3847							THEN
+;	3848								BEGIN
+;	3849								IF( NOT ADD_LVT( .NT_PTR, .BLZ_RECRD[ BLZ_VALUE ]) )
+;	3850								THEN
+;	3851									RETURN(FALSE);
+;	3852								END
+;	3853							ELSE
+;	3854								BEGIN
+;	3855								LOCAL
+;	3856									symbol_size : REF VECTOR[,long];
+;	3857	
+;	3858								! Pick up the symbol size
+;	3859								! by relying on the fact
+;	3860								! that TYP_SIZ == 3, and the
+;	3861								! SIZE field is immediately
+;	3862								! after the name.
+;	3863	
+;	3864								symbol_size = blz_recrd[ BLZ_NAME_CS ]
+;	3865									+ .blz_recrd[ BLZ_NAME_CS ] +1;
+;	3866	
+;	3867								! Given the size of the symbol,
+;	3868								! calculate its upper bound
+;	3869								! address.  Then add this
+;	3870								! symbol to the SAT if
+;	3871								! the definition is for
+;	3872								! a static symbol.
+;	3873	
+;	3874								symbol_size = .symbol_size[0] + 
+;	3875									.blz_recrd[BLZ_VALUE] -1;
+;	3876	IF_DIAG( BLD3 )
+;	3877								$fao_tt_out('blz type !XB goes from !XL to !XL',
+;     P 3878									.blz_recrd[BLZ_ACCES_TYPE],
+;     P 3879									.BLZ_RECRD[ BLZ_VALUE ],
+;     P 3880									.symbol_size);
+;	3881	END_DIAG;
+;	3882								IF( .BLZ_RECRD[BLZ_ACCES_TYPE] EQL ACCS_ADDRESS )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-10
+; Digital Equipment Corporation
+;
+;	3883								THEN
+;	3884									IF( (ADD_SAT( .NT_PTR,
+;	3885										.BLZ_RECRD[ BLZ_VALUE ],
+;	3886										.symbol_size)
+;	3887									  ) EQL 0 )
+;	3888									THEN
+;	3889										RETURN(FALSE);
+;	3890								END;
+;	3891	
+;	3892							END
+;	3893						ELSE
+;	3894							BEGIN
+;	3895	IF_DIAG( BLD3 )
+;	3896							$FAO_TT_OUT('ignore BLISS 0 in sat/lvt build: typ_siz=!SB',
+;     P 3897								.blz_recrd[ BLZ_TYP_SIZ ]);
+;	3898	END_DIAG;
+;	3899							END;
+;	3900						END;
+;	3901					END
+;	3902				ELSE
+;	3903					BEGIN
+;	3904	
+;	3905					! A real error, but we ignore it for
+;	3906					! now unless we are DEBUGging.
+;	3907	
+;	3908	IF_DIAG( BLD3 )
+;	3909					$FAO_TT_OUT('add_module: invalid DST record type: !XB',
+;     P 3910						.DST_RECRD[ DSTR_TYPE ]);
+;	3911	END_DIAG;
+;	3912					END;
+;	3913				END;
+;	3914	
+;	3915			    TES;
+;	3916	
+;	3917			! Go back and process the next record.
+;	3918	
+;	3919			END;
+;	3920	
+;	3921		! If the above WHILE exits, then we encountered
+;	3922		! the end of the DST records before we got an END_MODULE
+;	3923		! record to end the beginning MODULE one.  This is
+;	3924		! considered a fatal error.
+;	3925	
+;	3926		$FAO_TT_OUT('Premature end of DST in routine ADD_MODULE.');
+;	3927	
+;	3928		RETURN(FALSE);
+;	3929	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      0006C P.AAE:  .BYTE   36							      ;
+					      0006D 	    .ASCII  \dbg$add_module: scope depth overflow\		      ;
+					      00091	    .BLKB   3
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-11
+; Digital Equipment Corporation
+;
+					      00094 P.AAF:  .BYTE   21							      ;
+					      00095 	    .ASCII  \rtn end without begin\				      ;
+					      000AA	    .BLKB   2
+					      000AC P.AAG:  .BYTE   33							      ;
+					      000AD 	    .ASCII  \add_module: scope depth underflow\			      ;
+					      000CE	    .BLKB   2
+					      000D0 P.AAH:  .BYTE   43							      ;
+					      000D1 	    .ASCII  \Premature end of DST in routine ADD_MODULE.\	      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0E7C 002C0 	    .ENTRY  DBG$ADD_MODULE, Save R2,R3,R4,R5,R6,R9,R10,R11	      ; 3333
+		         59	0000V  CF  9E 002C2 	    MOVAB   ADD_NT, R9						      ;
+		         5A 00000000G  EF  9E 002C7 	    MOVAB   DBG$VS_SHRINK, R10					      ;
+		         5B 00000000'  EF  9E 002CE 	    MOVAB   P.AAE, R11						      ;
+		         5E	  A8   AE  9E 002D5 	    MOVAB   -88(SP), SP						      ;
+				  08   AE  9F 002D9 	    PUSHAB  CURENT_LANGUAGE					      ; 3411
+				  04   AC  DD 002DC 	    PUSHL   MODULE_TO_ADD					      ;
+		  0000V  CF	       02  FB 002DF 	    CALLS   #2, OK_TO_ADD					      ;
+		         03	       50  E8 002E4 	    BLBS    R0, 1$						      ;
+				     01EE  31 002E7 	    BRW     33$							      ;
+				       56  D4 002EA 1$:     CLRL    SCOPE_STACK_PTR					      ; 3424
+	   00	         6E	       00  2C 002EC 	    MOVC5   #0, (SP), #0, #44, SAT_RTN_STACK			      ; 3425
+		    14   AE	       2C     002F0									      ;
+	   00	         6E	       00  2C 002F3 	    MOVC5   #0, (SP), #0, #22, SCOPE_STACK			      ; 3426
+		    40   AE	       16     002F7									      ;
+		    40   AE	  04   AC  B0 002FA 	    MOVW    MODULE_TO_ADD, SCOPE_STACK				      ; 3427
+				  04   AE  9F 002FF 2$:     PUSHAB  DST_REC_ID						      ; 3433
+	      00000000G  EF	       01  FB 00302 	    CALLS   #1, DBG$GET_NXT_DST					      ;
+		         52	       50  D0 00309 	    MOVL    R0, DST_RECRD					      ;
+				       03  12 0030C 	    BNEQ    3$							      ;
+				     01BB  31 0030E 	    BRW     31$							      ;
+		         55	  01   A2  9E 00311 3$:     MOVAB   1(DST_RECRD), R5					      ; 3454
+	   08	    B7   8F	       65  8F 00315 	    CASEB   (R5), #183, #8					      ;
+	 0012	       0181	     FFE5     0031A 4$:     .WORD   2$-4$,-						      ;
+	 0012	       0155	     0155     00320		    28$-4$,-						      ;
+	 0117	       00D7	     00B3     00326		    5$-4$,-						      ;
+								    23$-4$,-						      ;
+								    23$-4$,-						      ;
+								    5$-4$,-						      ;
+								    12$-4$,-						      ;
+								    13$-4$,-						      ;
+								    17$-4$						      ;
+		         17	       65  91 0032C 5$:     CMPB    (R5), #23						      ; 3718
+				       CE  1A 0032F 	    BGTRU   2$							      ;
+		         7E	  40 AE46  3C 00331 	    MOVZWL  SCOPE_STACK[SCOPE_STACK_PTR], -(SP)			      ; 3735
+				       52  DD 00336 	    PUSHL   DST_RECRD						      ;
+		         69	       02  FB 00338 	    CALLS   #2, ADD_NT						      ;
+		         54	       50  D0 0033B 	    MOVL    R0, NT_PTR						      ;
+				       BF  13 0033E 	    BEQL    2$							      ; 3734
+				       65  95 00340 	    TSTB    (R5)						      ; 3748
+				       4B  13 00342 	    BEQL    8$							      ;
+      02   A2	         02	       00  ED 00344 	    CMPZV   #0, #2, 2(DST_RECRD), #2				      ; 3755
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-12
+; Digital Equipment Corporation
+;
+				       02     00349									      ;
+				       1A  13 0034A 	    BEQL    7$							      ;
+		         7E	       65  9A 0034C 	    MOVZBL  (R5), -(SP)						      ; 3770
+		  0000V  CF	       01  FB 0034F 	    CALLS   #1, DBG$SRM_TYP_LEN					      ;
+				       50  D5 00354 	    TSTL    UPPER_BOUND						      ; 3771
+				       09  13 00356 	    BEQL    6$							      ;
+	   51	    03   A2	       50  C1 00358 	    ADDL3   UPPER_BOUND, 3(DST_RECRD), R1			      ; 3773
+	   50	         51	       01  C3 0035D 	    SUBL3   #1, R1, UPPER_BOUND					      ;
+				       50  DD 00361 6$:     PUSHL   UPPER_BOUND						      ; 3778
+				     0156  31 00363 	    BRW     29$							      ;
+				4004   8F  BB 00366 7$:     PUSHR   #^M<R2,SP>						      ; 3799
+	      00000000G  EF	       02  FB 0036A 	    CALLS   #2, DBG$DST_VALUE					      ;
+		         01	       50  D1 00371 	    CMPL    R0, #1						      ;
+				       89  12 00374 	    BNEQ    2$							      ;
+				  0C   AE  9F 00376 	    PUSHAB  BOUNDS						      ; 3802
+				  04   AE  DD 00379 	    PUSHL   DESC_ADDRESS					      ;
+		  0000V  CF	       02  FB 0037C 	    CALLS   #2, DBG$GET_BOUNDS					      ;
+	   50	    0C   AE	  10   AE  C1 00381 	    ADDL3   BOUNDS+4, BOUNDS, R0				      ; 3812
+				  FF   A0  9F 00387 	    PUSHAB  -1(R0)						      ; 3813
+				  10   AE  DD 0038A 	    PUSHL   BOUNDS						      ; 3810
+				       3B  11 0038D 	    BRB     11$							      ;
+		         03	  02   A2  91 0038F 8$:     CMPB    2(DST_RECRD), #3					      ; 3836
+				       2E  12 00393 	    BNEQ    10$							      ;
+		         02	  03   A2  91 00395 	    CMPB    3(DST_RECRD), #2					      ; 3838
+				       28  12 00399 	    BNEQ    10$							      ;
+		         03	  04   A2  93 0039B 	    BITB    4(DST_RECRD), #3					      ; 3846
+				       06  12 0039F 	    BNEQ    9$							      ;
+				  06   A2  DD 003A1 	    PUSHL   6(DST_RECRD)					      ; 3849
+				     00E8  31 003A4 	    BRW     26$							      ;
+		         50	       52  D0 003A7 9$:     MOVL    DST_RECRD, R0					      ; 3865
+		         50	  0A   A0  9A 003AA 	    MOVZBL  10(R0), R0						      ;
+		         50	       52  C0 003AE 	    ADDL2   DST_RECRD, R0					      ;
+		         50	       0B  C0 003B1 	    ADDL2   #11, SYMBOL_SIZE					      ;
+	   51	         60	  06   A2  C1 003B4 	    ADDL3   6(DST_RECRD), (SYMBOL_SIZE), R1			      ; 3874
+	   50	         51	       01  C3 003B9 	    SUBL3   #1, R1, SYMBOL_SIZE					      ; 3875
+      04   A2	         02	       00  ED 003BD 	    CMPZV   #0, #2, 4(DST_RECRD), #1				      ; 3882
+				       01     003C2									      ;
+				       64  12 003C3 10$:    BNEQ    16$							      ;
+				       50  DD 003C5 	    PUSHL   SYMBOL_SIZE						      ; 3884
+				  06   A2  DD 003C7 	    PUSHL   6(DST_RECRD)					      ;
+				     00F2  31 003CA 11$:    BRW     30$							      ;
+	   53	    04   AC 00000000G  8F  C1 003CD 12$:    ADDL3   #DBG$_RST_BEGIN, MODULE_TO_ADD, R3			      ; 3474
+		    03   A3	  40   8F  8A 003D6 	    BICB2   #64, 3(R3)						      ;
+				  1C   A3  9F 003DB 	    PUSHAB  28(R3)						      ; 3483
+		         6A	       01  FB 003DE 	    CALLS   #1, DBG$VS_SHRINK					      ;
+				  23   A3  9F 003E1 	    PUSHAB  35(R3)						      ; 3484
+		         6A	       01  FB 003E4 	    CALLS   #1, DBG$VS_SHRINK					      ;
+				  2A   A3  9F 003E7 	    PUSHAB  42(R3)						      ; 3485
+		         6A	       01  FB 003EA 	    CALLS   #1, DBG$VS_SHRINK					      ;
+		         50	       01  D0 003ED 	    MOVL    #1, R0						      ; 3486
+					   04 003F0 	    RET     							      ;
+		         7E	  40 AE46  3C 003F1 13$:    MOVZWL  SCOPE_STACK[SCOPE_STACK_PTR], -(SP)			      ; 3500
+				       52  DD 003F6 	    PUSHL   DST_RECRD						      ;
+		         69	       02  FB 003F8 	    CALLS   #2, ADD_NT						      ;
+		         54	       50  D0 003FB 	    MOVL    R0, NT_PTR						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-13
+; Digital Equipment Corporation
+;
+				       65  13 003FE 	    BEQL    20$							      ; 3499
+		         02	  08   AE  D1 00400 	    CMPL    CURENT_LANGUAGE, #2					      ; 3510
+				       12  12 00404 	    BNEQ    15$							      ;
+				       56  D6 00406 	    INCL    SCOPE_STACK_PTR					      ; 3516
+		         0A	       56  D1 00408 	    CMPL    SCOPE_STACK_PTR, #10				      ;
+				       06  15 0040B 	    BLEQ    14$							      ;
+				       7E  D4 0040D 	    CLRL    -(SP)						      ; 3519
+				       5B  DD 0040F 	    PUSHL   R11							      ;
+				       5A  11 00411 	    BRB     22$							      ;
+		    40 AE46	       54  B0 00413 14$:    MOVW    NT_PTR, SCOPE_STACK[SCOPE_STACK_PTR]		      ; 3525
+				       7E  D4 00418 15$:    CLRL    -(SP)						      ; 3540
+				  03   A2  DD 0041A 	    PUSHL   3(DST_RECRD)					      ;
+				       54  DD 0041D 	    PUSHL   NT_PTR						      ;
+		  0000V  CF	       03  FB 0041F 	    CALLS   #3, ADD_SAT						      ;
+		    14 AE46	       50  D0 00424 	    MOVL    R0, SAT_RTN_STACK[SCOPE_STACK_PTR]			      ;
+				       3A  12 00429 16$:    BNEQ    20$							      ; 3539
+				  14 AE46  D4 0042B 	    CLRL    SAT_RTN_STACK[SCOPE_STACK_PTR]			      ; 3548
+				       68  11 0042F 	    BRB     27$							      ; 3549
+		         50	  14 AE46  D0 00431 17$:    MOVL    SAT_RTN_STACK[SCOPE_STACK_PTR], R0			      ; 3565
+				       1C  13 00436 	    BEQL    18$							      ;
+	   51	    02   A0	  03   A2  C1 00438 	    ADDL3   3(DST_RECRD), 2(FIXUP_SAT_PTR), R1			      ; 3586
+      06   A0	         51	       01  C3 0043E 	    SUBL3   #1, R1, 6(FIXUP_SAT_PTR)				      ;
+		         50	       60  3C 00443 	    MOVZWL  (FIXUP_SAT_PTR), RTN_NT_PTR				      ; 3587
+	      00000000G  E0	  80   8F  88 00446 	    BISB2   #128, DBG$_RST_BEGIN+3(RTN_NT_PTR)			      ; 3588
+				  14 AE46  D4 0044E 	    CLRL    SAT_RTN_STACK[SCOPE_STACK_PTR]			      ; 3595
+				       07  11 00452 	    BRB     19$							      ; 3565
+				       7E  D4 00454 18$:    CLRL    -(SP)						      ; 3599
+				  28   AB  9F 00456 	    PUSHAB  P.AAF						      ;
+				       76  11 00459 	    BRB     32$							      ;
+		         02	  08   AE  D1 0045B 19$:    CMPL    CURENT_LANGUAGE, #2					      ; 3605
+				       04  12 0045F 	    BNEQ    20$							      ;
+				       56  D7 00461 	    DECL    SCOPE_STACK_PTR					      ; 3609
+				       03  19 00463 	    BLSS    21$							      ;
+				     FE97  31 00465 20$:    BRW     2$							      ;
+				       7E  D4 00468 21$:    CLRL    -(SP)						      ; 3612
+				  40   AB  9F 0046A 	    PUSHAB  P.AAG						      ;
+				       62  11 0046D 22$:    BRB     32$							      ;
+		         7E	  40 AE46  3C 0046F 23$:    MOVZWL  SCOPE_STACK[SCOPE_STACK_PTR], -(SP)			      ; 3648
+				       52  DD 00474 	    PUSHL   DST_RECRD						      ;
+		         69	       02  FB 00476 	    CALLS   #2, ADD_NT						      ;
+		         54	       50  D0 00479 	    MOVL    R0, NT_PTR						      ;
+				       E7  13 0047C 	    BEQL    20$							      ; 3647
+		    BB   8F	       65  91 0047E 	    CMPB    (R5), #187						      ; 3656
+				       04  13 00482 	    BEQL    24$							      ;
+		         04	  02   A2  E9 00484 	    BLBC    2(DST_RECRD), 25$					      ; 3658
+				       7E  D4 00488 24$:    CLRL    -(SP)						      ; 3661
+				       30  11 0048A 	    BRB     29$							      ;
+				  03   A2  DD 0048C 25$:    PUSHL   3(DST_RECRD)					      ; 3667
+				       54  DD 0048F 26$:    PUSHL   NT_PTR						      ;
+		  0000V  CF	       02  FB 00491 	    CALLS   #2, ADD_LVT						      ;
+		         CC	       50  E8 00496 	    BLBS    R0, 20$						      ;
+				       3D  11 00499 27$:    BRB     33$							      ; 3669
+		         7E	  40 AE46  3C 0049B 28$:    MOVZWL  SCOPE_STACK[SCOPE_STACK_PTR], -(SP)			      ; 3685
+				       52  DD 004A0 	    PUSHL   DST_RECRD						      ;
+		         69	       02  FB 004A2 	    CALLS   #2, ADD_NT						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 7-14
+; Digital Equipment Corporation
+;
+		         54	       50  D0 004A5 	    MOVL    R0, NT_PTR						      ;
+				       BB  13 004A8 	    BEQL    20$							      ; 3684
+		         50	       52  D0 004AA 	    MOVL    DST_RECRD, R0					      ; 3698
+		         50	  07   A0  9A 004AD 	    MOVZBL  7(R0), R0						      ;
+		         50	       52  C0 004B1 	    ADDL2   DST_RECRD, R0					      ;
+		         50	       08  C0 004B4 	    ADDL2   #8, PSECT_LENGTH					      ;
+	   7E	    03   A2	       60  C1 004B7 	    ADDL3   (PSECT_LENGTH), 3(DST_RECRD), -(SP)			      ; 3705
+				  03   A2  DD 004BC 29$:    PUSHL   3(DST_RECRD)					      ; 3703
+				       54  DD 004BF 30$:    PUSHL   NT_PTR						      ;
+		  0000V  CF	       03  FB 004C1 	    CALLS   #3, ADD_SAT						      ;
+				       50  D5 004C6 	    TSTL    R0							      ;
+				       9B  12 004C8 	    BNEQ    20$							      ;
+				       0C  11 004CA 	    BRB     33$							      ; 3708
+				       7E  D4 004CC 31$:    CLRL    -(SP)						      ; 3926
+				  64   AB  9F 004CE 	    PUSHAB  P.AAH						      ;
+	      00000000G  EF	       02  FB 004D1 32$:    CALLS   #2, DBG$FAO_OUT					      ;
+				       50  D4 004D8 33$:    CLRL    R0							      ; 3333
+					   04 004DA 	    RET     							      ;
+
+; Routine Size:  539 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 8
+; Digital Equipment Corporation
+;
+;	3930	global routine dbg$srm_typ_len( type ) =
+;	3931	
+;	3932	!++
+;	3933	! Functional Description:
+;	3934	!
+;	3935	!	Map the so-called SRM standard types to their
+;	3936	! associated size, in bytes.
+;	3937	!
+;	3938	! Formal Parameters:
+;	3939	!
+;	3940	!	type	-the SRM type encoding - a number from
+;	3941	!		 DSC$K_DTYPE_BU to DSC$K_DTYPE_DC, inclusive.
+;	3942	!
+;	3943	! Routine Value:
+;	3944	!
+;	3945	!	0, if the type is not one which we expect,
+;	3946	!	the size of the datum, in bytes, otherwise.
+;	3947	!
+;	3948	! Side Effects:
+;	3949	!
+;	3950	!	none.
+;	3951	!--
+;	3952	begin
+;	3953		OWN
+;	3954		    SRM_LENGTHS : VECTOR[12,BYTE]	! Sizes of SRM type data.
+;	3955		    INITIAL( BYTE (
+;	3956			1, !	DSC$K_DTYPE_BU,	Byte logical.
+;	3957			2, !	DSC$K_DTYPE_WU,	Word logical.
+;	3958			4, !	DSC$K_DTYPE_LU,	Longword logical.
+;	3959			8, !	DSC$K_DTYPE_QU,	Quadword logical.
+;	3960			1, !	DSC$K_DTYPE_B,	Byte integer.
+;	3961			2, !	DSC$K_DTYPE_W,	Word integer.
+;	3962			4, !	DSC$K_DTYPE_L,	Longword integer.
+;	3963			8, !	DSC$K_DTYPE_Q,	Quadword integer.
+;	3964			4, !	DSC$K_DTYPE_F,	Single-precision floating.
+;	3965			8, !	DSC$K_DTYPE_D,	Double-precision floating.
+;	3966			8, !	DSC$K_DTYPE_FC,	Complex.
+;	3967			16 !	DSC$K_DTYPE_DC,	Double-precision Complex.
+;	3968		    ));
+;	3969	
+;	3970		! The only so-called SRM types which we
+;	3971		! know the size of are those from
+;	3972		! DSC$k_DTYPE_BU to _DC, inclusive.
+;	3973		! We simply pick this size value out 
+;	3974		! of the above vector.
+;	3975		
+;	3976		IF( .type GEQ DSC$K_DTYPE_BU AND
+;	3977		    .type LEQ DSC$K_DTYPE_DC )
+;	3978		then
+;	3979			RETURN(	.SRM_LENGTHS[ .type - DSC$K_DTYPE_BU ] );
+;	3980	
+;	3981		! Otherwise we don't know the size.
+;	3982	
+;	3983		RETURN(0);
+;	3984	end;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 8-1
+; Digital Equipment Corporation
+;
+
+
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00004 SRM_LENGTHS:
+							    .BYTE   1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 8, 16			      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0000 004DB 	    .ENTRY  DBG$SRM_TYP_LEN, Save nothing			      ; 3930
+		         02	  04   AC  D1 004DD 	    CMPL    TYPE, #2						      ; 3976
+				       17  19 004E1 	    BLSS    1$							      ;
+		         0D	  04   AC  D1 004E3 	    CMPL    TYPE, #13						      ; 3977
+				       11  14 004E7 	    BGTR    1$							      ;
+		         50 00000000'  EF  9E 004E9 	    MOVAB   SRM_LENGTHS, R0					      ; 3979
+		         50	  04 BC40  9E 004F0 	    MOVAB   @TYPE[R0], R0					      ;
+		         50	  FE   A0  9A 004F5 	    MOVZBL  -2(R0), R0						      ;
+					   04 004F9 	    RET     							      ;
+				       50  D4 004FA 1$:     CLRL    R0							      ; 3983
+					   04 004FC 	    RET     							      ; 3930
+
+; Routine Size:  34 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9
+; Digital Equipment Corporation
+;
+;	3985	ROUTINE OK_TO_ADD( MODULE_TO_ADD, LANGUAGE_ADDR ) =
+;	3986	
+;	3987	!++
+;	3988	! FUNCTIONAL DESCRIPTION:
+;	3989	!	See if it is OK to add the indicated module to the RST data base.
+;	3990	!	Also perform all necessary initializations so that ADD_MODULE
+;	3991	!	can go ahead an do so.
+;	3992	!
+;	3993	! FORMAL PARAMETERS:
+;	3994	!
+;	3995	!	MODULE_TO_ADD	-An RST-pointer to the MC record for
+;	3996	!			 the module we are to initialize.
+;	3997	!	LANGUAGE_ADDR	-The address of where we should pass
+;	3998	!			 back the module's language.  If this
+;	3999	!			 value = 0, we don't position the DST
+;	4000	!			 or check or pass back the language indicator.
+;	4001	!
+;	4002	! IMPLICIT INPUTS:
+;	4003	!
+;	4004	!	We believe the given MC pointer.  In particular,
+;	4005	!	we will not allocate storage for a module
+;	4006	!	if the corresponding storage descriptor
+;	4007	!	already contains a pointer.  (i.e. is not 0).
+;	4008	!
+;	4009	! IMPLICIT OUTPUTS:
+;	4010	!
+;	4011	!	ADD_MODULE will not fail if it is called after this
+;	4012	!	routine successfully completes.
+;	4013	!
+;	4014	!	The language code may be passed back to the caller.
+;	4015	!
+;	4016	! ROUTINE VALUE:
+;	4017	! COMPLETION CODES:
+;	4018	!
+;	4019	!	TRUE, if all goes OK, FALSE otherwise.
+;	4020	!
+;	4021	! SIDE EFFECTS:
+;	4022	!
+;	4023	!	Storage for all symbols for this module
+;	4024	!	is allocated so that DBG$VS_GET can then
+;	4025	!	simply dole it out.
+;	4026	!
+;	4027	!	The DST is 'positioned' so that DBG$GET_NXT_DST
+;	4028	!	will be able to sequentially read the DST starting
+;	4029	!	at the first record in the DST after the DST record
+;	4030	!	for the indicated module.
+;	4031	!
+;	4032	!--
+;	4033		BEGIN
+;	4034		MAP
+;	4035			LANGUAGE_ADDR : REF VECTOR,
+;	4036			MODULE_TO_ADD : REF MC_RECORD;
+;	4037		LOCAL
+;	4038					! Pointer to where a fetched DST record lives.
+;	4039			DST_RECRD : REF DST_RECORD,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-1
+; Digital Equipment Corporation
+;
+;	4040	
+;	4041					! ID of DST record where the DST for
+;	4042					!  the module we are to add begins.
+;	4043			BEGIN_DST_AT,
+;	4044	
+;	4045					! ID we are passed back so that we can
+;	4046					!  later refer to DST records.
+;	4047			DST_REC_ID,
+;	4048	
+;	4049					! Per-module source code language indicator.
+;	4050			CURENT_LANGUAGE,
+;	4051	
+;	4052					! Pointer to NT records we build.
+;	4053			NT_PTR : REF NT_RECORD,
+;	4054			
+;	4055					! We use the MC-contained descriptor of
+;	4056					! vector storage for all indicated symbols.
+;	4057			STORAGE_DESC : REF VECT_STORE_DESC;
+;	4058	
+;	4059	IF_DIAG( BLD )
+;	4060		$FAO_TT_OUT('Adding Module with MC-ptr !XL, ', .MODULE_TO_ADD);
+;	4061		$FAO_TT_OUT('storage left = !UL.',DBG$REPORT_FREE());
+;	4062	END_DIAG;
+;	4063	
+;	4064		! Make sure that we have enough space to add this
+;	4065		! module before we begin.  This is necessary because
+;	4066		! it would be very difficult to 'back out' once we
+;	4067		! began, and we wouldn't like to have modules
+;	4068		! half initialized.
+;	4069	
+;	4070		IF( NOT (DBG$REPORT_FREE() - DBG$MODULE_SIZE(.MODULE_TO_ADD)) GTR RST_AVAIL_SIZE )
+;	4071		THEN
+;	4072			! We don't try to handle this one here
+;	4073			! because what is appropriate depends on
+;	4074			! when (why) the module was being initialized.
+;	4075	
+;	4076			RETURN(FALSE);
+;	4077	
+;	4078		! Before allocating space for NT symbols, make
+;	4079		! sure that there will be some.  It makes no sense
+;	4080		! for a module to be added which has no name symbols.
+;	4081	
+;	4082		IF( .MODULE_TO_ADD[ MC_NAMES ] EQL 0 )
+;	4083		THEN
+;	4084			RETURN(FALSE);
+;	4085	
+;	4086		! See if NT storage has already been allocated.  To do
+;	4087		! this, pick up the vector storage descriptor for the 
+;	4088		! indicated NT records and see that it points to 0.
+;	4089	
+;	4090		STORAGE_DESC = MODULE_TO_ADD[ MC_NT_STORAGE ];
+;	4091	
+;	4092		IF( .STORAGE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	4093		THEN
+;	4094			RETURN(FALSE);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-2
+; Digital Equipment Corporation
+;
+;	4095	
+;	4096		! If we are going to allocate stroage for any
+;	4097		! SATs or LVTs, again check that none is already
+;	4098		! allocated.
+;	4099	
+;	4100		IF( .MODULE_TO_ADD[ MC_STATICS ] NEQ 0 )
+;	4101		THEN
+;	4102			BEGIN
+;	4103			STORAGE_DESC = MODULE_TO_ADD[ MC_SAT_STORAGE ];
+;	4104	
+;	4105			IF( .STORAGE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	4106			THEN
+;	4107				RETURN(FALSE);
+;	4108			END;
+;	4109		IF( .MODULE_TO_ADD[ MC_LITERALS ] NEQ 0 )
+;	4110		THEN
+;	4111			BEGIN
+;	4112			STORAGE_DESC = MODULE_TO_ADD[ MC_LVT_STORAGE ];
+;	4113	
+;	4114			IF( .STORAGE_DESC[ STOR_BEGIN_RST ] NEQ 0 )
+;	4115			THEN
+;	4116				RETURN(FALSE);
+;	4117			END;
+;	4118	
+;	4119		! At this point there is more to do only if the given
+;	4120		! MC pointer iss to the 'global' MC record.  This is 
+;	4121		! because there is no DST checking or language verification
+;	4122		! for the global MC case.
+;	4123	
+;	4124		IF( .LANGUAGE_ADDR NEQ 0 )
+;	4125		THEN
+;	4126			BEGIN
+;	4127	
+;	4128			! Processing for all DST-originated modules.
+;	4129	
+;	4130			! First, pick up the supposed DST record ID of where
+;	4131			! the DST for this module begins.
+;	4132		
+;	4133			BEGIN_DST_AT = .MODULE_TO_ADD[ MC_DST_START ];
+;	4134		
+;	4135	IF_DIAG( BLD )
+;	4136			$FAO_TT_OUT('ok_module from DST: rec ID = !XL',.BEGIN_DST_AT);
+;	4137	END_DIAG;
+;	4138		
+;	4139			! Position the DST to the indicated record, and
+;	4140			! make sure that is it is of type MODULE.
+;	4141		
+;	4142			IF( (DST_RECRD = DBG$POSITON_DST( .BEGIN_DST_AT )) EQL 0 )
+;	4143			THEN
+;	4144				BEGIN
+;	4145		
+;	4146				! The supposed record does not exist.
+;	4147		
+;	4148	%IF DBG_ERRORS
+;     L 4149	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-3
+; Digital Equipment Corporation
+;
+;     U 4150				$FAO_TT_OUT( 'DST Record ID !XL Does Not Exist.', .BEGIN_DST_AT );
+;     U 4151	%FI
+;	4152				RETURN(FALSE);
+;	4153				END
+;	4154			ELSE
+;	4155				! The record is reachable.  Make sure it is MODULE.
+;	4156		
+;	4157				IF( .DST_RECRD[ DSTR_TYPE ] NEQ DSC$K_DTYPE_MOD )
+;	4158				THEN
+;	4159					BEGIN
+;	4160					$FAO_TT_OUT('DST MODULE misplaced.');
+;	4161					RETURN(FALSE);
+;	4162					END;
+;	4163		
+;	4164			! Record type is OK.  Check that we know which
+;	4165			! source language the module was written in.
+;	4166		
+;	4167			IF( (CURENT_LANGUAGE = .DST_RECRD[ DSTR_VALUE ]) NEQ MARS_MODULE )
+;	4168			THEN
+;	4169				! If it's not MARS, it must be BLISS or FORTRAN.
+;	4170		
+;	4171				IF( .CURENT_LANGUAGE NEQ BLISS_MODULE 
+;	4172				   AND .CURENT_LANGUAGE NEQ FORTRAN_MODULE )
+;	4173				THEN
+;	4174					BEGIN
+;	4175					$FAO_TT_OUT('Foreign language module: !XL',
+;     P 4176						.CURENT_LANGUAGE);
+;	4177					RETURN(FALSE);
+;	4178					END;
+;	4179	IF_DIAG( BLD )
+;	4180			$FAO_TT_OUT(', Language=!XL, ', .CURENT_LANGUAGE );
+;	4181			PR_CS( DST_RECRD[ DSTR_NAME ] );
+;	4182	END_DIAG;
+;	4183	
+;	4184			! Pass back the language code in which this module
+;	4185			! is written.  This is needed because the caller
+;	4186			! of this routine doesn't get to look at the DST
+;	4187			! record for this module.
+;	4188		
+;	4189			LANGUAGE_ADDR[0] = .CURENT_LANGUAGE;
+;	4190	
+;	4191			END;
+;	4192	
+;	4193		! Now that nothing can go wrong, go ahead and allocate
+;	4194		! all NT, and possibly all SAT and/or all LVT storage.
+;	4195	
+;	4196		DBG$VS_INIT(	MODULE_TO_ADD[ MC_NT_STORAGE ],
+;	4197				.MODULE_TO_ADD[ MC_NAMES ],
+;	4198				RST_NT_SIZE
+;	4199			      );
+;	4200	
+;	4201		! NT storage is accessed via RST-pointers.
+;	4202	
+;	4203		MODULE_TO_ADD[ MC_NT_STORAGE ] = FALSE;
+;	4204	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-4
+; Digital Equipment Corporation
+;
+;	4205		! Likewise for SAT and LVT storage.  Only here
+;	4206		! we don't mind if no storage will be needed.
+;	4207	
+;	4208		IF( .MODULE_TO_ADD[ MC_STATICS ] NEQ 0 )
+;	4209		THEN
+;	4210			BEGIN
+;	4211			DBG$VS_INIT(	MODULE_TO_ADD[ MC_SAT_STORAGE ],
+;	4212					.MODULE_TO_ADD[ MC_STATICS ],
+;	4213					RST_SAT_SIZE
+;	4214				      );
+;	4215	
+;	4216			! SAT storage is not accessed via RST-pointers.
+;	4217	
+;	4218			MODULE_TO_ADD[ MC_SAT_STORAGE ] = TRUE;
+;	4219	
+;	4220			END;
+;	4221	
+;	4222		IF( .MODULE_TO_ADD[ MC_LITERALS ] NEQ 0 )
+;	4223		THEN
+;	4224			BEGIN
+;	4225			DBG$VS_INIT(	MODULE_TO_ADD[ MC_LVT_STORAGE ],
+;	4226					.MODULE_TO_ADD[ MC_LITERALS ],
+;	4227					RST_LVT_SIZE
+;	4228				      );
+;	4229	
+;	4230			! LVT storage is not accessed via RST-pointers.
+;	4231	
+;	4232			MODULE_TO_ADD[ MC_LVT_STORAGE ] = TRUE;
+;	4233	
+;	4234			END;
+;	4235	
+;	4236		! Set the OWN variable which various other routines
+;	4237		! in this module work from, to indicate which module
+;	4238		! we are currently building.  This is the only place
+;	4239		! where this variable gets set.
+;	4240	
+;	4241		CURRENT_MODULE = .MODULE_TO_ADD;
+;	4242	
+;	4243		! Looks like we're OK to go ahead and try to
+;	4244		! add the indicated module.  This is the only place
+;	4245		! in this routine where we return TRUE status.
+;	4246	
+;	4247	IF_DIAG( BLD )
+;	4248		$FAO_TT_OUT(' ok_to_add!');
+;	4249	END_DIAG;
+;	4250		RETURN(TRUE);
+;	4251	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      000FC P.AAI:  .BYTE   21							      ;
+					      000FD 	    .ASCII  \DST MODULE misplaced.\				      ;
+					      00112	    .BLKB   2
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-5
+; Digital Equipment Corporation
+;
+					      00114 P.AAJ:  .BYTE   28							      ;
+					      00115 	    .ASCII  \Foreign language module: !XL\			      ;
+					      00131	    .BLKB   3
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 080C 004FD OK_TO_ADD:
+							    .WORD   Save R2,R3,R11					      ; 3985
+		         5B 00000000G  EF  9E 004FF 	    MOVAB   DBG$VS_INIT, R11					      ;
+	      00000000G  EF	       00  FB 00506 	    CALLS   #0, DBG$REPORT_FREE					      ; 4070
+		         52	       50  D0 0050D 	    MOVL    R0, R2						      ;
+				  04   AC  DD 00510 	    PUSHL   MODULE_TO_ADD					      ;
+	      00000000G  EF	       01  FB 00513 	    CALLS   #1, DBG$MODULE_SIZE					      ;
+		         52	       50  C2 0051A 	    SUBL2   R0, R2						      ;
+	      00000BB8   8F	       52  D1 0051D 	    CMPL    R2, #3000						      ;
+				       7A  15 00524 	    BLEQ    5$							      ;
+	   52	    04   AC 00000000G  8F  C1 00526 	    ADDL3   #DBG$_RST_BEGIN, MODULE_TO_ADD, R2			      ; 4082
+				  08   A2  D5 0052F 	    TSTL    8(R2)						      ;
+				       6C  13 00532 	    BEQL    5$							      ;
+	   50	         52	       1C  C1 00534 	    ADDL3   #28, R2, STORAGE_DESC				      ; 4090
+				  01   A0  B5 00538 	    TSTW    1(STORAGE_DESC)					      ; 4092
+				       63  12 0053B 	    BNEQ    5$							      ;
+				  31   A2  D5 0053D 	    TSTL    49(R2)						      ; 4100
+				       09  13 00540 	    BEQL    1$							      ;
+	   50	         52	       23  C1 00542 	    ADDL3   #35, R2, STORAGE_DESC				      ; 4103
+				  01   A0  B5 00546 	    TSTW    1(STORAGE_DESC)					      ; 4105
+				       55  12 00549 	    BNEQ    5$							      ;
+				  35   A2  D5 0054B 1$:     TSTL    53(R2)						      ; 4109
+				       09  13 0054E 	    BEQL    2$							      ;
+	   50	         52	       2A  C1 00550 	    ADDL3   #42, R2, STORAGE_DESC				      ; 4112
+				  01   A0  B5 00554 	    TSTW    1(STORAGE_DESC)					      ; 4114
+				       47  12 00557 	    BNEQ    5$							      ;
+				  08   AC  D5 00559 2$:     TSTL    LANGUAGE_ADDR					      ; 4124
+				       48  13 0055C 	    BEQL    7$							      ;
+		         50	  04   A2  D0 0055E 	    MOVL    4(R2), BEGIN_DST_AT					      ; 4133
+				       50  DD 00562 	    PUSHL   BEGIN_DST_AT					      ; 4142
+	      00000000G  EF	       01  FB 00564 	    CALLS   #1, DBG$POSITON_DST					      ;
+		         53	       50  D0 0056B 	    MOVL    R0, DST_RECRD					      ;
+				       78  13 0056E 	    BEQL    10$							      ;
+		    BC   8F	  01   A3  91 00570 	    CMPB    1(DST_RECRD), #188					      ; 4157
+				       0A  13 00575 	    BEQL    3$							      ;
+				       7E  D4 00577 	    CLRL    -(SP)						      ; 4160
+			    00000000'  EF  9F 00579 	    PUSHAB  P.AAI						      ;
+				       18  11 0057F 	    BRB     4$							      ;
+		         53	  03   A3  D0 00581 3$:     MOVL    3(DST_RECRD), CURENT_LANGUAGE			      ; 4167
+				       1B  13 00585 	    BEQL    6$							      ;
+		         02	       53  D1 00587 	    CMPL    CURENT_LANGUAGE, #2					      ; 4171
+				       16  13 0058A 	    BEQL    6$							      ;
+		         01	       53  D1 0058C 	    CMPL    CURENT_LANGUAGE, #1					      ; 4172
+				       11  13 0058F 	    BEQL    6$							      ;
+				       53  DD 00591 	    PUSHL   CURENT_LANGUAGE					      ; 4176
+			    00000000'  EF  9F 00593 	    PUSHAB  P.AAJ						      ;
+	      00000000G  EF	       02  FB 00599 4$:     CALLS   #2, DBG$FAO_OUT					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 9-6
+; Digital Equipment Corporation
+;
+				       46  11 005A0 5$:     BRB     10$							      ; 4177
+		    08   BC	       53  D0 005A2 6$:     MOVL    CURENT_LANGUAGE, @LANGUAGE_ADDR			      ; 4189
+				       1C  DD 005A6 7$:     PUSHL   #28							      ; 4196
+				  08   A2  DD 005A8 	    PUSHL   8(R2)						      ;
+				  1C   A2  9F 005AB 	    PUSHAB  28(R2)						      ;
+		         6B	       03  FB 005AE 	    CALLS   #3, DBG$VS_INIT					      ;
+				  1C   A2  94 005B1 	    CLRB    28(R2)						      ; 4203
+				  31   A2  D5 005B4 	    TSTL    49(R2)						      ; 4208
+				       0F  13 005B7 	    BEQL    8$							      ;
+				       0A  DD 005B9 	    PUSHL   #10							      ; 4211
+				  31   A2  DD 005BB 	    PUSHL   49(R2)						      ;
+				  23   A2  9F 005BE 	    PUSHAB  35(R2)						      ;
+		         6B	       03  FB 005C1 	    CALLS   #3, DBG$VS_INIT					      ;
+		    23   A2	       01  90 005C4 	    MOVB    #1, 35(R2)						      ; 4218
+				  35   A2  D5 005C8 8$:     TSTL    53(R2)						      ; 4222
+				       0F  13 005CB 	    BEQL    9$							      ;
+				       06  DD 005CD 	    PUSHL   #6							      ; 4225
+				  35   A2  DD 005CF 	    PUSHL   53(R2)						      ;
+				  2A   A2  9F 005D2 	    PUSHAB  42(R2)						      ;
+		         6B	       03  FB 005D5 	    CALLS   #3, DBG$VS_INIT					      ;
+		    2A   A2	       01  90 005D8 	    MOVB    #1, 42(R2)						      ; 4232
+	      00000000'  EF	  04   AC  D0 005DC 9$:     MOVL    MODULE_TO_ADD, CURRENT_MODULE			      ; 4241
+		         50	       01  D0 005E4 	    MOVL    #1, R0						      ; 4250
+					   04 005E7 	    RET     							      ;
+				       50  D4 005E8 10$:    CLRL    R0							      ; 3985
+					   04 005EA 	    RET     							      ;
+
+; Routine Size:  238 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10
+; Digital Equipment Corporation
+;
+;	4252	ROUTINE ADD_NT( DST_RECRD, UP_SCOPE ) =
+;	4253	
+;	4254	!++
+;	4255	! Functional Description:
+;	4256	!	Add a symbol to the name table (NT).
+;	4257	!
+;	4258	! Formal Parameters:
+;	4259	!	DST_RECRD	-a pointer to the DST record that corresponds
+;	4260	!			 to the symbol being added.
+;	4261	!	UP_SCOPE	-an RST-pointer to the NT or MC record that
+;	4262	!			 corresponds to the symbol that is scope-wise
+;	4263	!			 above the symbol we are to add.
+;	4264	!
+;	4265	! Implicit Inputs:
+;	4266	!
+;	4267	!	The OWN, CURRENT_MODULE, has been set up to
+;	4268	!	indicate the MC pointer to the module we are
+;	4269	!	currently adding.
+;	4270	!
+;	4271	!	We call DBG$DST_VALUE with a DST_RECRD pointer - NOT a
+;	4272	!	so-called DST_REC_ID.  This works, for now, because these
+;	4273	!	two concepts are still the same.  If/when this is no longer
+;	4274	!	true, we must change it and all calls to it so that only one
+;	4275	!	way of specifying a DST record is used.
+;	4276	!
+;	4277	! Implicit Outputs:
+;	4278	!
+;	4279	!	None.
+;	4280	!
+;	4281	! Routine Value:
+;	4282	!	FALSE, if some real error occurs,
+;	4283	!	an NT_PTR to where we did add or find it, otherwise.
+;	4284	!
+;	4285	! Side Effects:
+;	4286	!
+;	4287	!	The NT gets updated to reflect the addition of the new
+;	4288	!	symbol if DBG$DST_VALUE knows how to evaluate the
+;	4289	!	given DST.
+;	4290	!--
+;	4291	
+;	4292	BEGIN
+;	4293		MAP
+;	4294			! This is an example of a case where we would be
+;	4295			! in trouble if pointers into the MC were not the same
+;	4296			! as those into the NT because here we don't yet know
+;	4297			! to which structure UP_SCOPE points.
+;	4298	
+;	4299			UP_SCOPE : REF MC_RECORD,
+;	4300	
+;	4301					! Pointer to the given DST record
+;	4302					! which we use only for 'standard' DST
+;	4303					! structures.
+;	4304			DST_RECRD : REF DST_RECORD;
+;	4305	
+;	4306		LOCAL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10-1
+; Digital Equipment Corporation
+;
+;	4307			LOOKUP_STATUS,	! How successful the DST_VALUE evaluation was.
+;	4308	
+;	4309					! Hash index used to access NT chains.
+;	4310			NT_HASH : REF NT_RECORD,
+;	4311	
+;	4312					! DST_RECRD pointer which we must use once
+;	4313					! we discover that the record is a BLISS
+;	4314					! Type Zero one.
+;	4315			BLZ_RECRD : REF BLZ_RECORD,
+;	4316	
+;	4317					! Pointer to NT record where the new
+;	4318					! symbol gets inserted.
+;	4319			NEW_NT_PTR : REF NT_RECORD,
+;	4320	
+;	4321					! NT pointer used to scan along chains.
+;	4322			NT_PTR : REF NT_RECORD,
+;	4323	
+;	4324					! Pointer to where the symbol name CS
+;	4325					! is in the DST record.
+;	4326			DST_NAME_CS : CS_POINTER,
+;	4327	
+;	4328					! The value of the symbol we are to add.
+;	4329			SYMBL_VALUE;
+;	4330		
+;	4331	
+;	4332		! We don't know yet which type (BLISS Zero or otherwise)
+;	4333		! of DST record we actually have.  Whatever it is, though,
+;	4334		! a pointer to it is a pointer to it.
+;	4335	
+;	4336		BLZ_RECRD = .DST_RECRD;
+;	4337	
+;	4338	IF_DIAG( BLD3 )
+;	4339		$FAO_TT_OUT('add_nt: recrd=!XL, up_scope=!XW, type=!XB, ',
+;     P 4340			.DST_RECRD, .UP_SCOPE, .DST_RECRD[ DSTR_TYPE ] );
+;	4341	END_DIAG;
+;	4342	
+;	4343		! ***** temporary code.
+;	4344	
+;	4345		! Throw away records which we aren't set up to handle yet.
+;	4346		! Specifically, we don't know anything about anything
+;	4347		! except type zero type which is encoded in the minimum (3)
+;	4348		! number of bytes.  Also, the 'strucutre level'
+;	4349		! must be 0.
+;	4350	
+;	4351		IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	4352		THEN
+;	4353			BEGIN
+;	4354			IF( .BLZ_RECRD[ BLZ_TYP_SIZ ] NEQ 3 )
+;	4355			THEN
+;	4356				BEGIN
+;	4357	IF_DIAG( BLD3 )
+;	4358				$FAO_TT_OUT(' thrown away as TYP SIZ = !UB',
+;     P 4359					.BLZ_RECRD[ BLZ_TYP_SIZ ] );
+;	4360	END_DIAG;
+;	4361				RETURN(FALSE);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10-2
+; Digital Equipment Corporation
+;
+;	4362				END;
+;	4363			IF( .BLZ_RECRD[ BLZ_STRUCT ] NEQ 0 )
+;	4364			THEN
+;	4365				BEGIN
+;	4366	IF_DIAG( BLD3 )
+;	4367				$FAO_TT_OUT(' thrown away as STRUCT = !UB',
+;     P 4368					.BLZ_RECRD[ BLZ_STRUCT ] );
+;	4369	END_DIAG;
+;	4370				RETURN(FALSE);
+;	4371				END;
+;	4372			END;
+;	4373	
+;	4374		! There is no point in adding an NT record for a symbol
+;	4375		! we can't evaluate.  We distinguish not being able to
+;	4376		! evaluate simply because the current context is not
+;	4377		! appropriate, as opposed to failure because of 
+;	4378		! a data-input-format error.
+;	4379	
+;	4380		IF( (LOOKUP_STATUS = DBG$DST_VALUE( .DST_RECRD, SYMBL_VALUE )) EQL 0 )
+;	4381		THEN
+;	4382			BEGIN
+;	4383	IF_DIAG( BLD3 )
+;	4384			$FAO_TT_OUT('thrown away as dbg$dst_value failed');
+;	4385	END_DIAG;
+;	4386			RETURN(FALSE);
+;	4387			END;
+;	4388	
+;	4389		! The only difference in building an NT record from either
+;	4390		! of the three classes of DST records we distinguish,
+;	4391		! (type zero, SRM types, and 'the rest'),
+;	4392		! is the calculation of where in the record the
+;	4393		! name counted string is found.
+;	4394	
+;	4395		! This code relies on the fact that the TYPE fields
+;	4396		! are in the same place in the three types of DST records.
+;	4397	
+;	4398		DST_NAME_CS = (	IF( .DST_RECRD[ DSTR_TYPE ] EQL DSC$K_DTYPE_Z )
+;	4399				THEN
+;	4400					BLZ_RECRD[ BLZ_NAME_CS ]
+;	4401				ELSE
+;	4402					DST_RECRD[ DSTR_NAME ]
+;	4403			      );
+;	4404	
+;	4405	IF_DIAG( BLD3 )
+;	4406		$FAO_TT_OUT('add_nt: status=!XB, value=!XL, hash=!XL, ',
+;     P 4407			.lookup_status,.SYMBL_VALUE, DBG$NT_HASH_FCN( .DST_NAME_CS ) );
+;	4408		PR_CS( .DST_NAME_CS );
+;	4409	END_DIAG;
+;	4410	
+;	4411		! Add the symbolo the name table.  Now we simply determine
+;	4412		! whether to add it onto the end of an existing hash chain, 
+;	4413		! or whether to begin a new one.
+;	4414	
+;	4415		NT_HASH = DBG$NT_HASH_FCN( .DST_NAME_CS );
+;	4416	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10-3
+; Digital Equipment Corporation
+;
+;	4417		IF( (NT_PTR = .DBG$GL_NT_HASH[ .NT_HASH ]) NEQ 0 )
+;	4418		THEN
+;	4419			BEGIN
+;	4420	
+;	4421			! There are already some symbols that hash to this
+;	4422			! same value.  This means that we simply link the new 
+;	4423			! record onto the end of this chain.
+;	4424		
+;	4425			WHILE( .NT_PTR[ NT_FORWARD ] NEQ 0 )
+;	4426				DO
+;	4427		
+;	4428				! Skip along to the end of the chain.
+;	4429		
+;	4430				NT_PTR = .NT_PTR[ NT_FORWARD ];
+;	4431			END
+;	4432		ELSE
+;	4433			BEGIN
+;	4434			EXTERNAL LITERAL DBG$_RST_BEGIN;
+;	4435	
+;	4436			! To build a new chain, we only need to
+;	4437			! know where in the hash vector to link it on.
+;	4438			! Make this hash-vector address look like a pointer
+;	4439			! to an NT record so that we can fill in NT_FORWARD
+;	4440			! below thereby filling in the hash vector.
+;	4441	
+;	4442			NT_PTR = DBG$GL_NT_HASH[ .NT_HASH ] AND NOT DBG$_RST_BEGIN;
+;	4443	IF_DIAG( BLD12 )
+;	4444			! Tally up counter for RST statistics gathering.
+;	4445	
+;	4446			NUM_CHAINS = .NUM_CHAINS + 1;
+;	4447	END_DIAG;
+;	4448			END;
+;	4449	
+;	4450		! Allocate space for the new NT record and fill
+;	4451		! in the fixed fields.  This must go without
+;	4452		! hitch or we give up.  Note that the NT record
+;	4453		! we build is the same no matter what type of
+;	4454		! DST record we build it from.
+;	4455	
+;	4456		IF( (NEW_NT_PTR =
+;	4457			DBG$VS_GET( CURRENT_MODULE[ MC_NT_STORAGE ], RST_NT_OVERHEAD + .DST_NAME_CS[0]))
+;	4458		   EQL 0 )
+;	4459		THEN
+;	4460			! We ran out of space.  This should never happen
+;	4461			! because we supposedly knew how much vector
+;	4462			! storage to allocate before we began adding any NTs.
+;	4463	
+;	4464			RETURN(FALSE);
+;	4465	
+;	4466	IF_DIAG( BLD12 )
+;	4467		! Tally up counter for RST statistics gathering.
+;	4468	
+;	4469		NUM_NT_ENTRIES = .NUM_NT_ENTRIES + 1;
+;	4470	END_DIAG;
+;	4471	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10-4
+; Digital Equipment Corporation
+;
+;	4472		NEW_NT_PTR[ NT_UP_SCOPE ] = .UP_SCOPE;
+;	4473		NEW_NT_PTR[ NT_DST_PTR ] = .DST_RECRD;
+;	4474		NEW_NT_PTR[ NT_TYPE ] = .DST_RECRD[ DSTR_TYPE ];
+;	4475	
+;	4476		! Moving the name could cause problems if we change
+;	4477		! the data representation.  Note that here we move  
+;	4478		! both the name-size count as well as the name itself.
+;	4479	
+;	4480		CH$MOVE( .DST_NAME_CS[0] +1, .DST_NAME_CS, NEW_NT_PTR[ NT_NAME_CS ] );
+;	4481	
+;	4482		! Add this new NT record to the name table by
+;	4483		! connecting up the hash-chain links.  The new record
+;	4484		! points back to a previous NT record, OR, it points
+;	4485		! back to the hash vector itself.  In either case there 
+;	4486		! is no NT record FORWARD of the new record.
+;	4487	
+;	4488		NEW_NT_PTR[ NT_BACKWARD ] = .NT_PTR;
+;	4489		NEW_NT_PTR[ NT_FORWARD ] = 0;
+;	4490	
+;	4491		! The following writes into the NT_FORWARD field
+;	4492		! of a previous NT record, OR, it writes the first
+;	4493		! chain-pointer into the hash chain itself.  This
+;	4494		! is why NT_FORWARD has to be the first field of
+;	4495		! the NT_FIELD_SET.
+;	4496	
+;	4497		NT_PTR[ NT_FORWARD ] = .NEW_NT_PTR;
+;	4498	
+;	4499		! All went ok so we return an RST-pointer to where this
+;	4500		! symbol got added.
+;	4501	
+;	4502	IF_DIAG( BLD3 )
+;	4503		$FAO_TT_OUT(', added at !XL', .NEW_NT_PTR );
+;	4504	END_DIAG;
+;	4505		RETURN(.NEW_NT_PTR);
+;	4506	END;
+
+
+
+
+
+					 01FC 005EB ADD_NT: .WORD   Save R2,R3,R4,R5,R6,R7,R8				      ; 4252
+		         5E	       04  C2 005ED 	    SUBL2   #4, SP						      ;
+		         53	  04   AC  D0 005F0 	    MOVL    DST_RECRD, R3					      ; 4336
+		         52	       53  D0 005F4 	    MOVL    R3, BLZ_RECRD					      ;
+				  01   A3  95 005F7 	    TSTB    1(R3)						      ; 4351
+				       0E  12 005FA 	    BNEQ    3$							      ;
+		         03	  02   A2  91 005FC 	    CMPB    2(BLZ_RECRD), #3					      ; 4354
+				       03  12 00600 	    BNEQ    1$							      ;
+				  05   A2  95 00602 	    TSTB    5(BLZ_RECRD)					      ; 4363
+				       03  13 00605 1$:     BEQL    3$							      ;
+				     00A5  31 00607 2$:     BRW     9$							      ;
+				4008   8F  BB 0060A 3$:     PUSHR   #^M<R3,SP>						      ; 4380
+	      00000000G  EF	       02  FB 0060E 	    CALLS   #2, DBG$DST_VALUE					      ;
+				       50  D5 00615 	    TSTL    LOOKUP_STATUS					      ;
+				       EE  13 00617 	    BEQL    2$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 10-5
+; Digital Equipment Corporation
+;
+				  01   A3  95 00619 	    TSTB    1(R3)						      ; 4398
+				       05  12 0061C 	    BNEQ    4$							      ;
+		         52	       0A  C0 0061E 	    ADDL2   #10, DST_NAME_CS					      ; 4400
+				       04  11 00621 	    BRB     5$							      ; 4398
+	   52	         53	       07  C1 00623 4$:     ADDL3   #7, R3, DST_NAME_CS					      ; 4402
+				       52  DD 00627 5$:     PUSHL   DST_NAME_CS						      ; 4415
+	      00000000G  EF	       01  FB 00629 	    CALLS   #1, DBG$NT_HASH_FCN					      ;
+		         57 00000000GFF40  3C 00630 	    MOVZWL  @DBG$GL_NT_HASH[NT_HASH], NT_PTR			      ; 4417
+				       11  13 00638 	    BEQL    7$							      ;
+			    00000000G  E7  B5 0063A 6$:     TSTW    DBG$_RST_BEGIN(NT_PTR)				      ; 4425
+				       1C  13 00640 	    BEQL    8$							      ;
+		         57 00000000G  E7  3C 00642 	    MOVZWL  DBG$_RST_BEGIN(NT_PTR), NT_PTR			      ; 4430
+				       EF  11 00649 	    BRB     6$							      ; 4425
+		         50 00000000GFF40  3E 0064B 7$:     MOVAW   @DBG$GL_NT_HASH[NT_HASH], R0			      ; 4442
+		         57 00000000*  8F  D2 00653 	    MCOML   #<^CDBG$_RST_BEGIN>, NT_PTR				      ;
+	   57	         50	       57  CB 0065A 	    BICL3   NT_PTR, R0, NT_PTR					      ;
+		         7E	       62  9A 0065E 8$:     MOVZBL  (DST_NAME_CS), -(SP)				      ; 4457
+		         6E	       0D  C0 00661 	    ADDL2   #13, (SP)						      ;
+	   50 00000000'  EF 00000000G  8F  C1 00664 	    ADDL3   #DBG$_RST_BEGIN, CURRENT_MODULE, R0			      ;
+				  1C   A0  9F 00670 	    PUSHAB  28(R0)						      ;
+	      00000000G  EF	       02  FB 00673 	    CALLS   #2, DBG$VS_GET					      ;
+		         58	       50  D0 0067A 	    MOVL    R0, NEW_NT_PTR					      ;
+				       30  13 0067D 	    BEQL    9$							      ; 4456
+		         56 00000000G  E8  9E 0067F 	    MOVAB   DBG$_RST_BEGIN(NEW_NT_PTR), R6			      ; 4472
+		    08   A6	  08   AC  B0 00686 	    MOVW    UP_SCOPE, 8(R6)					      ;
+		    04   A6	       53  D0 0068B 	    MOVL    R3, 4(R6)						      ; 4473
+		    02   A6	  01   A3  90 0068F 	    MOVB    1(R3), 2(R6)					      ; 4474
+		         50	       62  9A 00694 	    MOVZBL  (DST_NAME_CS), R0					      ; 4480
+				       50  D6 00697 	    INCL    R0							      ;
+      0C   A6	         62	       50  28 00699 	    MOVC3   R0, (DST_NAME_CS), 12(R6)				      ;
+		    0A   A6	       57  B0 0069E 	    MOVW    NT_PTR, 10(R6)					      ; 4488
+				       66  B4 006A2 	    CLRW    (R6)						      ; 4489
+	      00000000G  E7	       58  B0 006A4 	    MOVW    NEW_NT_PTR, DBG$_RST_BEGIN(NT_PTR)			      ; 4497
+		         50	       58  D0 006AB 	    MOVL    NEW_NT_PTR, R0					      ; 4505
+					   04 006AE 	    RET     							      ;
+				       50  D4 006AF 9$:     CLRL    R0							      ; 4252
+					   04 006B1 	    RET     							      ;
+
+; Routine Size:  199 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 11
+; Digital Equipment Corporation
+;
+;	4507	ROUTINE ADD_SAT( NT_PTR, LOWER, UPPER ) =
+;	4508	
+;	4509	!++
+;	4510	! Functional Description:
+;	4511	!
+;	4512	!	Build the SAT record to correspond to an NT record.
+;	4513	!
+;	4514	! Formal Parameters:
+;	4515	!	NT_PTR		-An RST-pointer to the NT record for this symbol.
+;	4516	!	LOWER		-The lower-bound value which is bound to 
+;	4517	!			 this symbol.
+;	4518	!	UPPER		-The upper-bound value which is bound to 
+;	4519	!			 this symbol.
+;	4520	!
+;	4521	! Implicit Inputs:
+;	4522	!
+;	4523	!	The OWN, CURRENT_MODULE, has been set up to
+;	4524	!	indicate the MC pointer to the module we are
+;	4525	!	currently adding.  Storage allocation works
+;	4526	!	from the vector storage descriptors stored therein.
+;	4527	!
+;	4528	! Implicit Outputs:
+;	4529	!
+;	4530	!	None.
+;	4531	!
+;	4532	! Routine Value:
+;	4533	!	0, if the SAT record was not built,
+;	4534	!	a SAT-pointer to where it was build, otherwise.
+;	4535	!
+;	4536	! Side Effects:
+;	4537	!
+;	4538	!	The SAT gets updated to reflect the addition of the new
+;	4539	!	symbol.
+;	4540	!
+;	4541	!	The NT bit, NT_IS_BOUNDED is set to TRUE or FALSE,
+;	4542	!	depending on whether the given UPPER_BOUND is 0 or not.
+;	4543	!--
+;	4544	
+;	4545	BEGIN
+;	4546		MAP
+;	4547			NT_PTR : REF NT_RECORD;
+;	4548	
+;	4549		LOCAL
+;	4550			SAT_PTR : REF SAT_RECORD;
+;	4551	
+;	4552		SAT_PTR = 0;
+;	4553	
+;	4554	IF_DIAG( BLD4 )
+;	4555		$FAO_TT_OUT('add_sat: global=!XB, ',.nt_ptr[nt_is_global]);
+;	4556	END_DIAG;
+;	4557	
+;	4558		! Ask for space for the fixed-size record.
+;	4559		! This should not fail because we supposedly knew
+;	4560		! how much space we wanted and allocated it all before
+;	4561		! we got here.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 11-1
+; Digital Equipment Corporation
+;
+;	4562	
+;	4563		IF( (SAT_PTR =
+;	4564			DBG$VS_GET( CURRENT_MODULE[ MC_SAT_STORAGE ], RST_SAT_SIZE) )
+;	4565		   EQL 0 )
+;	4566		THEN
+;	4567			BEGIN
+;	4568	
+;	4569			! Don't allow the SAT to overflow.
+;	4570		
+;	4571			$FAO_TT_OUT('sat overflow');
+;	4572			RETURN(FALSE);
+;	4573			END;
+;	4574	IF_DIAG(BLD4)
+;	4575		$FAO_TT_OUT('added');
+;	4576	END_DIAG;
+;	4577	IF_DIAG( BLD12 )
+;	4578		! Tally up counter for RST statistics gathering.
+;	4579	
+;	4580		NUM_SAT_ENTRIES = .NUM_SAT_ENTRIES + 1;
+;	4581	END_DIAG;
+;	4582	
+;	4583		! Go ahead and fill in the new record.
+;	4584	
+;	4585		SAT_PTR[ SAT_LB ] = .LOWER;
+;	4586		SAT_PTR[ SAT_UB ] = .UPPER;
+;	4587		SAT_PTR[ SAT_NT_PTR ] = .NT_PTR;
+;	4588	
+;	4589		! Mark all NTs _BOUNDED or not depending on whether
+;	4590		! the (new) upper bound is 0 or not.
+;	4591	
+;	4592		IF( .UPPER NEQ 0 )
+;	4593		THEN
+;	4594			NT_PTR[ NT_IS_BOUNDED ] = TRUE;
+;	4595	
+;	4596	IF_DIAG( BLD4 )
+;	4597		$FAO_TT_OUT(' at !XL, lb=!XL, ub=!XL, nt=!XL',
+;     P 4598			.SAT_PTR, .SAT_PTR[ SAT_LB ], .SAT_PTR[ SAT_UB ], .NT_PTR );
+;	4599	END_DIAG;
+;	4600	
+;	4601		! Return a pointer to where the SAT record was
+;	4602		! built.  Usually this is only tested for non-zero,
+;	4603		! DBG$ADD_MODULE keeps a stack of SAT record pointers
+;	4604		! for ROUTINEs, though, so it can go back and
+;	4605		! put in the UB value since we don't get that until 
+;	4606		! end-of-routine.
+;	4607	
+;	4608		RETURN(.SAT_PTR);
+;	4609	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00134 P.AAK:  .BYTE   12							      ;
+					      00135 	    .ASCII  \sat overflow\					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 11-2
+; Digital Equipment Corporation
+;
+					      00141	    .BLKB   3
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0804 006B2 ADD_SAT:.WORD   Save R2,R11						      ; 4507
+		         5B 00000000G  8F  D0 006B4 	    MOVL    #DBG$_RST_BEGIN, R11				      ;
+				       52  D4 006BB 	    CLRL    SAT_PTR						      ; 4552
+				       0A  DD 006BD 	    PUSHL   #10							      ; 4564
+	   50 00000000'  EF	       5B  C1 006BF 	    ADDL3   R11, CURRENT_MODULE, R0				      ;
+				  23   A0  9F 006C7 	    PUSHAB  35(R0)						      ;
+	      00000000G  EF	       02  FB 006CA 	    CALLS   #2, DBG$VS_GET					      ;
+		         52	       50  D0 006D1 	    MOVL    R0, SAT_PTR						      ;
+				       11  12 006D4 	    BNEQ    1$							      ; 4563
+				       7E  D4 006D6 	    CLRL    -(SP)						      ; 4571
+			    00000000'  EF  9F 006D8 	    PUSHAB  P.AAK						      ;
+	      00000000G  EF	       02  FB 006DE 	    CALLS   #2, DBG$FAO_OUT					      ;
+				       1C  11 006E5 	    BRB     3$							      ; 4572
+		    02   A2	  08   AC  7D 006E7 1$:     MOVQ    LOWER, 2(SAT_PTR)					      ; 4585
+		         62	  04   AC  B0 006EC 	    MOVW    NT_PTR, (SAT_PTR)					      ; 4587
+				  0C   AC  D5 006F0 	    TSTL    UPPER						      ; 4592
+				       0A  13 006F3 	    BEQL    2$							      ;
+	   50	    04   AC	       5B  C1 006F5 	    ADDL3   R11, NT_PTR, R0					      ; 4594
+		    03   A0	  80   8F  88 006FA 	    BISB2   #128, 3(R0)						      ;
+		         50	       52  D0 006FF 2$:     MOVL    SAT_PTR, R0						      ; 4608
+					   04 00702 	    RET     							      ;
+				       50  D4 00703 3$:     CLRL    R0							      ; 4507
+					   04 00705 	    RET     							      ;
+
+; Routine Size:  84 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 12
+; Digital Equipment Corporation
+;
+;	4610	ROUTINE ADD_LVT( NT_PTR, LVT_VAL ) =
+;	4611	
+;	4612	!++
+;	4613	! Functional Description:
+;	4614	!
+;	4615	!	Build the LVT record to correspond to the 
+;	4616	!	symbol we have just built the indicated NT
+;	4617	!	record for.
+;	4618	!
+;	4619	! Formal Parameters:
+;	4620	!	NT_PTR		-An RST-pointer to the NT record for this symbol.
+;	4621	!	LVT_VAL		-The literal value which is bound to 
+;	4622	!			 this symbol.
+;	4623	!
+;	4624	! Implicit Inputs:
+;	4625	!
+;	4626	!	The OWN, CURRENT_MODULE, has been set up to
+;	4627	!	indicate the MC pointer to the module we are
+;	4628	!	currently adding.  Storage allocation works
+;	4629	!	from the vector storage descriptors stored therein.
+;	4630	!
+;	4631	! Implicit Outputs:
+;	4632	!
+;	4633	!	None.
+;	4634	!
+;	4635	! Routine Value:
+;	4636	!	TRUE, if all goes OK,
+;	4637	!	FALSE, otherwise.
+;	4638	!
+;	4639	! Side Effects:
+;	4640	!
+;	4641	!	The LVT gets updated to reflect the addition of the new
+;	4642	!	symbol.
+;	4643	!--
+;	4644	
+;	4645	BEGIN
+;	4646		MAP
+;	4647			NT_PTR : REF NT_RECORD;
+;	4648	
+;	4649		LOCAL
+;	4650			LVT_PTR : REF LVT_RECORD;
+;	4651	
+;	4652	IF_DIAG( BLD4 )
+;	4653		$FAO_TT_OUT('add_lvt: ');
+;	4654	END_DIAG;
+;	4655	
+;	4656		! Ask for space for the fixed-size record.
+;	4657		! This should not fail because we supposedly knew
+;	4658		! how much space we wanted and allocated it all before
+;	4659		! we got here.
+;	4660	
+;	4661		IF( (LVT_PTR =
+;	4662			DBG$VS_GET( CURRENT_MODULE[ MC_LVT_STORAGE ], RST_LVT_SIZE) )
+;	4663		   EQL 0 )
+;	4664		THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 12-1
+; Digital Equipment Corporation
+;
+;	4665			BEGIN
+;	4666	
+;	4667			! Don't allow the LVT to overflow.
+;	4668	
+;	4669			$FAO_TT_OUT('lvt overflow');
+;	4670			RETURN(FALSE);
+;	4671			END;
+;	4672	
+;	4673		! Otherwise go ahead and fill in the
+;	4674		! new record.
+;	4675	
+;	4676		LVT_PTR[ LVT_VALUE ] = .LVT_VAL;
+;	4677		LVT_PTR[ LVT_NT_PTR ] = .NT_PTR;
+;	4678	
+;	4679	IF_DIAG( BLD4 )
+;	4680		$FAO_TT_OUT(' at !XL, value=!XL, nt=!XL',
+;     P 4681			.LVT_PTR, .LVT_PTR[ LVT_VALUE ], .NT_PTR );
+;	4682	END_DIAG;
+;	4683	
+;	4684	IF_DIAG( BLD12 )
+;	4685		! Tally up counter for RST statistics gathering.
+;	4686	
+;	4687		NUM_LVT_ENTRIES = .NUM_LVT_ENTRIES + 1;
+;	4688	END_DIAG;
+;	4689	
+;	4690		! This is the only place where we return
+;	4691		! an OK status.
+;	4692	
+;	4693		RETURN(TRUE);
+;	4694	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00144 P.AAL:  .BYTE   12							      ;
+					      00145 	    .ASCII  \lvt overflow\					      ;
+					      00151	    .BLKB   3
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0004 00706 ADD_LVT:.WORD   Save R2						      ; 4610
+				       06  DD 00708 	    PUSHL   #6							      ; 4662
+	   50 00000000'  EF 00000000G  8F  C1 0070A 	    ADDL3   #DBG$_RST_BEGIN, CURRENT_MODULE, R0			      ;
+				  2A   A0  9F 00716 	    PUSHAB  42(R0)						      ;
+	      00000000G  EF	       02  FB 00719 	    CALLS   #2, DBG$VS_GET					      ;
+		         52	       50  D0 00720 	    MOVL    R0, LVT_PTR						      ;
+				       11  12 00723 	    BNEQ    1$							      ; 4661
+				       7E  D4 00725 	    CLRL    -(SP)						      ; 4669
+			    00000000'  EF  9F 00727 	    PUSHAB  P.AAL						      ;
+	      00000000G  EF	       02  FB 0072D 	    CALLS   #2, DBG$FAO_OUT					      ;
+				       0D  11 00734 	    BRB     2$							      ; 4670
+		    02   A2	  08   AC  D0 00736 1$:     MOVL    LVT_VAL, 2(LVT_PTR)					      ; 4676
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 12-2
+; Digital Equipment Corporation
+;
+		         62	  04   AC  B0 0073B 	    MOVW    NT_PTR, (LVT_PTR)					      ; 4677
+		         50	       01  D0 0073F 	    MOVL    #1, R0						      ; 4693
+					   04 00742 	    RET     							      ;
+				       50  D4 00743 2$:     CLRL    R0							      ; 4610
+					   04 00745 	    RET     							      ;
+
+; Routine Size:  64 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 13
+; Digital Equipment Corporation
+;
+;	4695	%IF LIT_BLD12
+;     L 4696	%THEN
+;     U 4697	
+;     U 4698	ROUTINE RST_STATISTICS = 
+;     U 4699	
+;     U 4700	!++
+;     U 4701	! Functional Description:
+;     U 4702	!
+;     U 4703	!	Print out the so-called RST statistics.
+;     U 4704	!	This is simply how we can look at the
+;     U 4705	!	various information about the RST which
+;     U 4706	!	is tallied up under the conditional
+;     U 4707	!	control of DBG_BLD12.
+;     U 4708	!
+;     U 4709	! Calling Sequence:
+;     U 4710	!
+;     U 4711	!	This is NOT called by DEBUG.  A user can call
+;     U 4712	!	it by knowing its name by using CALL.
+;     U 4713	!--
+;     U 4714	
+;     U 4715	BEGIN
+;     U 4716		$FAO_TT_OUT('The RST contains:');
+;     U 4717		$FAO_TT_OUT('modules: !XL (!UL.) actually initialized.',
+;     U 4718			.NUM_MC_ENTRIES,.NUM_MC_ENTRIES);
+;     U 4719		$FAO_TT_OUT(' NT entries: !XL (!UL.) due to DSTs.',
+;     U 4720			.NUM_NT_ENTRIES,.NUM_NT_ENTRIES);
+;     U 4721		$FAO_TT_OUT(' NT entries: !XL (!UL.) due to GLOBALs.',
+;     U 4722			.NUM_GL_ENTRIES,.NUM_GL_ENTRIES);
+;     U 4723		$FAO_TT_OUT('which require !XL (!UL.) hash chains.',
+;     U 4724			.num_chains,.num_chains);
+;     U 4725		$FAO_TT_OUT('LVT entries: !XL (!UL.)',
+;     U 4726			.NUM_LVT_ENTRIES,.NUM_LVT_ENTRIES);
+;     U 4727		$FAO_TT_OUT('SAT entries: !XL (!UL.)',
+;     U 4728			.NUM_SAT_ENTRIES,.NUM_SAT_ENTRIES);
+;     U 4729	END;
+;     U 4730	
+;     U 4731	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 14
+; Digital Equipment Corporation
+;
+;	4732	GLOBAL ROUTINE DBG$GET_BOUNDS( DESCRIP_BLOCK, BOUNDS_DESC ) : NOVALUE =
+;	4733	
+;	4734	!++
+;	4735	! Functional Description:
+;	4736	!
+;	4737	!	Deduce the virtual address of the begnning,
+;	4738	!	and the length (in bytes), of the indicated
+;	4739	!	array.  i.e. Given the SRM-defined 'array descriptor',
+;	4740	!	produce the corresponding DEBUG/RST-defined
+;	4741	!	'array bounds descriptor'.  The latter is
+;	4742	!	defined in DBGRST.BEG
+;	4743	!
+;	4744	! Formal Parameters:
+;	4745	!	DESCRIP_BLOCK	-address of SRM array descriptor
+;	4746	!	BOUNDS_DESC	-address of the ARRAY_BNDS_DESC we are
+;	4747	!			 to 'fill in'.
+;	4748	!
+;	4749	! Implicit Inputs:
+;	4750	!
+;	4751	!	The SRM-defined notion of 'array descriptor',
+;	4752	!	classes _A and _S, is currently implemented.
+;	4753	!
+;	4754	! Implicit Outputs:
+;	4755	!
+;	4756	!	None.
+;	4757	!
+;	4758	! Routine Value:
+;	4759	!	NOVALUE
+;	4760	!
+;	4761	! Side Effects:
+;	4762	!
+;	4763	!	BOUNDS_DESC is an output parameter.  (see above)
+;	4764	!--
+;	4765	
+;	4766	BEGIN
+;	4767		MAP
+;	4768			DESCRIP_BLOCK : REF BLOCK [,BYTE],
+;	4769			BOUNDS_DESC : REF ARRAY_BNDS_DESC;
+;	4770		LOCAL
+;	4771			SPAN_BLOCK : REF VECTOR,
+;	4772			NUM_ARRAY_ELEMS;
+;	4773	
+;	4774	IF_DIAG( BLD4 )
+;	4775		$FAO_TT_OUT('array_desc: at !XL,',.descrip_block);
+;	4776		$fao_tt_out(' class=!XB',.descrip_block[DSC$B_CLASS]);
+;	4777	END_DIAG;
+;	4778	
+;	4779		! See that we have been given a valid array
+;	4780		! descriptor.  For now we only handle
+;	4781		! FORTRAN's _CLASS_A (general array) and
+;	4782		! _CLASS_B (type CHARACTER, again in FORTRAN).
+;	4783	
+;	4784		IF( .DESCRIP_BLOCK[ DSC$B_CLASS ] EQL DSC$K_CLASS_A )
+;	4785		THEN
+;	4786			BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 14-1
+; Digital Equipment Corporation
+;
+;	4787	
+;	4788			! General array descriptors.  Check consistency
+;	4789			! and get out if there is something wrong.
+;	4790	
+;	4791			IF(  (NOT .DESCRIP_BLOCK[ DSC$V_FL_COLUMN] )
+;	4792			   OR
+;	4793			     (NOT .DESCRIP_BLOCK[ DSC$V_FL_COEFF] )
+;	4794			   OR
+;	4795			     (NOT .DESCRIP_BLOCK[ DSC$V_FL_BOUNDS ] )
+;	4796			   OR
+;	4797			     (.DESCRIP_BLOCK[ DSC$B_DIMCT] LEQ 0 )
+;	4798			  )
+;	4799			THEN
+;	4800				BEGIN
+;	4801	%IF DBG_ERRORS
+;     L 4802	%THEN
+;     U 4803				$FAO_TT_OUT('invalid array desc at !XL',.DESCRIP_BLOCK);
+;     U 4804	%FI
+;	4805				SIGNAL( DBG$_INVARRDSC );
+;	4806				! no return
+;	4807				RETURN;
+;	4808				END;
+;	4809	
+;	4810			! Calculate the required values for general arrays.
+;	4811			! The length of the array is simply
+;	4812			! tallied up by multiplying 
+;	4813			! the total number of elements by each
+;	4814			! element size.  The total number of 
+;	4815			! elements is the product of the number of
+;	4816			! elements in each dimension.
+;	4817		
+;	4818			SPAN_BLOCK = DESCRIP_BLOCK[ DSC$L_M1 ];
+;	4819			NUM_ARRAY_ELEMS = .SPAN_BLOCK[0];
+;	4820		
+;	4821			INCR COUNT FROM 1 TO (.DESCRIP_BLOCK[ DSC$B_DIMCT ] -1 )
+;	4822				DO
+;	4823		
+;	4824				NUM_ARRAY_ELEMS = .NUM_ARRAY_ELEMS * .SPAN_BLOCK[.COUNT];
+;	4825		
+;	4826			! Calculate the length of the array, in bytes,
+;	4827			! and pass back this info.
+;	4828	
+;	4829			BOUNDS_DESC[ ARRAY_LENGTH ] = .NUM_ARRAY_ELEMS * 
+;	4830							.DESCRIP_BLOCK[ DSC$W_LENGTH ];
+;	4831	
+;	4832			! End of special _CLASS_A processing.
+;	4833			END
+;	4834		ELSE
+;	4835		IF( .DESCRIP_BLOCK[ DSC$B_CLASS ] EQL DSC$K_CLASS_S )
+;	4836		THEN
+;	4837			BEGIN
+;	4838	
+;	4839			! Class S is for static strings.
+;	4840			! For now, no checking.  Just pick up
+;	4841			! the needed info and send it back.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 14-2
+; Digital Equipment Corporation
+;
+;	4842	
+;	4843			BOUNDS_DESC[ ARRAY_LENGTH ] = .DESCRIP_BLOCK[ DSC$W_LENGTH ];
+;	4844	
+;	4845			! End of special _CLASS_S processing.
+;	4846			END
+;	4847		ELSE
+;	4848			! No more classes currently supported.
+;	4849	
+;	4850			BEGIN
+;	4851	%IF DBG_ERRORS
+;     L 4852	%THEN
+;     U 4853			$FAO_TT_OUT('invalid array desc class at !XL',.DESCRIP_BLOCK);
+;     U 4854	%FI
+;	4855			SIGNAL( DBG$_INVARRDSC );
+;	4856			! no return
+;	4857			RETURN;
+;	4858			END;
+;	4859		
+;	4860		! Pass back the required info common to all types.
+;	4861		! Currently this is only the address where the data begins.
+;	4862	
+;	4863		BOUNDS_DESC[ ARRAY_ADDRESS ] = .DESCRIP_BLOCK[ DSC$A_POINTER ];
+;	4864	
+;	4865	IF_DIAG( BLD4 )
+;	4866		$FAO_TT_OUT('=> begin=!XL, length=!XL',
+;     P 4867			.bounds_desc[ array_address ],.bounds_desc[ array_length ]);
+;	4868	END_DIAG;
+;	4869	END;
+
+
+
+
+
+					 001C 00746 	    .ENTRY  DBG$GET_BOUNDS, Save R2,R3,R4			      ; 4732
+		         52	  04   AC  D0 00748 	    MOVL    DESCRIP_BLOCK, R2					      ; 4784
+		         04	  03   A2  91 0074C 	    CMPB    3(R2), #4						      ;
+				       39  12 00750 	    BNEQ    3$							      ;
+	   44	    0A   A2	       05  E1 00752 	    BBC     #5, 10(R2), 4$					      ; 4791
+	   3F	    0A   A2	       06  E1 00757 	    BBC     #6, 10(R2), 4$					      ; 4793
+	   3A	    0A   A2	       07  E1 0075C 	    BBC     #7, 10(R2), 4$					      ; 4795
+				  0B   A2  95 00761 	    TSTB    11(R2)						      ; 4797
+				       35  1B 00764 	    BLEQU   4$							      ;
+	   51	         52	       14  C1 00766 	    ADDL3   #20, R2, SPAN_BLOCK					      ; 4818
+		         53	       61  D0 0076A 	    MOVL    (SPAN_BLOCK), NUM_ARRAY_ELEMS			      ; 4819
+		         54	  0B   A2  9A 0076D 	    MOVZBL  11(R2), R4						      ; 4821
+				       50  D4 00771 	    CLRL    COUNT						      ;
+				       04  11 00773 	    BRB     2$							      ;
+		         53	     6140  C4 00775 1$:     MULL2   (SPAN_BLOCK)[COUNT], NUM_ARRAY_ELEMS		      ; 4824
+	   F8	         50	       54  F2 00779 2$:     AOBLSS  R4, COUNT, 1$					      ; 4821
+		         50	  08   AC  D0 0077D 	    MOVL    BOUNDS_DESC, R0					      ; 4829
+		         51	       62  3C 00781 	    MOVZWL  (R2), R1						      ;
+      04   A0	         53	       51  C5 00784 	    MULL3   R1, NUM_ARRAY_ELEMS, 4(R0)				      ;
+				       1E  11 00789 	    BRB     5$							      ; 4784
+		         01	  03   A2  91 0078B 3$:     CMPB    3(R2), #1						      ; 4835
+				       0A  12 0078F 	    BNEQ    4$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 14-3
+; Digital Equipment Corporation
+;
+		         50	  08   AC  D0 00791 	    MOVL    BOUNDS_DESC, R0					      ; 4843
+		    04   A0	       62  3C 00795 	    MOVZWL  (R2), 4(R0)						      ;
+				       0E  11 00799 	    BRB     5$							      ; 4835
+			    000281B0   8F  DD 0079B 4$:     PUSHL   #164272						      ; 4855
+	      00000000G  00	       01  FB 007A1 	    CALLS   #1, LIB$SIGNAL					      ;
+					   04 007A8 	    RET     							      ; 4857
+		    08   BC	  04   A2  D0 007A9 5$:     MOVL    4(R2), @BOUNDS_DESC					      ; 4863
+					   04 007AE 	    RET     							      ; 4732
+
+; Routine Size:  105 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 15
+; Digital Equipment Corporation
+;
+;	4870	%IF DBG_ANY
+;     L 4871	%THEN
+;     U 4872		! This routine is only used by DEBUGging output routines.
+;     U 4873	
+;     U 4874	ROUTINE PR_CS( ADDR )  : NOVALUE =
+;     U 4875	
+;     U 4876	
+;     U 4877	!++
+;     U 4878	! Functional Description:
+;     U 4879	!	Print out a counted string in an
+;     U 4880	!	unambiguous way for debugging purposes.
+;     U 4881	!--
+;     U 4882	
+;     U 4883	BEGIN
+;     U 4884		MAP
+;     U 4885			ADDR : REF VECTOR[,BYTE];
+;     U 4886	
+;     U 4887		! Don't get fooled!
+;     U 4888	
+;     U 4889		IF( .ADDR EQL 0 )
+;     U 4890		THEN
+;     U 4891			$FAO_TT_OUT( '**** PR_CS AT 0 **** ' )
+;     U 4892		ELSE
+;     U 4893			$FAO_TT_OUT( 'Name(!UB.): "!AC".  ' , .ADDR[0], ADDR[0] );
+;     U 4894	END;
+;     U 4895	
+;     U 4896	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:03:26	DBB3:[DEBUG.SRC]DBGBLD.B32;6					Page 16
+; Digital Equipment Corporation
+;
+;	4897	END				!End of module
+;	4898	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$OWN        	    16    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$CODE       	  1967  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$PLIT       	   340  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        24         0       227
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	     1333	00:47.6		01:36.4
+;	FLOWAN	      110	00:07.6		00:14.0
+;	DELAY	       50	00:03.4		00:07.1
+;	TNBIND	       82	00:04.8		00:10.1
+;	CODE	      135	00:10.6		00:17.9
+;	FINAL	      221	00:13.9		00:23.6
+;	Total	     1931	01:27.8		02:49.1
+
+; Size:		1967 code + 356 data bytes
+; Run Time:	01:28.4
+; Elapsed Time:	02:50.1
+; Memory Used:	513 pages
+; Compilation Complete

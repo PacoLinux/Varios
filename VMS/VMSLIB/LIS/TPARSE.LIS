@@ -1,0 +1,1210 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE LIB$TPARSE (
+;	0002			IDENT = 'V0003'
+;	0003			) =
+;	0004	BEGIN
+;	0005	
+;	0006	!
+;	0007	! Copyright (c) 1977
+;	0008	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0009	!
+;	0010	! This software is furnished  under a license for use only on a single
+;	0011	! computer  system and  may be  copied only with  the inclusion of the
+;	0012	! above copyright notice.  This software, or any other copies thereof,
+;	0013	! may not be provided or  otherwise made available to any other person
+;	0014	! except for use on such system and to one who agrees to these license
+;	0015	! terms.  Title to and  ownership of the  software  shall at all times
+;	0016	! remain in DEC.
+;	0017	!
+;	0018	! The information in this software is subject to change without notice
+;	0019	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0020	! Corporation.
+;	0021	!
+;	0022	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0023	! software on equipment which is not supplied by DEC.
+;	0024	
+;	0025	!++
+;	0026	!
+;	0027	! FACILITY:  System Library
+;	0028	!
+;	0029	! ABSTRACT:
+;	0030	!
+;	0031	!	TPARSE is a general purpose state table driven parser. Its
+;	0032	!	general design is that of a finite state parser; however,
+;	0033	!	some of its features allow non-deterministic parsing and
+;	0034	!	limited use as a push-down parser. The input string is parsed
+;	0035	!	by interpreting the transitions in the user suppled state
+;	0036	!	table; user supplied action routines are called as indicated
+;	0037	!	in the state table to provide the semantics associated with
+;	0038	!	the table specified syntax.
+;	0039	!
+;	0040	! ENVIRONMENT:
+;	0041	!
+;	0042	!	Native node star processor; no operating system facilities are
+;	0043	!	needed. Minimum of xxxx longwords of stack required.
+;	0044	!
+;	0045	!--
+;	0046	!
+;	0047	!
+;	0048	! AUTHOR:  Andrew C. Goldstein, CREATION DATE:  14-Oct-1976  13:55
+;	0049	!
+;	0050	! REVISION HISTORY:
+;	0051	!
+;	0052	!   Andrew C. Goldstein, 7-Oct-1977  15:50
+;	0053	!   X0002 - Add action routine parameter, minimal keyword abbreviation.
+;	0054	!
+;	0055	!   Andrew C. Goldstein, 21-Feb-1978  16:31
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   X0003 - State table format changes (BL5)
+;	0057	!
+;	0058	!**
+;	0059	
+;	0060	
+;	0061	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0062	LIBRARY 'SYS$LIBRARY:TPAMAC.L32';
+;	0063	
+;	0064	
+;	0065	
+;	0066	PSECT
+;	0067		CODE		= LIB$CODE (SHARE, PIC),
+;	0068		PLIT		= LIB$CODE (SHARE, PIC);
+;	0069	
+;	0070	LINKAGE
+;	0071		L_GETSTRING	= CALL (STANDARD, STANDARD)
+;	0072				: GLOBAL (CHAR_COUNT = 6);
+;	0073	
+;	0074	FORWARD ROUTINE
+;	0075		LIB$TPARSE,			! main parser routine
+;	0076		GETSTRING	: L_GETSTRING;	! extract a basic string token
+;	0077	
+;	0078	
+;	0079	EXTERNAL ROUTINE
+;	0080		LIB$CVT_DTB	: ADDRESSING_MODE (GENERAL),	! decimal to binary conversion
+;	0081		LIB$CVT_OTB	: ADDRESSING_MODE (GENERAL),	! octal to binary conversion
+;	0082		LIB$CVT_HTB	: ADDRESSING_MODE (GENERAL);	! hex to binary conversion
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 2
+; Digital Equipment Corporation
+;
+;	0083	!
+;	0084	! Local macros and symbol definitions
+;	0085	!
+;	0086	
+;	0087	LITERAL
+;	0088	
+;	0089	! Character codes
+;	0090	!
+;	0091		SPACE		= %O'40',	! space character
+;	0092		TERMINATOR	= %O'377',	! keyword string terminator
+;	0093		TAB		= %O'11',	! tab character
+;	0094	
+;	0095	! String types (input to GETSTRING routine)
+;	0096	!
+;	0097		SPACES		= 0,
+;	0098		NUMERIC		= 1,
+;	0099		ALPHANUMERIC	= 2,
+;	0100		SYMBOL		= 3,
+;	0101	
+;	0102	! Token types
+;	0103	!
+;	0104		$ANY		= %X'FF' AND TPA$_ANY,		! any single character
+;	0105		$ALPHA		= %X'FF' AND TPA$_ALPHA,	! any alphabetic character
+;	0106		$DIGIT		= %X'FF' AND TPA$_DIGIT,	! any numeric character
+;	0107		$STRING		= %X'FF' AND TPA$_STRING,	! any alphanumeric string
+;	0108		$SYMBOL		= %X'FF' AND TPA$_SYMBOL,	! any symbol constituent set string
+;	0109		$BLANK		= %X'FF' AND TPA$_BLANK,	! any string of spaces and tabs
+;	0110		$DECIMAL	= %X'FF' AND TPA$_DECIMAL,	! decimal number
+;	0111		$OCTAL		= %X'FF' AND TPA$_OCTAL,	! octal number
+;	0112		$HEX		= %X'FF' AND TPA$_HEX,		! hexadecimal number
+;	0113		$LAMBDA		= %X'FF' AND TPA$_LAMBDA,	! empty string
+;	0114		$EOS		= %X'FF' AND TPA$_EOS,		! end of string
+;	0115		$SUBEXPR	= %X'FF' AND TPA$_SUBEXPR,	! subexpression
+;	0116		NULL_MATCH	= TPA$_LAMBDA,	! codes geq match null strings
+;	0117		HIGH_ASCII	= 255,		! highest ASCII character code
+;	0118		KEYWORD		= 256,		! start of keyword codes
+;	0119		HIGH_KEYWORD	= 475,		! highest keyword code
+;	0120		LOW_SPECIAL	= $ANY,		! first special type code
+;	0121		HIGH_SPECIAL	= $SUBEXPR;	! last special type code
+;	0122	
+;	0123	! Macros to determine character types
+;	0124	!
+;	0125	
+;	0126	MACRO
+;	0127		IS_ALPHABETIC (CHAR) = (SELECTONE CHAR OF
+;     M 0128					SET
+;     M 0129					[%ASCII 'A' TO %ASCII 'Z',
+;     M 0130					 %ASCII 'a' TO %ASCII 'z']: 1;
+;     M 0131					[OTHERWISE]: 0;
+;     M 0132					TES
+;     M 0133				       )%,
+;	0134	
+;	0135		IS_NUMERIC (CHAR)    = (SELECTONE CHAR OF
+;     M 0136					SET
+;     M 0137					[%ASCII '0' TO %ASCII '9']: 1;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 2-1
+; Digital Equipment Corporation
+;
+;     M 0138					[OTHERWISE]: 0;
+;     M 0139					TES
+;     M 0140				       )%,
+;	0141	
+;	0142		IS_SYMBOL (CHAR)      = (SELECTONE CHAR OF
+;     M 0143					SET
+;     M 0144					[%ASCII '_', %ASCII '$']: 1;
+;     M 0145					[OTHERWISE]: 0;
+;     M 0146					TES
+;     M 0147				       )%,
+;	0148	
+;	0149		IS_SPACE (CHAR)      = (SELECTONE CHAR OF
+;     M 0150					SET
+;     M 0151					[SPACE, TAB]: 1;
+;     M 0152					[OTHERWISE]: 0;
+;     M 0153					TES
+;     M 0154				       )%;
+;	0155	
+;	0156	! Macros to fetch state table entries, for both data items and self
+;	0157	! relative addresses.
+;	0158	!
+;	0159	
+;	0160	MACRO
+;	0161		GET_BYTE (POINTER) =
+;     M 0162			(POINTER = .POINTER + 1; .(.POINTER-1)<0,8>)
+;     M 0163			%,
+;	0164	
+;	0165		GET_WORD (POINTER) =
+;     M 0166			(POINTER = .POINTER + 2; .(.POINTER-2)<0,16>)
+;     M 0167			%,
+;	0168	
+;	0169		GET_LONG (POINTER) =
+;     M 0170			(POINTER = .POINTER + 4; .(.POINTER-4)<0,32>)
+;     M 0171			%,
+;	0172	
+;	0173		REL_WORD (POINTER) =
+;     M 0174			(POINTER = .POINTER + 2; .POINTER + .(.POINTER-2)<0,16,1>)
+;     M 0175			%,
+;	0176	
+;	0177		REL_LONG (POINTER) =
+;     M 0178			(POINTER = .POINTER + 4; .POINTER + .(.POINTER-4)<0,32,1>)
+;     M 0179			%;
+;	0180	
+;	0181	! Structure definition for the transition length table. It consists of 64
+;	0182	! entries, indexed by the 6 transition option bits. Each entry is a 4 bit
+;	0183	! nibble giving the number of words that are used by that transition
+;	0184	! option mask.
+;	0185	!
+;	0186	
+;	0187	STRUCTURE
+;	0188		NIBBLEVECTOR [I; N] =
+;	0189			[(N+1)/2]
+;	0190			NIBBLEVECTOR<I*4, 4, 0>;
+;	0191	
+;	0192	! Macro to generate nibbles in a PLIT expression.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 2-2
+; Digital Equipment Corporation
+;
+;	0193	!
+;	0194	
+;	0195	MACRO
+;	0196		NIBBLE [A, B] =
+;     M 0197			BYTE (B^4 + A)
+;     M 0198			%;
+;	0199	
+;	0200	! The transition length table.
+;	0201	!
+;	0202	
+;	0203	BIND
+;	0204		LENGTH_TABLE	= UPLIT (NIBBLE (0,1,1,2,2,3,3,4,2,3,3,4,4,5,5,6,
+;     P 0205						 2,3,3,4,4,5,5,6,4,5,5,6,6,7,7,8,
+;     P 0206						 2,3,3,4,4,5,5,6,4,5,5,6,6,7,7,8,
+;     P 0207						 4,5,5,6,6,7,7,8,6,7,7,8,8,9,9,10
+;     P 0208						 ))
+;	0209				: NIBBLEVECTOR;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3
+; Digital Equipment Corporation
+;
+;	0210	GLOBAL ROUTINE LIB$TPARSE (STATE_VECTOR, START_STATE, KEYTAB) =
+;	0211	
+;	0212	!++
+;	0213	!
+;	0214	! FUNCTIONAL DESCRIPTION:
+;	0215	!
+;	0216	!	This routine is the main parser routine.
+;	0217	!
+;	0218	!
+;	0219	! CALLING SEQUENCE:
+;	0220	!	LIB$TPARSE (ARG1, ARG2, ARG3)
+;	0221	!
+;	0222	!
+;	0223	! INPUT PARAMETERS:
+;	0224	!	ARG1 = address of state vector, containing:
+;	0225	!		options longword
+;	0226	!		    bit 0 set to match blanks and tabs
+;	0227	!		          clear to ignore blanks and tabs
+;	0228	!		    bit 1 set to allow minimum abbreviation of keywords
+;	0229	!			  clear to use match count
+;	0230	!		    high byte = keyword match count (0 = exact)
+;	0231	!		string descriptor of string to be parsed
+;	0232	!		data made available to action routines:
+;	0233	!		    string descriptor of matching token
+;	0234	!		    single character token
+;	0235	!		    numerical value of numeric token
+;	0236	!	ARG2 = address of starting state in state table
+;	0237	!	ARG3 = address of keyword table
+;	0238	!
+;	0239	! IMPLICIT INPUTS:
+;	0240	!	NONE
+;	0241	!
+;	0242	! OUTPUT PARAMETERS:
+;	0243	!	string descriptor pointed to by ARG1 updated to indicate
+;	0244	!	string not processed by the parser
+;	0245	!
+;	0246	! IMPLICIT OUTPUTS:
+;	0247	!	NONE
+;	0248	!
+;	0249	! ROUTINE VALUE:
+;	0250	!	1 if successful parse
+;	0251	!	0 if syntax error
+;	0252	!
+;	0253	! SIDE EFFECTS:
+;	0254	!	none except as produced by user's action routines
+;	0255	!
+;	0256	!--
+;	0257	
+;	0258	
+;	0259	BEGIN
+;	0260	
+;	0261	LOCAL
+;	0262		STATE,				! state table pointer
+;	0263		TYPE		: BLOCK [4, BYTE]; ! syntax type of current transition
+;	0264	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-1
+; Digital Equipment Corporation
+;
+;	0265	
+;	0266	MAP
+;	0267		STATE_VECTOR	: REF BLOCK [,BYTE], ! user state vector
+;	0268		KEYTAB	: REF VECTOR[,WORD,SIGNED];  ! keyword table
+;	0269	
+;	0270	BUILTIN
+;	0271		TESTBITSC;
+;	0272	
+;	0273	
+;	0274	! TPARSE data area available to action routines.
+;	0275	!
+;	0276	MACRO
+;	0277		STATE_LENGTH	= STATE_VECTOR[TPA$L_COUNT]%,	! length of user supplied state vector
+;	0278		STRING_COUNT	= STATE_VECTOR[TPA$L_STRINGCNT]%, ! byte count of string being parsed
+;	0279		STRING_POINTER	= STATE_VECTOR[TPA$L_STRINGPTR]%, ! address of string being parsed
+;	0280		TOKEN_COUNT	= STATE_VECTOR[TPA$L_TOKENCNT]%, ! byte count of current token
+;	0281		TOKEN_POINTER	= STATE_VECTOR[TPA$L_TOKENPTR]%, ! address of current token
+;	0282		STATE_CHAR	= STATE_VECTOR[TPA$L_CHAR]%,	! current single character token
+;	0283		STATE_NUMBER	= STATE_VECTOR[TPA$L_NUMBER]%,	! numerical value of number token
+;	0284		STATE_PARAM	= STATE_VECTOR[TPA$L_PARAM]%,	! action routine parameter from state table
+;	0285		MCOUNT		= STATE_VECTOR[TPA$B_MCOUNT]%,	! match abbreviation count
+;	0286		SPACE_FLAG	= STATE_VECTOR[TPA$V_BLANKS]%,	! process spaces explicitly
+;	0287		ABBRFM_FLAG	= STATE_VECTOR[TPA$V_ABBRFM]%,	! allow first match abbreviations
+;	0288		ABBREV_FLAG	= STATE_VECTOR[TPA$V_ABBREV]%,	! allow minimal abbreviations
+;	0289		AMBIG_FLAG	= STATE_VECTOR[TPA$V_AMBIG]%;	! ambiguous keyword in this state
+;	0290	
+;	0291	
+;	0292	!
+;	0293	! Contents of the type byte - code and flags.
+;	0294	!
+;	0295	MACRO
+;	0296		TYPECODE	= 0,0,9,0%,	! full token type code
+;	0297		TYPEBYTE	= 0,0,8,0%,	! token type byte
+;	0298		OPTION_BITS	= 0,11,6,0%,	! transition option flags
+;	0299		CODEFLAG	= 0,8,1,0%,	! transition is special code
+;	0300		EXTRAFLAG	= 0,9,1,0%,	! extra type byte present
+;	0301		LASTFLAG	= 0,10,1,0%,	! last transition in state
+;	0302		EXTFLAG		= 0,11,1,0%,	! type extension present
+;	0303		TRANFLAG	= 0,12,1,0%,	! transition target present
+;	0304		MASKFLAG	= 0,13,1,0%,	! bitmask present
+;	0305		ADDRFLAG	= 0,14,1,0%,	! data address present
+;	0306		ACTFLAG		= 0,15,1,0%,	! action routine present
+;	0307		PARMFLAG	= 0,16,1,0%;	! parameter longword present
+;	0308	
+;	0309	GLOBAL REGISTER
+;	0310		CHAR_COUNT	= 6;		! character count in string token
+;	0311	
+;	0312	EXTERNAL LITERAL
+;	0313		LIB$_SYNTAXERR,			! syntax error status
+;	0314		LIB$_INVTYPE;			! invalid state table
+;	0315	
+;	0316	
+;	0317	!+
+;	0318	!
+;	0319	! Entry initialization consists of loading the starting state
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-2
+; Digital Equipment Corporation
+;
+;	0320	! into the state pointer. Then we proceed into the main
+;	0321	! loop that attempts to match transitions in the state table to
+;	0322	! the current string contents.
+;	0323	!
+;	0324	!-
+;	0325	
+;	0326	
+;	0327	IF .STATE_LENGTH LSSU TPA$K_COUNT0 THEN RETURN SS$_INSFARG; ! check minimum length of state vector
+;	0328	
+;	0329	AMBIG_FLAG = 0;
+;	0330	STATE = .START_STATE;
+;	0331	
+;	0332	WHILE 1 DO
+;	0333	    BEGIN
+;	0334	
+;	0335	! The following horrendous expression attempts to match the token type
+;	0336	! of the current transition to the current string position.
+;	0337	!
+;	0338	    IF BEGIN
+;	0339		TYPE = GET_WORD (STATE);	! get basic type code
+;	0340		IF .TYPE[EXTRAFLAG]		! and extra byte if present
+;	0341		THEN TYPE<16,8> = GET_BYTE (STATE);
+;	0342	
+;	0343		IF NOT .SPACE_FLAG AND .TYPE[TYPECODE] NEQ TPA$_LAMBDA
+;	0344		THEN
+;	0345		    BEGIN
+;	0346		    GETSTRING (STRING_COUNT, SPACES);
+;	0347		    STRING_COUNT = .STRING_COUNT - .CHAR_COUNT;  ! update string pointer
+;	0348		    STRING_POINTER = .STRING_POINTER + .CHAR_COUNT;
+;	0349		    END;
+;	0350	
+;	0351		CHAR_COUNT = 0;			! init matching string descriptor
+;	0352		TOKEN_POINTER = .STRING_POINTER;
+;	0353	
+;	0354		IF .TYPE[TYPECODE] LSSU NULL_MATCH AND .STRING_COUNT EQL 0
+;	0355		    THEN 0			! no match if at end
+;	0356		    ELSE
+;	0357	
+;	0358			SELECTONEU .TYPE[TYPECODE] OF
+;	0359			SET
+;	0360	
+;	0361	! Single characters are matched by token types whose numerical value is
+;	0362	! the ASCII code of the character.
+;	0363	!
+;	0364	
+;	0365			[0 TO HIGH_ASCII]:	! single ASCII character
+;	0366			    IF .TYPE[TYPEBYTE] EQL CH$RCHAR (.STRING_POINTER)
+;	0367			    THEN (STATE_CHAR = CH$RCHAR(.STRING_POINTER);
+;	0368				  CHAR_COUNT = 1)
+;	0369			    ELSE 0;
+;	0370	
+;	0371	! Keywords are matched by token types whose bits 0-6 contain the keyword
+;	0372	! number. A keyword token may be either (1) an exact match or
+;	0373	! (2) abbreviated to some number of characters fixed for the call or
+;	0374	! (3) arbitrarily abbreviated (such that the first match wins) or
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-3
+; Digital Equipment Corporation
+;
+;	0375	! (4) abbreviated to the minimum which is locally unambiguous. Condition
+;	0376	! (4) is tested for ambiguity by finding the next entry in the keyword table
+;	0377	! and matching it against the token string. The keyword strings for each
+;	0378	! state are padded with a filler to prevent false matches across states.
+;	0379	!
+;	0380	
+;	0381	
+;	0382			[KEYWORD TO HIGH_KEYWORD]:  ! keyword match
+;	0383			    IF NOT .AMBIG_FLAG
+;	0384			    AND GETSTRING (STRING_COUNT, SYMBOL)
+;	0385			    THEN
+;	0386				BEGIN
+;	0387				LOCAL KEY;
+;	0388				KEY = .KEYTAB + .KEYTAB[.TYPE[TYPEBYTE]];
+;	0389				IF CH$EQL (.CHAR_COUNT, .TOKEN_POINTER,
+;	0390					   .CHAR_COUNT, .KEY, 0)
+;	0391				THEN
+;	0392				    IF (CH$RCHAR (.KEY + .CHAR_COUNT) EQL TERMINATOR
+;	0393					OR (.MCOUNT NEQ 0 AND .CHAR_COUNT GEQU .MCOUNT)
+;	0394					)
+;	0395				    THEN 1
+;	0396				    ELSE IF .ABBRFM_FLAG
+;	0397				    THEN 1
+;	0398				    ELSE IF .ABBREV_FLAG
+;	0399				    THEN
+;	0400					BEGIN
+;	0401					KEY = 1 + CH$FIND_CH (65535, .KEY+.CHAR_COUNT, TERMINATOR);
+;	0402					IF CH$NEQ (.CHAR_COUNT, .TOKEN_POINTER,
+;	0403						   .CHAR_COUNT, .KEY, 0)
+;	0404					THEN 1
+;	0405					ELSE
+;	0406					    BEGIN
+;	0407					    AMBIG_FLAG = 1;
+;	0408					    0
+;	0409					    END
+;	0410					END
+;	0411				    ELSE 0
+;	0412				END
+;	0413			    ELSE 0;
+;	0414	
+;	0415	! All other token types are special cases, representing commonly occurring
+;	0416	! composites and other useful artifacts.
+;	0417	!
+;	0418	
+;	0419			[OTHERWISE]:		  ! all other types
+;	0420			    CASE .TYPE[TYPEBYTE] FROM LOW_SPECIAL TO HIGH_SPECIAL OF
+;	0421			    SET
+;	0422	
+;	0423			    [$LAMBDA]:		! empty string
+;	0424				1;
+;	0425	
+;	0426			    [$EOS]:		! end of input
+;	0427				.STRING_COUNT EQL 0;
+;	0428	
+;	0429			    [$ANY]:		! any single character
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-4
+; Digital Equipment Corporation
+;
+;	0430				(STATE_CHAR = CH$RCHAR (.STRING_POINTER);
+;	0431				 CHAR_COUNT = 1
+;	0432				);
+;	0433	
+;	0434			    [$ALPHA]:		! alphabetic
+;	0435				IF IS_ALPHABETIC (CH$RCHAR (.STRING_POINTER))
+;	0436				THEN (STATE_CHAR = CH$RCHAR (.STRING_POINTER);
+;	0437				      CHAR_COUNT = 1)
+;	0438				ELSE 0;
+;	0439	
+;	0440			    [$DIGIT]:		! single digit
+;	0441				IF IS_NUMERIC (CH$RCHAR (.STRING_POINTER))
+;	0442				THEN (STATE_CHAR = CH$RCHAR (.STRING_POINTER);
+;	0443				      CHAR_COUNT = 1)
+;	0444				ELSE 0;
+;	0445	
+;	0446			    [$STRING]:		! alphanumeric string
+;	0447				GETSTRING (STRING_COUNT, ALPHANUMERIC);
+;	0448	
+;	0449			    [$SYMBOL]:		! symbol constituent set string
+;	0450				GETSTRING (STRING_COUNT, SYMBOL);
+;	0451	
+;	0452			    [$BLANK]:		! blanks or tabs
+;	0453				GETSTRING (STRING_COUNT, SPACES);
+;	0454	
+;	0455			    [$DECIMAL]:		! decimal number
+;	0456				IF GETSTRING (STRING_COUNT, NUMERIC)
+;	0457				THEN LIB$CVT_DTB (.CHAR_COUNT, .TOKEN_POINTER, STATE_NUMBER)
+;	0458				ELSE 0;
+;	0459	
+;	0460			    [$OCTAL]:		! octal number
+;	0461				IF GETSTRING (STRING_COUNT, NUMERIC)
+;	0462				THEN LIB$CVT_OTB (.CHAR_COUNT, .TOKEN_POINTER, STATE_NUMBER)
+;	0463				ELSE 0;
+;	0464	
+;	0465			    [$HEX]:		! hexa-decimal number
+;	0466				IF GETSTRING (STRING_COUNT, ALPHANUMERIC)
+;	0467				THEN LIB$CVT_HTB (.CHAR_COUNT, .TOKEN_POINTER, STATE_NUMBER)
+;	0468				ELSE 0;
+;	0469	
+;	0470			    [$SUBEXPR]:		! subexpression
+;	0471				BEGIN
+;	0472				LOCAL SAVECOUNT, SAVEPOINTER;
+;	0473				SAVECOUNT = .STRING_COUNT;  ! save current position
+;	0474				SAVEPOINTER = .STRING_POINTER;
+;	0475				IF LIB$TPARSE (.STATE_VECTOR, .STATE + 2 + .(.STATE)<0,16,1>,
+;	0476						.KEYTAB)
+;	0477				THEN (CHAR_COUNT = .SAVECOUNT - .STRING_COUNT;
+;	0478				      TOKEN_POINTER = .SAVEPOINTER;
+;	0479				      STRING_COUNT = .SAVECOUNT;
+;	0480				      STRING_POINTER = .SAVEPOINTER;
+;	0481				      1)
+;	0482				ELSE (STRING_COUNT = .SAVECOUNT;
+;	0483				      STRING_POINTER = .SAVEPOINTER;
+;	0484				      0)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-5
+; Digital Equipment Corporation
+;
+;	0485				END;
+;	0486	
+;	0487			    [INRANGE]: RETURN LIB$_INVTYPE;	! just for completeness
+;	0488	
+;	0489			    [OUTRANGE]: RETURN LIB$_INVTYPE;
+;	0490	
+;	0491			    TES;		! end of special types case
+;	0492	
+;	0493			TES			! end of select on .TYPE
+;	0494		END
+;	0495	
+;	0496	!+
+;	0497	!
+;	0498	! The type code in this transition matches the current string,
+;	0499	! which is now described by the global string descriptor. Call
+;	0500	! the user's action routine, if it exists, and if it returns true,
+;	0501	! gobble the string and take the transition. Note that we set R0
+;	0502	! to 1 going into the call, making it easier for the routine to
+;	0503	! return success.
+;	0504	!
+;	0505	!-
+;	0506	
+;	0507	    THEN
+;	0508		BEGIN
+;	0509		STRING_COUNT = .STRING_COUNT - .CHAR_COUNT;  ! update string pointer
+;	0510		STRING_POINTER = .STRING_POINTER + .CHAR_COUNT;
+;	0511		TOKEN_COUNT = .CHAR_COUNT;
+;	0512						! skip extension if present
+;	0513		IF TESTBITSC (TYPE[EXTFLAG]) THEN STATE = .STATE + 2;
+;	0514	
+;	0515		IF TESTBITSC (TYPE[PARMFLAG])	! set parameter longword if present
+;	0516		THEN STATE_PARAM = GET_LONG (STATE);
+;	0517	
+;	0518		IF
+;	0519		    BEGIN
+;	0520		    IF TESTBITSC (TYPE[ACTFLAG])
+;	0521		    THEN
+;	0522			BEGIN
+;	0523			BUILTIN R0, CALLG;
+;	0524			R0 = 1;
+;	0525			CALLG (.STATE_VECTOR, REL_LONG (STATE))  ! call action routine
+;	0526			END
+;	0527		    ELSE 1
+;	0528		    END
+;	0529	
+;	0530	! Either there was no action routine, or the action routine has returned
+;	0531	! success; we take the transition. First we get the data address, if present.
+;	0532	! If present, store whatever data is called for: the mask, if supplied, or
+;	0533	! type dependent data if not - either the matching character, the number
+;	0534	! value, or the string descriptor of the matching string.
+;	0535	!
+;	0536	
+;	0537		THEN
+;	0538		    BEGIN
+;	0539		    IF .TYPE[ADDRFLAG]
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-6
+; Digital Equipment Corporation
+;
+;	0540		    THEN
+;	0541			BEGIN
+;	0542			LOCAL ADDRESS;
+;	0543			ADDRESS = REL_LONG (STATE);
+;	0544			IF .TYPE[MASKFLAG]
+;	0545			THEN
+;	0546			    .ADDRESS = ..ADDRESS OR GET_LONG (STATE)
+;	0547			ELSE
+;	0548			    BEGIN
+;	0549			    IF NOT .TYPE[CODEFLAG]
+;	0550			    THEN
+;	0551				(.ADDRESS)<0,8> = .STATE_CHAR
+;	0552			    ELSE
+;	0553				BEGIN
+;	0554				CASE .TYPE[TYPEBYTE] FROM LOW_SPECIAL TO HIGH_SPECIAL OF
+;	0555				SET
+;	0556	
+;	0557				[$ANY, $ALPHA, $DIGIT]:
+;	0558					(.ADDRESS)<0,8> = .STATE_CHAR;
+;	0559	
+;	0560				[$DECIMAL, $OCTAL, $HEX]:
+;	0561					.ADDRESS = .STATE_NUMBER;
+;	0562	
+;	0563				[INRANGE, OUTRANGE]:
+;	0564					BEGIN
+;	0565					(.ADDRESS) = .TOKEN_COUNT;
+;	0566					(.ADDRESS+4) = .TOKEN_POINTER;
+;	0567					END;
+;	0568	
+;	0569				TES;
+;	0570				END;
+;	0571			    END;
+;	0572			END;
+;	0573	
+;	0574	! Take the transition. If an explicit target exists, follow it. -1 means
+;	0575	! exit with success, -2 means exit with failure. If no explicit target exists,
+;	0576	! skip transitions until we reach the beginning of the next state.
+;	0577	!
+;	0578	
+;	0579		    AMBIG_FLAG = 0;
+;	0580		    IF .TYPE[TRANFLAG]
+;	0581		    THEN			! take the transition
+;	0582			IF .(.STATE)<0,16,1> EQL TPA$_EXIT  ! TPA$_EXIT means exit
+;	0583			THEN RETURN 1
+;	0584			ELSE IF .(.STATE)<0,16,1> EQL TPA$_FAIL  ! TPA$_FAIL means exit
+;	0585			THEN RETURN LIB$_SYNTAXERR
+;	0586	
+;	0587			ELSE STATE = REL_WORD (STATE)
+;	0588		    ELSE			! default to next state
+;	0589			UNTIL .TYPE[LASTFLAG] DO
+;	0590			    BEGIN
+;	0591			    TYPE = GET_WORD (STATE);
+;	0592			    IF .TYPE[EXTRAFLAG]
+;	0593			    THEN TYPE<16,8> = GET_BYTE (STATE);
+;	0594						! skip optional components
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-7
+; Digital Equipment Corporation
+;
+;	0595			    STATE = .STATE + 2 * .LENGTH_TABLE[.TYPE[OPTION_BITS]];
+;	0596			    END;
+;	0597		    END
+;	0598	
+;	0599	! The action routine has rejected the transition. Make like it never matched.
+;	0600	!
+;	0601	
+;	0602		ELSE
+;	0603		    BEGIN			! return characters to string
+;	0604		    STRING_COUNT = .STRING_COUNT + .CHAR_COUNT;
+;	0605		    STRING_POINTER = .STRING_POINTER - .CHAR_COUNT;
+;	0606						! skip the rest of the transition
+;	0607		    STATE = .STATE + 2 * .LENGTH_TABLE[.TYPE[OPTION_BITS]];
+;	0608		    IF .TYPE[LASTFLAG]
+;	0609		    THEN
+;	0610			BEGIN
+;	0611			GETSTRING (STRING_COUNT, SYMBOL);
+;	0612			TOKEN_COUNT = .CHAR_COUNT;
+;	0613			IF .TOKEN_COUNT EQL 0 AND .STRING_COUNT NEQ 0
+;	0614			THEN TOKEN_COUNT = .TOKEN_COUNT + 1;
+;	0615			RETURN LIB$_SYNTAXERR;
+;	0616			END;
+;	0617		    END
+;	0618		END
+;	0619	
+;	0620	!+
+;	0621	!
+;	0622	! If the transition does not match, we execute this code. It skips
+;	0623	! the current transition to set up to try the next one in the state.
+;	0624	! If this was the last transition in the state, a syntax error has
+;	0625	! occurred and TPARSE returns the value 0.
+;	0626	!
+;	0627	!-
+;	0628	
+;	0629	    ELSE
+;	0630		BEGIN
+;	0631		STATE = .STATE + 2 * .LENGTH_TABLE[.TYPE[OPTION_BITS]];
+;	0632		IF .TYPE[LASTFLAG]
+;	0633		THEN
+;	0634		    BEGIN
+;	0635		    GETSTRING (STRING_COUNT, SYMBOL);
+;	0636		    TOKEN_COUNT = .CHAR_COUNT;
+;	0637		    IF .TOKEN_COUNT EQL 0 AND .STRING_COUNT NEQ 0
+;	0638		    THEN TOKEN_COUNT = .TOKEN_COUNT + 1;
+;	0639		    RETURN LIB$_SYNTAXERR;
+;	0640		    END;
+;	0641		END
+;	0642	
+;	0643	    END					! end of outside loop
+;	0644	
+;	0645	END;					! end of routine TPARSE
+
+
+							    .TITLE  LIB$TPARSE
+							    .IDENT  \V0003\
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-8
+; Digital Equipment Corporation
+;
+
+							    .PSECT  LIB$CODE,NOWRT,  SHR,  PIC,2
+
+					      00000 P.AAA:  .BYTE   16							      ;
+					      00001 	    .BYTE   33							      ;
+					      00002 	    .BYTE   50							      ;
+					      00003 	    .BYTE   67							      ;
+					      00004 	    .BYTE   50							      ;
+					      00005 	    .BYTE   67							      ;
+					      00006 	    .BYTE   84							      ;
+					      00007 	    .BYTE   101							      ;
+					      00008 	    .BYTE   50							      ;
+					      00009 	    .BYTE   67							      ;
+					      0000A 	    .BYTE   84							      ;
+					      0000B 	    .BYTE   101							      ;
+					      0000C 	    .BYTE   84							      ;
+					      0000D 	    .BYTE   101							      ;
+					      0000E 	    .BYTE   118							      ;
+					      0000F 	    .BYTE   -121						      ;
+					      00010 	    .BYTE   50							      ;
+					      00011 	    .BYTE   67							      ;
+					      00012 	    .BYTE   84							      ;
+					      00013 	    .BYTE   101							      ;
+					      00014 	    .BYTE   84							      ;
+					      00015 	    .BYTE   101							      ;
+					      00016 	    .BYTE   118							      ;
+					      00017 	    .BYTE   -121						      ;
+					      00018 	    .BYTE   84							      ;
+					      00019 	    .BYTE   101							      ;
+					      0001A 	    .BYTE   118							      ;
+					      0001B 	    .BYTE   -121						      ;
+					      0001C 	    .BYTE   118							      ;
+					      0001D 	    .BYTE   -121						      ;
+					      0001E 	    .BYTE   -104						      ;
+					      0001F 	    .BYTE   -87							      ;
+
+						    LENGTH_TABLE=	P.AAA
+							    .GLOBL  LIB$CVT_DTB, LIB$CVT_OTB, LIB$CVT_HTB, LIB$_SYNTAXERR
+							    .GLOBL  LIB$_INVTYPE
+
+					 0FFC 00020 	    .ENTRY  LIB$TPARSE, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0210
+		         50	  04   AC  D0 00022 	    MOVL    STATE_VECTOR, R0					      ; 0327
+		         08	       60  D1 00026 	    CMPL    (R0), #8						      ;
+				       06  1E 00029 	    BGEQU   1$							      ;
+		         50	0114   8F  3C 0002B 	    MOVZWL  #276, R0						      ;
+					   04 00030 	    RET     							      ;
+		    06   A0	       01  8A 00031 1$:     BICB2   #1, 6(R0)						      ; 0329
+		         57	  08   AC  D0 00035 	    MOVL    START_STATE, STATE					      ; 0330
+		         58	       87  3C 00039 2$:     MOVZWL  (STATE)+, TYPE					      ; 0339
+	   08	         58	       09  E1 0003C 	    BBC     #9, TYPE, 3$					      ; 0340
+				       57  D6 00040 	    INCL    STATE						      ; 0341
+	   08	         10	  FF   A7  F0 00042 	    INSV    -1(STATE), #16, #8, TYPE				      ;
+				       58     00047									      ;
+		         54	  04   AC  D0 00048 3$:     MOVL    STATE_VECTOR, R4					      ; 0343
+		         5B	  04   A4  9E 0004C 	    MOVAB   4(R4), R11						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-9
+; Digital Equipment Corporation
+;
+		         1D	       6B  E8 00050 	    BLBS    (R11), 4$						      ;
+	   58	         09	       00  ED 00053 	    CMPZV   #0, #9, TYPE, #502					      ;
+			    000001F6   8F     00057									      ;
+				       12  13 0005C 	    BEQL    4$							      ;
+				       7E  D4 0005E 	    CLRL    -(SP)						      ; 0346
+				  08   A4  9F 00060 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 00063 	    CALLS   #2, GETSTRING					      ;
+		    08   A4	       56  C2 00068 	    SUBL2   CHAR_COUNT, 8(R4)					      ; 0347
+		    0C   A4	       56  C0 0006C 	    ADDL2   CHAR_COUNT, 12(R4)					      ; 0348
+				       56  D4 00070 4$:     CLRL    CHAR_COUNT						      ; 0351
+		         59	  14   A4  9E 00072 	    MOVAB   20(R4), R9						      ;
+		         5A	  0C   A4  D0 00076 	    MOVL    12(R4), R10						      ; 0352
+		         69	       5A  D0 0007A 	    MOVL    R10, (R9)						      ;
+	   58	         09	       00  ED 0007D 	    CMPZV   #0, #9, TYPE, #502					      ; 0354
+			    000001F6   8F     00081									      ;
+				       08  1E 00086 	    BGEQU   5$							      ;
+				  08   A4  D5 00088 	    TSTL    8(R4)						      ;
+				       03  12 0008B 	    BNEQ    5$							      ;
+				     028B  31 0008D 	    BRW     48$							      ;
+	   58	         09	       00  ED 00090 5$:     CMPZV   #0, #9, TYPE, #255					      ; 0358
+			    000000FF   8F     00094									      ;
+				       08  1A 00099 	    BGTRU   6$							      ;
+		         6A	       58  91 0009B 	    CMPB    TYPE, (R10)						      ; 0366
+				       74  12 0009E 	    BNEQ    9$							      ;
+				     00C8  31 000A0 	    BRW     18$							      ; 0367
+	   58	         09	       00  ED 000A3 6$:     CMPZV   #0, #9, TYPE, #256					      ; 0358
+			    00000100   8F     000A7									      ;
+				       69  1F 000AC 	    BLSSU   10$							      ;
+	   58	         09	       00  ED 000AE 	    CMPZV   #0, #9, TYPE, #475					      ;
+			    000001DB   8F     000B2									      ;
+				       5E  1A 000B7 	    BGTRU   10$							      ;
+		         57	  02   AB  E8 000B9 	    BLBS    2(R11), 9$						      ; 0383
+				       03  DD 000BD 	    PUSHL   #3							      ; 0384
+				  08   A4  9F 000BF 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 000C2 	    CALLS   #2, GETSTRING					      ;
+		         4A	       50  E9 000C7 	    BLBC    R0, 9$						      ;
+		         50	       58  9A 000CA 	    MOVZBL  TYPE, R0						      ; 0388
+		         55	  0C BC40  32 000CD 	    CVTWL   @KEYTAB[R0], KEY					      ;
+		         55	  0C   AC  C0 000D2 	    ADDL2   KEYTAB, KEY						      ;
+	   65	    00   B9	       56  29 000D6 	    CMPC3   CHAR_COUNT, @0(R9), (KEY)				      ; 0389
+				       37  12 000DB 	    BNEQ    9$							      ;
+		    FF   8F	     6645  91 000DD 	    CMPB    (CHAR_COUNT)[KEY], #255				      ; 0392
+				       5D  13 000E2 	    BEQL    13$							      ;
+				  07   A4  95 000E4 	    TSTB    7(R4)						      ; 0393
+				       08  13 000E7 	    BEQL    7$							      ;
+      07   A4	         08	       00  ED 000E9 	    CMPZV   #0, #8, 7(R4), CHAR_COUNT				      ;
+				       56     000EE									      ;
+				       50  1B 000EF 	    BLEQU   13$							      ;
+	   7D	         6B	       02  E0 000F1 7$:     BBS     #2, (R11), 19$					      ; 0396
+	   1B	         6B	       01  E1 000F5 	    BBC     #1, (R11), 9$					      ; 0398
+	 6645	  FFFF   8F	  FF   8F  3A 000F9 	    LOCC    #255, #65535, (CHAR_COUNT)[KEY]			      ; 0401
+				       02  12 00101 	    BNEQ    8$							      ;
+				       51  D4 00103 	    CLRL    R1							      ;
+	   55	         51	       01  C1 00105 8$:     ADDL3   #1, R1, KEY						      ;
+	   65	    00   B9	       56  29 00109 	    CMPC3   CHAR_COUNT, @0(R9), (KEY)				      ; 0402
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-10
+; Digital Equipment Corporation
+;
+				       62  12 0010E 	    BNEQ    19$							      ;
+		    02   AB	       01  88 00110 	    BISB2   #1, 2(R11)						      ; 0407
+				     0204  31 00114 9$:     BRW     48$							      ; 0406
+	   0B	    ED   8F	       58  8F 00117 10$:    CASEB   TYPE, #237, #11					      ; 0420
+	 0042	       0027	     004F     0011C 11$:    .WORD   18$-11$,-						      ;
+	 0060	       005C	     0058     00122		    14$-11$,-						      ;
+	 00A6	       0089	     006C     00128		    16$-11$,-						      ;
+	 00C6	       0020	     00F9     0012E		    20$-11$,-						      ;
+								    21$-11$,-						      ;
+								    22$-11$,-						      ;
+								    24$-11$,-						      ;
+								    25$-11$,-						      ;
+								    26$-11$,-						      ;
+								    32$-11$,-						      ;
+								    12$-11$,-						      ;
+								    29$-11$						      ;
+		         50 00000000G  8F  D0 00134 	    MOVL    #LIB$_INVTYPE, R0					      ; 0489
+					   04 0013B 	    RET     							      ;
+				  08   A4  D5 0013C 12$:    TSTL    8(R4)						      ; 0427
+				       D3  12 0013F 	    BNEQ    9$							      ;
+				       2F  11 00141 13$:    BRB     19$							      ;
+		         50	       6A  9A 00143 14$:    MOVZBL  (R10), R0						      ; 0435
+		    41   8F	       50  91 00146 	    CMPB    R0, #65						      ;
+				       06  1F 0014A 	    BLSSU   15$							      ;
+		    5A   8F	       50  91 0014C 	    CMPB    R0, #90						      ;
+				       19  1B 00150 	    BLEQU   18$							      ;
+		    61   8F	       50  91 00152 15$:    CMPB    R0, #97						      ;
+				       BC  1F 00156 	    BLSSU   9$							      ;
+		    7A   8F	       50  91 00158 	    CMPB    R0, #122						      ;
+				       0B  11 0015C 	    BRB     17$							      ;
+		         50	       6A  9A 0015E 16$:    MOVZBL  (R10), R0						      ; 0441
+		         30	       50  91 00161 	    CMPB    R0, #48						      ;
+				       AE  1F 00164 	    BLSSU   9$							      ;
+		         39	       50  91 00166 	    CMPB    R0, #57						      ;
+				       A9  1A 00169 17$:    BGTRU   9$							      ;
+		    18   A4	       6A  9A 0016B 18$:    MOVZBL  (R10), 24(R4)					      ; 0442
+		         56	       01  D0 0016F 	    MOVL    #1, CHAR_COUNT					      ; 0443
+				       6C  11 00172 19$:    BRB     28$							      ;
+				       02  DD 00174 20$:    PUSHL   #2							      ; 0447
+				       06  11 00176 	    BRB     23$							      ;
+				       03  DD 00178 21$:    PUSHL   #3							      ; 0450
+				       02  11 0017A 	    BRB     23$							      ;
+				       7E  D4 0017C 22$:    CLRL    -(SP)						      ; 0453
+				  08   A4  9F 0017E 23$:    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 00181 	    CALLS   #2, GETSTRING					      ;
+				       55  11 00186 	    BRB     27$							      ;
+				       01  DD 00188 24$:    PUSHL   #1							      ; 0456
+				  08   A4  9F 0018A 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 0018D 	    CALLS   #2, GETSTRING					      ;
+		         7D	       50  E9 00192 	    BLBC    R0, 31$						      ;
+				  1C   A4  9F 00195 	    PUSHAB  28(R4)						      ; 0457
+				       69  DD 00198 	    PUSHL   (R9)						      ;
+				       56  DD 0019A 	    PUSHL   CHAR_COUNT						      ;
+	      00000000G  00	       03  FB 0019C 	    CALLS   #3, LIB$CVT_DTB					      ;
+				       38  11 001A3 	    BRB     27$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-11
+; Digital Equipment Corporation
+;
+				       01  DD 001A5 25$:    PUSHL   #1							      ; 0461
+				  08   A4  9F 001A7 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 001AA 	    CALLS   #2, GETSTRING					      ;
+		         60	       50  E9 001AF 	    BLBC    R0, 31$						      ;
+				  1C   A4  9F 001B2 	    PUSHAB  28(R4)						      ; 0462
+				       69  DD 001B5 	    PUSHL   (R9)						      ;
+				       56  DD 001B7 	    PUSHL   CHAR_COUNT						      ;
+	      00000000G  00	       03  FB 001B9 	    CALLS   #3, LIB$CVT_OTB					      ;
+				       1B  11 001C0 	    BRB     27$							      ;
+				       02  DD 001C2 26$:    PUSHL   #2							      ; 0466
+				  08   A4  9F 001C4 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 001C7 	    CALLS   #2, GETSTRING					      ;
+		         43	       50  E9 001CC 	    BLBC    R0, 31$						      ;
+				  1C   A4  9F 001CF 	    PUSHAB  28(R4)						      ; 0467
+				       69  DD 001D2 	    PUSHL   (R9)						      ;
+				       56  DD 001D4 	    PUSHL   CHAR_COUNT						      ;
+	      00000000G  00	       03  FB 001D6 	    CALLS   #3, LIB$CVT_HTB					      ;
+		         32	       50  E9 001DD 27$:    BLBC    R0, 31$						      ;
+				       33  11 001E0 28$:    BRB     32$							      ;
+		         52	  08   A4  D0 001E2 29$:    MOVL    8(R4), SAVECOUNT					      ; 0473
+		         53	       5A  D0 001E6 	    MOVL    R10, SAVEPOINTER					      ; 0474
+				  0C   AC  DD 001E9 	    PUSHL   KEYTAB						      ; 0475
+		         50	       67  32 001EC 	    CVTWL   (STATE), R0						      ;
+		         50	       57  C0 001EF 	    ADDL2   STATE, R0						      ;
+	   7E	         50	       02  C1 001F2 	    ADDL3   #2, R0, -(SP)					      ;
+				       54  DD 001F6 	    PUSHL   R4							      ;
+		  FE23   CF	       03  FB 001F8 	    CALLS   #3, LIB$TPARSE					      ;
+		         0E	       50  E9 001FD 	    BLBC    R0, 30$						      ;
+	   56	         52	  08   A4  C3 00200 	    SUBL3   8(R4), SAVECOUNT, CHAR_COUNT			      ; 0477
+		         69	       53  D0 00205 	    MOVL    SAVEPOINTER, (R9)					      ; 0478
+		    08   A4	       52  7D 00208 	    MOVQ    SAVECOUNT, 8(R4)					      ; 0479
+				       07  11 0020C 	    BRB     32$							      ; 0477
+		    08   A4	       52  7D 0020E 30$:    MOVQ    SAVECOUNT, 8(R4)					      ; 0482
+				     0106  31 00212 31$:    BRW     48$							      ;
+		    08   A4	       56  C2 00215 32$:    SUBL2   CHAR_COUNT, 8(R4)					      ; 0509
+		    0C   A4	       56  C0 00219 	    ADDL2   CHAR_COUNT, 12(R4)					      ; 0510
+		    10   A4	       56  D0 0021D 	    MOVL    CHAR_COUNT, 16(R4)					      ; 0511
+	   03	         58	       0B  E5 00221 	    BBCC    #11, TYPE, 33$					      ; 0513
+		         57	       02  C0 00225 	    ADDL2   #2, STATE						      ;
+	   04	         58	       10  E5 00228 33$:    BBCC    #16, TYPE, 34$					      ; 0515
+		    20   A4	       87  D0 0022C 	    MOVL    (STATE)+, 32(R4)					      ; 0516
+	   10	         58	       0F  E5 00230 34$:    BBCC    #15, TYPE, 35$					      ; 0520
+		         50	       01  D0 00234 	    MOVL    #1, R0						      ; 0524
+	   52	         57	       87  C1 00237 	    ADDL3   (STATE)+, STATE, R2					      ; 0525
+		         62	       64  FA 0023B 	    CALLG   (R4), (R2)						      ;
+		         03	       50  E8 0023E 	    BLBS    R0, 35$						      ;
+				     009A  31 00241 	    BRW     46$							      ;
+	   47	         58	       0E  E1 00244 35$:    BBC     #14, TYPE, 41$					      ; 0539
+	   51	         57	       87  C1 00248 	    ADDL3   (STATE)+, STATE, ADDRESS				      ; 0543
+	   05	         58	       0D  E1 0024C 	    BBC     #13, TYPE, 36$					      ; 0544
+		         61	       87  C8 00250 	    BISL2   (STATE)+, (ADDRESS)					      ; 0546
+				       3A  11 00253 	    BRB     41$							      ; 0544
+		         50	  04   AC  D0 00255 36$:    MOVL    STATE_VECTOR, R0					      ; 0551
+	   28	         58	       08  E1 00259 	    BBC     #8, TYPE, 39$					      ; 0549
+	   0B	    ED   8F	       58  8F 0025D 	    CASEB   TYPE, #237, #11					      ; 0554
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-12
+; Digital Equipment Corporation
+;
+	 0023	       0023	     0023     00262 37$:    .WORD   39$-37$,-						      ;
+	 0018	       0018	     0018     00268		    39$-37$,-						      ;
+	 0029	       0029	     0029     0026E		    39$-37$,-						      ;
+	 0018	       0018	     0018     00274		    38$-37$,-						      ;
+								    38$-37$,-						      ;
+								    38$-37$,-						      ;
+								    40$-37$,-						      ;
+								    40$-37$,-						      ;
+								    40$-37$,-						      ;
+								    38$-37$,-						      ;
+								    38$-37$,-						      ;
+								    38$-37$						      ;
+		         61	  10   A0  D0 0027A 38$:    MOVL    16(R0), (ADDRESS)					      ; 0565
+		    04   A1	  14   A0  D0 0027E 	    MOVL    20(R0), 4(ADDRESS)					      ; 0566
+				       0A  11 00283 	    BRB     41$							      ; 0554
+		         61	  18   A0  90 00285 39$:    MOVB    24(R0), (ADDRESS)					      ; 0558
+				       04  11 00289 	    BRB     41$							      ; 0554
+		         61	  1C   A0  D0 0028B 40$:    MOVL    28(R0), (ADDRESS)					      ; 0561
+		         50	  04   AC  D0 0028F 41$:    MOVL    STATE_VECTOR, R0					      ; 0572
+		    06   A0	       01  8A 00293 	    BICB2   #1, 6(R0)						      ; 0579
+	   1B	         58	       0C  E1 00297 	    BBC     #12, TYPE, 44$					      ; 0580
+		  FFFF   8F	       67  B1 0029B 	    CMPW    (STATE), #-1					      ; 0582
+				       04  12 002A0 	    BNEQ    42$							      ;
+		         50	       01  D0 002A2 	    MOVL    #1, R0						      ; 0583
+					   04 002A5 	    RET     							      ;
+		  FFFE   8F	       67  B1 002A6 42$:    CMPW    (STATE), #-2					      ; 0584
+				       6C  13 002AB 	    BEQL    47$							      ;
+		         50	       87  32 002AD 	    CVTWL   (STATE)+, R0					      ; 0587
+		         57	       50  C0 002B0 	    ADDL2   R0, STATE						      ;
+				     FD83  31 002B3 43$:    BRW     2$							      ; 0580
+	   F9	         58	       0A  E0 002B6 44$:    BBS     #10, TYPE, 43$					      ; 0589
+		         58	       87  3C 002BA 	    MOVZWL  (STATE)+, TYPE					      ; 0591
+	   08	         58	       09  E1 002BD 	    BBC     #9, TYPE, 45$					      ; 0592
+				       57  D6 002C1 	    INCL    STATE						      ; 0593
+	   08	         10	  FF   A7  F0 002C3 	    INSV    -1(STATE), #16, #8, TYPE				      ;
+				       58     002C8									      ;
+	   58	         06	       0B  EF 002C9 45$:    EXTZV   #11, #6, TYPE, R0					      ; 0595
+				       50     002CD									      ;
+		         50	       04  C4 002CE 	    MULL2   #4, R0						      ;
+    FD29   CF	         04	       50  EF 002D1 	    EXTZV   R0, #4, LENGTH_TABLE, R1				      ;
+				       51     002D7									      ;
+		         57	     6741  3E 002D8 	    MOVAW   (STATE)[R1], STATE					      ;
+				       D8  11 002DC 	    BRB     44$							      ; 0589
+		         52	  04   AC  D0 002DE 46$:    MOVL    STATE_VECTOR, R2					      ; 0603
+		    08   A2	       56  C0 002E2 	    ADDL2   CHAR_COUNT, 8(R2)					      ; 0604
+		    0C   A2	       56  C2 002E6 	    SUBL2   CHAR_COUNT, 12(R2)					      ; 0605
+	   58	         06	       0B  EF 002EA 	    EXTZV   #11, #6, TYPE, R0					      ; 0607
+				       50     002EE									      ;
+		         50	       04  C4 002EF 	    MULL2   #4, R0						      ;
+    FD08   CF	         04	       50  EF 002F2 	    EXTZV   R0, #4, LENGTH_TABLE, R1				      ;
+				       51     002F8									      ;
+		         57	     6741  3E 002F9 	    MOVAW   (STATE)[R1], STATE					      ;
+	   B2	         58	       0A  E1 002FD 	    BBC     #10, TYPE, 43$					      ; 0608
+				       03  DD 00301 	    PUSHL   #3							      ; 0611
+				  08   A2  9F 00303 	    PUSHAB  8(R2)						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 3-13
+; Digital Equipment Corporation
+;
+		  0000V  CF	       02  FB 00306 	    CALLS   #2, GETSTRING					      ;
+		    10   A2	       56  D0 0030B 	    MOVL    CHAR_COUNT, 16(R2)					      ; 0612
+				       39  12 0030F 	    BNEQ    49$							      ; 0613
+				  08   A2  D5 00311 	    TSTL    8(R2)						      ;
+				       34  13 00314 	    BEQL    49$							      ;
+				  10   A2  D6 00316 	    INCL    16(R2)						      ; 0614
+				       2F  11 00319 47$:    BRB     49$							      ; 0615
+	   58	         06	       0B  EF 0031B 48$:    EXTZV   #11, #6, TYPE, R0					      ; 0631
+				       50     0031F									      ;
+		         50	       04  C4 00320 	    MULL2   #4, R0						      ;
+    FCD7   CF	         04	       50  EF 00323 	    EXTZV   R0, #4, LENGTH_TABLE, R1				      ;
+				       51     00329									      ;
+		         57	     6741  3E 0032A 	    MOVAW   (STATE)[R1], STATE					      ;
+	   81	         58	       0A  E1 0032E 	    BBC     #10, TYPE, 43$					      ; 0632
+				       03  DD 00332 	    PUSHL   #3							      ; 0635
+				  08   A4  9F 00334 	    PUSHAB  8(R4)						      ;
+		  0000V  CF	       02  FB 00337 	    CALLS   #2, GETSTRING					      ;
+		    10   A4	       56  D0 0033C 	    MOVL    CHAR_COUNT, 16(R4)					      ; 0636
+				       08  12 00340 	    BNEQ    49$							      ; 0637
+				  08   A4  D5 00342 	    TSTL    8(R4)						      ;
+				       03  13 00345 	    BEQL    49$							      ;
+				  10   A4  D6 00347 	    INCL    16(R4)						      ; 0638
+		         50 00000000G  8F  D0 0034A 49$:    MOVL    #LIB$_SYNTAXERR, R0					      ; 0639
+					   04 00351 	    RET     							      ; 0210
+
+; Routine Size:  818 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 4
+; Digital Equipment Corporation
+;
+;	0646	ROUTINE GETSTRING (STRING, TYPE) : L_GETSTRING =
+;	0647	
+;	0648	!++
+;	0649	!
+;	0650	! FUNCTIONAL DESCRIPTION:
+;	0651	!
+;	0652	!	This routine extracts a string of the indicated type from
+;	0653	!	the front of the string being parsed.
+;	0654	!
+;	0655	!
+;	0656	! CALLING SEQUENCE:
+;	0657	!	GETSTRING (ARG1, ARG2)
+;	0658	!
+;	0659	!
+;	0660	! INPUT PARAMETERS:
+;	0661	!	ARG1 = address of string descriptor of source string
+;	0662	!	ARG2 = string type code
+;	0663	!
+;	0664	! IMPLICIT INPUTS:
+;	0665	!	NONE
+;	0666	!
+;	0667	! OUTPUT PARAMETERS:
+;	0668	!	NONE
+;	0669	!
+;	0670	! IMPLICIT OUTPUTS:
+;	0671	!	NONE
+;	0672	!
+;	0673	! ROUTINE VALUE:
+;	0674	!	1 if string is not empty
+;	0675	!	0 if string is null
+;	0676	!
+;	0677	! SIDE EFFECTS:
+;	0678	!	NONE
+;	0679	!
+;	0680	!--
+;	0681	
+;	0682	
+;	0683	BEGIN
+;	0684	
+;	0685	MAP
+;	0686		STRING: REF VECTOR;
+;	0687	
+;	0688	EXTERNAL REGISTER
+;	0689		CHAR_COUNT	= 6;		! character count of found string
+;	0690	
+;	0691	!+
+;	0692	!
+;	0693	! To extract the string we simply scan through the input string
+;	0694	! until we hit a character that is not in the class.
+;	0695	! We count the characters in the global string count.
+;	0696	!
+;	0697	!-
+;	0698	
+;	0699	CHAR_COUNT = 0;
+;	0700	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 4-1
+; Digital Equipment Corporation
+;
+;	0701	WHILE .STRING[0] GTRU .CHAR_COUNT
+;	0702	AND (
+;	0703	    (	IF .TYPE EQL SPACES
+;	0704		THEN IS_SPACE (CH$RCHAR (.STRING[1] + .CHAR_COUNT))
+;	0705		ELSE 0)
+;	0706	    OR	(IF .TYPE GEQU NUMERIC
+;	0707		THEN IS_NUMERIC (CH$RCHAR (.STRING[1] + .CHAR_COUNT))
+;	0708		ELSE 0)
+;	0709	    OR	(IF .TYPE GEQU ALPHANUMERIC
+;	0710		THEN IS_ALPHABETIC (CH$RCHAR (.STRING[1] + .CHAR_COUNT))
+;	0711		ELSE 0)
+;	0712	    OR	(IF .TYPE EQL SYMBOL
+;	0713		THEN IS_SYMBOL (CH$RCHAR (.STRING[1] + .CHAR_COUNT))
+;	0714		ELSE 0)
+;	0715	    )
+;	0716	DO (CHAR_COUNT = .CHAR_COUNT + 1);
+;	0717	
+;	0718	RETURN .CHAR_COUNT GTRU 0;
+;	0719	
+;	0720	END;					! end of routine GETSTRING
+
+
+
+
+
+					 0004 00352 GETSTRING:
+							    .WORD   Save R2						      ; 0646
+				       56  D4 00354 	    CLRL    CHAR_COUNT						      ; 0699
+		         50	  04   AC  D0 00356 	    MOVL    STRING, R0						      ; 0701
+		         56	       60  D1 0035A 1$:     CMPL    (R0), CHAR_COUNT					      ;
+				       64  1B 0035D 	    BLEQU   7$							      ;
+		         52	  08   AC  D0 0035F 	    MOVL    TYPE, R2						      ; 0703
+				       0F  12 00363 	    BNEQ    2$							      ;
+		         51	  04 B046  9A 00365 	    MOVZBL  @4(R0)[CHAR_COUNT], R1				      ; 0704
+		         09	       51  91 0036A 	    CMPB    R1, #9						      ;
+				       50  13 0036D 	    BEQL    6$							      ;
+		         20	       51  91 0036F 	    CMPB    R1, #32						      ;
+				       4B  13 00372 	    BEQL    6$							      ;
+		         01	       52  D1 00374 2$:     CMPL    R2, #1						      ; 0706
+				       0F  1F 00377 	    BLSSU   3$							      ;
+		         51	  04 B046  9A 00379 	    MOVZBL  @4(R0)[CHAR_COUNT], R1				      ; 0707
+		         30	       51  91 0037E 	    CMPB    R1, #48						      ;
+				       05  1F 00381 	    BLSSU   3$							      ;
+		         39	       51  91 00383 	    CMPB    R1, #57						      ;
+				       37  1B 00386 	    BLEQU   6$							      ;
+		         02	       52  D1 00388 3$:     CMPL    R2, #2						      ; 0709
+				       1D  1F 0038B 	    BLSSU   5$							      ;
+		         51	  04 B046  9A 0038D 	    MOVZBL  @4(R0)[CHAR_COUNT], R1				      ; 0710
+		    41   8F	       51  91 00392 	    CMPB    R1, #65						      ;
+				       06  1F 00396 	    BLSSU   4$							      ;
+		    5A   8F	       51  91 00398 	    CMPB    R1, #90						      ;
+				       21  1B 0039C 	    BLEQU   6$							      ;
+		    61   8F	       51  91 0039E 4$:     CMPB    R1, #97						      ;
+				       06  1F 003A2 	    BLSSU   5$							      ;
+		    7A   8F	       51  91 003A4 	    CMPB    R1, #122						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43	DBB3:[VMSLIB.SRC]TPARSE.B32;2					Page 4-2
+; Digital Equipment Corporation
+;
+				       15  1B 003A8 	    BLEQU   6$							      ;
+		         03	       52  D1 003AA 5$:     CMPL    R2, #3						      ; 0712
+				       14  12 003AD 	    BNEQ    7$							      ;
+		         51	  04 B046  9A 003AF 	    MOVZBL  @4(R0)[CHAR_COUNT], R1				      ; 0713
+		         24	       51  91 003B4 	    CMPB    R1, #36						      ;
+				       06  13 003B7 	    BEQL    6$							      ;
+		    5F   8F	       51  91 003B9 	    CMPB    R1, #95						      ;
+				       04  12 003BD 	    BNEQ    7$							      ;
+				       56  D6 003BF 6$:     INCL    CHAR_COUNT						      ; 0716
+				       97  11 003C1 	    BRB     1$							      ; 0701
+				       50  D4 003C3 7$:     CLRL    R0							      ; 0718
+				       56  D5 003C5 	    TSTL    CHAR_COUNT						      ;
+				       02  1B 003C7 	    BLEQU   8$							      ;
+				       50  D6 003C9 	    INCL    R0							      ;
+					   04 003CB 8$:     RET     							      ; 0646
+
+; Routine Size:  122 bytes
+
+
+;	0721	
+;	0722	
+;	0723	END
+;	0724	ELUDOM					! end of module TPARSE
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  LIB$CODE       	   972  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        15         0       115
+;  DBA4:[SYSLIB]TPAMAC.L32;1		        39        14        35         5
+
+
+
+
+
+; Size:		940 code + 32 data bytes
+; Run Time:	00:36.0
+; Elapsed Time:	01:16.9
+; Memory Used:	382 pages
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:23:43									Page 4-3
+; Digital Equipment Corporation
+;
+; Compilation Complete

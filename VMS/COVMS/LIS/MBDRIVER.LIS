@@ -1,0 +1,1133 @@
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (2)      93  EXE$SNDEVMSG - SEND DEVICE DRIVER MAILBOX MESSA
+   (3)     140  SYSTEM INTERNAL WRITE TO MAILBOX SUBROUTINE
+   (4)     219  CANCELIO - CANCEL I/O ON MAILBOX UNIT
+   (5)     293  CHECKIO - CHECK READ AND WRITE PARAMETERS
+   (6)     357  FDTREAD - READ FUNCTION DECISION ROUTINE
+   (7)     425  FDTSET - SET UP ATTENTION AST FUNCTION
+   (8)     476  FDTEOF - WRITE EOF MESSAGE TO MAILBOX
+   (9)     506  FDTWRITE - WRITE OPERATION FDT ROUTINE
+   (11)    627  INSERT MESSAGE IN MAILBOX QUEUE
+   (12)    663  STARTIO - STARTIO OPERATION
+   (13)    691  FINISHREAD - FINISH READ I/O OPERATION
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   1
+X05                                                                                                                              (1)
+
+                                     0000     1 	.TITLE	MBDRIVER - STARLET MAILBOX DEVICE DRIVER 
+                                     0000     2 	.IDENT	/X05/		;
+                                     0000     3 ;
+                                     0000     4 ; COPYRIGHT (C) 1978
+                                     0000     5 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     6 ;
+                                     0000     7 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000     8 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000     9 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    10 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    11 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    12 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    13 ; REMAIN IN DEC.
+                                     0000    14 ;
+                                     0000    15 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    16 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    17 ; CORPORATION.
+                                     0000    18 ;
+                                     0000    19 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    20 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    21 ;
+                                     0000    22 ;++
+                                     0000    23 ; FACILITY:
+                                     0000    24 ;
+                                     0000    25 ;	VAX/VMS MAILBOX DEVICE DRIVER
+                                     0000    26 ;
+                                     0000    27 ; ABSTRACT:
+                                     0000    28 ;
+                                     0000    29 ;	THIS MODULE CONTAINS THE MAILBOX DRIVER I/O ROUTINES.
+                                     0000    30 ;
+                                     0000    31 ; AUTHOR: R. HEINEN 16-SEPT-76
+                                     0000    32 ;
+                                     0000    33 ;--
+                                     0000    34 ; EXTERNAL SYMBOLS
+                                     0000    35 ;
+                                     0000    36 	$ACBDEF				; DEFINE AST CONTROL BLOCK
+                                     0000    37 	$CADEF				; DEFINE CONDITIONAL ASSEMBLY
+                                     0000    38 	$DDBDEF				; DEFINE DDB
+                                     0000    39 	$DYNDEF				; DEFINE DYNAMIC BLOCK TYPES
+                                     0000    40 	$IODEF				; DEFINE FUNCTION CODES
+                                     0000    41 	$IRPDEF				; DEFINE I/O PACKET OFFSETS
+                                     0000    42 	$IPLDEF				; DEFINE IPL NUMBERS
+                                     0000    43 	$PCBDEF				; DEFINE PCB OFFSETS
+                                     0000    44 	$PRDEF				; DEFINE PROCESSOR REGISTERS
+                                     0000    45 	$PRIDEF				; DEFINE PRIORITY INCREMENTS
+                                     0000    46 	$RSNDEF				; DEFINE RESOURCE NUMBERS
+                                     0000    47 	$SSDEF				; DEFINE SYSTEM STATUS CODES
+                                     0000    48 	$UCBDEF				; DEFINE UCB OFFSETS
+                                     0000    49  
+                                     0000    50 ;
+                                     0000    51 ; LOCAL DEFINITIONS
+                                     0000    52 ;
+                           00000000  0000    53 UCB$L_MB_MSGQ=UCB$L_FQFL
+                           0000000C  0000    54 UCB$L_MB_W_AST = UCB$L_ASTQFL
+                           00000010  0000    55 UCB$L_MB_R_AST = UCB$L_ASTQBL
+                                     0000    56  
+                           00000000  0000    57 P1		= 0			; OFFSET TO BUFFER ADDRESS IN ARGUMENT BLOCK
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   2
+X05                                                                                                                              (1)
+
+                           00000004  0000    58 P2		= 4			; OFFSET TO REQUEST SIZE IN ARGUMENT BLOCK
+                           00000008  0000    59 P3		= 8			; OFFSET FOR PARAMETER 3
+                           0000000C  0000    60 P4		= 12			; OFFSET FOR PARAMETER 4
+                                     0000    61  
+                                     0000    62 ;
+                                     0000    63 ; LOCAL DATA STORAGE
+                                     0000    64 ;
+                                     0000    65  
+                                 00000000    66 	.PSECT	WIONONPAGED
+                                     0000    67  
+                                     0000    68 MB$DDT::
+                           000002D5' 0000    69 	.LONG	STARTIO			; STARTIO OPERATION
+                           00000000  0004    70 	.LONG	0			; NO UNSOLICITED INTERRUTPS
+                           0000001C' 0008    71 	.LONG	10$			; FUNCTION DECISION TABLE
+                           000000FC' 000C    72 	.LONG	CANCELIO		; CANCEL I/O
+                  00000000 00000000  0010    73 	.LONG	0,0			; DIAGNOSTIC INFO
+                           00000000  0018    74 	.LONG	0			; UNIT INITIALIZATION ENTRY POINT
+                                     001C    75  
+                                     001C    76 ;
+                                     001C    77 ; FUNCTION DECISION TABLE
+                                     001C    78 ;
+                                     001C    79  
+                                     001C    80 10$:	FUNCTAB	,<-			; LEGAL FUNCTIONS
+                                     001C    81 		SETMODE,-		; ASK FOR READ OR WRITE AST'S
+                                     001C    82 		WRITEOF,-		; WRITE EOF
+                                     001C    83 		READLBLK,WRITELBLK,-
+                                     001C    84 		READVBLK,WRITEVBLK,-
+                                     001C    85 		READPBLK,WRITEPBLK>
+                                     0024    86 	FUNCTAB,<READLBLK,READVBLK,READPBLK,-
+                                     0024    87 		WRITELBLK,WRITEVBLK,WRITEPBLK>
+                                     002C    88 	FUNCTAB FDTREAD,<READLBLK,READPBLK,READVBLK>; READ FUNCTION
+                                     0038    89 	FUNCTAB FDTWRITE,<WRITELBLK,WRITEPBLK,WRITEVBLK>; WRITE FUNCTION
+                                     0044    90 	FUNCTAB	FDTSET,<SETMODE>	; SET AST CONTROL
+                                     0050    91 	FUNCTAB	FDTEOF,<WRITEOF>	; WRITE EOF
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   3
+X05             EXE$SNDEVMSG - SEND DEVICE DRIVER MAILBOX MESSA                                                                  (2)
+
+                                     005C    93 	.SBTTL	EXE$SNDEVMSG - SEND DEVICE DRIVER MAILBOX MESSAGE
+                                     005C    94 ;++
+                                     005C    95 ; EXE$SNDEVMSG - SEND DEVICE SPECIFIC MESSAGE ON BEHALF OF DRIVER
+                                     005C    96 ;
+                                     005C    97 ; FUNCTIONAL DESCRIPTION:
+                                     005C    98 ;
+                                     005C    99 ; THIS ROUTINE BUILDS AND SENDS A DEVICE SPECIFIC MESSAGE TO A MAILBOX.
+                                     005C   100 ; THE MESSAGE IS FORMATTED AS FOLLOWS:
+                                     005C   101 ;
+                                     005C   102 ;	WORD 0   = TYPE OF MESSAGE
+                                     005C   103 ;	WORD 1   = UNIT OF DEVICE
+                                     005C   104 ;	REMAINDER = COUNTED STRING OF DEVICE NAME
+                                     005C   105 ;
+                                     005C   106 ; INPUTS:
+                                     005C   107 ;
+                                     005C   108 ;	R2 = ADDRESS OF 
+                                     005C   109 ;	R3 = MAILBOX UCB ADDRESS
+                                     005C   110 ;	R4 = TYPE OF MESSAGE
+                                     005C   111 ;	R5 = DEVICE UCB ADDRESS
+                                     005C   112 ;
+                                     005C   113 ;
+                                     005C   114 ; OUTPUTS:
+                                     005C   115 ;
+                                     005C   116 ;	R0 = STATUS OF THE OPERATION
+                                     005C   117 ;	R1,R2,R3,R4,R5 ARE DISTROYED
+                                     005C   118 ;
+                                     005C   119 ; STATUS RETURNS:
+                                     005C   120 ;
+                                     005C   121 ;	SEE EXE$WRTMAILBOX.
+                                     005C   122 ;--
+                                     005C   123 EXE$SNDEVMSG::				; SEND MESSAGE FOR DEVICE DRIVER
+                          55     DD  005C   124 	PUSHL	R5			; SAVE SENDING DEVICE UCB
+                     01F0 8F     BB  005E   125 	PUSHR	#^M<R4,R5,R6,R7,R8>	; PUSH MESSAGE TYPE AND RESERVE SPACE
+         02 AE         48 A5     B0  0062   126 	MOVW	UCB$W_UNIT(R5),2(SP)	; INSERT UNIT OF DEVICE
+            55         24 A5     D0  0067   127 	MOVL	UCB$L_DDB(R5),R5	; ADDRESS SENDING DDB
+            52            5E     D0  006B   128 	MOVL	SP,R2			; COPY MESSAGE ADDRESS
+                          0C     BB  006E   129 	PUSHR	#^M<R2,R3>		; SAVE MESSAGE ADDRESS AND TARGET UCB
+            04            00     EF  0070   130 	EXTZV	#0,#4,DDB$T_NAME(R5),-(SP); GET SIZE OF NAME TO 15 CHARAS
+            7E         14 A5         0073       
+                          6E     D6  0076   131 	INCL	(SP)			; SET UP TO COPY SIZE TOO
+         14 A5            6E     28  0078   132 	MOVC3	(SP),DDB$T_NAME(R5),4(R2); COPY NAME
+                       04 A2         007C       
+            8E            04     C1  007E   133 	ADDL3	#4,(SP)+,R3		; GET TOTAL MESSAGE SIZE
+                          53         0081       
+                          30     BA  0082   134 	POPR	#^M<R4,R5>		; GET ADDRESS AND TARGET UCB
+                          06     10  0084   135 	BSBB	EXE$WRTMAILBOX		; DO THE MAILBOX WRITE
+            5E            14     C0  0086   136 	ADDL	#20,SP			; RESTORE STACK
+                          20     BA  0089   137 	POPR	#^M<R5>			; RESTORE SENDING UCB
+                                 05  008B   138 	RSB				; RETURN
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   4
+X05             SYSTEM INTERNAL WRITE TO MAILBOX SUBROUTINE                                                                      (3)
+
+                                     008C   140 	.SBTTL	SYSTEM INTERNAL WRITE TO MAILBOX SUBROUTINE
+                                     008C   141 ;++
+                                     008C   142 ; EXE$WRTMAILBOX - WRITE TO MAILBOX SUBROUTINE FOR EXECUTIVE USE
+                                     008C   143 ;
+                                     008C   144 ; FUNCTIONAL DESCRIPTION:
+                                     008C   145 ;
+                                     008C   146 ; THIS ROUTINE IS USED BY SYSTEM ROUTINES TO WRITE A MESSAGE TO A MAILBOX.
+                                     008C   147 ;
+                                     008C   148 ; INPUTS:
+                                     008C   149 ;
+                                     008C   150 ;	R3 = SIZE OF MESSAGE
+                                     008C   151 ;	R4 = MESSAGE ADDRESS
+                                     008C   152 ;	R5 = MAILBOX UCB ADDRESS
+                                     008C   153 ;
+                                     008C   154 ; OUTPUTS:
+                                     008C   155 ;
+                                     008C   156 ;	R0 = STATUS OF OPERATION
+                                     008C   157 ;
+                                     008C   158 ;	R1,R2 USED.
+                                     008C   159 ;
+                                     008C   160 ; COMPLETION CODES:
+                                     008C   161 ;
+                                     008C   162 ;	SS$_NORMAL
+                                     008C   163 ;	SS$_DEVOFFLIN - MAILBOX IS NOT ONLINE
+                                     008C   164 ;	SS$_MBTOOSML - MESSAGE TOO LARGE FOR MAILBOX
+                                     008C   165 ;	SS$_MBFULL - MAILBOX FULL OF MESSAGES
+                                     008C   166 ;	SS$_INSFMEM - MEMORY ALLOCATION PROBLEM
+                                     008C   167 ;
+                                     008C   168 ;--
+                                     008C   169 EXE$WRTMAILBOX::			;
+                                     008C   170 ;
+                                     008C   171 ; SET THE PROPER IPL FOR INTERLOCK
+                                     008C   172 ;
+            7E            12     DB  008C   173 	MFPR	#PR$_IPL,-(SP)		; SAVE CURRENT IPL
+            6E         0B A5     91  008F   174 	CMPB	UCB$B_FIPL(R5),(SP)	; HIGH ENOUGH?
+                          04     1B  0093   175 	BLEQU	10$			; IF LEQU THEN YES
+                                     0095   176 	SETIPL	UCB$B_FIPL(R5)		; SET THE PROPER IPL
+                                     0099   177 ;
+                                     0099   178 ; MAIL THE MESSAGE
+                                     0099   179 ;
+            50       0084 8F     3C  0099   180 10$:	MOVZWL	#SS$_DEVOFFLINE,R0	; ASSUME OFF LINE
+         58 A5            04     E1  009E   181 	BBC	#UCB$V_ONLINE,UCB$W_STS(R5),20$; BR IF NOT ONLINE
+                          55         00A2       
+            50       08D8 8F     3C  00A3   182 	MOVZWL	#SS$_MBFULL,R0		; ASSUME MESSAGE WILL NOT FIT
+         14 A5         16 A5     B1  00A8   183 	CMPW	UCB$W_MSGCNT(R5),UCB$W_MSGMAX(R5); MAIL BOX FULL?
+                          49     13  00AD   184 	BEQL	20$			; IF YES THEN NO WRITE
+            50       019C 8F     3C  00AF   185 	MOVZWL	#SS$_MBTOOSML,R0	; ASSUME MESSAGE TOO BIG
+            51         16 A3     9E  00B4   186 	MOVAB	22(R3),R1		; SET SIZE TO REQUEST
+         18 A5            53     B1  00B8   187 	CMPW	R3,UCB$W_BUFQUO(R5)	; MESSAGE FIT?
+                          3A     1A  00BC   188 	BGTRU	20$			; IF GTRU THEN NO
+         3A A5            53     B1  00BE   189 	CMPW	R3,UCB$W_DEVBUFSIZ(R5)	; BIGGER THAN ALLOWED?
+                          34     1A  00C2   190 	BGTRU	20$			; IF YES THEN ALSO ERROR
+                          38     BB  00C4   191 	PUSHR	#^M<R3,R4,R5>		; SAVE REGISTERS FROM MOVC
+                          FF37'  30  00C6   192 	BSBW	EXE$ALONONPAGED		; GET THE MEMORY BLOCK
+            2A            50     E9  00C9   193 	BLBC	R0,15$			; RETURN UNSUCESSFULLY ON FAILURE
+                                     00CC   194 ;
+                                     00CC   195 ; FILL IN BLOCK
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   5
+X05             SYSTEM INTERNAL WRITE TO MAILBOX SUBROUTINE                                                                      (3)
+
+                                     00CC   196 ;
+                          82     7F  00CC   197 	PUSHAQ	(R2)+			; SAVE BLOCK ADDRESS AND PASS LINK WORDS
+            82            51     B0  00CE   198 	MOVW	R1,(R2)+		; INSERT BLOCK SIZE
+            82            13     B0  00D1   199 	MOVW	#DYN$C_BUFIO,(R2)+	; INSERT BLOCK TYPE
+            82         04 AE     B0  00D4   200 	MOVW	4(SP),(R2)+		; INSERT SIZE OF MESSAGE
+                          82     D4  00D8   201 	CLRL	(R2)+			; SET NO PACKET
+            50   00000000'EF     D0  00DA   202 	MOVL	SCH$GL_CURPCB,R0	; GET CURRENT PCB
+            82         60 A0     D0  00E1   203 	MOVL	PCB$L_PID(R0),(R2)+	; INSERT IT ( WHATEVER IT IS! )
+                                     00E5   204 ;
+                                     00E5   205 ; COPY DATA
+                                     00E5   206 ;
+            64         04 AE     28  00E5   207 	MOVC3	4(SP),(R4),(R2)		; MOVE DATA
+                          62         00E9       
+                                     00EA   208 ;
+                                     00EA   209 ; INSERT IN MESSAGE QUEUE
+                                     00EA   210 ;
+                          04     BA  00EA   211 	POPR	#^M<R2>			; RESTORE BLOCK ADDRESS
+            55         08 AE     D0  00EC   212 	MOVL	8(SP),R5		; RESTORE MAILBOX UCB ADDRESS
+                          01BF   30  00F0   213 	BSBW	INSMBQUEUE		; INSERT ON QUEUE
+            50            01     9A  00F3   214 	MOVZBL	#SS$_NORMAL,R0		; SET SUCCESS
+                          38     BA  00F6   215 15$:	POPR	#^M<R3,R4,R5>		; RESTORE REGISTERS
+                                     00F8   216 20$:	ENBINT				; ENABLE INTERUPTS TO CALLER'S IPL
+                                 05  00FB   217 	RSB				; AND RETURN
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   6
+X05             CANCELIO - CANCEL I/O ON MAILBOX UNIT                                                                            (4)
+
+                                     00FC   219 	.SBTTL	CANCELIO - CANCEL I/O ON MAILBOX UNIT
+                                     00FC   220 ;++
+                                     00FC   221 ; CANCELIO - CANCEL I/O ON MAILBOX UNIT
+                                     00FC   222 ;
+                                     00FC   223 ; FUNCTIONAL DESCRIPTION:
+                                     00FC   224 ;
+                                     00FC   225 ; THIS ROUTINE IS ENTERED TO CANCEL ALL OUTSTANDING I/O FOR A PARTICULAR
+                                     00FC   226 ; PROCESS AND CHANNEL ON A MAILBOX UNIT.
+                                     00FC   227 ; IF THE UNIT IS BUSY, THE CURRENT READ PACKET IS CHECKED AND COMPLETED
+                                     00FC   228 ; IF IT BELONGS TO THE CANCELLING PROCESS. ALL QUEUED REQUESTS HAVE BEEN REMOVED.
+                                     00FC   229 ; IF NO READER EXISTS THEN THE QUEUE OF OUTSTANDING MESSAGES IS SEARCHED
+                                     00FC   230 ; FOR MESSAGES AND WAITING WRITES. IF A PID MATCH EXISTS THEN THESE I/O
+                                     00FC   231 ; ARE ALSO COMPLETED ALONG WITH REMOVING THE MESSAGES.
+                                     00FC   232 ; THE FINAL ACTION IS TO SEARCH THE QUEUE OF AST REQUESTS TO REMOVE THE ONES
+                                     00FC   233 ; ASSOCIATED WITH THE CANCELLING PROCESS.
+                                     00FC   234 ;
+                                     00FC   235 ; INPUTS:
+                                     00FC   236 ;
+                                     00FC   237 ;	R2 = NEGITIVE OF CHANNEL NUMBER
+                                     00FC   238 ;	R3 = CURRENT PACKET ADDRESS
+                                     00FC   239 ;	R4 = PCB OF CANCELLING PROCESS
+                                     00FC   240 ;	R5 = UCB OF UNIT
+                                     00FC   241 ;
+                                     00FC   242 ; OUTPUTS:
+                                     00FC   243 ;
+                                     00FC   244 ;	R4,R5 ARE PRESERVED
+                                     00FC   245 ;
+                                     00FC   246 ; IPL = DEVICE FORK IPL
+                                     00FC   247 ;--
+                                     00FC   248 CANCELIO:				; CANCEL I/O ON MAILBOX UNIT
+            7E            56     7D  00FC   249 	MOVQ	R6,-(SP)		; SAVE R6,R7
+            56            52     D0  00FF   250 	MOVL	R2,R6			; COPY CHANNEL NUMBER
+         58 A5            08     E1  0102   251 	BBC	#UCB$V_BSY,UCB$W_STS(R5),10$; BUSY?
+                          15         0106       
+         0C A3         60 A4     D1  0107   252 	CMPL	PCB$L_PID(R4),IRP$L_PID(R3); PIDS MATCH?
+                          4B     12  010C   253 	BNEQ	40$			; IF NO THEN CANCEL DONE
+         28 A3            56     B1  010E   254 	CMPW	R6,IRP$W_CHAN(R3)	; CHANNEL MATCH?
+                          45     12  0112   255 	BNEQ	40$			; IF NEQ THEN NO
+            50            2C     7D  0114   256 	MOVQ	#SS$_ABORT,R0		; SET STATUS FOR ABORT
+                          FEE6'  30  0117   257 	BSBW	IOC$REQCOM		; COMPLETE THE REQUEST
+                          3D     11  011A   258 	BRB	40$			; AND CANCEL IS DONE
+                                     011C   259 ;
+                                     011C   260 ; NO READER WAITING - CHECK MESSAGE QUEUE
+                                     011C   261 ;
+            52            65     9E  011C   262 10$:	MOVAB	UCB$L_MB_MSGQ(R5),R2	; ADDRESS MESSAGE QUEUE
+            50            52     D0  011F   263 	MOVL	R2,R0			; COPY LIST HEAD ADDRESS
+            52            62     D0  0122   264 20$:	MOVL	(R2),R2			; ADDRESS LIST ENTRY
+            52            50     D1  0125   265 	CMPL	R0,R2			; END OF LIST?
+                          2F     13  0128   266 	BEQL	40$			; IF YES THEN DONE
+         12 A2         60 A4     D1  012A   267 	CMPL	PCB$L_PID(R4),18(R2)	; MESSAGE BELONG TO CANCELLING PROCESS?
+                          F1     12  012F   268 	BNEQ	20$			; IF NO THEN SEARCH MORE
+            53         0E A2     D0  0131   269 	MOVL	14(R2),R3		; ADDRESS PACKET IF ANY
+                          EB     13  0135   270 	BEQL	20$			; IF EQL THEN NO ASSOC PACKET
+         28 A3            56     B1  0137   271 	CMPW	R6,IRP$W_CHAN(R3)	; CHANNEL MATCH?
+                          E5     12  013B   272 	BNEQ	20$			; IF NEQ THEN NO
+                                     013D   273 					; BUT GET RID OF MESSAGE
+         34 A3            2C     7D  013D   274 	MOVQ	#SS$_ABORT,IRP$L_MEDIA(R3); SET STATUS
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   7
+X05             CANCELIO - CANCEL I/O ON MAILBOX UNIT                                                                            (4)
+
+                          FEBC'  30  0141   275 	BSBW	COM$POST		; COMPLETE THE OPERATION
+            50            62     0F  0144   276 30$:	REMQUE	(R2),R0			; REMOVE MESSAGE FROM QUEUE
+         18 A5         0C A2     A0  0147   277 	ADDW	12(R2),UCB$W_BUFQUO(R5)	; ADJUST QUOTA
+                       16 A5     B7  014C   278 	DECW	UCB$W_MSGCNT(R5)	; AND MESSAGE COUNT
+         3C A5         16 A5     B0  014F   279 	MOVW	UCB$W_MSGCNT(R5),UCB$L_DEVDEPEND(R5); SAVE IT
+                          FEA9'  30  0154   280 	BSBW	EXE$DEANONPAGED		; DEALLOCATE MESSAGE
+                          C3     11  0157   281 	BRB	10$			; SEARCH LIST FROM THE START
+                                     0159   282 ;
+                                     0159   283 ; SEARCH AST QUEUE
+                                     0159   284 ;
+            57         0C A5     9E  0159   285 40$:	MOVAB	UCB$L_MB_W_AST(R5),R7	; ADDRESS LIST OF AST'S
+                          FEA0'  30  015D   286 	BSBW	COM$FLUSHATTNS		; FLUSH ATTENTION AST'S
+            57         10 A5     9E  0160   287 	MOVAB	UCB$L_MB_R_AST(R5),R7	; ADDRESS WRITER AST'S
+                          FE99'  30  0164   288 	BSBW	COM$FLUSHATTNS		; FLUSH THAT LIST
+            56            8E     7D  0167   289 	MOVQ	(SP)+,R6		; RESTORE REGISTERS
+            50            02     9A  016A   290 	MOVZBL	#RSN$_MAILBOX,R0	; DECLARE RESOURCE AVAILABLE
+                          FE90'  31  016D   291 	BRW	SCH$RAVAIL		;  AND RETURN TO CALLER
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   8
+X05             CHECKIO - CHECK READ AND WRITE PARAMETERS                                                                        (5)
+
+                                     0170   293 	.SBTTL	CHECKIO - CHECK READ AND WRITE PARAMETERS
+                                     0170   294  
+                                     0170   295 	.ENABL	LSB
+                                     0170   296  
+                                     0170   297 ;++
+                                     0170   298 ; READCHECKIO - CHECK READ PARAMETERS
+                                     0170   299 ; WRITECHECKIO - CHECK WRITE PARAMETERS
+                                     0170   300 ;
+                                     0170   301 ; FUNCTIONAL DESCRIPTION:
+                                     0170   302 ;
+                                     0170   303 ; THIS ROUTINE IS USED BY THE READ AND WRITE FDT ROUTINES TO VALIDATE THE
+                                     0170   304 ; I/O REQUEST. THE CHECKS ARE MADE BASED ON THE SETTING OF THE IRP$V_FUNC
+                                     0170   305 ; OPERATION DIRECTION BIT. THE CHECKS ARE, 1) ACCESS TO UNIT BY UIC,
+                                     0170   306 ; 2) MESSAGE REQUEST SIZE WITHIN MAX MESSAGE SIZE, 3) BUFFER ACCESSIBLE.
+                                     0170   307 ;
+                                     0170   308 ; 0 LENGTH TRANSFERS AND ACCESS VIOLATIONS CAUSE COMPLETIONS HERE.
+                                     0170   309 ;
+                                     0170   310 ; INPUTS:
+                                     0170   311 ;
+                                     0170   312 ;	R3 = PACKET ADDRESS
+                                     0170   313 ;	R4 = PCB ADDRESS
+                                     0170   314 ;	R5 = UCB ADDRESS
+                                     0170   315 ;	R6 = CCB ADDRESS
+                                     0170   316 ;	R7 = FUNCTION CODE
+                                     0170   317 ;	AP = ADDRESS OF THE FIRST QIO PARAMETER
+                                     0170   318 ;
+                                     0170   319 ; OUTPUTS:
+                                     0170   320 ;
+                                     0170   321 ;	R0 = BUFFER ADDRESS
+                                     0170   322 ;	R1 = BUFFER SIZE
+                                     0170   323 ;	R3 = PACKET ADDRESS
+                                     0170   324 ;	R4 = PCB ADDRESS
+                                     0170   325 ;	R5 = UCB ADDRESS
+                                     0170   326 ;
+                                     0170   327 ; IMPLICIT OUTPUTS:
+                                     0170   328 ;
+                                     0170   329 ;	THE BUFFER ADDRESS AND COUNT IS SAVED IN IRP$L_MEDIA.
+                                     0170   330 ;--
+                                     0170   331 READCHECKIO:				; CHECK READ PARAMETERS
+                     0000'CF     9F  0170   332 	PUSHAB	W^EXE$READCHK		; READ CHECKS NEEDED
+            50       0000'CF     9E  0174   333 	MOVAB	W^EXE$CHKRDACCES,R0	;
+                          09     11  0179   334 	BRB	10$			; CONTINUE IN COMMON
+                                     017B   335 WRITECHECKIO:				; SET UP FOR WRITE CHECK
+            50       0000'CF     9E  017B   336 	MOVAB	W^EXE$CHKWRTACCES,R0	; SET UP WRITE CHECK
+                     0000'CF     9F  0180   337 	PUSHAB	W^EXE$WRITECHK		;
+            51         1A A5     3C  0184   338 10$:	MOVZWL	UCB$W_VPROT(R5),R1	; SET UP FOR UIC CHECK
+            52         1C A5     D0  0188   339 	MOVL	UCB$L_OWNUIC(R5),R2	;
+                       30 A3     B4  018C   340 	CLRW	IRP$W_BOFF(R3)		; RESET QUOTA
+                          60     16  018F   341 	JSB	(R0)			; CHECK UIC ACCESS
+            19            50     E9  0191   342 	BLBC	R0,ERROR		; BR IF ACCESS FAILURE
+            51         04 AC     3C  0194   343 	MOVZWL	P2(AP),R1		; GET BUFFER SIZE
+                          16     13  0198   344 	BEQL	70$			; IF EQL THEN COMPLETE HERE
+         3A A5            51     B1  019A   345 	CMPW	R1,UCB$W_DEVBUFSIZ(R5)	; MESSAGE SIZE IN RANGE?
+                          08     1A  019E   346 	BGTRU	50$			; IF GTRU THEN NO
+            50            6C     D0  01A0   347 	MOVL	P1(AP),R0		; GET BUFFER ADDRESS
+         34 A3            50     D0  01A3   348 	MOVL	R0,IRP$L_MEDIA(R3)	; SAVE BUFFER ADDRESS
+                                 05  01A7   349 	RSB				; RETURN AND CHECK BUFFER
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page   9
+X05             CHECKIO - CHECK READ AND WRITE PARAMETERS                                                                        (5)
+
+            50       019C 8F     3C  01A8   350 50$:	MOVZWL	#SS$_MBTOOSML,R0	; SET BOX TOO SMALL
+                          FE50'  31  01AD   351 ERROR:	BRW	EXE$ABORTIO		; ABORT THE I/O
+            50            01     9A  01B0   352 70$:	MOVZBL	#SS$_NORMAL,R0		; COMPLETE 0 LENGTH TRANSFERS
+                          FE4A'  31  01B3   353 	BRW	EXE$FINISHIOC		;
+                                     01B6   354  
+                                     01B6   355 	.DSABL	LSB
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  10
+X05             FDTREAD - READ FUNCTION DECISION ROUTINE                                                                         (6)
+
+                                     01B6   357 	.SBTTL	FDTREAD - READ FUNCTION DECISION ROUTINE
+                                     01B6   358 ;++
+                                     01B6   359 ; FDTREAD - FUNCTION DECISION ROUTINE FOR READ OPERATIONS
+                                     01B6   360 ;
+                                     01B6   361 ; FUNCTIONAL DESCRIPTION:
+                                     01B6   362 ;
+                                     01B6   363 ; THE USER REQUEST IS VAILDATED FOR:
+                                     01B6   364 ;
+                                     01B6   365 ;	1.ACCESS BY UIC.
+                                     01B6   366 ;	2.REQUEST WITHIN MAXIMUM MESSAGE SIZE.
+                                     01B6   367 ;	3.BUFFER ACCESSIBLE FOR WRITE.
+                                     01B6   368 ;
+                                     01B6   369 ; THEN THE PACKET IS QUEUED ONTO THE UCB FOR PROCESSING WHEN THE UNIT IS IDLE.
+                                     01B6   370 ;  FOR READ NOW FUNCTIONS, IF NO MESSAGES ARE PRESENT IN THE MAILBOX
+                                     01B6   371 ; THE OPERATION IS COMPLETED.
+                                     01B6   372 ;
+                                     01B6   373 ; INPUTS:
+                                     01B6   374 ;
+                                     01B6   375 ;	R3 = I/O PACKET ADDRESS
+                                     01B6   376 ;	R4 = CURRENT PCB ADDRESS
+                                     01B6   377 ;	R5 = UCB ADDRESS
+                                     01B6   378 ;	R6 = CCB ADDRESS
+                                     01B6   379 ;	R7 = FUNCTION CODE
+                                     01B6   380 ;	AP = PARAMETER BLOCK AT USER ARGUMENT "P1"
+                                     01B6   381 ;
+                                     01B6   382 ; OUTPUTS:
+                                     01B6   383 ;
+                                     01B6   384 ;	THE PACKET IS QUEUED VIA "EXE$QIODRVPKT" OR
+                                     01B6   385 ;	THE REQUEST IS COMPLETED WITH AN ERROR VIA "EXE$ABORTIO"
+                                     01B6   386 ;
+                                     01B6   387 ; STATUS CODES:
+                                     01B6   388 ;
+                                     01B6   389 ;	SS$_NOPRIV - USER DOES NOT HAVE PRIVILEGE TO READ MAILBOX
+                                     01B6   390 ;	SS$_ACCVIO - BUFFER ACCESS VIOLATION ( "EXE$READCHK" )
+                                     01B6   391 ;	SS$_MBTOOSML - REQUEST EXCEEDS THE MAXIMUM MESSAGE SIZE
+                                     01B6   392 ;	SS$_ENDOFFILE - FOR "READNOW" NO DATA RETURN
+                                     01B6   393 ;	SS$_NORMAL - NORMAL STATUS ( "STARTIO" )
+                                     01B6   394 ;--
+                                     01B6   395 FDTREAD:				;
+                          B8     10  01B6   396 	BSBB	READCHECKIO		; VALIDATE THE REQUEST
+                                     01B8   397 ;
+                                     01B8   398 ; UPDATE MEASUREMENT COUNTER IF ENABLED
+                                     01B8   399 ;
+                           00000002  01B8   400 	.IF NE CA$_MEASURE
+                 00000000'EF     D6  01B8   401 	INCL	PMS$GL_MBREADS		; COUNT MAILBOX READS
+                                     01BE   402 	.ENDC
+                                     01BE   403 ;
+                                     01BE   404 ; CHECK FOR READ NOW FUNCTIONS
+                                     01BE   405 ;
+         20 A3            06     E1  01BE   406 	BBC	#IO$V_NOW,IRP$W_FUNC(R3),50$; BR IF NOT "NOW"
+                          11         01C2       
+                                     01C3   407 ;
+                                     01C3   408 ; READ NOW
+                                     01C3   409 ;
+                                     01C3   410 ; TEST TO SEE IF THERE ARE ANY MESSAGES WAITING
+                                     01C3   411 ;
+                                     01C3   412 	SETIPL	UCB$B_FIPL(R5)		; SET TO FORK IPL
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  11
+X05             FDTREAD - READ FUNCTION DECISION ROUTINE                                                                         (6)
+
+                       16 A5     B5  01C7   413 	TSTW	UCB$W_MSGCNT(R5)	; ANY MESSAGES?
+                          08     12  01CA   414 	BNEQ	50$			; IF NEQ THEN YES
+                                     01CC   415 ;
+                                     01CC   416 ; COMPLETE "READNOW" FUNCTIONS BECAUSE NO MESSAGES ARE AVAILABLE
+                                     01CC   417 ;
+            50       0870 8F     3C  01CC   418 	MOVZWL	#SS$_ENDOFFILE,R0	; SET NO TRANSFER AND STATUS
+                          FE2C'  31  01D1   419 	BRW	EXE$FINISHIOC		; COMPLETE THE I/O
+                                     01D4   420 ;
+                                     01D4   421 ; QUEUE PACKET TO DRIVER LIST
+                                     01D4   422 ;
+                          FE29'  31  01D4   423 50$:	BRW	EXE$QIODRVPKT		; QUEUE PACKET ON UCB
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  12
+X05             FDTSET - SET UP ATTENTION AST FUNCTION                                                                           (7)
+
+                                     01D7   425 	.SBTTL	FDTSET - SET UP ATTENTION AST FUNCTION
+                                     01D7   426 ;++
+                                     01D7   427 ; FDTSET - SET UP ATTENTION AST
+                                     01D7   428 ;
+                                     01D7   429 ; FUNCTIONAL DESCRIPTION:
+                                     01D7   430 ;
+                                     01D7   431 ; THIS ROUTINE PROCESSES SET MODE REQUESTS TO ENABLE OR DISABLE AN ATTENTION
+                                     01D7   432 ; AST. THE WORK IS DONE BY A COMMUNICATION DRIVER SUBROUTINE AFTER A CHECK
+                                     01D7   433 ; IS MADE TO SEE IF THE REQUESTOR HAS ACCESS TO THE MAILBOX.
+                                     01D7   434 ;
+                                     01D7   435 ; INPUTS:
+                                     01D7   436 ;
+                                     01D7   437 ;	R3 = I/O PACKET ADDRESS
+                                     01D7   438 ;	R4 = CURRENT PCB
+                                     01D7   439 ;	R5 = UCB ADDRESS FOR MAILBOX UNIT
+                                     01D7   440 ;
+                                     01D7   441 ; OUTPUTS:
+                                     01D7   442 ;
+                                     01D7   443 ;	NONE, THE I/O IS COMPLETED
+                                     01D7   444 ;
+                                     01D7   445 ; STATUS RETURNS:
+                                     01D7   446 ;
+                                     01D7   447 ;	SS$_NORMAL - SUCCESSUFL COMPLETION
+                                     01D7   448 ;	SS$_INSFMEM - INSUFICIENT MEMORY
+                                     01D7   449 ;	SS$_EXQUOTA - AST QUOTA EXCEEDED
+                                     01D7   450 ;--
+                                     01D7   451 FDTSET:					; SET RECEIVE AST FUNCTION
+                                     01D7   452 ;
+                                     01D7   453 ; SEE IF USER CAN READ THIS MAILBOX
+                                     01D7   454 ;
+            51         1A A5     3C  01D7   455 	MOVZWL	UCB$W_VPROT(R5),R1	; GET UNIT PROTECTION
+            52         1C A5     D0  01DB   456 	MOVL	UCB$L_OWNUIC(R5),R2	; GET OWNER UIC
+                          FE1E'  30  01DF   457 	BSBW	EXE$CHKRDACCES		; CHECK THE ACCESS OF THIS USER
+            C8            50     E9  01E2   458 	BLBC	R0,ERROR		; IF LOW CLEAR THEN ERROR
+            57         0C A5     9E  01E5   459 	MOVAB	UCB$L_MB_W_AST(R5),R7	; ASSUME WRITER AST
+         20 A3            07     E1  01E9   460 	BBC	#IO$V_READATTN,IRP$W_FUNC(R3),10$; BR IF NOT READER AST
+                          02         01ED       
+                          87     D5  01EE   461 	TSTL	(R7)+			; POINT TO READER AST LIST
+                     0090 8F     BB  01F0   462 10$:	PUSHR	#^M<R4,R7>		; SAVE PCB AND LIST HEAD
+                          FE09'  30  01F4   463 	BSBW	COM$SETATTNAST		; CONTINUE IN COMMON
+                          12     BA  01F7   464 	POPR	#^M<R1,R4>		; POP PCB AND SET LIST HEAD ADDRESS
+                                     01F9   465 	SETIPL	UCB$B_DIPL(R5)		; SET UP THE IPL
+         20 A3            07     E0  01FD   466 	BBS	#IO$V_READATTN,IRP$W_FUNC(R3),15$; BR IF READER AST
+                          07         0201       
+                                     0202   467 					; DEFUALT IS WRITE ATTN
+                       16 A5     B5  0202   468 	TSTW	UCB$W_MSGCNT(R5)	; ANY MESSAGES?
+                          0A     13  0205   469 	BEQL	25$			; IF EQL THEN NONE
+                          05     11  0207   470 	BRB	20$			; IF NEQ THEN DELIVER AST
+         58 A5            08     E1  0209   471 15$:	BBC	#UCB$V_BSY,UCB$W_STS(R5),25$; BR IF NOT BUSY
+                          03         020D       
+                          FDEF'  30  020E   472 20$:	BSBW	COM$DELATTNAST		; DELIVER THE ASTS
+            54            51     D0  0211   473 25$:	MOVL	R1,R4			; RESTORE PCB
+                          FDE9'  31  0214   474 	BRW	EXE$FINISHIOC		; COMPLETE THE I/O
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  13
+X05             FDTEOF - WRITE EOF MESSAGE TO MAILBOX                                                                            (8)
+
+                                     0217   476 	.SBTTL	FDTEOF - WRITE EOF MESSAGE TO MAILBOX
+                                     0217   477 ;++
+                                     0217   478 ; FDTEOF - WRITE EOF MESSAGE TO THE MAILBOX
+                                     0217   479 ;
+                                     0217   480 ; FUNCTIONAL DESCRIPTION:
+                                     0217   481 ;
+                                     0217   482 ; THIS IS THE FDT ROUTINE FOR IO$WRITEOF. THE ACTION IS TO BUILD A
+                                     0217   483 ; ZERO LENGHT MESSAGE AND TO INSERT IT IN THE MAILBOX.
+                                     0217   484 ; THIS MESSAGE, WHEN READ RESULTS IN AN SS$_ENDOFILE STATUS RETURN.
+                                     0217   485 ;
+                                     0217   486 ; INPUTS:
+                                     0217   487 ;
+                                     0217   488 ;	R3 = I/O PACKET ADDRESS
+                                     0217   489 ;	R4 = CURRENT PCB ADDRESS
+                                     0217   490 ;	R5 = MAILBOX UCB ADDRESS
+                                     0217   491 ;
+                                     0217   492 ; OUTPUTS:
+                                     0217   493 ;
+                                     0217   494 ;	THE I/O IS COMPLETED IN THE WRITE FDT LOGIC. ( SEE BELOW)
+                                     0217   495 ;--
+                                     0217   496 FDTEOF:					;
+                       30 A3     D4  0217   497 	CLRL	IRP$W_BOFF(R3)		; SET NO TRANSFER AND NO QUOTA
+            51         1A A5     3C  021A   498 	MOVZWL	UCB$W_VPROT(R5),R1	; GET VOLUME PROTECTION
+            52         1C A5     D0  021E   499 	MOVL	UCB$L_OWNUIC(R5),R2	; GET THE OWNER UIC
+                          FDDB'  30  0222   500 	BSBW	EXE$CHKWRTACCES		; CHECK THE ACCESS
+            85            50     E9  0225   501 	BLBC	R0,ERROR		; IF ERROR THEN BR
+                          51     D4  0228   502 	CLRL	R1			; SET NO DATA
+            50            6E     9E  022A   503 	MOVAB	(SP),R0			; FAKE GOOD ADDRESS FOR THE FUTURE MOVC
+                          03     11  022D   504 	BRB	WRITE			; WRITE THE MESSAGE
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  14
+X05             FDTWRITE - WRITE OPERATION FDT ROUTINE                                                                           (9)
+
+                                     022F   506 	.SBTTL	FDTWRITE - WRITE OPERATION FDT ROUTINE
+                                     022F   507 ;++
+                                     022F   508 ; FDTWRITE -- FUNCTION DECISION ACTION ROUTINE FOR WRITE FUNCTIONS
+                                     022F   509 ;
+                                     022F   510 ; FUNCTIONAL DESCRIPTION:
+                                     022F   511 ;
+                                     022F   512 ; THE USER REQUEST IS VALIDATED FOR PRIVILEGE, SIZE, ACCESS AND AVAILABLE
+                                     022F   513 ; SPACE. IF VALID, A BUFFERED I/O BLOCK IS ALLOCATED (IMPLIED RESOURCE WAIT).
+                                     022F   514 ; THE BLOCK IS SET UP AND QUEUED TO THE UNIT MESSAGE LIST. IF THE UNIT
+                                     022F   515 ; IS BUSY, THE OUTSTANDING READ OPERATION IS COMPLETED DIRECTLY.
+                                     022F   516 ; IN THE CASE OF "WRITENOW" FUNCTIONS THE I/O IS COMPLETED BEFORE THE
+                                     022F   517 ; MESSAGE IS QUEUED. OTHERWISE THE READ COMPLETE ROUTINE COMPLETES
+                                     022F   518 ; THE MESSAGE ASSOCIATED WRITE.
+                                     022F   519 ;
+                                     022F   520 ; INPUTS:
+                                     022F   521 ;
+                                     022F   522 ;	R3 = I/O PACKET ADDRESS
+                                     022F   523 ;	R4 = CURRENT PCB ADDRESS
+                                     022F   524 ;	R5 = UCB ADDRESS
+                                     022F   525 ;	R6 = CCB ADDRESS
+                                     022F   526 ;	R7 = FUNCTION CODE
+                                     022F   527 ;	AP = ADDRESS OF USER ARGUMENT BLOCK AT "P1"
+                                     022F   528 ;
+                                     022F   529 ; OUTPUTS:
+                                     022F   530 ;
+                                     022F   531 ;	THE I/O IS COMPLETED IN ERROR, THE I/O IS RESTARTED BECAUSE OF
+                                     022F   532 ;	RESOURCE WAIT, OR THE I/O IS COMPETED NORMALLY.
+                                     022F   533 ;
+                                     022F   534 ; STATUS RETURNS:
+                                     022F   535 ;
+                                     022F   536 ;	SS$_MBTOOSML - MESSAGE IS TOO BIG
+                                     022F   537 ;	SS$_ACCVIO - BUFFER ACCESS VIOLATION ( "EXE$WRITECHK" )
+                                     022F   538 ;	SS$_MBFULL - MAILBOX IS FULL
+                                     022F   539 ;	SS$_NOPRIV - USER DOES NOT HAVE WRITE PRIVILEGE
+                                     022F   540 ;	SS$_NORMAL - SUCCESSFUL STATUS
+                                     022F   541 ;	SS$_INSFMEM - NO MEMORY FOR BUFFER ALLOCATION
+                                     022F   542 ;--
+                                     022F   543 FDTWRITE:				;
+                          FF49   30  022F   544 	BSBW	WRITECHECKIO		; CHECK OPERATION PARAMETERS
+                                     0232   545 WRITE:
+                          09     BB  0232   546 	PUSHR	#^M<R0,R3>		; SAVE REGISTERS
+            51            16     C0  0234   547 	ADDL	#22,R1			; ADJUST REQUEST SIZE FOR HEADER
+                                     0237   548 ;
+                                     0237   549 ; GET BUFFER
+                                     0237   550 ;
+                          FDC6'  30  0237   551 	BSBW	EXE$ALONONPAGED		; ALLOCATE A BUFFER
+            5A            50     E9  023A   552 	BLBC	R0,55$			; CONTINUE
+                          09     BA  023D   553 	POPR	#^M<R0,R3>		; RESTORE PACKET ADDRESS AND DATA ADDRESS
+                                     023F   554 ;
+                                     023F   555 ; SET UP BLOCK
+                                     023F   556 ;
+                          3C     BB  023F   557 	PUSHR	#^M<R2,R3,R4,R5>	; SAVE BLOCK,PACKET,PCB AND UCB
+            52            08     C0  0241   558 	ADDL	#8,R2			; POINT PAST FIXED PART
+            82            51     B0  0244   559 	MOVW	R1,(R2)+		; INSERT SIZE
+            82            13     90  0247   560 	MOVB	#DYN$C_BUFIO,(R2)+	; INSERT TYPE
+            82            0B     90  024A   561 	MOVB	#IPL$_MAILBOX,(R2)+	; INSERT IPL
+            82         32 A3     B0  024D   562 	MOVW	IRP$W_BCNT(R3),(R2)+	; INSERT MESSAGE SIZE
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  15
+X05             FDTWRITE - WRITE OPERATION FDT ROUTINE                                                                           (9)
+
+            82            53     D0  0251   563 	MOVL	R3,(R2)+		; INSERT SAVED PACKET ADDRESS
+         20 A3            06     E1  0254   564 	BBC	#IO$V_NOW,IRP$W_FUNC(R3),15$; BR IF NOT "NOW"
+                          03         0258       
+                       FC A2     D4  0259   565 	CLRL	-4(R2)			; RESET MESSAGE PACKET POINTER
+            82         60 A4     D0  025C   566 15$:	MOVL	PCB$L_PID(R4),(R2)+	; INSERT PID OF SENDER
+                                     0260   567 ;
+                                     0260   568 ; COPY DATA FROM USER TO SYSTEM
+                                     0260   569 ;
+            60         32 A3     28  0260   570 	MOVC3	IRP$W_BCNT(R3),(R0),(R2); MOVE CHARACTERS TO SYSTEM SPACE
+                          62         0264       
+                          3C     BA  0265   571 	POPR	#^M<R2,R3,R4,R5>	; RESTORE REGISTERS
+                                     0267   572 ;
+                                     0267   573 ; MAKE FINAL QUOTA CHECKS INTERLOCKED WITH DRIVER WRITERS
+                                     0267   574 ;
+                                     0267   575 ; THESE CHECKS MUST BE MADE AT DRIVER FORK LEVEL TO PRESERVE THE
+                                     0267   576 ; INTEGRITY OF THE QUOTAS. IF THE QUOTA IS EXCEEDED THEN THE PROCESS 
+                                     0267   577 ; IS PLACED IN A "RSN$_MAILBOX" WAIT STATE. THE PROCEEDURE FOR
+                                     0267   578 ; PLACING THE PROCESS IN THE WAIT STATE IS COMPLICATED BY THE
+                                     0267   579 ; HIGHER THAN "IPL$_SYNCH" EXECUTION LEVEL. IN THIS CASE IT
+                                     0267   580 ; IS OK TO CALL RESOURCE WAIT BECAUSE THE IPL WAS RAISED TO FORK
+                                     0267   581 ; LEVEL AND NOT REACHED BECAUSE OF AN INTERRUPT LEVEL FORK.
+                                     0267   582 ;
+                                     0267   583 ;
+                                     0267   584 ; MAIL BOX OVER QUOTA?
+                                     0267   585 ;
+                                     0267   586 20$:	DSBINT	UCB$B_FIPL(R5)		; RAISE TO DRIVER FORK LEVEL
+                                     026E   587 ;
+                                     026E   588 ; TEST FIRST TO SEE IF ROOM IS AVAILABLE FOR THE MESSAGE
+                                     026E   589 ;
+         18 A5         32 A3     B1  026E   590 	CMPW	IRP$W_BCNT(R3),UCB$W_BUFQUO(R5); MESSAGE FIT?
+                          29     1A  0273   591 	BGTRU	60$			; IF GTR THEN NO
+                                     0275   592 ;
+                                     0275   593 ; SEE IF MAILBOX IS FULL
+                                     0275   594 ;
+         14 A5         16 A5     B1  0275   595 	CMPW	UCB$W_MSGCNT(R5),UCB$W_MSGMAX(R5); FULL?
+                          22     13  027A   596 	BEQL	60$			; IF EQL THEN YES
+                                     027C   597 ;
+                                     027C   598 ; QUEUE THE MESSAGE
+                                     027C   599 ;
+                          28     BB  027C   600 	PUSHR	#^M<R3,R5>		; SAVE UCB ADDRESS AND PACKET
+                          32     10  027E   601 	BSBB	INSMBQUEUE		; INSERT THE MESSAGE
+                          28     BA  0280   602 	POPR	#^M<R3,R5>		; RESTORE UCB ADDRESS AND PACKET
+                                     0282   603 	ENBINT				; LOWER IPL
+                                     0285   604 ;
+                                     0285   605 ; SEE IF WRITE I/O GETS COMPLETED NOW
+                                     0285   606 ;
+         20 A3            06     E0  0285   607 	BBS	#IO$V_NOW,IRP$W_FUNC(R3),50$; BR IF WRITE NOW
+                          03         0289       
+                          FD73'  31  028A   608 	BRW	EXE$QIORETURN		; RETURN TO CALLER
+                                     028D   609 ;
+                                     028D   610 ; FINISH WRITE I/O OPERATION
+                                     028D   611 ;
+            50         30 A3     D0  028D   612 50$:	MOVL	IRP$W_BCNT-2(R3),R0	; GET TRANSFER COUNT
+            50            01     B0  0291   613 	MOVW	#SS$_NORMAL,R0		; SET STATUS IN LOW
+                          FD69'  31  0294   614 	BRW	EXE$FINISHIOC		; COMPLETE THE I/O
+                          0A     BA  0297   615 55$:	POPR	#^M<R1,R3>
+            51            03     9A  0299   616 	MOVZBL	#RSN$_NPDYNMEM,R1	; SET RESOURCE TO AWAIT
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  16
+X05             FDTWRITE - WRITE OPERATION FDT ROUTINE                                                                           (9)
+
+                          0E     11  029C   617 	BRB	65$			;
+            50            52     D0  029E   618 60$:	MOVL	R2,R0			; DEALLOCATE MESSAGE BLOCK
+                          53     DD  02A1   619 	PUSHL	R3			; SAVE PACKET
+                          FD5A'  30  02A3   620 	BSBW	EXE$DEANONPAGED		;
+                          53   8ED0  02A6   621 	POPL	R3			; RESTORE PACKET
+            51            02     9A  02A9   622 	MOVZBL	#RSN$_MAILBOX,R1	; SET RESOURCE TO AWAIT
+                                     02AC   623 65$:	SETIPL	#IPL$_SYNCH		; UP IPL FOR WAIT
+                          FD4E'  31  02AF   624 	BRW	EXE$IORSNWAIT		; ENTER WAIT STATE
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  17
+X05             FDTWRITE - WRITE OPERATION FDT ROUTINE                                                                          (11)
+
+                                     02B2   626 
+                                     02B2   627 	.SBTTL INSERT MESSAGE IN MAILBOX QUEUE
+                                     02B2   628 ;++
+                                     02B2   629 ; INSMBQUEUE - INSERT MESSAGE ON MAILBOX QUEUE
+                                     02B2   630 ;
+                                     02B2   631 ; INPUTS:
+                                     02B2   632 ;
+                                     02B2   633 ;	R2 = ADDRESS OF MESSAGE BLOCK
+                                     02B2   634 ;	R5 = UCB OF MAILBOX
+                                     02B2   635 ;
+                                     02B2   636 ; OUTPUTS:
+                                     02B2   637 ;
+                                     02B2   638 ;	THE MESSAGE IS QUEUED AND IF THE UNIT IS BUSY THEN
+                                     02B2   639 ;	CONTROL IS TRANSFERED TO "FINISHREAD" TO COMPLETE THE
+                                     02B2   640 ;	WAITING READ REQUEST.
+                                     02B2   641 ;--
+                                     02B2   642 INSMBQUEUE:				;
+                       16 A5     B6  02B2   643 	INCW	UCB$W_MSGCNT(R5)	; ADJUST MESSAGE COUNT
+         3C A5         16 A5     B0  02B5   644 	MOVW	UCB$W_MSGCNT(R5),UCB$L_DEVDEPEND(R5); SAVE IT
+         18 A5         0C A2     A2  02BA   645 	SUBW	12(R2),UCB$W_BUFQUO(R5)	; ADJUST BYTE QUOTA BY MESSAGE SIZE
+                      00000002       02BF   646 	.IF NE CA$_MEASURE		; CHECK FOR MEASUREMENT ENABLED
+                 00000000'EF     D6  02BF   647 	INCL	PMS$GL_MBWRITES		; COUNT MAILBOX WRITES
+                                     02C5   648 	.ENDC
+                                     02C5   649 ;
+                                     02C5   650 ; TEST UNIT BUSY -- IF BUSY FINISH OUTSTANDING READ
+                                     02C5   651 ;
+         58 A5            08     E0  02C5   652 	BBS	#UCB$V_BSY,UCB$W_STS(R5),FINISHREAD; BRANCH IF BUSY
+                          18         02C9       
+                                     02CA   653 ;
+                                     02CA   654 ; INSERT MESSAGE IN QUEUE
+                                     02CA   655 ;
+         04 B5            62     0E  02CA   656 	INSQUE	(R2),@UCB$L_MB_MSGQ+4(R5); INSERT MESSAGE IN QUEUE
+                                     02CE   657 ;
+                                     02CE   658 ; DELIVER ALL AST'S WAITING FOR MESSAGES ON THIS MAILBOX
+                                     02CE   659 ;
+            54         0C A5     9E  02CE   660 	MOVAB	UCB$L_MB_W_AST(R5),R4	; ADDRESS ATTENTION LIST HEAD
+                          FD2B'  31  02D2   661 	BRW	COM$DELATTNAST		; DELIVER THE AST'S
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  18
+X05             STARTIO - STARTIO OPERATION                                                                                     (12)
+
+                                     02D5   663 	.SBTTL	STARTIO - STARTIO OPERATION
+                                     02D5   664 ;++
+                                     02D5   665 ; STARTIO - START READ OPERATION ON IDLE MAILBOX UNIT
+                                     02D5   666 ;
+                                     02D5   667 ; FUNCTIONAL DESCRIPTION:
+                                     02D5   668 ;
+                                     02D5   669 ; THIS ROUTINE IS ENTERED WHEN THE UNIT IS NOT BUSY AND THERE IS A 
+                                     02D5   670 ; PACKET TO PROCESS. IF THERE IS ANY MESSAGE WAITING THE READ IS COMPLETED
+                                     02D5   671 ; OTHERWISE, AN RSB IS DONE LEAVING THE UNIT BUSY AND THE PACKET IN
+                                     02D5   672 ; LIMBO.
+                                     02D5   673 ;
+                                     02D5   674 ; INPUTS:
+                                     02D5   675 ;
+                                     02D5   676 ;	R3 = I/O PACKET ADDRESS
+                                     02D5   677 ;	R5 = UCB ADDRESS
+                                     02D5   678 ;
+                                     02D5   679 ; OUTPUTS:
+                                     02D5   680 ;
+                                     02D5   681 ;	R2 = MESSAGE ADDRESS ON TRANSFER TO "FINISHREAD".
+                                     02D5   682 ;
+                                     02D5   683 ;	OTHERWISE AN RSB IS DONE.
+                                     02D5   684 ;--
+                                     02D5   685 STARTIO:				;
+            52         00 B5     0F  02D5   686 	REMQUE	@UCB$L_MB_MSGQ(R5),R2	; GET MESSAGE IF ANY FROM QUEUE
+                          07     1C  02D9   687 	BVC	FINISHREAD		; IF V-CLEAR THEN COMPLETE THE READ
+            54         10 A5     9E  02DB   688 	MOVAB	UCB$L_MB_R_AST(R5),R4	; ADDRESS LIST OF READER AST'S
+                          FD1E'  31  02DF   689 	BRW	COM$DELATTNAST		; DELIVER AST'S
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  19
+X05             FINISHREAD - FINISH READ I/O OPERATION                                                                          (13)
+
+                                     02E2   691 	.SBTTL	FINISHREAD - FINISH READ I/O OPERATION
+                                     02E2   692 ;++
+                                     02E2   693 ; FINISHREAD - FINISH READ OPERATION
+                                     02E2   694 ;
+                                     02E2   695 ; FUNCTIONAL DECRIPTION:
+                                     02E2   696 ;
+                                     02E2   697 ; THIS ROUTINE IS ENTERED WHEN THE UNIT IS BUSY AND A MESSAGE
+                                     02E2   698 ; IS AVAILABLE.
+                                     02E2   699 ; THE WAITING READ IS COMPLETED ALONG WITH THE MATCHING WRITE
+                                     02E2   700 ; REQUEST IF THE WRITE WAS A WAIT TYPE.
+                                     02E2   701 ;
+                                     02E2   702 ; INPUTS:
+                                     02E2   703 ;
+                                     02E2   704 ;	R2 = MESSAGE ADDRESS
+                                     02E2   705 ;	R5 = UCB ADDRESS
+                                     02E2   706 ;
+                                     02E2   707 ; OUTPUTS:
+                                     02E2   708 ;
+                                     02E2   709 ;--
+                                     02E2   710 FINISHREAD:				;
+            53         4C A5     D0  02E2   711 	MOVL	UCB$L_IRP(R5),R3	; GET CURRENT I/O PACKET
+         2C A3            52     D0  02E6   712 	MOVL	R2,IRP$L_SVAPTE(R3)	; INSERT BLOCK ADDRESS IN PACKET
+            82         16 A2     9E  02EA   713 	MOVAB	22(R2),(R2)+		; INSERT ADDRESS OF DATA
+            82         34 A3     D0  02EE   714 	MOVL	IRP$L_MEDIA(R3),(R2)+	; INSERT USER VIRTUAL ADDRESS
+                          82     D5  02F2   715 	TSTL	(R2)+			; PASS TYPE WORD
+         18 A5            62     A0  02F4   716 	ADDW	(R2),UCB$W_BUFQUO(R5)	; ADJUST QUOTA BY MESSAGE BLOCK SIZE
+            62         32 A3     B1  02F8   717 	CMPW	IRP$W_BCNT(R3),(R2)	; REQUEST GTRU ACTUAL?
+                          04     1A  02FC   718 	BGTRU	10$			; IF GTRU THEN MESSAGE SIZE CORRECT
+            62         32 A3     B0  02FE   719 	MOVW	IRP$W_BCNT(R3),(R2)	; OTHERWISE REQUEST SIZE IS CORRECT
+            62            10     78  0302   720 10$:	ASHL	#16,(R2),R0		; GET SIZE TO UPPER WORD
+                          50         0305       
+            50            01     B0  0306   721 	MOVW	#SS$_NORMAL,R0		; ASSUME NORMAL STATUS
+         32 A3            82     B0  0309   722 	MOVW	(R2)+,IRP$W_BCNT(R3)	; REPLACE ORIGIONAL SIZE WITH CORRECT
+                          05     12  030D   723 	BNEQ	15$			; IF NEQ THEN OK
+            50       0870 8F     B0  030F   724 	MOVW	#SS$_ENDOFFILE,R0	; SET EOF STATUS
+                       16 A5     B7  0314   725 15$:	DECW	UCB$W_MSGCNT(R5)	; ADJUST MESSAGE COUNT
+         3C A5         16 A5     B0  0317   726 	MOVW	UCB$W_MSGCNT(R5),UCB$L_DEVDEPEND(R5); SAVE IT
+                          53     DD  031C   727 	PUSHL	R3			; SAVE PACKET OF READER
+            51         0C A3     D0  031E   728 	MOVL	IRP$L_PID(R3),R1	; GET READER PID
+            53            82     D0  0322   729 	MOVL	(R2)+,R3		; GET WRITER PACKET
+                          0B     13  0325   730 	BEQL	20$			; IF EQL THEN NONE
+         34 A3            50     7D  0327   731 	MOVQ	R0,IRP$L_MEDIA(R3)	; SET READ STATUS AND PID OF RECEIVER
+         34 A3            01     9B  032B   732 	MOVZBW	#SS$_NORMAL,IRP$L_MEDIA(R3); INSURE SUCCESS
+                          FCCE'  30  032F   733 	BSBW	COM$POST		; COMPLETE THE I/O
+            7E            62     D0  0332   734 20$:	MOVL	(R2),-(SP)		; GET WRITER PID
+            7E            50     D0  0335   735 	MOVL	R0,-(SP)		; SAVE STATUS VALUE
+            50            02     9A  0338   736 	MOVZBL	#RSN$_MAILBOX,R0	; SET NUMBER OF RESOURCE AVAILABLE
+                          FCC2'  30  033B   737 	BSBW	SCH$RAVAIL		; DECLARE IT
+                          0B     BA  033E   738 	POPR	#^M<R0,R1,R3>		; RESTORE REGISTERS
+                                     0340   739 	REQCOM				; COMPLETE REQUEST!!!
+                                     0343   740  	.END
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  20
+SYMBOL TABLE                                                                                                                    (13)
+
+ACB$B_RMOD       0000000B            DYN$C_PCB      = 0000000C            IO$M_MOUNT     = 00000200            
+ACB$B_TYPE       0000000A            DYN$C_PDB      = 00000021            IO$M_NOECHO    = 00000040            
+ACB$L_AST        00000010            DYN$C_PFL      = 00000023            IO$M_NOFILTR   = 00000200            
+ACB$L_ASTPRM     00000014            DYN$C_PIB      = 00000022            IO$M_NOFORMAT  = 00000100            
+ACB$L_ASTQBL     00000004            DYN$C_PQB      = 0000000D            IO$M_NOW       = 00000040            
+ACB$L_ASTQFL     00000000            DYN$C_PTR      = 00000025            IO$M_NOWAIT    = 00000080            
+ACB$L_KAST       00000018            DYN$C_RVT      = 0000000E            IO$M_PACKED    = 00000080            
+ACB$L_PID        0000000C            DYN$C_SFT      = 00000024            IO$M_PURGE     = 00000800            
+ACB$M_QUOTA    = 00000040            DYN$C_SSB      = 0000001D            IO$M_READATTN  = 00000080            
+ACB$S_MODE     = 00000002            DYN$C_TQE      = 0000000F            IO$M_REVERSE   = 00000040            
+ACB$V_KAST     = 00000007            DYN$C_TYPAHD   = 00000014            IO$M_SHUTDOWN  = 00000080            
+ACB$V_MODE     = 00000000            DYN$C_UCB      = 00000010            IO$M_STARTUP   = 00000040            
+ACB$V_QUOTA    = 00000006            DYN$C_VCB      = 00000011            IO$M_SYNCH     = 00000200            
+ACB$W_SIZE       00000008            DYN$C_WCB      = 00000012            IO$M_TIMED     = 00000080            
+BIT...         = 00000000            ERROR            000001AD R     03   IO$M_TRMNOECHO = 00001000            
+CA$_MEASURE    = 00000002            EXE$ABORTIO      ********   X   03   IO$M_WRTATTN   = 00000100            
+CA$_MEASURE_IOT= 00000004            EXE$ALONONPAGED  ********   X   03   IO$S_FCODE     = 00000006            
+CA$_SIMULATOR  = 00000001            EXE$CHKRDACCES   ********   X   03   IO$V_ABORT     = 00000008            
+CANCELIO         000000FC R     03   EXE$CHKWRTACCES  ********   X   03   IO$V_ACCESS    = 00000006            
+COM$DELATTNAST   ********   X   03   EXE$DEANONPAGED  ********   X   03   IO$V_ATTNAST   = 00000008            
+COM$FLUSHATTNS   ********   X   03   EXE$FINISHIOC    ********   X   03   IO$V_BINARY    = 00000006            
+COM$POST         ********   X   03   EXE$IORSNWAIT    ********   X   03   IO$V_CANCTRLO  = 00000006            
+COM$SETATTNAST   ********   X   03   EXE$QIODRVPKT    ********   X   03   IO$V_COMMOD    = 00000006            
+DDB$B_ACPCLASS   00000013            EXE$QIORETURN    ********   X   03   IO$V_CREATE    = 00000007            
+DDB$B_TYPE       0000000A            EXE$READCHK      ********   X   03   IO$V_CTRLCAST  = 00000008            
+DDB$C_LENGTH     00000014            EXE$SNDEVMSG     0000005C RG    03   IO$V_CTRLYAST  = 00000007            
+DDB$K_LENGTH     00000014            EXE$WRITECHK     ********   X   03   IO$V_CVTLOW    = 00000008            
+DDB$L_ACPD       00000010            EXE$WRTMAILBOX   0000008C RG    03   IO$V_DATACHECK = 0000000E            
+DDB$L_DDT        0000000C            FDTEOF           00000217 R     03   IO$V_DELETE    = 00000008            
+DDB$L_LINK       00000000            FDTREAD          000001B6 R     03   IO$V_DMOUNT    = 0000000A            
+DDB$L_UCB        00000004            FDTSET           000001D7 R     03   IO$V_DSABLMBX  = 0000000A            
+DDB$T_NAME       00000014            FDTWRITE         0000022F R     03   IO$V_ENABLMBX  = 00000007            
+DDB$W_SIZE       00000008            FINISHREAD       000002E2 R     03   IO$V_FCODE     = 00000000            
+DYN$C_ACB      = 00000002            GBL...         = 00000000            IO$V_HANGUP    = 00000009            
+DYN$C_ADP      = 00000001            INSMBQUEUE       000002B2 R     03   IO$V_INHERLOG  = 0000000B            
+DYN$C_AQB      = 00000003            IO$M_ABORT     = 00000100            IO$V_INHEXTGAP = 0000000C            
+DYN$C_BRDCST   = 0000001A            IO$M_ACCESS    = 00000040            IO$V_INHRETRY  = 0000000F            
+DYN$C_BUFIO    = 00000013            IO$M_ATTNAST   = 00000100            IO$V_INHSEEK   = 0000000C            
+DYN$C_CEB      = 00000004            IO$M_BINARY    = 00000040            IO$V_INTERRUPT = 00000006            
+DYN$C_CIR      = 0000001E            IO$M_CANCTRLO  = 00000040            IO$V_MOUNT     = 00000009            
+DYN$C_CRB      = 00000005            IO$M_COMMOD    = 00000040            IO$V_NOECHO    = 00000006            
+DYN$C_CXB      = 0000001B            IO$M_CREATE    = 00000080            IO$V_NOFILTR   = 00000009            
+DYN$C_DDB      = 00000006            IO$M_CTRLCAST  = 00000100            IO$V_NOFORMAT  = 00000008            
+DYN$C_FCB      = 00000007            IO$M_CTRLYAST  = 00000080            IO$V_NOW       = 00000006            
+DYN$C_FRK      = 00000008            IO$M_CVTLOW    = 00000100            IO$V_NOWAIT    = 00000007            
+DYN$C_GSD      = 00000015            IO$M_DATACHECK = 00004000            IO$V_PACKED    = 00000007            
+DYN$C_IDB      = 00000009            IO$M_DELETE    = 00000100            IO$V_PURGE     = 0000000B            
+DYN$C_IRP      = 0000000A            IO$M_DMOUNT    = 00000400            IO$V_READATTN  = 00000007            
+DYN$C_JPB      = 0000001F            IO$M_DSABLMBX  = 00000400            IO$V_REVERSE   = 00000006            
+DYN$C_KFH      = 00000026            IO$M_ENABLMBX  = 00000080            IO$V_SHUTDOWN  = 00000007            
+DYN$C_KFI      = 00000018            IO$M_FCODE     = 0000003F            IO$V_STARTUP   = 00000006            
+DYN$C_LOG      = 0000000B            IO$M_HANGUP    = 00000200            IO$V_SYNCH     = 00000009            
+DYN$C_MTL      = 00000019            IO$M_INHERLOG  = 00000800            IO$V_TIMED     = 00000007            
+DYN$C_MVL      = 00000016            IO$M_INHEXTGAP = 00001000            IO$V_TRMNOECHO = 0000000C            
+DYN$C_NDB      = 0000001C            IO$M_INHRETRY  = 00008000            IO$V_WRTATTN   = 00000008            
+DYN$C_NET      = 00000017            IO$M_INHSEEK   = 00001000            IO$_ACCESS     = 00000032            
+DYN$C_PBH      = 00000020            IO$M_INTERRUPT = 00000040            IO$_ACPCONTROL = 00000038            
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  21
+SYMBOL TABLE                                                                                                                    (13)
+
+IO$_CREATE     = 00000033            IRP$B_CARCON     00000038            IRP$W_TT_PRMPT   0000003C            
+IO$_DEACCESS   = 00000034            IRP$B_EFN        00000022            MASKH          = 00000100            
+IO$_DELETE     = 00000035            IRP$B_PRI        00000023            MASKL          = 00000000            
+IO$_DIAGNOSE   = 0000001D            IRP$B_RMOD       0000000B            MB$DDT           00000000 RG    03   
+IO$_DRVCLR     = 00000004            IRP$B_TYPE       0000000A            P1             = 00000000            
+IO$_ERASETAPE  = 00000006            IRP$C_LENGTH     0000004C            P2             = 00000004            
+IO$_LOGICAL    = 0000002F            IRP$K_LENGTH     0000004C            P3             = 00000008            
+IO$_MODIFY     = 00000036            IRP$L_AST        00000010            P4             = 0000000C            
+IO$_MOUNT      = 00000039            IRP$L_ASTPRM     00000014            PCB$B_ASTACT     0000000C            
+IO$_NOP        = 00000000            IRP$L_DIAGBUF    00000044            PCB$B_ASTEN      0000000D            
+IO$_OFFSET     = 00000006            IRP$L_IOQBL      00000004            PCB$B_PRI        0000000B            
+IO$_PACKACK    = 00000008            IRP$L_IOQFL      00000000            PCB$B_PRIB       00000033            
+IO$_PHYSICAL   = 0000001F            IRP$L_IOSB       00000024            PCB$B_TYPE       0000000A            
+IO$_READHEAD   = 0000000E            IRP$L_IOST1      00000034            PCB$B_WEFC       00000032            
+IO$_READLBLK   = 00000021            IRP$L_IOST2      00000038            PCB$C_LENGTH     0000007C            
+IO$_READPBLK   = 0000000C            IRP$L_MEDIA      00000034            PCB$K_LENGTH     0000007C            
+IO$_READPRESET = 00000019            IRP$L_PID        0000000C            PCB$L_ASTQBL     00000014            
+IO$_READPROMPT = 00000037            IRP$L_SEGVBN     00000040            PCB$L_ASTQFL     00000010            
+IO$_READTRACKD = 00000010            IRP$L_SEQNUM     00000048            PCB$L_EFC2P      00000058            
+IO$_READVBLK   = 00000031            IRP$L_SVAPTE     0000002C            PCB$L_EFC3P      0000005C            
+IO$_RECAL      = 00000003            IRP$L_TT_TERM    00000038            PCB$L_EFCS       00000050            
+IO$_RELEASE    = 00000005            IRP$L_UCB        0000001C            PCB$L_EFCU       00000054            
+IO$_RETCENTER  = 00000007            IRP$L_WIND       00000018            PCB$L_EFWM       0000004C            
+IO$_REWIND     = 00000024            IRP$M_BUFIO    = 00000001            PCB$L_OWNER      0000001C            
+IO$_REWINDOFF  = 00000022            IRP$M_CHAINED  = 00000020            PCB$L_PHD        00000064            
+IO$_SEARCH     = 00000009            IRP$M_COMPLX   = 00000008            PCB$L_PHYPCB     00000018            
+IO$_SEEK       = 00000002            IRP$M_DIAGBUF  = 00000080            PCB$L_PID        00000060            
+IO$_SENSECHAR  = 0000001B            IRP$M_FUNC     = 00000002            PCB$L_PQB        0000004C            
+IO$_SENSEMODE  = 00000027            IRP$M_PAGIO    = 00000004            PCB$L_SQBL       00000004            
+IO$_SETCHAR    = 0000001A            IRP$M_PHYSIO   = 00000100            PCB$L_SQFL       00000000            
+IO$_SETMODE    = 00000023            IRP$M_PRIVIO   = 00000200            PCB$L_STS        00000028            
+IO$_SKIPFILE   = 00000025            IRP$M_SWAPIO   = 00000040            PCB$L_UIC        00000020            
+IO$_SKIPRECORD = 00000026            IRP$M_VIRTUAL  = 00000010            PCB$L_WSSWP      00000024            
+IO$_SPACEFILE  = 00000002            IRP$S_FCODE    = 00000006            PCB$L_WTIME      0000002C            
+IO$_SPACERECORD= 00000009            IRP$S_FMOD     = 0000000A            PCB$T_LNAME      0000006C            
+IO$_STARTSPNDL = 00000019            IRP$S_MODE     = 00000002            PCB$V_ASTPEN   = 00000011            
+IO$_UNLOAD     = 00000001            IRP$V_BUFIO    = 00000000            PCB$V_BATCH    = 0000000E            
+IO$_VIRTUAL    = 0000003F            IRP$V_CHAINED  = 00000005            PCB$V_DELPEN   = 00000001            
+IO$_WRITECHECK = 0000000A            IRP$V_COMPLX   = 00000003            PCB$V_FORCPEN  = 00000002            
+IO$_WRITECHECKH= 00000018            IRP$V_DIAGBUF  = 00000007            PCB$V_HIBER    = 00000013            
+IO$_WRITEHEAD  = 0000000D            IRP$V_FCODE    = 00000000            PCB$V_INQUAN   = 00000003            
+IO$_WRITELBLK  = 00000020            IRP$V_FMOD     = 00000006            PCB$V_LOGIN    = 00000014            
+IO$_WRITEMARK  = 0000001C            IRP$V_FUNC     = 00000001            PCB$V_NOACNT   = 0000000F            
+IO$_WRITEOF    = 00000028            IRP$V_MODE     = 00000000            PCB$V_PHDRES   = 00000012            
+IO$_WRITEPBLK  = 0000000B            IRP$V_PAGIO    = 00000002            PCB$V_PSWAPM   = 00000004            
+IO$_WRITETRACKD= 0000000F            IRP$V_PHYSIO   = 00000008            PCB$V_RES      = 00000000            
+IO$_WRITEVBLK  = 00000030            IRP$V_PRIVIO   = 00000009            PCB$V_RESPEN   = 00000005            
+IOC$REQCOM       ********   X   03   IRP$V_SWAPIO   = 00000006            PCB$V_SSFEXC   = 00000006            
+IPL$_ASTDEL    = 00000002            IRP$V_VIRTUAL  = 00000004            PCB$V_SSFEXCE  = 00000007            
+IPL$_HWCLK     = 00000018            IRP$W_ABCNT      0000003C            PCB$V_SSFEXCS  = 00000008            
+IPL$_IOPOST    = 00000004            IRP$W_BCNT       00000032            PCB$V_SSFEXCU  = 00000009            
+IPL$_MAILBOX   = 0000000B            IRP$W_BOFF       00000030            PCB$V_SSRWAIT  = 0000000A            
+IPL$_POWER     = 0000001F            IRP$W_CHAN       00000028            PCB$V_SUSPEN   = 0000000B            
+IPL$_QUEUEAST  = 00000006            IRP$W_FUNC       00000020            PCB$V_SWPVBN   = 00000010            
+IPL$_SCHED     = 00000003            IRP$W_OBCNT      0000003E            PCB$V_WAKEPEN  = 0000000C            
+IPL$_SYNCH     = 00000007            IRP$W_SIZE       00000008            PCB$V_WALL     = 0000000D            
+IPL$_TIMER     = 00000007            IRP$W_STS        0000002A            PCB$W_APTCNT     00000034            
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  22
+SYMBOL TABLE                                                                                                                    (13)
+
+PCB$W_ASTCNT     0000003C            PR$_USP        = 00000003            SS$_DEVFOREIGN = 00000064            
+PCB$W_BIOCNT     0000003E            PR$_WCSA       = 0000002C            SS$_DEVICEFULL = 00000850            
+PCB$W_BIOLM      00000040            PR$_WCSD       = 0000002D            SS$_DEVMOUNT   = 0000006C            
+PCB$W_BYTCNT     00000042            PRI$_IOCOM     = 00000001            SS$_DEVNOTALLOC= 00000858            
+PCB$W_BYTLM      00000068            PRI$_NULL      = 00000000            SS$_DEVNOTMBX  = 00000074            
+PCB$W_DIOCNT     00000044            PRI$_RESAVL    = 00000002            SS$_DEVNOTMOUNT= 0000007C            
+PCB$W_DIOLM      00000046            PRI$_TICOM     = 00000004            SS$_DEVOFFLINE = 00000084            
+PCB$W_FILCNT     00000048            PRI$_TIMER     = 00000002            SS$_DIRFULL    = 00000860            
+PCB$W_GPGCNT     00000038            PRI$_TOCOM     = 00000003            SS$_DRVERR     = 0000008C            
+PCB$W_GRP        00000022            READCHECKIO      00000170 R     03   SS$_DUPFILENAME= 00000868            
+PCB$W_MEM        00000020            RSN$_ASTWAIT   = 00000001            SS$_DUPLNAM    = 00000094            
+PCB$W_MTXCNT     0000000E            RSN$_BRKTHRU   = 00000006            SS$_ENDOFFILE  = 00000870            
+PCB$W_PPGCNT     0000003A            RSN$_MAILBOX   = 00000002            SS$_ENDOFTAPE  = 00000878            
+PCB$W_PRCCNT     0000006A            RSN$_NPDYNMEM  = 00000003            SS$_ENDOFUSRLBL= 00000970            
+PCB$W_SIZE       00000008            RSN$_PGDYNMEM  = 00000005            SS$_EXQUOTA    = 0000001C            
+PCB$W_STATE      00000030            RSN$_PGFILE    = 00000004            SS$_EXTIDXFILE = 00000880            
+PCB$W_TMBU       00000036            SCH$GL_CURPCB    ********   X   03   SS$_FCPREADERR = 00000888            
+PCB$W_TQCNT      0000004A            SCH$RAVAIL       ********   X   03   SS$_FCPREPSTN  = 00000988            
+PMS$GL_MBREADS   ********   X   03   SS$_ABORT      = 0000002C            SS$_FCPREWNDERR= 00000890            
+PMS$GL_MBWRITES  ********   X   03   SS$_ACCONFLICT = 00000800            SS$_FCPSPACERR = 00000898            
+PR$_ACCR       = 00000029            SS$_ACCVIO     = 0000000C            SS$_FCPWRITERR = 000008A0            
+PR$_ACCS       = 00000028            SS$_ARITH      = 00000404            SS$_FILACCERR  = 0000009C            
+PR$_ASTLVL     = 00000013            SS$_ASTFLT     = 0000040C            SS$_FILALRACC  = 000000A4            
+PR$_ESP        = 00000001            SS$_BADATTRIB  = 00000034            SS$_FILELOCKED = 000008A8            
+PR$_ICCS       = 00000018            SS$_BADCHKSUM  = 00000808            SS$_FILENUMCHK = 000008B0            
+PR$_ICR        = 0000001A            SS$_BADESCAPE  = 0000003C            SS$_FILESEQCHK = 000008B8            
+PR$_IPL        = 00000012            SS$_BADFILEHDR = 00000810            SS$_FILESTRUCT = 000008C0            
+PR$_ISP        = 00000004            SS$_BADFILENAME= 00000818            SS$_FILNOTACC  = 000000AC            
+PR$_KSP        = 00000000            SS$_BADFILEVER = 00000820            SS$_FILNOTCNTG = 000002AC            
+PR$_MAPEN      = 00000038            SS$_BADIMGHDR  = 00000044            SS$_FILNOTEXP  = 000000B4            
+PR$_NICR       = 00000019            SS$_BADIRECTORY= 00000828            SS$_FORMAT     = 000000BC            
+PR$_P0BR       = 00000008            SS$_BADPARAM   = 00000014            SS$_GPTFULL    = 000000C4            
+PR$_P0LR       = 00000009            SS$_BADSTACK   = 000002B4            SS$_GSDFULL    = 000000CC            
+PR$_P1BR       = 0000000A            SS$_BEGOFFILE  = 00000938            SS$_GSDNOTXXX  = 000000D4            
+PR$_P1LR       = 0000000B            SS$_BLOCKCNTERR= 00000940            SS$_HANGUP     = 000002CC            
+PR$_PCBB       = 00000010            SS$_BREAK      = 00000414            SS$_HEADERFULL = 000008C8            
+PR$_RXCS       = 00000020            SS$_BUFFEROVF  = 00000601            SS$_IDXFILEFULL= 000008D0            
+PR$_RXDB       = 00000021            SS$_BUGCHECK   = 000002A4            SS$_ILLBLKNUM  = 000000DC            
+PR$_SBIER      = 00000034            SS$_CANCEL     = 00000830            SS$_ILLCNTRFUNC= 000000E4            
+PR$_SBIFS      = 00000030            SS$_CHANINTLK  = 0000004C            SS$_ILLEFC     = 000000EC            
+PR$_SBIMT      = 00000033            SS$_CLIFRCEXT  = 00000980            SS$_ILLIOFUNC  = 000000F4            
+PR$_SBIQC      = 00000036            SS$_CMODSUPR   = 0000041C            SS$_ILLLBLAST  = 00000968            
+PR$_SBIS       = 00000031            SS$_CMODUSER   = 00000424            SS$_ILLPAGCNT  = 000000FC            
+PR$_SBISC      = 00000032            SS$_COMPAT     = 0000042C            SS$_ILLSEQOP   = 000002DC            
+PR$_SBITA      = 00000035            SS$_CONTINUE   = 00000001            SS$_ILLSER     = 00000104            
+PR$_SBR        = 0000000C            SS$_CONTROLC   = 00000651            SS$_ILLUSRLBLRD= 00000958            
+PR$_SCBB       = 00000011            SS$_CONTROLO   = 00000609            SS$_ILLUSRLBLWT= 00000960            
+PR$_SID        = 0000003E            SS$_CONTROLY   = 00000611            SS$_INCVOLLABEL= 0000010C            
+PR$_SIRR       = 00000014            SS$_CREATED    = 00000619            SS$_INSFARG    = 00000114            
+PR$_SISR       = 00000015            SS$_CTRLERR    = 00000054            SS$_INSFMEM    = 00000124            
+PR$_SLR        = 0000000D            SS$_DATACHECK  = 0000005C            SS$_INSFRAME   = 0000012C            
+PR$_SSP        = 00000002            SS$_DATAOVERUN = 00000838            SS$_INSFWSL    = 0000011C            
+PR$_TBIA       = 00000039            SS$_DEBUG      = 0000046C            SS$_IVADDR     = 00000134            
+PR$_TBIS       = 0000003A            SS$_DEVACTIVE  = 000002C4            SS$_IVCHAN     = 0000013C            
+PR$_TODR       = 0000001B            SS$_DEVALLOC   = 00000840            SS$_IVCHNLSEC  = 0000026C            
+PR$_TXCS       = 00000022            SS$_DEVALRALLOC= 00000641            SS$_IVDEVNAM   = 00000144            
+PR$_TXDB       = 00000023            SS$_DEVASSIGN  = 00000848            SS$_IVGSDNAM   = 0000014C            
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  23
+SYMBOL TABLE                                                                                                                    (13)
+
+SS$_IVLOGNAM   = 00000154            SS$_ROPRAND    = 00000454            UCB$L_DEVDEPEND  0000003C            
+SS$_IVLOGTAB   = 0000015C            SS$_SECTBLFUL  = 0000021C            UCB$L_DPC        0000007C            
+SS$_IVPROTECT  = 000002F4            SS$_SSFAIL     = 0000045C            UCB$L_DUETIM     0000005C            
+SS$_IVQUOTAL   = 00000164            SS$_SUPERSEDE  = 00000631            UCB$L_DX_BFPNT   FFFFFFF4            
+SS$_IVSECFLG   = 0000016C            SS$_TAPEPOSLOST= 00000224            UCB$L_DX_BUF     FFFFFFF0            
+SS$_IVSECIDCTL = 000002E4            SS$_TBIT       = 00000464            UCB$L_DX_RXDB    FFFFFFF8            
+SS$_IVSSRQ     = 00000174            SS$_TIMEOUT    = 0000022C            UCB$L_EMB        00000078            
+SS$_IVSTSFLG   = 0000017C            SS$_TOOMANYVER = 00000990            UCB$L_FIRST      00000014            
+SS$_IVTIME     = 00000184            SS$_TOOMUCHDATA= 0000029C            UCB$L_FPC        0000000C            
+SS$_LENVIO     = 0000018C            SS$_UNASEFC    = 00000234            UCB$L_FQBL       00000004            
+SS$_LKWSETFUL  = 00000194            SS$_UNSAFE     = 0000023C            UCB$L_FQFL       00000000            
+SS$_MBFULL     = 000008D8            SS$_UNWIND     = 00000920            UCB$L_FR3        00000010            
+SS$_MBTOOSML   = 0000019C            SS$_UNWINDING  = 00000928            UCB$L_FR4        00000014            
+SS$_MCHECK     = 000002BC            SS$_VASFULL    = 00000244            UCB$L_IOQBL      00000044            
+SS$_MEDOFL     = 000001A4            SS$_VECINUSE   = 0000024C            UCB$L_IOQFL      00000040            
+SS$_MSGNOTFND  = 00000621            SS$_VOLINV     = 00000254            UCB$L_IRP        0000004C            
+SS$_MUSTCLOSEFL= 00000948            SS$_WAITUSRLBL = 00000950            UCB$L_LINK       0000002C            
+SS$_NODATA     = 000001AC            SS$_WASCLR     = 00000001            UCB$L_LOGADR     00000064            
+SS$_NOHANDLER  = 000008F8            SS$_WASECC     = 00000639            UCB$L_MAXBLOCK   00000080            
+SS$_NOHOMEBLK  = 000008E0            SS$_WASSET     = 00000009            UCB$L_MB_MSGQ  = 00000000            
+SS$_NOIOCHAN   = 000001B4            SS$_WRITLCK    = 0000025C            UCB$L_MB_R_AST = 00000010            
+SS$_NOLINKS    = 0000027C            STARTIO          000002D5 R     03   UCB$L_MB_W_AST = 0000000C            
+SS$_NOLOGNAM   = 000001BC            UCB$B_AMOD       00000053            UCB$L_MEDIA      00000088            
+SS$_NOMBX      = 00000274            UCB$B_CEX        00000077            UCB$L_NT_DATSSB  00000074            
+SS$_NOMOREFILES= 00000930            UCB$B_CM1        0000004A            UCB$L_NT_INTSSB  00000078            
+SS$_NONEXDRV   = 000001C4            UCB$B_CM2        0000004B            UCB$L_OPCNT      00000060            
+SS$_NONEXPR    = 000008E8            UCB$B_DEVCLASS   00000038            UCB$L_OWNUIC     0000001C            
+SS$_NONLOCAL   = 000008F0            UCB$B_DEVTYPE    00000039            UCB$L_PID        00000028            
+SS$_NOPRIV     = 00000024            UCB$B_DIPL       00000052            UCB$L_RQBL       00000004            
+SS$_NORMAL     = 00000001            UCB$B_DX_SCTCNT  FFFFFFFE            UCB$L_RQFL       00000000            
+SS$_NOSIGNAL   = 00000900            UCB$B_DX_SPARE   FFFFFFFF            UCB$L_SVAPTE     00000068            
+SS$_NOSOLICIT  = 00000284            UCB$B_ERTCNT     00000070            UCB$L_SVPN       00000064            
+SS$_NOSUCHDEV  = 00000908            UCB$B_ERTMAX     00000071            UCB$L_TTCHAR     0000003C            
+SS$_NOSUCHFILE = 00000910            UCB$B_ESCAPE     0000004B            UCB$L_VCB        00000030            
+SS$_NOSUCHNODE = 0000028C            UCB$B_FEX        00000076            UCB$M_BSY      = 00000100            
+SS$_NOSUCHSEC  = 00000978            UCB$B_FIPL       0000000B            UCB$M_CANCEL   = 00000008            
+SS$_NOTAPEOP   = 00000264            UCB$B_LOCSRV     0000003C            UCB$M_DEADMO   = 00000400            
+SS$_NOTFILEDEV = 000001CC            UCB$B_OFFNDX     00000090            UCB$M_DELMBX   = 00000002            
+SS$_NOTINTBLSZ = 000001D4            UCB$B_OFFRTC     00000091            UCB$M_DIAGBUF  = 00000002            
+SS$_NOTLABELMT = 000001DC            UCB$B_REMSRV     0000003D            UCB$M_DX_WRITE = 00000008            
+SS$_NOTNETDEV  = 000002EC            UCB$B_SECTORS    0000003C            UCB$M_ECC      = 00000001            
+SS$_NOTRAN     = 00000629            UCB$B_SLAVE      00000074            UCB$M_ERLOGIP  = 00000004            
+SS$_NOTSQDEV   = 000001E4            UCB$B_SPR        00000075            UCB$M_INT      = 00000002            
+SS$_OPCCUS     = 00000434            UCB$B_STATE      00000052            UCB$M_INTTYPE  = 00000080            
+SS$_OPCDEC     = 0000043C            UCB$B_TRACKS     0000003D            UCB$M_JOB      = 00000001            
+SS$_OPINCOMPL  = 000002D4            UCB$B_TYPE       0000000A            UCB$M_MOUNTING = 00000200            
+SS$_PAGOWNVIO  = 000001EC            UCB$B_VERTSZ     0000003F            UCB$M_NOCNVRT  = 00000004            
+SS$_PAGRDERR   = 00000444            UCB$C_LENGTH     00000074            UCB$M_NT_BFROVF= 00000004            
+SS$_PARITY     = 000001F4            UCB$C_LOGLNK   = 00000001            UCB$M_NT_BREAK = 00000020            
+SS$_PARTESCAPE = 000001FC            UCB$K_LENGTH     00000074            UCB$M_NT_NAME  = 00000010            
+SS$_PFMBSY     = 00000204            UCB$L_AMB        00000054            UCB$M_NT_NONTR = 00000040            
+SS$_PSTFULL    = 0000020C            UCB$L_ASTQBL     00000010            UCB$M_NT_SDP   = 00000008            
+SS$_RADRMOD    = 0000044C            UCB$L_ASTQFL     0000000C            UCB$M_ONLINE   = 00000010            
+SS$_REJECT     = 00000294            UCB$L_CPID       0000005C            UCB$M_POWER    = 00000020            
+SS$_REMOTE     = 00000649            UCB$L_CRB        00000020            UCB$M_PRMMBX   = 00000001            
+SS$_RESIGNAL   = 00000918            UCB$L_DDB        00000024            UCB$M_TIM      = 00000001            
+SS$_RESULTOVF  = 00000214            UCB$L_DEVCHAR    00000034            UCB$M_TIMOUT   = 00000040            
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  24
+SYMBOL TABLE                                                                                                                    (13)
+
+UCB$M_TT_NOTIF = 00000004            UCB$W_MSGMAX     00000014            
+UCB$M_TT_TIMO  = 00000002            UCB$W_NT_CHAN    0000007C            
+UCB$M_VALID    = 00000800            UCB$W_OFFSET     00000086            
+UCB$S_LNKPRI   = 00000002            UCB$W_REFC       00000050            
+UCB$S_LTYPE    = 00000002            UCB$W_SIZE       00000008            
+UCB$T_PARTNER    0000000C            UCB$W_SRCADDR    0000001A            
+UCB$V_BACKP    = 00000005            UCB$W_STS        00000058            
+UCB$V_BSY      = 00000008            UCB$W_UNIT       00000048            
+UCB$V_CANCEL   = 00000003            UCB$W_VPROT      0000001A            
+UCB$V_DEADMO   = 0000000A            WRITE            00000232 R     03   
+UCB$V_DELMBX   = 00000001            WRITECHECKIO     0000017B R     03   
+UCB$V_DIAGBUF  = 00000001            
+UCB$V_DX_WRITE = 00000003            
+UCB$V_ECC      = 00000000            
+UCB$V_ERLOGIP  = 00000002            
+UCB$V_INT      = 00000001            
+UCB$V_INTTYPE  = 00000007            
+UCB$V_JOB      = 00000000            
+UCB$V_LNKPRI   = 00000006            
+UCB$V_LTYPE    = 00000000            
+UCB$V_MOUNTING = 00000009            
+UCB$V_MSGACK   = 00000004            
+UCB$V_MSGFLO   = 00000003            
+UCB$V_NOCNVRT  = 00000002            
+UCB$V_NT_BFROVF= 00000002            
+UCB$V_NT_BREAK = 00000005            
+UCB$V_NT_NAME  = 00000004            
+UCB$V_NT_NONTR = 00000006            
+UCB$V_NT_SDP   = 00000003            
+UCB$V_ONLINE   = 00000004            
+UCB$V_POWER    = 00000005            
+UCB$V_PRMMBX   = 00000000            
+UCB$V_SEGFLO   = 00000002            
+UCB$V_TIM      = 00000000            
+UCB$V_TIMOUT   = 00000006            
+UCB$V_TT_NOTIF = 00000002            
+UCB$V_TT_TIMO  = 00000001            
+UCB$V_VALID    = 0000000B            
+UCB$W_BCNT       0000006E            
+UCB$W_BCR        00000092            
+UCB$W_BOFF       0000006C            
+UCB$W_BUFQUO     00000018            
+UCB$W_BYTESTOGO  0000003E            
+UCB$W_CHARGE     0000004A            
+UCB$W_CYLINDERS  0000003E            
+UCB$W_DA         00000088            
+UCB$W_DC         0000008A            
+UCB$W_DEVBUFSIZ  0000003A            
+UCB$W_DEVSTS     0000005A            
+UCB$W_DSTADDR    00000018            
+UCB$W_DX_BCR     FFFFFFFC            
+UCB$W_EC1        0000008C            
+UCB$W_EC2        0000008E            
+UCB$W_ERRCNT     00000072            
+UCB$W_FUNC       00000084            
+UCB$W_MB_SEED    FFFFFFFC            
+UCB$W_MSGCNT     00000016            
+MBDRIVER        - STARLET MAILBOX DEVICE DRIVER                  21-AUG-1978 23:55:39   VAX-11 MACRO X0.3-11               Page  25
+PROGRAM SECTION SYNOPSIS                                                                                                        (13)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFF      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+WIONONPAGED      00000343      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+6216. BYTES LEFT IN FREE MEMORY POOL.
+2784. BYTES OF RECLAIMED MEMORY.
+OBJ$:MBDRIVER,LIS$:MBDRIVER/-SP=LIB$:LIB/ML,SRC$:MBDRIVER
+11 MLB DIR RDS - 1118 GETS TO DEFINE 27 MACROS. 91 INTER. FILE WRITES. 

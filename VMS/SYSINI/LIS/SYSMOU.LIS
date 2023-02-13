@@ -1,0 +1,586 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE SYSMOU (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'X0005'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MOUNT Utility Structure Levels 1 & 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This module contains the code and data needed to mount the system
+;	0033	!	disk during system initialization.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  1-Nov-1977  19:02
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 28-Dec-1977  14:57
+;	0048	!   X0002 - Modify for Structure Level 2
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 13-Feb-1978  22:02
+;	0051	!   X0003 - Change $GTCHAN call to $GETCHN
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 16-Jun-78  14:16
+;	0054	!   X0004 - Ignore signals of success codes
+;	0055	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   Andrew C. Goldstein, 27-Jul-78  15:19
+;	0057	!   X0005 - Continue on warning signals
+;	0058	!
+;	0059	!**
+;	0060	
+;	0061	
+;	0062	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0063	REQUIRE 'SRCD$:[MOUNT.SRC]MOUDEF.B32';
+;	0370	
+;	0371	
+;	0372	FORWARD ROUTINE
+;	0373		MOUNT_SYSTEM,			! main routine
+;	0374		MAIN_HANDLER;			! condition handler
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 2
+; Digital Equipment Corporation
+;
+;	0375	!+
+;	0376	!
+;	0377	! Own storage for general use in the MOUNT utility
+;	0378	!
+;	0379	!-
+;	0380	
+;	0381	GLOBAL LITERAL
+;	0382		DEVCHAR_LEN	= 64;		! length of device characteristics buffer
+;	0383	
+;	0384	GLOBAL
+;	0385		CLEANUP_FLAGS	: BITVECTOR [32], ! error cleanup status flags
+;	0386		CHANNEL,			! channel number for I/O
+;	0387		MAILBOX_CHANNEL,		! channel number of ACP termination mailbox
+;	0388		PHYS_NAME	: VECTOR [2],	! descriptor of physical device name
+;	0389		LOG_BUFFER	: VECTOR [20, BYTE],
+;	0390						! buffer to construct logical name
+;	0391		HOME_BLOCK	: BBLOCK [512],	! buffer for volume header label or home block
+;	0392		DEVICE_CHAR	: BBLOCK [DEVCHAR_LEN],
+;	0393						! buffer for device characteristics
+;	0394		HOMEBLOCK_LBN,			! LBN of home block read
+;	0395		HEADER_LBN,			! LBN of file header
+;	0396		DEV_INDEX,			! index into device data table
+;	0397		USER_STATUS	: VECTOR [2],	! status return for various routines
+;	0398		CURRENT_VCB	: REF BBLOCK,	! address of VCB used by CHECK_HEADER2
+;	0399		REAL_VCB	: REF BBLOCK,	! address of VCB allocated for volume
+;	0400		REAL_FCB	: REF BBLOCK,	! address of FCB allocated for volume
+;	0401		REAL_WCB	: REF BBLOCK,	! address of window allocated for volume
+;	0402		REAL_AQB	: REF BBLOCK,	! address of AQB allocated for volume
+;	0403		LOG_ENTRY	: REF BBLOCK,	! address of logical name entry
+;	0404		MTL_ENTRY	: REF BBLOCK;	! address of mounted volume list entry
+;	0405	
+;	0406	OWN
+;	0407		DEVCHAR_DESC	: VECTOR [2] INITIAL (DEVCHAR_LEN, DEVICE_CHAR);
+;	0408						! descriptor for device characteristics
+;	0409	
+;	0410	
+;	0411	
+;	0412	!+
+;	0413	!
+;	0414	! The following area is a hand crafted mount parser output suitable for
+;	0415	! mounting the system disk.
+;	0416	!
+;	0417	!-
+;	0418	
+;	0419	GLOBAL
+;	0420		MOUNT_OPTIONS	: BITVECTOR [64] ! option flags
+;	0421				INITIAL (
+;	0422					1^OPT_SYSTEM OR
+;	0423					1^OPT_WRITE OR
+;	0424					1^OPT_BLOCK OR
+;	0425					1^OPT_OVR_ID OR
+;	0426					1^OPT_LOG_NAME OR
+;	0427					1^OPT_DEVICE OR
+;	0428					1^OPT_LABEL),
+;	0429		PROTECTION	: INITIAL (0),	! value of /PROTECTION switch
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 2-1
+; Digital Equipment Corporation
+;
+;	0430		OWNER_UIC	: INITIAL (0),	! value of /OWNER_UIC switch
+;	0431		USER_UIC	: INITIAL (0),	! value of /USER_UIC switch
+;	0432		EXTENSION	: INITIAL (0),	! value of /EXTENSION switch
+;	0433		WINDOW		: INITIAL (0),	! value of /WINDOW switch
+;	0434		ACCESSED	: INITIAL (0),	! value of /ACCESSED switch
+;	0435		BLOCKSIZE	: INITIAL (0),	! value of /BLOCK switch
+;	0436		DEVICE_COUNT	: INITIAL (1),	! number of devices specified
+;	0437		LABEL_COUNT	: INITIAL (1),	! number of volume labels specified
+;	0438		VID_STRING	: VECTOR [2],	! descriptor of VISUAL_ID string
+;	0439		COMMENT_STRING	: VECTOR [2],	! descriptor of COMMENT string
+;	0440		ACP_STRING	: VECTOR [2],	! descriptor of ACP device or name string
+;	0441		DRIVE_COUNT	: VECTOR [1],	! value of /DRIVES switch
+;	0442	
+;	0443		PARSE_IMP_END	: VECTOR [0];	! end of data area
+;	0444	
+;	0445	GLOBAL BIND
+;	0446		LABEL_STRING	= DESCRIPTOR ('SYSTEMDISK') : VECTOR,
+;	0447						! dummy volume label of system disk
+;	0448		LOG_NAME	= DESCRIPTOR ('SYS$DISK') : VECTOR;
+;	0449						! logical name of system disk
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 3
+; Digital Equipment Corporation
+;
+;	0450	GLOBAL ROUTINE MOUNT_SYSTEM (SYS_CHANNEL) =
+;	0451	
+;	0452	!++
+;	0453	!
+;	0454	! FUNCTIONAL DESCRIPTION:
+;	0455	!
+;	0456	!	This routine mounts the system disk (i.e., the disk to which the
+;	0457	!	channel is assigned) and starts the ACP.
+;	0458	!
+;	0459	!
+;	0460	! CALLING SEQUENCE:
+;	0461	!	MOUNT_SYSTEM (ARG1)
+;	0462	!
+;	0463	! INPUT PARAMETERS:
+;	0464	!	ARG1: channel number assigned to disk
+;	0465	!
+;	0466	! IMPLICIT INPUTS:
+;	0467	!	own storage of this module
+;	0468	!
+;	0469	! OUTPUT PARAMETERS:
+;	0470	!	NONE
+;	0471	!
+;	0472	! IMPLICIT OUTPUTS:
+;	0473	!	NONE
+;	0474	!
+;	0475	! ROUTINE VALUE:
+;	0476	!	1 if successful, assorted statuses if not
+;	0477	!
+;	0478	! SIDE EFFECTS:
+;	0479	!	system disk mounted, ACP started, logical name created
+;	0480	!
+;	0481	!--
+;	0482	
+;	0483	BEGIN
+;	0484	
+;	0485	LOCAL
+;	0486		STATUS,				! system service status
+;	0487		P,				! pointer into characteristics block
+;	0488		UNIT_DESC	: VECTOR[2];	! unit number string descriptor
+;	0489	
+;	0490	EXTERNAL ROUTINE
+;	0491		READ_HOMEBLOCK,			! read disk home block
+;	0492		MOUNT_DISK1,			! mount disk, level 1
+;	0493		MOUNT_DISK2;			! mount disk, level 2
+;	0494	
+;	0495	
+;	0496	! Enable the condition handler.
+;	0497	!
+;	0498	
+;	0499	ENABLE MAIN_HANDLER;
+;	0500	
+;	0501	CHANNEL = .SYS_CHANNEL;
+;	0502	
+;	0503	! Get the device characteristics and do device type validation: Make sure
+;	0504	! the device is mountable at all, and check that the mount qualifiers are
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 3-1
+; Digital Equipment Corporation
+;
+;	0505	! consistent with the device type.
+;	0506	!
+;	0507	
+;	0508	$GETCHN (CHAN = .CHANNEL, PRIBUF = DEVCHAR_DESC);
+;	0509	
+;	0510	IF NOT .DEVICE_CHAR[DEV$V_FOD]
+;	0511	THEN ERR_EXIT (SS$_NOTFILEDEV);
+;	0512	
+;	0513	IF NOT .DEVICE_CHAR[DEV$V_AVL]
+;	0514	THEN ERR_EXIT (SS$_DEVOFFLINE);
+;	0515	
+;	0516	IF .DEVICE_CHAR[DEV$V_MNT]
+;	0517	THEN ERR_EXIT (SS$_DEVMOUNT);
+;	0518	
+;	0519	IF .DEVICE_CHAR[DEV$V_SQD]
+;	0520	THEN ERR_EXIT (SS$_NOTFILEDEV);
+;	0521	
+;	0522	! Construct the physical device name by appending the ascii unit number to
+;	0523	! the device name in the device characteristics.
+;	0524	!
+;	0525	
+;	0526	UNIT_DESC[0] = 6;
+;	0527	P = DEVICE_CHAR + .DEVICE_CHAR[DIB$W_DEVNAMOFF];
+;	0528	UNIT_DESC[1] = .P + .(.P)<0,8> + 1;
+;	0529	$FAO (
+;     P 0530		DESCRIPTOR ('!UW:'),
+;     P 0531		UNIT_DESC[0],
+;     P 0532		UNIT_DESC[0],
+;     P 0533		.DEVICE_CHAR[DIB$W_UNIT]
+;     P 0534		);
+;	0535	PHYS_NAME[0] = .(.P)<0,8> + .UNIT_DESC[0];
+;	0536	PHYS_NAME[1] = .P + 1;
+;	0537	
+;	0538	! Now attempt to read the home block or volume header label, as appropriate
+;	0539	! for the device type.
+;	0540	!
+;	0541	
+;	0542	STATUS = READ_HOMEBLOCK (LABEL_STRING[0]);
+;	0543	
+;	0544	MOUNT_OPTIONS[OPT_IS_FILES11] = 1;	! assume volume is Files-11
+;	0545	IF NOT .STATUS
+;	0546	AND .STATUS NEQ SS$_INCVOLLABEL
+;	0547	THEN ERR_EXIT (.STATUS);
+;	0548	RETURN (
+;	0549	    IF .MOUNT_OPTIONS[OPT_IS_FILES11B]
+;	0550	    THEN MOUNT_DISK2 ()
+;	0551	    ELSE MOUNT_DISK1 ()
+;	0552	    );
+;	0553	
+;	0554	END;					! end of routine MOUNT_COMMAND
+
+
+							    .TITLE  SYSMOU
+							    .IDENT  \X0005\
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 3-2
+; Digital Equipment Corporation
+;
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAB:  .ASCII  \SYSTEMDISK\					      ;
+					      0000A	    .BLKB   2
+					      0000C P.AAA:  .LONG   10							      ;
+					      00010 	    .ADDRESS  P.AAB						      ;
+					      00014 P.AAD:  .ASCII  \SYS$DISK\						      ;
+					      0001C P.AAC:  .LONG   8							      ;
+					      00020 	    .ADDRESS  P.AAD						      ;
+					      00024 P.AAF:  .ASCII  \!UW:\						      ;
+					      00028 P.AAE:  .LONG   4							      ;
+					      0002C 	    .ADDRESS  P.AAF						      ;
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00000 DEVCHAR_DESC:
+							    .LONG   64							      ;
+					      00004 	    .ADDRESS  DEVICE_CHAR					      ;
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 CLEANUP_FLAGS::
+							    .BLKB   4
+					      00004 CHANNEL::
+							    .BLKB   4
+					      00008 MAILBOX_CHANNEL::
+							    .BLKB   4
+					      0000C PHYS_NAME::
+							    .BLKB   8
+					      00014 LOG_BUFFER::
+							    .BLKB   20
+					      00028 HOME_BLOCK::
+							    .BLKB   512
+					      00228 DEVICE_CHAR::
+							    .BLKB   64
+					      00268 HOMEBLOCK_LBN::
+							    .BLKB   4
+					      0026C HEADER_LBN::
+							    .BLKB   4
+					      00270 DEV_INDEX::
+							    .BLKB   4
+					      00274 USER_STATUS::
+							    .BLKB   8
+					      0027C CURRENT_VCB::
+							    .BLKB   4
+					      00280 REAL_VCB::
+							    .BLKB   4
+					      00284 REAL_FCB::
+							    .BLKB   4
+					      00288 REAL_WCB::
+							    .BLKB   4
+					      0028C REAL_AQB::
+							    .BLKB   4
+					      00290 LOG_ENTRY::
+							    .BLKB   4
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 3-3
+; Digital Equipment Corporation
+;
+					      00294 MTL_ENTRY::
+							    .BLKB   4
+					      00298 MOUNT_OPTIONS::
+							    .LONG   -532643072						      ;
+					      0029C	    .BLKB   4
+					      002A0 PROTECTION::
+							    .LONG   0							      ;
+					      002A4 OWNER_UIC::
+							    .LONG   0							      ;
+					      002A8 USER_UIC::
+							    .LONG   0							      ;
+					      002AC EXTENSION::
+							    .LONG   0							      ;
+					      002B0 WINDOW::.LONG   0							      ;
+					      002B4 ACCESSED::
+							    .LONG   0							      ;
+					      002B8 BLOCKSIZE::
+							    .LONG   0							      ;
+					      002BC DEVICE_COUNT::
+							    .LONG   1							      ;
+					      002C0 LABEL_COUNT::
+							    .LONG   1							      ;
+					      002C4 VID_STRING::
+							    .BLKB   8
+					      002CC COMMENT_STRING::
+							    .BLKB   8
+					      002D4 ACP_STRING::
+							    .BLKB   8
+					      002DC DRIVE_COUNT::
+							    .BLKB   4
+					      002E0 PARSE_IMP_END::
+							    .BLKB   0
+
+						    DEVCHAR_LEN==	64
+						    LABEL_STRING==	P.AAA
+						    LOG_NAME==		P.AAC
+							    .GLOBL  READ_HOMEBLOCK, MOUNT_DISK1, MOUNT_DISK2, SYS$GETCHN
+							    .GLOBL  SYS$FAO
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0C04 00000 	    .ENTRY  MOUNT_SYSTEM, Save R2,R10,R11			      ; 0450
+		         5A 00000000G  00  9E 00002 	    MOVAB   LIB$STOP, R10					      ;
+		         5B	0000'  CF  9E 00009 	    MOVAB   DEVICE_CHAR, R11					      ;
+		         5E	       08  C2 0000E 	    SUBL2   #8, SP						      ;
+		         6D 000000B7   EF  DE 00011 	    MOVAL   8$, (FP)						      ; 0483
+		  FDDC   CB	  04   AC  D0 00018 	    MOVL    SYS_CHANNEL, CHANNEL				      ; 0501
+				       7E  7C 0001E 	    CLRQ    -(SP)						      ; 0508
+				0000'  CF  9F 00020 	    PUSHAB  DEVCHAR_DESC					      ;
+				       7E  D4 00024 	    CLRL    -(SP)						      ;
+				FDDC   CB  DD 00026 	    PUSHL   CHANNEL						      ;
+	      00000000G  9F	       05  FB 0002A 	    CALLS   #5, @#SYS$GETCHN					      ;
+	   08	    01   AB	       06  E0 00031 	    BBS     #6, DEVICE_CHAR+1, 1$				      ; 0510
+		         7E	01CC   8F  3C 00036 	    MOVZWL  #460, -(SP)						      ; 0511
+		         6A	       01  FB 0003B 	    CALLS   #1, LIB$STOP					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 3-4
+; Digital Equipment Corporation
+;
+	   07	    02   AB	       02  E0 0003E 1$:     BBS     #2, DEVICE_CHAR+2, 2$				      ; 0513
+		         7E	  84   8F  9A 00043 	    MOVZBL  #132, -(SP)						      ; 0514
+		         6A	       01  FB 00047 	    CALLS   #1, LIB$STOP					      ;
+	   07	    02   AB	       03  E1 0004A 2$:     BBC     #3, DEVICE_CHAR+2, 3$				      ; 0516
+		         7E	  6C   8F  9A 0004F 	    MOVZBL  #108, -(SP)						      ; 0517
+		         6A	       01  FB 00053 	    CALLS   #1, LIB$STOP					      ;
+	   08	         6B	       05  E1 00056 3$:     BBC     #5, DEVICE_CHAR, 4$					      ; 0519
+		         7E	01CC   8F  3C 0005A 	    MOVZWL  #460, -(SP)						      ; 0520
+		         6A	       01  FB 0005F 	    CALLS   #1, LIB$STOP					      ;
+		         6E	       06  D0 00062 4$:     MOVL    #6, UNIT_DESC					      ; 0526
+		         50	       6B  9E 00065 	    MOVAB   DEVICE_CHAR, R0					      ; 0527
+		         52	  0E   AB  3C 00068 	    MOVZWL  DEVICE_CHAR+14, P					      ;
+		         52	       50  C0 0006C 	    ADDL2   R0, P						      ;
+		         50	       62  9A 0006F 	    MOVZBL  (P), R0						      ; 0528
+		         50	       52  C0 00072 	    ADDL2   P, R0						      ;
+      04   AE	         50	       01  C1 00075 	    ADDL3   #1, R0, UNIT_DESC+4					      ;
+		         7E	  0C   AB  3C 0007A 	    MOVZWL  DEVICE_CHAR+12, -(SP)				      ; 0534
+				  04   AE  9F 0007E 	    PUSHAB  UNIT_DESC						      ;
+				  08   AE  9F 00081 	    PUSHAB  UNIT_DESC						      ;
+				0000'  CF  9F 00084 	    PUSHAB  P.AAE						      ;
+	      00000000G  9F	       04  FB 00088 	    CALLS   #4, @#SYS$FAO					      ;
+		         50	       62  9A 0008F 	    MOVZBL  (P), R0						      ; 0535
+    FDE4   CB	         50	       6E  C1 00092 	    ADDL3   UNIT_DESC, R0, PHYS_NAME				      ;
+    FDE8   CB	         52	       01  C1 00098 	    ADDL3   #1, P, PHYS_NAME+4					      ; 0536
+				0000'  CF  9F 0009E 	    PUSHAB  LABEL_STRING					      ; 0542
+		  0000G  CF	       01  FB 000A2 	    CALLS   #1, READ_HOMEBLOCK					      ;
+	   00	    70   AB	       21  E2 000A7 	    BBSS    #33, MOUNT_OPTIONS, 5$				      ; 0544
+		         0E	       50  E8 000AC 5$:     BLBS    STATUS, 6$						      ; 0545
+	      0000010C   8F	       50  D1 000AF 	    CMPL    STATUS, #268					      ; 0546
+				       05  13 000B6 	    BEQL    6$							      ;
+				       50  DD 000B8 	    PUSHL   STATUS						      ; 0547
+		         6A	       01  FB 000BA 	    CALLS   #1, LIB$STOP					      ;
+	   06	    70   AB	       22  E1 000BD 6$:     BBC     #34, MOUNT_OPTIONS, 7$				      ; 0549
+		  0000G  CF	       00  FB 000C2 	    CALLS   #0, MOUNT_DISK2					      ; 0550
+					   04 000C7 	    RET     							      ; 0548
+		  0000G  CF	       00  FB 000C8 7$:     CALLS   #0, MOUNT_DISK1					      ; 0551
+					   04 000CD 	    RET     							      ; 0450
+					 0000 000CE 8$:     .WORD   Save nothing					      ; 0483
+				       7E  D4 000D0 	    CLRL    -(SP)						      ;
+				       5E  DD 000D2 	    PUSHL   SP							      ;
+		         7E	  04   AC  7D 000D4 	    MOVQ    4(AP), -(SP)					      ;
+		  0000V  CF	       03  FB 000D8 	    CALLS   #3, MAIN_HANDLER					      ;
+					   04 000DD 	    RET     							      ;
+
+; Routine Size:  222 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 4
+; Digital Equipment Corporation
+;
+;	0555	ROUTINE MAIN_HANDLER (SIGNAL, MECHANISM) =
+;	0556	
+;	0557	!++
+;	0558	!
+;	0559	! FUNCTIONAL DESCRIPTION:
+;	0560	!
+;	0561	!	This routine is the main level condition handler for the MOUNT
+;	0562	!	utility. It undoes anything that MOUNT has done so far and then
+;	0563	!	unwinds and returns the condition code as status to MOUNT's
+;	0564	!	caller (i.e., the CLI).
+;	0565	!
+;	0566	!
+;	0567	! CALLING SEQUENCE:
+;	0568	!	MAIN_HANDLER (ARG1, ARG2)
+;	0569	!
+;	0570	! INPUT PARAMETERS:
+;	0571	!	ARG1: address of signal array
+;	0572	!	ARG2: address of mechanism array
+;	0573	!
+;	0574	! IMPLICIT INPUTS:
+;	0575	!	NONE
+;	0576	!
+;	0577	! OUTPUT PARAMETERS:
+;	0578	!	NONE
+;	0579	!
+;	0580	! IMPLICIT OUTPUTS:
+;	0581	!	NONE
+;	0582	!
+;	0583	! ROUTINE VALUE:
+;	0584	!	SS$_CONTINUE
+;	0585	!
+;	0586	! SIDE EFFECTS:
+;	0587	!	stack unwound, control passed to CLI
+;	0588	!
+;	0589	!--
+;	0590	
+;	0591	BEGIN
+;	0592	
+;	0593	MAP
+;	0594		SIGNAL		: REF BBLOCK,	! signal array
+;	0595		MECHANISM	: REF BBLOCK;	! mechanism array
+;	0596	
+;	0597	EXTERNAL
+;	0598		USER_STATUS	: VECTOR;	! status return of some routines
+;	0599	
+;	0600	
+;	0601	! Do cleanup as indicated by the status flags.
+;	0602	! Cause the condition code to be returned in R0 as the main routine value.
+;	0603	!
+;	0604	
+;	0605	IF .SIGNAL[CHF$L_SIG_NAME] NEQ SS$_UNWIND
+;	0606	AND .BBLOCK [SIGNAL[CHF$L_SIG_NAME], STS$V_SEVERITY] EQL STS$K_SEVERE
+;	0607	THEN
+;	0608	    BEGIN
+;	0609	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 4-1
+; Digital Equipment Corporation
+;
+;	0610	    IF .SIGNAL[CHF$L_SIG_NAME] NEQ 0
+;	0611	    THEN MECHANISM[CHF$L_MCH_SAVR0] = .SIGNAL[CHF$L_SIG_NAME]
+;	0612	    ELSE MECHANISM[CHF$L_MCH_SAVR0] = .USER_STATUS[0];
+;	0613	    $UNWIND ();
+;	0614	    END;
+;	0615	
+;	0616	RETURN SS$_CONTINUE;			! continue from success signals
+;	0617	
+;	0618	END;					! end of routine MAIN_HANDLER
+
+
+
+							    .GLOBL  SYS$UNWIND
+
+					 0000 000DE MAIN_HANDLER:
+							    .WORD   Save nothing					      ; 0555
+		         50	  04   AC  D0 000E0 	    MOVL    SIGNAL, R0						      ; 0605
+	      00000920   8F	  04   A0  D1 000E4 	    CMPL    4(R0), #2336					      ;
+				       26  13 000EC 	    BEQL    3$							      ;
+      04   A0	         03	       00  ED 000EE 	    CMPZV   #0, #3, 4(R0), #4					      ; 0606
+				       04     000F3									      ;
+				       1E  12 000F4 	    BNEQ    3$							      ;
+	   51	    08   AC	       0C  C1 000F6 	    ADDL3   #12, MECHANISM, R1					      ; 0611
+				  04   A0  D5 000FB 	    TSTL    4(R0)						      ; 0610
+				       06  13 000FE 	    BEQL    1$							      ;
+		         61	  04   A0  D0 00100 	    MOVL    4(R0), (R1)						      ; 0611
+				       05  11 00104 	    BRB     2$							      ; 0610
+		         61	0000G  CF  D0 00106 1$:     MOVL    USER_STATUS, (R1)					      ; 0612
+				       7E  7C 0010B 2$:     CLRQ    -(SP)						      ; 0613
+	      00000000G  9F	       02  FB 0010D 	    CALLS   #2, @#SYS$UNWIND					      ;
+		         50	       01  D0 00114 3$:     MOVL    #1, R0						      ; 0616
+					   04 00117 	    RET     							      ; 0555
+
+; Routine Size:  58 bytes
+
+
+;	0619	
+;	0620	END
+;	0621	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	   736    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $OWN$          	     8    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $PLIT$         	    48  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   280  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:40:08	DBB3:[SYSINI.SRC]SYSMOU.B32;7					Page 4-2
+; Digital Equipment Corporation
+;
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        23         0       241
+
+
+
+
+
+; Size:		280 code + 792 data bytes
+; Run Time:	00:12.9
+; Elapsed Time:	00:27.0
+; Memory Used:	294 pages
+; Compilation Complete

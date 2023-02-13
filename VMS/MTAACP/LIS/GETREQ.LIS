@@ -1,0 +1,681 @@
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE GETREQ (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0003'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! COPYRIGHT (C) 1977
+;	0009	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0010	!
+;	0011	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0012	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0013	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0014	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0015	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0016	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0017	! REMAIN IN DEC.
+;	0018	!
+;	0019	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0020	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0021	! CORPORATION.
+;	0022	!
+;	0023	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0024	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MTAACP
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	THIS ROUTINE GETS THE NEXT I/O REQUEST FROM THE ACP QUEUE.
+;	0033	!	IF NO REQUESTS ARE QUEUED, IT HIBERNATES.  WHEN ALL ITS WORK IS
+;	0034	! COMPLETE, IT DELETES ITSELF.
+;	0035	!
+;	0036	! ENVIRONMENT:
+;	0037	!
+;	0038	!	STARLET OPERATING SYSTEM, INCLUDING PRIVILEGED SYSTEM SERVICES
+;	0039	!	AND INTERNAL EXEC ROUTINES. THIS ROUTINE MUST BE CALLED
+;	0040	!	IN KERNEL MODE.
+;	0041	!
+;	0042	!--
+;	0043	!
+;	0044	!
+;	0045	! AUTHOR:  D. H. GILLESPIE,	 CREATION DATE:  11-MAY-1977  17:26
+;	0046	!
+;	0047	! REVISION HISTORY:
+;	0048	!
+;	0049	!   D. H. Gillespie, 11-Jan-1978  15:25
+;	0050	!   X0003 - DEASSIGN MAILBOX
+;	0051	!
+;	0052	!   D. H. Gillespie, 25-Jan-1978  10:36
+;	0053	!   X0004 - CHANGE TO NEW BUG_CHECK
+;	0054	!
+;	0055	!   D. H. Gillespie, 27-Jan-1978  10:42
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   X0005 - ADD WAIT FOR COMPLETION OF I/O BEFORE DELETING ACP
+;	0057	!
+;	0058	!   D. H. Gillespie, 12-May-78  13:41
+;	0059	!   A0001 - change CURRENT_VCB to a register
+;	0060	!
+;	0061	!   D. H. Gillespie, 23-May-78  9:14
+;	0062	!   A0002 - add NOTUSED
+;	0063	!
+;	0064	!   D. H. Gillespie, 8-Jun-78  8:24
+;	0065	!   A0003 - change CTL$GL_CCB to @CTL$GL_CCBBASE
+;	0066	!
+;	0067	!**
+;	0068	
+;	0069	
+;	0070	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0071	REQUIRE 'SRC$:MTADEF.B32';
+;	0367	
+;	0368	FORWARD ROUTINE
+;	0369		GET_REQ		: L$GET_REQ,				!EXEC MODE GET REQUEST
+;	0370		GET_REQUEST	: COMMON_CALL;			!KERNEL MODE GET REQUEST
+;	0371	
+;	0372	EXTERNAL ROUTINE
+;	0373		CHECK_MAIL,					!CHECK FOR MAIL FROM OPERATOR
+;	0374		LOCK_IODB,					!LOCK I/O DATABASE MUTEX
+;	0375		SYS$HIBER	: ADDRESSING_MODE(ABSOLUTE),
+;	0376		UNLOCK_IODB;					!UNLOCK I/O DATABAS MUTEX
+;	0377	
+;	0378	EXTERNAL
+;	0379		CTL$GL_CCBBASE	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE),	!BASE ADDR OF CHANNEL CONTROL BLOCK
+;	0380		DISK_UCB	: REF BBLOCK,			!UCB OF DEVICE SYS$DISK
+;	0381		IO_CHANNEL,					!I/O CHANNEL NUMBER
+;	0382		MAIL_CHANNEL;					!MAILBOX CHANNEL NUMBER
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 2
+; Digital Equipment Corporation
+;
+;	0383	ROUTINE GET_REQUEST : COMMON_CALL =
+;	0384	
+;	0385	!++
+;	0386	!
+;	0387	! FUNCTIONAL DESCRIPTION:
+;	0388	!	THIS ROUTINE GETS THE NEXT I/O REQUEST FROM THE ACP QUEUE.
+;	0389	!	IF NO MORE REQUESTS, IT CHECKS IF THERE ARE ANY VOLUMES BEING SERVICED BY 
+;	0390	!	THE ACP.  IF THERE ARE NONE, PREPARE TO DELETE ITSELF.
+;	0391	!
+;	0392	! CALLING SEQUENCE:
+;	0393	!	GET_REQUEST (), CALLED IN KERNEL_MDOE
+;	0394	!
+;	0395	! INPUT PARAMETERS:
+;	0396	!	NONE
+;	0397	!
+;	0398	! IMPLICIT INPUTS:
+;	0399	!	QUEUE_HEAD: ADDRESS OF ACP QUEUE BLOCK
+;	0400	!	IO_CHANNEL: I/O CHANNEL NUMBER
+;	0401	!
+;	0402	! OUTPUT PARAMETERS:
+;	0403	!	NONE
+;	0404	!
+;	0405	! IMPLICIT OUTPUTS:
+;	0406	!	CURRENT_UCB: ADDRESS OF UCB OF REQUEST
+;	0407	!	CURRENT_VCB: ADDRESS OF VCB OF REQUEST
+;	0408	!	CURRENT_WCB: WINDOW OF FILE IF ACCESSED
+;	0409	!	HDR1:	     ADDRESS OF HDR1 LABEL IN VOLUME CONTROL BLOCK
+;	0410	!	HDR2:	     ADDRESS OF HDR2 LABEL IN VOLUME CONTROL BLOCK
+;	0411	!
+;	0412	! ROUTINE VALUE:
+;	0413	!	ADDRESS OF REQUEST I/O PACKET
+;	0414	!
+;	0415	! SIDE EFFECTS:
+;	0416	!	I/O CHANNEL ASSIGNED TO DEVICE OF REQUEST
+;	0417	!	RESULT STRING LENGTH SET TO ZERO AND RESULT STRING CLEARED
+;	0418	!	DISABLE WRITE BACK OF CHANNEL WINDOW
+;	0419	!
+;	0420	!--
+;	0421	
+;	0422	BEGIN
+;	0423	
+;	0424	EXTERNAL REGISTER
+;	0425		COMMON_REG;
+;	0426	
+;	0427	
+;	0428	! THIS REGISTER FORCES REMQUE TO BE EXECUTED IN ONE INSTRUCTION
+;	0429	REGISTER
+;	0430		QUEUE_POINTER	: REF BBLOCK;
+;	0431	
+;	0432	EXTERNAL
+;	0433		CURRENT_UCB	: REF BBLOCK,		! ADDRESS OF CURRENT UCB
+;	0434		CURRENT_WCB	: REF BBLOCK,		! ADDRESS OF FILE WINDOW
+;	0435		HDR1		: REF BBLOCK,		! ADDRESS OF HDR1 LABEL
+;	0436		HDR2		: REF BBLOCK,		! ADDRESS OF HDR2 LABEL
+;	0437		IOC$GL_AQBLIST	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE),	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 2-1
+; Digital Equipment Corporation
+;
+;	0438		QUEUE_HEAD	: REF BBLOCK,		! ACP QUEUE LIST HEAD
+;	0439		SCH$GL_CURPCB	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE);
+;	0440	
+;	0441	LOCAL
+;	0442		CCB		: REF BBLOCK,		! POINTER TO CCB OF I/O CHANNEL
+;	0443		PACKET		: REF BBLOCK;		! ADDRESS OF NEW I/O PACKET
+;	0444	
+;	0445	! ATTEMPT TO DEQUEUE A PACKET.
+;	0446	!
+;	0447	
+;	0448	WHILE 1 DO
+;	0449	    BEGIN
+;	0450	    QUEUE_POINTER = .QUEUE_HEAD;
+;	0451	    IF NOT REMQUE (.QUEUE_POINTER[AQB$L_ACPQFL], PACKET)
+;	0452	    THEN
+;	0453	
+;	0454	! CHECK THAT STRUCTURES ARE VALID
+;	0455	        BEGIN
+;	0456		LOCAL VPAGE : REF BBLOCK;
+;	0457		IF .PACKET[IRP$B_TYPE] NEQ DYN$C_IRP THEN BUG_CHECK (NOTIRPAQB);
+;	0458		CURRENT_UCB = .PACKET[IRP$L_UCB];
+;	0459		IF .CURRENT_UCB[UCB$B_TYPE] NEQ DYN$C_UCB THEN BUG_CHECK (NOTUCBIRP);
+;	0460		CURRENT_VCB = .CURRENT_UCB[UCB$L_VCB];
+;	0461		IF .CURRENT_VCB[VCB$B_TYPE] NEQ DYN$C_VCB THEN BUG_CHECK (NOTVCBUCB);
+;	0462		IF .CURRENT_VCB[VCB$L_VPFL] NEQ CURRENT_VCB[VCB$L_VPFL] THEN
+;	0463		    BEGIN
+;	0464		    VPAGE = .CURRENT_VCB[VCB$L_VPFL];
+;	0465		    IF .VPAGE[VVP$B_TYPE] NEQ VVP_TYPE THEN BUG_CHECK(NOTVVPVCB);
+;	0466		    HDR1 = VPAGE[VVP$T_HDR1];
+;	0467		    HDR2 = VPAGE[VVP$T_HDR2];
+;	0468		    END;
+;	0469	
+;	0470	! IF THE VOLUME IS BLOCKED FOR REWIND OR VOLUME MOUNT, PUT ALL REQUESTS OTHER THAN
+;	0471	! CANCEL ON THE STALLED I/O QUEUE.
+;	0472		IF NOT (.CURRENT_VCB[VCB$V_WAIREWIND] OR .CURRENT_VCB[VCB$V_WAIMOUVOL])
+;	0473		THEN EXITLOOP;					!VOLUME IS NOT BLOCKED
+;	0474		IF .PACKET[IRP$V_FCODE] EQL IO$_ACPCONTROL 	!LET CANCEL THRU
+;	0475		AND NOT .PACKET[IRP$V_VIRTUAL] THEN EXITLOOP;
+;	0476	
+;	0477		INSQUE(.PACKET,.VPAGE[VVP$L_STALLIOBL]);	!INSERT IN STALLED I/O QUEUE
+;	0478		END
+;	0479	    ELSE
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 3
+; Digital Equipment Corporation
+;
+;	0480	! IF THE REMQUE FAILED AND THE MOUNT COUNT IN THE AQB IS ZERO, THIS ACP IS
+;	0481	! POTENTIALLY IDLE.  INTERLOCK THE I/O DATABASE AND CHECK THE QUEUE AND THE
+;	0482	! COUNT AGAIN.  IF THE ACP IS NO LONGER IDLE, PROCEED AS IF NOTHING HAD HAPPENDED.
+;	0483	! IF IT STILL IS, UNHOOK THE AQB FROM THE SYSTEM AQB LIST.  ONCE UNHOOKED, THE 
+;	0484	! ACP CAN NO LONGER BE FOUND BY ANYONE.  CHANGE THE PROCESS UIC SO THAT A NEW
+;	0485	! ACP WILL BE SUCCESSFULLY CREATED BY MOUNT.  RETURN TO EXEC MODE GET_REQUEST
+;	0486	! TO WAIT FOR OUTSTANDING I/O AND DELETE THE PROCESS.
+;	0487		BEGIN
+;	0488		IF .QUEUE_POINTER[AQB$B_MNTCNT] EQL 0 THEN
+;	0489		    BEGIN
+;	0490		    LOCK_IODB();				!LOCK I/O DATA BASE MUTEX
+;	0491		    IF .QUEUE_POINTER[AQB$B_MNTCNT] EQL 0
+;	0492		    AND .QUEUE_POINTER[AQB$L_ACPQFL] EQL QUEUE_POINTER[AQB$L_ACPQFL]
+;	0493		    THEN
+;	0494			BEGIN
+;	0495			LOCAL P : REF BBLOCK;
+;	0496			P = .IOC$GL_AQBLIST;
+;	0497			IF .P EQL .QUEUE_POINTER
+;	0498			THEN IOC$GL_AQBLIST = .QUEUE_POINTER[AQB$L_LINK]
+;	0499			ELSE
+;	0500			    BEGIN
+;	0501			    UNTIL .P[AQB$L_LINK] EQL .QUEUE_POINTER
+;	0502			    DO P = .P[AQB$L_LINK];
+;	0503		 	    P[AQB$L_LINK] = .QUEUE_POINTER[AQB$L_LINK];
+;	0504			    END;
+;	0505	! INC GROUP COMPONENT OF PROCESS PCB SO THE CREATE ACP IN MOUNT WILL NOT
+;	0506	! GET A DUPLICATE PROCESS ERROR.
+;	0507			SCH$GL_CURPCB[PCB$W_GRP] = .SCH$GL_CURPCB[PCB$W_GRP] + 1;
+;	0508		 	UNLOCK_IODB();
+;	0509			END
+;	0510		    ELSE
+;	0511			UNLOCK_IODB();
+;	0512		    END;				!END OF IF NO MORE VOLUMES MOUNTED
+;	0513		RETURN 0;				!NO PACKET
+;	0514		END;					!END OF IF PACKET FOUND
+;	0515	    END;					!END OF WHILE LOOP
+;	0516	
+;	0517	! THE CURRENT VOLUME MAY NOT BE ON THE UNIT INDICATED IN THE USERS CHANNEL
+;	0518	!
+;	0519	(LOCAL
+;	0520		UCBLST		: REF VECTOR[LONG],	! POINTER TO UCBLST IN RVT
+;	0521		RVT		: REF BBLOCK;		!RELATIVE VOLUME TABLE
+;	0522	RVT = .CURRENT_VCB[VCB$L_RVT];
+;	0523	IF .RVT[RVT$B_TYPE] NEQ DYN$C_RVT THEN BUG_CHECK(NOTRVTVCB);
+;	0524	
+;	0525	UCBLST = RVT[RVT$L_UCBLST];
+;	0526	CURRENT_UCB = .UCBLST[.CURRENT_VCB[VCB$W_RVN]]);
+;	0527	IF .CURRENT_UCB[UCB$B_TYPE] NEQ DYN$C_UCB THEN BUG_CHECK(NOTUCBRVT);
+;	0528	CCB = .CTL$GL_CCBBASE - .IO_CHANNEL;			! POINT TO CCB
+;	0529	CCB[CCB$L_UCB] = .CURRENT_UCB;			! AND ASSIGN IT BY STUFFING UCB
+;	0530	
+;	0531	! GET THE WCB ADDRESS IF THERE IS A FILE OPEN ON THE CHANNEL.
+;	0532	! THE WINDOW POINTER WILL NOT BE VALID IF THIS IS A CANCEL IO
+;	0533	! WHICH IS AN ACP CONTROL FUNCTION WITH THE VIRTUAL BIT OFF
+;	0534	!
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 3-1
+; Digital Equipment Corporation
+;
+;	0535	
+;	0536	CURRENT_WCB = .PACKET[IRP$L_WIND];
+;	0537	
+;	0538	! IF LOW ORDER BIT IS SET, THEN DEACCESS IS PENDING.  IGNORE WINDOW.
+;	0539	IF .(PACKET[IRP$L_WIND])<0,1> THEN CURRENT_WCB = 0;
+;	0540	
+;	0541	! ADDRESS FOR WINDOW IS LONG WORD ALIGNED
+;	0542	IF .(PACKET[IRP$L_WIND])<1,2> NEQ 0 THEN BUG_CHECK(BADWCBPT);
+;	0543	IF .CURRENT_WCB NEQ 0 THEN
+;	0544	    BEGIN
+;	0545	    IF .CURRENT_WCB[WCB$B_TYPE] NEQ DYN$C_WCB
+;	0546	    THEN BUG_CHECK (NOTWCBIRP);
+;	0547	    IF .CURRENT_WCB[WCB$V_NOTFCP] THEN  BUG_CHECK(NOTFCPWCB);
+;	0548	    END;
+;	0549	
+;	0550	! PREVENT WRITE-BACK OF WCB.  SET RESULT STRING LENGTH EQUAL TO ZERO.
+;	0551	! CLEAR RESULT STRING BUFFER.
+;	0552	
+;	0553	IF .PACKET[IRP$V_COMPLX] THEN
+;	0554	    BEGIN
+;	0555	    LOCAL ABD : REF BBLOCKVECTOR[,ABD$C_LENGTH];
+;	0556	    ABD = .BBLOCK [.PACKET[IRP$L_SVAPTE], AIB$L_DESCRIPT];
+;	0557	    ABD[ABD$C_WINDOW, ABD$W_COUNT] = 0;
+;	0558	
+;	0559	    IF .ABD[ABD$C_RESL, ABD$W_COUNT] GEQ 2
+;	0560	    THEN (.ABD[ABD$C_RESL,ABD$W_TEXT] + ABD[ABD$C_RESL,ABD$W_TEXT] + 1)<0,16> = 0;
+;	0561	
+;	0562	    CH$FILL(0,
+;	0563		.ABD[ABD$C_RES,ABD$W_COUNT],
+;	0564		.ABD[ABD$C_RES,ABD$W_TEXT] + ABD[ABD$C_RES,ABD$W_TEXT] + 1);
+;	0565	    END
+;	0566	
+;	0567	! IF THERE IS NO BUFFER PACKET, THE FUNCTION MUST BE AN ACP CONTROL FUNCTION.
+;	0568	ELSE
+;	0569	    BEGIN
+;	0570	    IF (.PACKET[IRP$V_FCODE] GTRU IO$_LOGICAL
+;	0571	    AND .PACKET[IRP$V_FCODE] NEQ IO$_ACPCONTROL)
+;	0572	    OR (.PACKET[IRP$V_FCODE] EQL IO$_ACPCONTROL AND .PACKET[IRP$V_VIRTUAL])
+;	0573	    THEN BUG_CHECK(NOBUFPCKT);
+;	0574	    END;
+;	0575	RETURN .PACKET;
+;	0576	END;				!END OF ROUTINE
+
+
+							    .TITLE  GETREQ
+							    .IDENT  \A0003\
+
+							    .PSECT  $LOCKEDC2$,NOWRT,2
+
+					      00000 P.AAA:  .WORD   0, -257						      ;
+					      00004 	    .WORD    <BUG$_NOTIRPAQB!4>					      ;
+					      00006	    .BLKB   2
+					      00008 P.AAB:  .WORD   0, -257						      ;
+					      0000C 	    .WORD    <BUG$_NOTUCBIRP!4>					      ;
+					      0000E	    .BLKB   2
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 3-2
+; Digital Equipment Corporation
+;
+					      00010 P.AAC:  .WORD   0, -257						      ;
+					      00014 	    .WORD    <BUG$_NOTVCBUCB!4>					      ;
+					      00016	    .BLKB   2
+					      00018 P.AAD:  .WORD   0, -257						      ;
+					      0001C 	    .WORD    <BUG$_NOTVVPVCB!4>					      ;
+					      0001E	    .BLKB   2
+					      00020 P.AAE:  .WORD   0, -257						      ;
+					      00024 	    .WORD    <BUG$_NOTRVTVCB!4>					      ;
+					      00026	    .BLKB   2
+					      00028 P.AAF:  .WORD   0, -257						      ;
+					      0002C 	    .WORD    <BUG$_NOTUCBRVT!4>					      ;
+					      0002E	    .BLKB   2
+					      00030 P.AAG:  .WORD   0, -257						      ;
+					      00034 	    .WORD    <BUG$_BADWCBPT!4>					      ;
+					      00036	    .BLKB   2
+					      00038 P.AAH:  .WORD   0, -257						      ;
+					      0003C 	    .WORD    <BUG$_NOTWCBIRP!4>					      ;
+					      0003E	    .BLKB   2
+					      00040 P.AAI:  .WORD   0, -257						      ;
+					      00044 	    .WORD    <BUG$_NOTFCPWCB!4>					      ;
+					      00046	    .BLKB   2
+					      00048 P.AAJ:  .WORD   0, -257						      ;
+					      0004C 	    .WORD    <BUG$_NOBUFPCKT!4>					      ;
+					      0004E	    .BLKB   2
+
+							    .GLOBL  CHECK_MAIL, LOCK_IODB, SYS$HIBER, UNLOCK_IODB
+							    .GLOBL  CTL$GL_CCBBASE, DISK_UCB, IO_CHANNEL, MAIL_CHANNEL
+							    .GLOBL  CURRENT_UCB, CURRENT_WCB, HDR1, HDR2, IOC$GL_AQBLIST
+							    .GLOBL  QUEUE_HEAD, SCH$GL_CURPCB, BUG$_NOTIRPAQB, BUG$_NOTUCBIRP
+							    .GLOBL  BUG$_NOTVCBUCB, BUG$_NOTVVPVCB, BUG$_NOTRVTVCB
+							    .GLOBL  BUG$_NOTUCBRVT, BUG$_BADWCBPT, BUG$_NOTWCBIRP
+							    .GLOBL  BUG$_NOTFCPWCB, BUG$_NOBUFPCKT
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 07FC 00000 GET_REQUEST:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10			      ; 0383
+		         57	0000G  CF  9E 00002 	    MOVAB   CURRENT_WCB, R7					      ;
+		         58 00000000G  9F  9E 00007 	    MOVAB   @#IOC$GL_AQBLIST, R8				      ;
+		         59	0000G  CF  9E 0000E 	    MOVAB   CURRENT_UCB, R9					      ;
+		         5A	0000'  CF  9E 00013 	    MOVAB   P.AAA, R10						      ;
+		         52	0000G  CF  D0 00018 1$:     MOVL    QUEUE_HEAD, QUEUE_POINTER				      ; 0450
+		         56	  00   B2  0F 0001D 	    REMQUE  @0(QUEUE_POINTER), PACKET				      ; 0451
+				       6D  1D 00021 	    BVS     9$							      ;
+		         0A	  0A   A6  91 00023 	    CMPB    10(PACKET), #10					      ; 0457
+				       03  13 00027 	    BEQL    2$							      ;
+		         6A	       00  FB 00029 	    CALLS   #0, P.AAA						      ;
+		         69	  1C   A6  D0 0002C 2$:     MOVL    28(PACKET), CURRENT_UCB				      ; 0458
+		         50	       69  D0 00030 	    MOVL    CURRENT_UCB, R0					      ; 0459
+		         10	  0A   A0  91 00033 	    CMPB    10(R0), #16						      ;
+				       04  13 00037 	    BEQL    3$							      ;
+		    08   AA	       00  FB 00039 	    CALLS   #0, P.AAB						      ;
+		         50	       69  D0 0003D 3$:     MOVL    CURRENT_UCB, R0					      ; 0460
+		         5B	  30   A0  D0 00040 	    MOVL    48(R0), CURRENT_VCB					      ;
+		         11	  0A   AB  91 00044 	    CMPB    10(CURRENT_VCB), #17				      ; 0461
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 3-3
+; Digital Equipment Corporation
+;
+				       04  13 00048 	    BEQL    4$							      ;
+		    10   AA	       00  FB 0004A 	    CALLS   #0, P.AAC						      ;
+		         50	  3C   AB  9E 0004E 4$:     MOVAB   60(CURRENT_VCB), R0					      ; 0462
+		         50	  3C   AB  D1 00052 	    CMPL    60(CURRENT_VCB), R0					      ;
+				       1A  13 00056 	    BEQL    6$							      ;
+		         53	  3C   AB  D0 00058 	    MOVL    60(CURRENT_VCB), VPAGE				      ; 0464
+		         02	  0A   A3  91 0005C 	    CMPB    10(VPAGE), #2					      ; 0465
+				       04  13 00060 	    BEQL    5$							      ;
+		    18   AA	       00  FB 00062 	    CALLS   #0, P.AAD						      ;
+    0000G  CF	         53	       0C  C1 00066 5$:     ADDL3   #12, VPAGE, HDR1					      ; 0466
+		  0000G  CF	  5C   A3  9E 0006C 	    MOVAB   92(R3), HDR2					      ; 0467
+	   05	    0B   AB	       03  E0 00072 6$:     BBS     #3, 11(CURRENT_VCB), 7$				      ; 0472
+	   59	    0B   AB	       02  E1 00077 	    BBC     #2, 11(CURRENT_VCB), 15$				      ;
+      20   A6	         06	       00  ED 0007C 7$:     CMPZV   #0, #6, 32(PACKET), #56				      ; 0474
+				       38     00081									      ;
+				       05  12 00082 	    BNEQ    8$							      ;
+	   4C	    2A   A6	       04  E1 00084 	    BBC     #4, 42(PACKET), 15$					      ; 0475
+		  0108   D3	       66  0E 00089 8$:     INSQUE  (PACKET), @264(VPAGE)				      ; 0477
+				       88  11 0008E 	    BRB     1$							      ; 0451
+				  0B   A2  95 00090 9$:     TSTB    11(QUEUE_POINTER)					      ; 0488
+				       3D  12 00093 	    BNEQ    14$							      ;
+		  0000G  CF	       00  FB 00095 	    CALLS   #0, LOCK_IODB					      ; 0490
+				  0B   A2  95 0009A 	    TSTB    11(QUEUE_POINTER)					      ; 0491
+				       2E  12 0009D 	    BNEQ    13$							      ;
+		         52	       62  D1 0009F 	    CMPL    (QUEUE_POINTER), QUEUE_POINTER			      ; 0492
+				       29  12 000A2 	    BNEQ    13$							      ;
+		         50	       68  D0 000A4 	    MOVL    IOC$GL_AQBLIST, P					      ; 0496
+		         52	       50  D1 000A7 	    CMPL    P, QUEUE_POINTER					      ; 0497
+				       06  12 000AA 	    BNEQ    10$							      ;
+		         68	  10   A2  D0 000AC 	    MOVL    16(QUEUE_POINTER), IOC$GL_AQBLIST			      ; 0498
+				       11  11 000B0 	    BRB     12$							      ; 0497
+		         52	  10   A0  D1 000B2 10$:    CMPL    16(P), QUEUE_POINTER				      ; 0501
+				       06  13 000B6 	    BEQL    11$							      ;
+		         50	  10   A0  D0 000B8 	    MOVL    16(P), P						      ; 0502
+				       F4  11 000BC 	    BRB     10$							      ; 0501
+		    10   A0	  10   A2  D0 000BE 11$:    MOVL    16(QUEUE_POINTER), 16(P)				      ; 0503
+		         50 00000000G  9F  D0 000C3 12$:    MOVL    @#SCH$GL_CURPCB, R0					      ; 0507
+				  22   A0  B6 000CA 	    INCW    34(R0)						      ;
+		  0000G  CF	       00  FB 000CD 13$:    CALLS   #0, UNLOCK_IODB					      ; 0511
+				     00BB  31 000D2 14$:    BRW     27$							      ; 0513
+		         52	  20   AB  D0 000D5 15$:    MOVL    32(CURRENT_VCB), RVT				      ; 0522
+		         0E	  0A   A2  91 000D9 	    CMPB    10(RVT), #14					      ; 0523
+				       04  13 000DD 	    BEQL    16$							      ;
+		    20   AA	       00  FB 000DF 	    CALLS   #0, P.AAE						      ;
+	   51	         52	       0C  C1 000E3 16$:    ADDL3   #12, RVT, UCBLST					      ; 0525
+		         50	  0E   AB  3C 000E7 	    MOVZWL  14(CURRENT_VCB), R0					      ; 0526
+		         69	     6140  D0 000EB 	    MOVL    (UCBLST)[R0], CURRENT_UCB				      ;
+		         50	       69  D0 000EF 	    MOVL    CURRENT_UCB, R0					      ; 0527
+		         10	  0A   A0  91 000F2 	    CMPB    10(R0), #16						      ;
+				       04  13 000F6 	    BEQL    17$							      ;
+		    28   AA	       00  FB 000F8 	    CALLS   #0, P.AAF						      ;
+	   50 00000000G  9F	0000G  CF  C3 000FC 17$:    SUBL3   IO_CHANNEL, @#CTL$GL_CCBBASE, CCB			      ; 0528
+		         60	       69  D0 00106 	    MOVL    CURRENT_UCB, (CCB)					      ; 0529
+		         67	  18   A6  D0 00109 	    MOVL    24(PACKET), CURRENT_WCB				      ; 0536
+		         02	  18   A6  E9 0010D 	    BLBC    24(PACKET), 18$					      ; 0539
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 3-4
+; Digital Equipment Corporation
+;
+				       67  D4 00111 	    CLRL    CURRENT_WCB						      ;
+		         06	  18   A6  93 00113 18$:    BITB    24(PACKET), #6					      ; 0542
+				       04  13 00117 	    BEQL    19$							      ;
+		    30   AA	       00  FB 00119 	    CALLS   #0, P.AAG						      ;
+		         50	       67  D0 0011D 19$:    MOVL    CURRENT_WCB, R0					      ; 0543
+				       16  13 00120 	    BEQL    21$							      ;
+		         12	  0A   A0  91 00122 	    CMPB    10(R0), #18						      ; 0545
+				       04  13 00126 	    BEQL    20$							      ;
+		    38   AA	       00  FB 00128 	    CALLS   #0, P.AAH						      ; 0546
+		         50	       67  D0 0012C 20$:    MOVL    CURRENT_WCB, R0					      ; 0547
+	   04	    0B   A0	       02  E1 0012F 	    BBC     #2, 11(R0), 21$					      ;
+		    40   AA	       00  FB 00134 	    CALLS   #0, P.AAI						      ;
+	   2E	    2A   A6	       03  E1 00138 21$:    BBC     #3, 42(PACKET), 23$					      ; 0553
+		         50	  2C   B6  D0 0013D 	    MOVL    @44(PACKET), ABD					      ; 0556
+				  02   A0  B4 00141 	    CLRW    2(ABD)						      ; 0557
+		         02	  1A   A0  B1 00144 	    CMPW    26(ABD), #2						      ; 0559
+				       0D  1F 00148 	    BLSSU   22$							      ;
+		         51	  18   A0  9E 0014A 	    MOVAB   24(ABD), R1						      ; 0560
+		         52	       61  3C 0014E 	    MOVZWL  (R1), R2						      ;
+		         51	       52  C0 00151 	    ADDL2   R2, R1						      ;
+				  01   A1  B4 00154 	    CLRW    1(R1)						      ;
+		         51	  20   A0  9E 00157 22$:    MOVAB   32(ABD), R1						      ; 0564
+		         52	       61  3C 0015B 	    MOVZWL  (R1), R2						      ;
+		         51	       52  C0 0015E 	    ADDL2   R2, R1						      ;
+	   00	         6E	       00  2C 00161 	    MOVC5   #0, (SP), #0, 34(ABD), 1(R1)			      ; 0562
+		    01   A1	  22   A0     00165									      ;
+				       21  11 00169 	    BRB     26$							      ; 0553
+      20   A6	         06	       00  ED 0016B 23$:    CMPZV   #0, #6, 32(PACKET), #47				      ; 0570
+				       2F     00170									      ;
+				       08  1B 00171 	    BLEQU   24$							      ;
+      20   A6	         06	       00  ED 00173 	    CMPZV   #0, #6, 32(PACKET), #56				      ; 0571
+				       38     00178									      ;
+				       0D  12 00179 	    BNEQ    25$							      ;
+      20   A6	         06	       00  ED 0017B 24$:    CMPZV   #0, #6, 32(PACKET), #56				      ; 0572
+				       38     00180									      ;
+				       09  12 00181 	    BNEQ    26$							      ;
+	   04	    2A   A6	       04  E1 00183 	    BBC     #4, 42(PACKET), 26$					      ;
+		    48   AA	       00  FB 00188 25$:    CALLS   #0, P.AAJ						      ; 0573
+		         50	       56  D0 0018C 26$:    MOVL    PACKET, R0						      ; 0575
+					   04 0018F 	    RET     							      ;
+				       50  D4 00190 27$:    CLRL    R0							      ; 0383
+					   04 00192 	    RET     							      ;
+
+; Routine Size:  403 bytes
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 4
+; Digital Equipment Corporation
+;
+;	0577	GLOBAL ROUTINE GET_REQ : L$GET_REQ  =
+;	0578	
+;	0579	!++
+;	0580	!
+;	0581	! FUNCTIONAL DESCRIPTION:
+;	0582	!	THIS ROUTINE GETS A REQUEST FROM THE IO QUEUE. IF THERE ARE NO
+;	0583	!	ENTRIES, IT THEN ENABLES AST'S FOR EXEC MODE AND HIBERNATES.
+;	0584	!	IF AN AST IS DELIVERED, THEN  A PROCESS MAY BE UNBLOCK AND CONTINUED
+;	0585	!	FROM POINT OF BLOCK.
+;	0586	!
+;	0587	! CALLING SEQUENCE:
+;	0588	!	GET_REQ(), EXEC MODE
+;	0589	!
+;	0590	! INPUT PARAMETERS:
+;	0591	!	NONE
+;	0592	!
+;	0593	! IMPLICIT INPUTS:
+;	0594	!	NONE
+;	0595	!
+;	0596	! OUTPUT PARAMETERS:
+;	0597	!	NONE
+;	0598	!
+;	0599	! IMPLICIT OUTPUTS:
+;	0600	!	NONE
+;	0601	!
+;	0602	! ROUTINE VALUE:
+;	0603	!	ADDRESS OF REQUEST I/O PACKET
+;	0604	!
+;	0605	! SIDE EFFECTS:
+;	0606	!	NONE
+;	0607	!
+;	0608	!--
+;	0609	
+;	0610	BEGIN
+;	0611	
+;	0612	EXTERNAL REGISTER
+;	0613		COMMON_REG;
+;	0614	
+;	0615	BIND
+;	0616		SECONDS 	= UPLIT(-70000000,-1);
+;	0617	
+;	0618	EXTERNAL
+;	0619		QUEUE_HEAD	: REF BBLOCK;			!HEAD OF ACP QUEUE
+;	0620	
+;	0621	LOCAL
+;	0622		PACKET;						!PACKET ADDRESS
+;	0623	
+;	0624	REGISTER
+;	0625		QUEUE_POINTER	: REF BBLOCK;
+;	0626	
+;	0627	WHILE 1 DO
+;	0628	    BEGIN
+;	0629	    $SETAST(ENBFLG=0);					!DISABLE AST'S
+;	0630	    PACKET = KERNEL_CALL(GET_REQUEST);			!GET REQUEST OFF QUEUE
+;	0631	    IF .PACKET NEQ 0 THEN RETURN .PACKET;		!GOT A REQUEST TO PROCESS
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 4-1
+; Digital Equipment Corporation
+;
+;	0632	
+;	0633	
+;	0634	! If there are no volumes to service and the ACP's queue is empty, check if
+;	0635	! all I/O is done, namely rewinds.  Wait for all I/O before
+;	0636	! deleting process.  If the ACP still has volumes/requests to service, hibernate.
+;	0637	
+;	0638	    QUEUE_POINTER = .QUEUE_HEAD;
+;	0639	    IF .QUEUE_POINTER[AQB$B_MNTCNT] EQL 0 
+;	0640	    AND .QUEUE_POINTER[AQB$L_ACPQFL] EQL QUEUE_POINTER[AQB$L_ACPQFL] THEN
+;	0641		BEGIN
+;	0642		LOCAL CCB : REF BBLOCK;
+;	0643		WHILE 1 DO
+;	0644		    BEGIN
+;	0645		    CCB = .CTL$GL_CCBBASE - .IO_CHANNEL;
+;	0646		    IF .CCB[CCB$W_IOC] EQL 0 THEN EXITLOOP;
+;	0647		    IF $SETIMR(EFN = TIMEFN,DAYTIM = SECONDS)
+;	0648		    THEN $WAITFR(EFN=TIMEFN);
+;	0649		    END;
+;	0650		CCB[CCB$L_UCB] = .DISK_UCB;
+;	0651		$DASSGN (CHAN = .MAIL_CHANNEL);
+;	0652		$DASSGN (CHAN = .IO_CHANNEL);
+;	0653		$DELPRC();
+;	0654		END
+;	0655	    ELSE
+;	0656		BEGIN
+;	0657		CHECK_MAIL();
+;	0658		$SETAST(ENBFLG = 1);				!ENABLE BEFORE HIBERATE
+;	0659		SYS$HIBER();					!HIBERNATE
+;	0660		END;						!END OF WHILE LOOP
+;	0661	    END;
+;	0662	END;							!END OF ROUTINE
+
+
+
+					      00193	    .BLKB   1
+					      00194 P.AAK:  .LONG   -70000000, -1					      ;
+
+						    SECONDS=		P.AAK
+							    .GLOBL  SYS$SETAST, SYS$CMKRNL, SYS$SETIMR, SYS$WAITFR
+							    .GLOBL  SYS$DASSGN, SYS$DELPRC
+
+				       1C  BB 0019C GET_REQ::
+							    PUSHR   #^M<R2,R3,R4>					      ; 0577
+				       7E  D4 0019E 1$:     CLRL    -(SP)						      ; 0629
+	      00000000G  9F	       01  FB 001A0 	    CALLS   #1, @#SYS$SETAST					      ;
+				       7E  D4 001A7 	    CLRL    -(SP)						      ; 0630
+				       5E  DD 001A9 	    PUSHL   SP							      ;
+				FE51   CF  9F 001AB 	    PUSHAB  GET_REQUEST						      ;
+	      00000000G  9F	       03  FB 001AF 	    CALLS   #3, @#SYS$CMKRNL					      ;
+		         54	       50  D0 001B6 	    MOVL    R0, PACKET						      ;
+				       05  13 001B9 	    BEQL    2$							      ; 0631
+		         50	       54  D0 001BB 	    MOVL    PACKET, R0						      ;
+				       78  11 001BE 	    BRB     7$							      ;
+		         52	0000G  CF  D0 001C0 2$:     MOVL    QUEUE_HEAD, QUEUE_POINTER				      ; 0638
+				  0B   A2  95 001C5 	    TSTB    11(QUEUE_POINTER)					      ; 0639
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 4-2
+; Digital Equipment Corporation
+;
+				       56  12 001C8 	    BNEQ    5$							      ;
+		         52	       62  D1 001CA 	    CMPL    (QUEUE_POINTER), QUEUE_POINTER			      ; 0640
+				       51  12 001CD 	    BNEQ    5$							      ;
+	   53 00000000G  9F	0000G  CF  C3 001CF 3$:     SUBL3   IO_CHANNEL, @#CTL$GL_CCBBASE, CCB			      ; 0645
+				  0A   A3  B5 001D9 	    TSTW    10(CCB)						      ; 0646
+				       1C  13 001DC 	    BEQL    4$							      ;
+				       7E  7C 001DE 	    CLRQ    -(SP)						      ; 0647
+				  B1   AF  9F 001E0 	    PUSHAB  SECONDS						      ; 0577
+				       03  DD 001E3 	    PUSHL   #3							      ; 0647
+	      00000000G  9F	       04  FB 001E5 	    CALLS   #4, @#SYS$SETIMR					      ;
+		         E0	       50  E9 001EC 	    BLBC    R0, 3$						      ;
+				       03  DD 001EF 	    PUSHL   #3							      ; 0648
+	      00000000G  9F	       01  FB 001F1 	    CALLS   #1, @#SYS$WAITFR					      ;
+				       D5  11 001F8 	    BRB     3$							      ; 0643
+		         63	0000G  CF  D0 001FA 4$:     MOVL    DISK_UCB, (CCB)					      ; 0650
+				0000G  CF  DD 001FF 	    PUSHL   MAIL_CHANNEL					      ; 0651
+	      00000000G  9F	       01  FB 00203 	    CALLS   #1, @#SYS$DASSGN					      ;
+				0000G  CF  DD 0020A 	    PUSHL   IO_CHANNEL						      ; 0652
+	      00000000G  9F	       01  FB 0020E 	    CALLS   #1, @#SYS$DASSGN					      ;
+				       7E  7C 00215 	    CLRQ    -(SP)						      ; 0653
+	      00000000G  9F	       02  FB 00217 	    CALLS   #2, @#SYS$DELPRC					      ;
+				       15  11 0021E 	    BRB     6$							      ; 0639
+		  0000G  CF	       00  FB 00220 5$:     CALLS   #0, CHECK_MAIL					      ; 0657
+				       01  DD 00225 	    PUSHL   #1							      ; 0658
+	      00000000G  9F	       01  FB 00227 	    CALLS   #1, @#SYS$SETAST					      ;
+	      00000000G  9F	       00  FB 0022E 	    CALLS   #0, @#SYS$HIBER					      ; 0659
+				     FF66  31 00235 6$:     BRW     1$							      ; 0627
+				       1C  BA 00238 7$:     POPR    #^M<R2,R3,R4>					      ; 0577
+					   05 0023A 	    RSB     							      ;
+
+; Routine Size:  159 bytes
+
+
+;	0663	
+;	0664	END
+;	0665	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDC2$     	    80  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   571  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:34:30	DBB3:[MTAACP.SRC]GETREQ.B32;9					Page 4-3
+; Digital Equipment Corporation
+;
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        50         0       265
+
+
+
+
+
+;	0666	
+; Size:		562 code + 89 data bytes
+; Run Time:	00:18.8
+; Elapsed Time:	00:47.4
+; Memory Used:	361 pages
+; Compilation Complete

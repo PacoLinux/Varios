@@ -1,0 +1,473 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 1
+;
+;	0001	MODULE WITURN (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0007C'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This module generates a window mapping the desired VBN from
+;	0033	!	the supplied file header.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	CREATION DATE:  7-Dec-1976  14:38
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 17-Mar-1977  16:53
+;	0048	!   X0002 - Add system interlock while turning window
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 26-Apr-1977  11:36
+;	0051	!   X0003 - Move code to locked down PSECT
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 21-Jul-1977  15:17
+;	0054	!   X0004 - Add multi-header code
+;	0055	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 1-1
+;
+;	0056	!   Andrew C. Goldstein, 14-Dec-1977  12:58
+;	0057	!   X0005 - Count window turns in performance measurement data base
+;	0058	!
+;	0059	!   Andrew C. Goldstein, 9-Jan-1978  17:23
+;	0060	!   X0006 - Fix edge condition of VBN 0 in first header
+;	0061	!
+;	0062	!   Andrew C. Goldstein, 5-May-78  16:19
+;	0063	!   A0007 - Build window in private buffer
+;	0064	!
+;	0065	!**
+;	0066	
+;	0067	
+;	0068	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0069	REQUIRE 'SRC$:FCPDEF.B32';
+;	0388	
+;	0389	!
+;	0390	! The code in this routine must be locked into the working set because it
+;	0391	! runs at IPL$_SYNCH.
+;	0392	!
+;	0393	
+;	0394	LOCK_CODE;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2
+;
+;	0395	GLOBAL ROUTINE TURN_WINDOW (WINDOW, HEADER, DESIRED_VBN, START_VBN) =
+;	0396	
+;	0397	!++
+;	0398	!
+;	0399	! FUNCTIONAL DESCRIPTION:
+;	0400	!
+;	0401	!	This routine scans the map area of the supplied file header
+;	0402	!	and builds retrieval pointers in the window until
+;	0403	!	(1) the entire header has been scanned, or
+;	0404	!	(2) the first retrieval pointer in the window maps the desired VBN
+;	0405	!
+;	0406	! CALLING SEQUENCE:
+;	0407	!	TURN_WINDOW (ARG1, ARG2, ARG3, ARG4)
+;	0408	!
+;	0409	! INPUT PARAMETERS:
+;	0410	!	ARG1: address of window block or 0 if to be created
+;	0411	!	ARG2: address of file header
+;	0412	!	ARG3: desired VBN
+;	0413	!	ARG4: starting VBN of file header
+;	0414	!
+;	0415	! IMPLICIT INPUTS:
+;	0416	!	NONE
+;	0417	!
+;	0418	! OUTPUT PARAMETERS:
+;	0419	!	updated window
+;	0420	!
+;	0421	! IMPLICIT OUTPUTS:
+;	0422	!	NONE
+;	0423	!
+;	0424	! ROUTINE VALUE:
+;	0425	!	address of window if created
+;	0426	!	or 1 ir window already present
+;	0427	!
+;	0428	! SIDE EFFECTS:
+;	0429	!	NONE
+;	0430	!
+;	0431	!--
+;	0432	
+;	0433	BEGIN
+;	0434	
+;	0435	MAP
+;	0436		WINDOW		: REF BBLOCK,	! pointer to window
+;	0437		HEADER		: REF BBLOCK;	! pointer to file header
+;	0438	
+;	0439	LOCAL
+;	0440		VBN,				! VBN in scanning window
+;	0441		COUNT,				! retrieval pointer count
+;	0442		COUNTER,			! loop counter
+;	0443		LBN,				! retrieval pointer start LBN
+;	0444		WINDOW_BUFFER	: BBLOCK [MAX_WINDOW*6], ! buffer in which to build window
+;	0445		POINTER_COUNT,			! count of pointers in window
+;	0446		WINDOW_SIZE,			! size of window in pointers
+;	0447		BASE_VBN,			! starting VBN in window
+;	0448		NEW_WINDOW	: REF BBLOCK,	! address of newly allocated window
+;	0449		W_POINTER	: REF BBLOCK,	! pointer to scan window
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-1
+;
+;	0450		M_POINTER	: REF BBLOCK,	! pointer to scan header map area
+;	0451		MAP_AREA	: REF BBLOCK;	! pointer to start of header map area
+;	0452	
+;	0453	MACRO
+;	0454		WINDOW_MAP	= (.WINDOW+WCB$C_MAP)%;	!start of window map area
+;	0455	
+;	0456	EXTERNAL
+;	0457		PMS$GL_TURN	: ADDRESSING_MODE (ABSOLUTE);
+;	0458						! system count of window turns
+;	0459	
+;	0460	EXTERNAL ROUTINE
+;	0461		ALLOCATE;			! allocate system dynamic memory
+;	0462	
+;	0463	! If we are being called with an existing window, copy it into the buffer
+;	0464	! and pick up the window parameters. Otherwise, set up for creating a
+;	0465	! maximal size window.
+;	0466	!
+;	0467	
+;	0468	IF .WINDOW NEQ 0
+;	0469	THEN
+;	0470	    BEGIN
+;	0471	    WINDOW_SIZE = (.WINDOW[WCB$W_SIZE] - WCB$C_LENGTH) / 6;
+;	0472	    POINTER_COUNT = .WINDOW[WCB$W_NMAP];
+;	0473	    BASE_VBN = .WINDOW[WCB$L_STVBN];
+;	0474	    VBN = .BASE_VBN;				! get starting VBN of window
+;	0475	    CH$MOVE (.POINTER_COUNT*6, WINDOW_MAP, WINDOW_BUFFER);
+;	0476	    END
+;	0477	ELSE
+;	0478	    BEGIN
+;	0479	    POINTER_COUNT = 0;
+;	0480	    WINDOW_SIZE = MAX_WINDOW;
+;	0481	    END;
+;	0482	
+;	0483	! Scan the window looking for the starting VBN of the header. If it is
+;	0484	! contained within the window, truncate the window so that it maps exactly
+;	0485	! up to the start of the header. If the starting VBN is not contained in
+;	0486	! the window, the entire window must be discarded. However, if the desired
+;	0487	! VBN precedes the header start VBN, we do nothing since the window is
+;	0488	! already best effort.
+;	0489	!
+;	0490	
+;	0491	PMS$GL_TURN = .PMS$GL_TURN + 1;			! count window turn in PMS data base
+;	0492	W_POINTER = WINDOW_BUFFER;			! point to first retrieval pointer
+;	0493	
+;	0494	IF
+;	0495	    BEGIN
+;	0496	    INCR J FROM 1 TO .POINTER_COUNT
+;	0497	    DO
+;	0498		IF .VBN + .W_POINTER[WCB$W_COUNT] LSSU .START_VBN
+;	0499		THEN
+;	0500		    BEGIN
+;	0501		    VBN = .VBN + .W_POINTER[WCB$W_COUNT];	! accumulate running VBN
+;	0502		    W_POINTER = .W_POINTER + 6;		! and move to next pointer
+;	0503		    END
+;	0504		ELSE					! VBN is in or precedes current pointer
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-2
+;
+;	0505		    BEGIN
+;	0506		    IF .VBN LSSU .START_VBN
+;	0507		    THEN
+;	0508			BEGIN
+;	0509			W_POINTER[WCB$W_COUNT] = .START_VBN - .VBN;
+;	0510			W_POINTER = .W_POINTER + 6;	! bump the pointer
+;	0511			POINTER_COUNT = .J;		! truncate the window
+;	0512			EXITLOOP 0;
+;	0513			END
+;	0514		    ELSE
+;	0515			EXITLOOP -1;			! precedes the window
+;	0516		    END
+;	0517	    END
+;	0518	
+;	0519	THEN						! header VBN is not in window
+;	0520	    BEGIN
+;	0521	    IF .DESIRED_VBN LSSU .START_VBN
+;	0522	    AND .START_VBN GTRU 1
+;	0523	    THEN
+;	0524		RETURN 0				! leave it alone
+;	0525	    ELSE
+;	0526		BEGIN
+;	0527		POINTER_COUNT = 0;			! flush the window
+;	0528		BASE_VBN = .START_VBN;
+;	0529		W_POINTER = WINDOW_BUFFER;		! point to first pointer
+;	0530		END;
+;	0531	    END;
+;	0532	
+;	0533	! The window is now suitably initialized. Set up necessary pointers.
+;	0534	! Now scan the map area, extracting retrieval pointers.
+;	0535	!
+;	0536	
+;	0537	MAP_AREA = .HEADER + .HEADER[FH1$B_MPOFFSET]*2;	! point to map area
+;	0538	M_POINTER = .MAP_AREA + FM1$C_POINTERS;		! point to start of pointers
+;	0539	
+;	0540	DECR COUNTER FROM .MAP_AREA[FM1$B_INUSE]/2 TO 1 DO
+;	0541	    BEGIN
+;	0542	
+;	0543	    COUNT = .M_POINTER[FM1$B_COUNT] + 1;		! get retrieval pointer count
+;	0544	    LBN = .M_POINTER[FM1$W_LOWLBN];			! low order LBN
+;	0545	    LBN<16,8> = .M_POINTER[FM1$B_HIGHLBN];		! and high order LBN
+;	0546	    M_POINTER = .M_POINTER + 4;			! update map pointer
+;	0547	
+;	0548	! See if this set of blocks is contiguous with the preceding (in the
+;	0549	! window). If so, merge them.
+;	0550	!
+;	0551	
+;	0552	    IF .POINTER_COUNT NEQ 0	! only if non-empty window
+;	0553		AND .W_POINTER[WCB$W_PREVCOUNT] + .W_POINTER[WCB$L_PREVLBN] EQL .LBN
+;	0554		AND .W_POINTER[WCB$W_PREVCOUNT] + .COUNT LSSU 65536
+;	0555	    THEN W_POINTER[WCB$W_PREVCOUNT] = .W_POINTER[WCB$W_PREVCOUNT] + .COUNT
+;	0556	
+;	0557	! Build a new retrieval pointer. If the window is full, shuffle the
+;	0558	! entries up by one. If this would cause the pointer mapping the 
+;	0559	! desired VBN to fall off the top, we are done.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-3
+;
+;	0560	!
+;	0561	
+;	0562	    ELSE
+;	0563		BEGIN
+;	0564		IF .POINTER_COUNT GEQU .WINDOW_SIZE
+;	0565		THEN
+;	0566		    BEGIN
+;	0567		    IF .BASE_VBN + .WINDOW_BUFFER[WCB$W_COUNT] GTRU .DESIRED_VBN
+;	0568		    THEN EXITLOOP;
+;	0569	
+;	0570		    POINTER_COUNT = .POINTER_COUNT - 1;
+;	0571		    BASE_VBN = .BASE_VBN + .WINDOW_BUFFER[WCB$W_COUNT];
+;	0572		    CH$MOVE (.POINTER_COUNT*6, WINDOW_BUFFER+6, WINDOW_BUFFER);
+;	0573		    W_POINTER = .W_POINTER - 6;
+;	0574		    END;
+;	0575	
+;	0576	! Finally build the pointer and count it.
+;	0577	!
+;	0578	
+;	0579		W_POINTER[WCB$W_COUNT] = .COUNT;
+;	0580		W_POINTER[WCB$L_LBN] = .LBN;
+;	0581		W_POINTER = .W_POINTER + 6;
+;	0582		POINTER_COUNT = .POINTER_COUNT + 1;
+;	0583		END;
+;	0584	
+;	0585	    END;					! end of header scan loop
+;	0586	
+;	0587	! Having built a new window in the buffer, update the real one. If none exists,
+;	0588	! create one as big as needed. Then interlock the system data base and copy
+;	0589	! the buffer into the window.
+;	0590	!
+;	0591	
+;	0592	NEW_WINDOW = .WINDOW;
+;	0593	IF .NEW_WINDOW EQL 0
+;	0594	THEN
+;	0595	    NEW_WINDOW = ALLOCATE ((MAXU (.POINTER_COUNT, MIN_WINDOW)) * 6 + WCB$C_LENGTH, WCB_TYPE);
+;	0596	
+;	0597	SET_IPL (IPL$_SYNCH);
+;	0598	NEW_WINDOW[WCB$W_NMAP] = .POINTER_COUNT;
+;	0599	NEW_WINDOW[WCB$L_STVBN] = .BASE_VBN;
+;	0600	CH$MOVE (.POINTER_COUNT*6, WINDOW_BUFFER, .NEW_WINDOW+WCB$C_MAP);
+;	0601	SET_IPL (0);					! unlock the data base
+;	0602	
+;	0603	IF .WINDOW EQL 0
+;	0604	THEN RETURN .NEW_WINDOW
+;	0605	ELSE RETURN 1;
+;	0606	
+;	0607	
+;	0608	END;						! end of routine TURN_WINDOW
+
+
+							    .TITLE  WITURN
+							    .IDENT  \A0007C\
+
+							    .EXTRN  PMS$GL_TURN, ALLOCATE
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-4
+;
+
+							    .PSECT  $LOCKEDC1$,NOWRT,2
+
+					 0FFC 00000 	    .ENTRY  TURN_WINDOW, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0395
+		         5E 	FE14   CE  9E 00002 	    MOVAB   -492(SP), SP					      ;
+		         58 	  04   AC  D0 00007 	    MOVL    WINDOW, R8						      ; 0468
+				       23  13 0000B 	    BEQL    1$							      ;
+		         50 	  08   A8  3C 0000D 	    MOVZWL  8(R8), R0						      ; 0471
+		         50 	       24  C2 00011 	    SUBL2   #36, R0						      ;
+      08   AE	         50 	       06  C7 00014 	    DIVL3   #6, R0, WINDOW_SIZE					      ;
+		         59 	  16   A8  3C 00019 	    MOVZWL  22(R8), POINTER_COUNT				      ; 0472
+		         6E 	  20   A8  D0 0001D 	    MOVL    32(R8), BASE_VBN					      ; 0473
+		         57 	       6E  D0 00021 	    MOVL    BASE_VBN, VBN					      ; 0474
+	   50 	         59 	       06  C5 00024 	    MULL3   #6, POINTER_COUNT, R0				      ; 0475
+      0C   AE	    24   A8	       50  28 00028 	    MOVC3   R0, 36(R8), WINDOW_BUFFER				      ;
+				       07  11 0002E 	    BRB     2$							      ; 0468
+				       59  D4 00030 1$:     CLRL    POINTER_COUNT					      ; 0479
+		    08   AE	  50   8F  9A 00032 	    MOVZBL  #80, WINDOW_SIZE					      ; 0480
+			    00000000G  9F  D6 00037 2$:     INCL    @#PMS$GL_TURN					      ; 0491
+		         56 	  0C   AE  9E 0003D 	    MOVAB   WINDOW_BUFFER, W_POINTER				      ; 0492
+		         50 	       59  D0 00041 	    MOVL    POINTER_COUNT, R0					      ; 0496
+		         53 	  10   AC  D0 00044 	    MOVL    START_VBN, R3					      ; 0498
+				       51  D4 00048 	    CLRL    J							      ; 0496
+				       27  11 0004A 	    BRB     5$							      ;
+		         52 	       66  3C 0004C 3$:     MOVZWL  (W_POINTER), R2					      ; 0498
+		         52 	       57  C0 0004F 	    ADDL2   VBN, R2						      ;
+		         53 	       52  D1 00052 	    CMPL    R2, R3						      ;
+				       0B  1E 00055 	    BGEQU   4$							      ;
+		         52 	       86  3C 00057 	    MOVZWL  (W_POINTER)+, R2					      ; 0501
+		         57 	       52  C0 0005A 	    ADDL2   R2, VBN						      ;
+		         56 	       04  C0 0005D 	    ADDL2   #4, W_POINTER					      ; 0502
+				       11  11 00060 	    BRB     5$							      ; 0498
+		         53 	       57  D1 00062 4$:     CMPL    VBN, R3						      ; 0506
+				       10  1E 00065 	    BGEQU   6$							      ;
+	   86 	         53 	       57  A3 00067 	    SUBW3   VBN, R3, (W_POINTER)+				      ; 0509
+		         56 	       04  C0 0006B 	    ADDL2   #4, W_POINTER					      ; 0510
+		         59 	       51  D0 0006E 	    MOVL    J, POINTER_COUNT					      ; 0511
+				       1B  11 00071 	    BRB     8$							      ; 0512
+	   D5 	         51 	       50  F3 00073 5$:     AOBLEQ  R0, J, 3$						      ; 0496
+		         53 	  0C   AC  D1 00077 6$:     CMPL    DESIRED_VBN, R3					      ; 0521
+				       08  1E 0007B 	    BGEQU   7$							      ;
+		         01 	       53  D1 0007D 	    CMPL    R3, #1						      ; 0522
+				       03  1B 00080 	    BLEQU   7$							      ;
+				     00D5  31 00082 	    BRW     17$							      ;
+				       59  D4 00085 7$:     CLRL    POINTER_COUNT					      ; 0527
+		         6E 	       53  D0 00087 	    MOVL    R3, BASE_VBN					      ; 0528
+		         56 	  0C   AE  9E 0008A 	    MOVAB   WINDOW_BUFFER, W_POINTER				      ; 0529
+		         51 	  08   AC  D0 0008E 8$:     MOVL    HEADER, R1						      ; 0537
+		         50 	  01   A1  9A 00092 	    MOVZBL  1(R1), R0						      ;
+		         50 	     6140  3E 00096 	    MOVAW   (R1)[R0], MAP_AREA					      ;
+		         57 	  0A   A0  9E 0009A 	    MOVAB   10(R0), M_POINTER					      ; 0538
+		         51 	  08   A0  9A 0009E 	    MOVZBL  8(MAP_AREA), R1					      ; 0540
+      04   AE	         51 	       02  C7 000A2 	    DIVL3   #2, R1, 4(SP)					      ;
+				  04   AE  D6 000A7 	    INCL    COUNTER						      ;
+				       67  11 000AA 	    BRB     12$							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-5
+;
+		         5A 	  01   A7  9A 000AC 9$:     MOVZBL  1(M_POINTER), COUNT					      ; 0543
+				       5A  D6 000B0 	    INCL    COUNT						      ;
+		         5B 	  02   A7  3C 000B2 	    MOVZWL  2(M_POINTER), LBN					      ; 0544
+	   08 	         10 	       87  F0 000B6 	    INSV    (M_POINTER)+, #16, #8, LBN				      ; 0545
+				       5B     000BA									      ;
+				       59  D5 000BB 	    TSTL    POINTER_COUNT					      ; 0552
+				       23  13 000BD 	    BEQL    10$							      ;
+		         50 	  FA   A6  3C 000BF 	    MOVZWL  -6(W_POINTER), R0					      ; 0553
+		         50 	  FC   A6  C0 000C3 	    ADDL2   -4(W_POINTER), R0					      ;
+		         5B 	       50  D1 000C7 	    CMPL    R0, LBN						      ;
+				       16  12 000CA 	    BNEQ    10$							      ;
+		         50 	  FA   A6  3C 000CC 	    MOVZWL  -6(W_POINTER), R0					      ; 0554
+		         50 	       5A  C0 000D0 	    ADDL2   COUNT, R0						      ;
+	      00010000   8F	       50  D1 000D3 	    CMPL    R0, #65536						      ;
+				       06  1E 000DA 	    BGEQU   10$							      ;
+		    FA   A6	       5A  A0 000DC 	    ADDW2   COUNT, -6(W_POINTER)				      ; 0555
+				       31  11 000E0 	    BRB     12$							      ; 0552
+		    08   AE	       59  D1 000E2 10$:    CMPL    POINTER_COUNT, WINDOW_SIZE				      ; 0564
+				       23  1F 000E6 	    BLSSU   11$							      ;
+		         50 	  0C   AE  3C 000E8 	    MOVZWL  WINDOW_BUFFER, R0					      ; 0567
+		         50 	       6E  C0 000EC 	    ADDL2   BASE_VBN, R0					      ;
+		    0C   AC	       50  D1 000EF 	    CMPL    R0, DESIRED_VBN					      ;
+				       22  1A 000F3 	    BGTRU   13$							      ;
+				       59  D7 000F5 	    DECL    POINTER_COUNT					      ; 0570
+		         50 	  0C   AE  3C 000F7 	    MOVZWL  WINDOW_BUFFER, R0					      ; 0571
+		         6E 	       50  C0 000FB 	    ADDL2   R0, BASE_VBN					      ;
+	   50 	         59 	       06  C5 000FE 	    MULL3   #6, POINTER_COUNT, R0				      ; 0572
+      0C   AE	    12   AE	       50  28 00102 	    MOVC3   R0, WINDOW_BUFFER+6, WINDOW_BUFFER			      ;
+		         56 	       06  C2 00108 	    SUBL2   #6, W_POINTER					      ; 0573
+		         86 	       5A  B0 0010B 11$:    MOVW    COUNT, (W_POINTER)+					      ; 0579
+		         86 	       5B  D0 0010E 	    MOVL    LBN, (W_POINTER)+					      ; 0580
+				       59  D6 00111 	    INCL    POINTER_COUNT					      ; 0582
+		         95 	  04   AE  F5 00113 12$:    SOBGTR  COUNTER, 9$						      ; 0540
+		         56 	       58  D0 00117 13$:    MOVL    R8, NEW_WINDOW					      ; 0592
+				       1B  12 0011A 	    BNEQ    15$							      ; 0593
+				       01  DD 0011C 	    PUSHL   #1							      ; 0595
+		         50 	       59  D0 0011E 	    MOVL    POINTER_COUNT, R0					      ;
+		         01 	       50  D1 00121 	    CMPL    R0, #1						      ;
+				       03  1E 00124 	    BGEQU   14$							      ;
+		         50 	       01  D0 00126 	    MOVL    #1, R0						      ;
+		         50 	       06  C4 00129 14$:    MULL2   #6, R0						      ;
+				  24   A0  9F 0012C 	    PUSHAB  36(R0)						      ;
+		  0000G  CF	       02  FB 0012F 	    CALLS   #2, ALLOCATE					      ;
+		         56 	       50  D0 00134 	    MOVL    R0, NEW_WINDOW					      ;
+		         12 	       07  DA 00137 15$:    MTPR    #7, #18						      ; 0597
+		    16   A6	       59  B0 0013A 	    MOVW    POINTER_COUNT, 22(NEW_WINDOW)			      ; 0598
+		    20   A6	       6E  D0 0013E 	    MOVL    BASE_VBN, 32(NEW_WINDOW)				      ; 0599
+		         59 	       06  C4 00142 	    MULL2   #6, R9						      ; 0600
+      24   A6	    0C   AE	       59  28 00145 	    MOVC3   R9, WINDOW_BUFFER, 36(NEW_WINDOW)			      ;
+		         12 	       00  DA 0014B 	    MTPR    #0, #18						      ; 0601
+				       58  D5 0014E 	    TSTL    R8							      ; 0603
+				       04  12 00150 	    BNEQ    16$							      ;
+		         50 	       56  D0 00152 	    MOVL    NEW_WINDOW, R0					      ; 0604
+					   04 00155 	    RET     							      ;
+		         50 	       01  D0 00156 16$:    MOVL    #1, R0						      ; 0605
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:06:28	DBB3:[F11A.SRC]WITURN.B32;11					Page 2-6
+;
+					   04 00159 	    RET     							      ;
+				       50  D4 0015A 17$:    CLRL    R0							      ; 0395
+					   04 0015C 	    RET     							      ;
+
+; Routine Size:  349 bytes
+
+
+;	0609	END
+;	0610	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDC1$     	   349  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        17         0       229
+
+
+
+
+
+; Size:		349 code + 0 data bytes
+; Run Time:	00:09.0
+; Elapsed Time:	00:19.1
+; Memory Used:	325 pages
+; Compilation Complete

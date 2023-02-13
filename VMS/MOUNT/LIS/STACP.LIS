@@ -1,0 +1,1046 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE STACP (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'X0009'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MOUNT Utility Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine hooks up the VCB to the UCB being mounted, finds or
+;	0033	!	creates the AQB and starts up the ACP.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  19-Oct-1977  15:43
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   D. H. Gillespie, 4-Dec-1977  15:35
+;	0048	!   X0002 - ADD SETTING OF DEV$M_SDI FOR MAGNETIC TAPE
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 22-Dec-1977  15:08
+;	0051	!   X0003 - Add structure level 2 support
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 2-Feb-1978  11:25
+;	0054	!   X0004 - Run all ACP's in [1,3]
+;	0055	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   Andrew C. Goldstein, 13-Feb-1978  21:56
+;	0057	!   X0005 - Change $GTCHAN call to $GETCHN
+;	0058	!
+;	0059	!   Andrew C. Goldstein, 22-Feb-1978  13:01
+;	0060	!   X0006 - Add /DATACHECK switch
+;	0061	!
+;	0062	!   Andrew C. Goldstein, 10-May-78  14:41
+;	0063	!   X0007 - Use MOUNT function, pick up ACP configuration parameters
+;	0064	!
+;	0065	!   Andrew C. Goldstein, 16-Jun-78  13:10
+;	0066	!   X0008 - Set working set quota for ACP
+;	0067	!
+;	0068	!   Andrew C. Goldstein, 16-Aug-78  11:23
+;	0069	!   X0009 - Use right bit for process swap flag
+;	0070	!
+;	0071	!**
+;	0072	
+;	0073	
+;	0074	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0075	REQUIRE 'SRC$:MOUDEF.B32';
+;	0382	REQUIRE 'LIBD$:[VMSLIB.OBJ]MOUNTMSG.B32';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2
+; Digital Equipment Corporation
+;
+;	0482	GLOBAL ROUTINE START_ACP (UCB, VCB, TYPE) : NOVALUE =
+;	0483	
+;	0484	!++
+;	0485	!
+;	0486	! FUNCTIONAL DESCRIPTION:
+;	0487	!
+;	0488	!	This routine hooks up the VCB to the UCB being mounted, finds or
+;	0489	!	creates the AQB and starts up the ACP.
+;	0490	!
+;	0491	!
+;	0492	! CALLING SEQUENCE:
+;	0493	!	START_ACP (ARG1, ARG2, ARG3)
+;	0494	!
+;	0495	! INPUT PARAMETERS:
+;	0496	!	ARG1: address of UCB
+;	0497	!	ARG2: address of VCB
+;	0498	!	ARG3: type code of ACP wanted
+;	0499	!
+;	0500	! IMPLICIT INPUTS:
+;	0501	!	MOUNT parser database
+;	0502	!	CHANNEL: I/O channel assigned to device being mounted
+;	0503	!
+;	0504	! OUTPUT PARAMETERS:
+;	0505	!	NONE
+;	0506	!
+;	0507	! IMPLICIT OUTPUTS:
+;	0508	!	NONE
+;	0509	!
+;	0510	! ROUTINE VALUE:
+;	0511	!	NONE
+;	0512	!
+;	0513	! SIDE EFFECTS:
+;	0514	!	device characteristics altered, VCB hooked up to UCB, ACP started
+;	0515	!
+;	0516	!--
+;	0517	
+;	0518	BEGIN
+;	0519	
+;	0520	MAP
+;	0521		UCB		: REF BBLOCK,	! address of UCB being mounted
+;	0522		VCB		: REF BBLOCK,	! address of VCB being mounted
+;	0523		TYPE		: BYTE;		! type code of desired ACP
+;	0524	
+;	0525	LINKAGE
+;	0526		IOC_SEARCH	= JSB (REGISTER = 4) :
+;	0527				NOPRESERVE (2, 3, 5)
+;	0528				GLOBAL (ACP_DEVICE = 1);
+;	0529	
+;	0530	LABEL
+;	0531		ACP_SEARCH;			! main ACP search loop
+;	0532	
+;	0533	LITERAL
+;	0534		HALF_SECOND	= 5000000,	! 1/2 second in 100 nsec units
+;	0535		ACP_UIC		= 1^16 + 3,	! UIC to run ACP's under [1,3]
+;	0536		MAILBOX_CHARLEN	= 16,		! length of mailbox characteristics buffer
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-1
+; Digital Equipment Corporation
+;
+;	0537		TERM_BUFFER_LEN	= 8,		! length of termination message buffer
+;	0538		PROCBUF_LEN	= 16,		! maximum length of ACP process name
+;	0539		FILEBUF_LEN	= 64;		! maximum length of ACP file name
+;	0540	
+;	0541	LOCAL
+;	0542		CREATE_ACP,			! ACP creation flag
+;	0543		STATUS,				! general service status value
+;	0544		CLASS		: BYTE,		! device class code for ACP sharing
+;	0545		FILE_PREF	: REF VECTOR [,BYTE], ! address of ACP prefix string
+;	0546		FILE_PREF_LEN,			! length of ACP prefix string
+;	0547		SWAP_FLAG,			! ACP swap status flag
+;	0548		WORKING_SET,			! working set quota for ACP
+;	0549		ACP_UCB		: REF BBLOCK,	! UCB of ACP to be used
+;	0550		AQB		: REF BBLOCK,	! address of AQB to be used
+;	0551		P		: REF BBLOCK,	! pointer to chase AQB list
+;	0552		QUOTA_LIST	: VECTOR [6, BYTE]; ! ACP quota list
+;	0553	
+;	0554	OWN
+;	0555						! ACP termination buffer
+;	0556		MAILBOX_CHAR	: BBLOCK [MAILBOX_CHARLEN],
+;	0557						! mailbox characteristics buffer
+;	0558		MAILBOX_DESC	: VECTOR [2] INITIAL (MAILBOX_CHARLEN, MAILBOX_CHAR),
+;	0559						! mailbox characteristics buffer descriptor
+;	0560		TERM_BUFFER	: VECTOR [TERM_BUFFER_LEN, BYTE],
+;	0561						! ACP termination message buffer
+;	0562		PROC_NAME	: VECTOR [2],	! string descriptor of ACP process name
+;	0563		PROCBUF		: VECTOR [PROCBUF_LEN, BYTE],
+;	0564						! string buffer for ACP process name
+;	0565		FILE_NAME	: VECTOR [2],	! string descriptor of ACP file name
+;	0566		FILEBUF		: VECTOR [FILEBUF_LEN, BYTE],
+;	0567						! string buffer for ACP file name
+;	0568		IO_STATUS	: VECTOR [2];	! I/O status block
+;	0569	
+;	0570	EXTERNAL
+;	0571		DEVICE_CHAR	: BBLOCK,	! DEVICE CHARACTERISTICS OF DEVICE BEING MOUNTED
+;	0572		MOUNT_OPTIONS	: BITVECTOR,	! command options
+;	0573		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0574		CHANNEL,			! channel assigned to device
+;	0575		MAILBOX_CHANNEL,		! channel number assigned to mailbox
+;	0576		HOME_BLOCK	: BBLOCK,	! address of volume home block if disk
+;	0577		ACP_STRING	: VECTOR,	! string descriptor of ACP device or name
+;	0578		REAL_AQB	: REF BBLOCK,	! address of AQB allocated
+;	0579		SCH$GL_CURPCB	: REF BBLOCK ADDRESSING_MODE (ABSOLUTE),
+;	0580						! address of our PCB
+;	0581		IOC$GL_AQBLIST	: REF BBLOCK ADDRESSING_MODE (ABSOLUTE),
+;	0582						! system AQB listhead
+;	0583		EXE$GL_FLAGS	: BITVECTOR ADDRESSING_MODE (ABSOLUTE),
+;	0584						! system flags longword
+;	0585		ACP$GW_WORKSET	: WORD ADDRESSING_MODE (ABSOLUTE),
+;	0586						! disk ACP working set
+;	0587		ACP$GW_MAPCACHE	: WORD ADDRESSING_MODE (ABSOLUTE),
+;	0588						! disk ACP bitmap cache size
+;	0589		ACP$GW_HDRCACHE	: WORD ADDRESSING_MODE (ABSOLUTE),
+;	0590						! disk ACP header cache size
+;	0591		ACP$GW_DIRCACHE	: WORD ADDRESSING_MODE (ABSOLUTE),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-2
+; Digital Equipment Corporation
+;
+;	0592						! disk ACP directory cache size
+;	0593		ACP$GB_SWAPFLGS	: BITVECTOR ADDRESSING_MODE (ABSOLUTE),
+;	0594						! ACP swap mode flags
+;	0595		ACP$GB_BASEPRIO	: BYTE ADDRESSING_MODE (ABSOLUTE);
+;	0596						! ACP base priority
+;	0597	
+;	0598	EXTERNAL LITERAL
+;	0599		EXE$V_MULTACP	: UNSIGNED (6),	! multiple ACP bit in system flags
+;	0600		EXE$V_INIT	: UNSIGNED (6),	! ACP initialized bit in system flags
+;	0601		ACP$V_SWAPSYS	: UNSIGNED (6),	! swap /SYSTEM (etc.) ACP's
+;	0602		ACP$V_SWAPGRP	: UNSIGNED (6),	! swap /GROUP ACP's
+;	0603		ACP$V_SWAPPRV	: UNSIGNED (6),	! swap private ACP's
+;	0604		ACP$V_SWAPMAG	: UNSIGNED (6);	! swap magtape ACP's
+;	0605	
+;	0606	EXTERNAL ROUTINE
+;	0607		LOCK_IODB,			! lock I/O database mutex
+;	0608		UNLOCK_IODB,			! unlock the above
+;	0609		ALLOCATE_MEM,			! allocate system dynamic memory
+;	0610		DEALLOCATE_MEM,			! deallocate same
+;	0611		SET_DATACHECK,			! set data check attributes for volume
+;	0612		IOC$SEARCHDEV	: IOC_SEARCH ADDRESSING_MODE (ABSOLUTE);
+;	0613						! search I/O database for device
+;	0614	
+;	0615	
+;	0616	! First establish whether we are creating an ACP. This is controlled by
+;	0617	! the /PROCESSOR qualifier; the default is controlled by EXE$V_MULTACP
+;	0618	! in the system mask: either a common ACP for each type, or one ACP per
+;	0619	! device class per ACP type.
+;	0620	!
+;	0621	! An outer loop exists around this code to handle the situation where two
+;	0622	! users attempt to create the same common ACP (detected by seeing the
+;	0623	! AQB$V_CREATING bit in the found AQB). When this happens we simply wait
+;	0624	! a while and try all over. If the condition sticks for 10 seconds we
+;	0625	! give up on grounds of a sick I/O database.
+;	0626	!
+;	0627	
+;	0628	ACP_SEARCH: BEGIN
+;	0629	DECR J FROM 60 TO 1 DO
+;	0630	BEGIN
+;	0631	
+;	0632	LOCK_IODB ();
+;	0633	
+;	0634	CREATE_ACP = 0;			! assume no ACP creation
+;	0635	
+;	0636	CLASS = .BBLOCK[.UCB[UCB$L_DDB], DDB$B_ACPCLASS];
+;	0637	
+;	0638	IF .MOUNT_OPTIONS[OPT_UNIQUEACP] OR .MOUNT_OPTIONS[OPT_FILEACP]
+;	0639	THEN CREATE_ACP = 1
+;	0640	
+;	0641	! If the SAME qualifier was specified, find the device given and make sure
+;	0642	! it in fact has an ACP.
+;	0643	!
+;	0644	
+;	0645	ELSE IF .MOUNT_OPTIONS[OPT_SAMEACP]
+;	0646	THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-3
+; Digital Equipment Corporation
+;
+;	0647	    BEGIN
+;	0648		BEGIN
+;	0649		GLOBAL REGISTER ACP_DEVICE = 1;
+;	0650		ACP_DEVICE = ACP_STRING[0];
+;	0651		STATUS = IOC$SEARCHDEV (.SCH$GL_CURPCB);
+;	0652		ACP_UCB = .ACP_DEVICE;
+;	0653		END;
+;	0654	    IF NOT .STATUS
+;	0655	    THEN
+;	0656		BEGIN
+;	0657		UNLOCK_IODB ();
+;	0658		ERR_EXIT (.STATUS);
+;	0659		END;
+;	0660	    IF NOT .BBLOCK [ACP_UCB[UCB$L_DEVCHAR], DEV$V_MNT]
+;	0661	    OR NOT .BBLOCK [ACP_UCB[UCB$L_DEVCHAR], DEV$V_FOD]
+;	0662	    OR .BBLOCK [ACP_UCB[UCB$L_DEVCHAR], DEV$V_FOR]
+;	0663	    THEN
+;	0664		BEGIN
+;	0665		UNLOCK_IODB ();
+;	0666		ERR_EXIT (MOUN$_NOACPDEV);
+;	0667		END;
+;	0668	    AQB = .BBLOCK [.ACP_UCB[UCB$L_VCB], VCB$L_AQB];
+;	0669	    IF .AQB[AQB$B_ACPTYPE] NEQ .TYPE
+;	0670	    THEN
+;	0671		BEGIN
+;	0672		UNLOCK_IODB ();
+;	0673		ERR_EXIT (MOUN$_INCOMPACP);
+;	0674		END;
+;	0675	    END
+;	0676	
+;	0677	! Otherwise we use the default ACP (one ACP per class/type). Search the
+;	0678	! system AQB list for a suitable AQB (of the right type and marked system
+;	0679	! default or right type and class and marked class default).
+;	0680	!
+;	0681	
+;	0682	ELSE
+;	0683	    BEGIN
+;	0684	    AQB = .IOC$GL_AQBLIST;
+;	0685	    UNTIL .AQB EQL 0 DO
+;	0686		BEGIN
+;	0687		IF .EXE$GL_FLAGS[EXE$V_MULTACP]
+;	0688		THEN
+;	0689		    BEGIN
+;	0690		    IF .AQB[AQB$V_DEFCLASS]
+;	0691		    AND .AQB[AQB$B_ACPTYPE] EQL .TYPE
+;	0692		    AND .AQB[AQB$B_CLASS] EQL .CLASS
+;	0693		    THEN
+;	0694			EXITLOOP;
+;	0695		    END
+;	0696		ELSE
+;	0697		    BEGIN
+;	0698		    IF .AQB[AQB$V_DEFSYS]
+;	0699		    AND .AQB[AQB$B_ACPTYPE] EQL .TYPE
+;	0700		    THEN
+;	0701			EXITLOOP;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-4
+; Digital Equipment Corporation
+;
+;	0702		    END;
+;	0703		AQB = .AQB[AQB$L_LINK];
+;	0704		END;
+;	0705	    IF .AQB EQL 0 THEN CREATE_ACP = 1;
+;	0706	    END;
+;	0707	
+;	0708	! If we are creating an ACP, now allocate the AQB thereto. Fill in the
+;	0709	! AQB and hook it into the system AQB list. Note that this must be done under
+;	0710	! the I/O database lock since the list is singly linked.
+;	0711	!
+;	0712	
+;	0713	IF .CREATE_ACP
+;	0714	THEN
+;	0715	    BEGIN
+;	0716	    AQB = ALLOCATE_MEM (AQB$C_LENGTH, 0);
+;	0717	    AQB[AQB$B_TYPE] = DYN$C_AQB;
+;	0718	    AQB[AQB$B_MNTCNT] = 1;
+;	0719	    AQB[AQB$V_CREATING] = 1;
+;	0720	    AQB[AQB$B_ACPTYPE] = .TYPE;
+;	0721	    IF .MOUNT_OPTIONS[OPT_UNIQUEACP] OR .MOUNT_OPTIONS[OPT_FILEACP]
+;	0722	    THEN
+;	0723		AQB[AQB$V_UNIQUE] = 1
+;	0724	    ELSE IF .EXE$GL_FLAGS[EXE$V_MULTACP]
+;	0725	    THEN
+;	0726		BEGIN
+;	0727		AQB[AQB$V_DEFCLASS] = 1;
+;	0728		AQB[AQB$B_CLASS] = .CLASS;
+;	0729		END
+;	0730	    ELSE
+;	0731		AQB[AQB$V_DEFSYS] = 1;
+;	0732	    AQB[AQB$L_ACPQFL] = AQB[AQB$L_ACPQFL];
+;	0733	    AQB[AQB$L_ACPQBL] = AQB[AQB$L_ACPQFL];
+;	0734	    AQB[AQB$L_LINK] = .IOC$GL_AQBLIST;
+;	0735	    IOC$GL_AQBLIST = .AQB;
+;	0736	    REAL_AQB = .AQB;
+;	0737	    CLEANUP_FLAGS[CLF_DELAQB] = 1;
+;	0738	    LEAVE ACP_SEARCH;
+;	0739	    END
+;	0740	
+;	0741	! If we are not creating a new ACP then we have found an AQB to use. Check
+;	0742	! that it is not in transition. If OK, bump its mount count. Otherwise,
+;	0743	! release the I/O database mutex, wait a while, and try all over.
+;	0744	!
+;	0745	
+;	0746	ELSE
+;	0747	    BEGIN
+;	0748	    IF NOT .AQB[AQB$V_CREATING]
+;	0749	    THEN
+;	0750		BEGIN
+;	0751		AQB[AQB$B_MNTCNT] = .AQB[AQB$B_MNTCNT] + 1;
+;	0752		LEAVE ACP_SEARCH;
+;	0753		END;
+;	0754	    END;
+;	0755	
+;	0756	UNLOCK_IODB ();
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-5
+; Digital Equipment Corporation
+;
+;	0757	
+;	0758	! The AQB we want to use is in transition (i.e., it is a new ACP being created).
+;	0759	! Since this may or may not be successful, we cannot use it at this time.
+;	0760	! Time out and retry.
+;	0761	!
+;	0762	
+;	0763	IF $SETIMR (EFN = 1, DAYTIM = UPLIT (-HALF_SECOND, -1))
+;	0764	THEN $WAITFR (EFN = 1);
+;	0765	
+;	0766	END;					! end of ACP search retry loop
+;	0767	
+;	0768	! If we fall out of the loop, the AQB we want has been in transition for
+;	0769	! 10 seconds and is clearly in trouble.
+;	0770	!
+;	0771	
+;	0772	ERR_EXIT (MOUN$_AQBTIME);
+;	0773	
+;	0774	END;					! end of block ACP_SEARCH
+;	0775	
+;	0776	UNLOCK_IODB ();
+;	0777	
+;	0778	! Now create the ACP process if needed. Construct the process name from
+;	0779	! the device name and unit in the form ddcuACP; construct the
+;	0780	! ACP file name from the supplied name or the default name in the DDB.
+;	0781	! Note that the ACP file prefix depends upon whether or not a file system
+;	0782	! exists for the system disk. Normally, we use 'SYS$SYSTEM' but when this
+;	0783	! is the mount of the system disk, we use '[SYSEXE]' since FILEREAD doesn't
+;	0784	! do logical name translation.
+;	0785	!
+;	0786	
+;	0787	IF .CREATE_ACP
+;	0788	THEN
+;	0789	    BEGIN
+;	0790	    PROC_NAME[0] = PROCBUF_LEN;
+;	0791	    PROC_NAME[1] = PROCBUF;
+;	0792	
+;	0793	    $FAO (
+;     P 0794		DESCRIPTOR ('!AC!UW!AC'),
+;     P 0795		PROC_NAME[0],
+;     P 0796		PROC_NAME[0],
+;     P 0797		BBLOCK [.UCB[UCB$L_DDB], DDB$T_NAME],
+;     P 0798		.UCB[UCB$W_UNIT],
+;     P 0799		UPLIT BYTE (3, 'ACP')
+;     P 0800		);
+;	0801	
+;	0802	    IF .EXE$GL_FLAGS[EXE$V_INIT]
+;	0803	    THEN
+;	0804		BEGIN
+;	0805		FILE_PREF_LEN = %CHARCOUNT ('SYS$SYSTEM:');
+;	0806		FILE_PREF = UPLIT BYTE ('SYS$SYSTEM:');
+;	0807		END
+;	0808	    ELSE
+;	0809		BEGIN
+;	0810		FILE_PREF_LEN = %CHARCOUNT ('[SYSEXE]');
+;	0811		FILE_PREF = UPLIT BYTE ('[SYSEXE]');
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-6
+; Digital Equipment Corporation
+;
+;	0812		END;
+;	0813	
+;	0814	    FILE_NAME[1] = FILEBUF;
+;	0815	    IF .MOUNT_OPTIONS[OPT_FILEACP]
+;	0816	    THEN
+;	0817		BEGIN
+;	0818		FILE_NAME[0] = .ACP_STRING[0] + .FILE_PREF_LEN;
+;	0819		CH$COPY (.FILE_PREF_LEN, .FILE_PREF, .ACP_STRING[0], .ACP_STRING[1],
+;	0820			    0, .FILE_NAME[0], FILEBUF);
+;	0821		END
+;	0822	    ELSE
+;	0823		BEGIN
+;	0824		FILE_NAME[0] = .FILE_PREF_LEN + 11;
+;	0825		CH$COPY (.FILE_PREF_LEN, .FILE_PREF, 3, BBLOCK [.UCB[UCB$L_DDB], DDB$L_ACPD],
+;	0826			    8, UPLIT BYTE ('AACP.EXE'),
+;	0827			    0, .FILE_PREF_LEN+11, FILEBUF);
+;	0828		IF .MOUNT_OPTIONS[OPT_IS_FILES11B]
+;	0829		THEN (FILEBUF+.FILE_PREF_LEN+3)<0,8> = 'B';
+;	0830		END;
+;	0831	    
+;	0832	! Create a mailbox which will receive the termination message in case the
+;	0833	! ACP bombs. The $GETCHN call is used to obtain the mailbox unit number.
+;	0834	!
+;	0835	
+;	0836	    MAILBOX_CHANNEL = 0;
+;	0837	    STATUS = $CREMBX (CHAN   = MAILBOX_CHANNEL,
+;     P 0838			      PROMSK = %X'FFED');	! system writable, owner readable
+;	0839	    IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0840	    CLEANUP_FLAGS[CLF_DEASSMBX] = 1;
+;	0841	
+;	0842	    $GETCHN (CHAN   = .MAILBOX_CHANNEL,
+;     P 0843		     PRIBUF = MAILBOX_DESC[0]);
+;	0844	
+;	0845	    SWAP_FLAG = 4;
+;	0846	    IF .ACP$GB_SWAPFLGS[ (IF .DEVICE_CHAR[DEV$V_SQD] THEN ACP$V_SWAPMAG
+;	0847				ELSE IF .AQB[AQB$V_DEFSYS] OR .AQB[AQB$V_DEFCLASS]
+;	0848				     OR .MOUNT_OPTIONS[OPT_SYSTEM] THEN ACP$V_SWAPSYS
+;	0849				ELSE IF .MOUNT_OPTIONS[OPT_GROUP] THEN ACP$V_SWAPGRP
+;	0850				ELSE ACP$V_SWAPPRV
+;	0851				)]
+;	0852	    THEN SWAP_FLAG = 0;
+;	0853	
+;	0854	! Compute the working set quota for the ACP
+;	0855	!
+;	0856	
+;	0857	    IF .DEVICE_CHAR[DEV$V_SQD]
+;	0858	    THEN
+;	0859		WORKING_SET = 128		! working set for magtape ACP
+;	0860	    ELSE
+;	0861		BEGIN
+;	0862		WORKING_SET = .ACP$GW_WORKSET;	! working set for disk ACP
+;	0863		IF .WORKING_SET EQL 0
+;	0864		THEN WORKING_SET = .ACP$GW_MAPCACHE + .ACP$GW_HDRCACHE + .ACP$GW_DIRCACHE + 150;
+;	0865		END;
+;	0866	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-7
+; Digital Equipment Corporation
+;
+;	0867	    (QUOTA_LIST+0)<0,8> = PQL$_WSQUOTA;
+;	0868	    (QUOTA_LIST+1)<0,32> = .WORKING_SET;
+;	0869	    (QUOTA_LIST+5)<0,8> = PQL$_LISTEND;
+;	0870	
+;	0871	    STATUS = $CREPRC (
+;     P 0872			    PIDADR = AQB[AQB$L_ACPPID],
+;     P 0873			    IMAGE  = FILE_NAME[0],
+;     P 0874			    PRCNAM = PROC_NAME[0],
+;     P 0875			    QUOTA  = QUOTA_LIST,
+;     P 0876			    PRVADR = UPLIT (-1,-1),
+;     P 0877			    BASPRI = .ACP$GB_BASEPRIO,
+;     P 0878			    UIC    = ACP_UIC,
+;     P 0879			    MBXUNT = .MAILBOX_CHAR[DIB$W_UNIT],
+;     P 0880			    STSFLG = .SWAP_FLAG,
+;     P 0881			    INPUT  = DESCRIPTOR('_TTB1:')	!FOR DEBUG PROCESSES
+;     P 0882			    );
+;	0883	
+;	0884	    IF NOT .STATUS THEN ERR_EXIT (.STATUS);
+;	0885	
+;	0886	! Now wait for the ACP to come up. We do this by sitting in a time out loop
+;	0887	! waiting for the transition bit in the AQB to clear, and also waiting for
+;	0888	! a message on the mailbox in case the ACP dies.
+;	0889	!
+;	0890	
+;	0891	    $QIO (
+;     P 0892		CHAN   = .MAILBOX_CHANNEL,
+;     P 0893		FUNC   = IO$_READVBLK,
+;     P 0894		EFN    = 2,
+;     P 0895		IOSB   = IO_STATUS[0],
+;     P 0896		P1     = TERM_BUFFER,
+;     P 0897		P2     = TERM_BUFFER_LEN
+;     P 0898		);
+;	0899	
+;	0900	    IF BEGIN
+;	0901	    DECR J FROM 60 TO 1 DO
+;	0902		BEGIN
+;	0903		IF $SETIMR (EFN = 1, DAYTIM = UPLIT (-HALF_SECOND, -1))
+;	0904		THEN $WFLOR (EFN = 1, MASK = 1^1 OR 1^2);
+;	0905	
+;	0906		IF NOT .AQB[AQB$V_CREATING]
+;	0907		THEN EXITLOOP 0;
+;	0908	
+;	0909		IF .IO_STATUS[0] NEQ 0
+;	0910		THEN
+;	0911		    BEGIN
+;	0912		    $CANTIM ();
+;	0913		    IF NOT .IO_STATUS[0] THEN ERR_EXIT (.IO_STATUS[0]);
+;	0914		    IF .TERM_BUFFER<0,16> EQL MSG$_DELPROC
+;	0915		    THEN ERR_EXIT (.(TERM_BUFFER+4));
+;	0916	
+;	0917		    $QIO (
+;     P 0918			CHAN = .MAILBOX_CHANNEL,
+;     P 0919			FUNC = IO$_READVBLK,
+;     P 0920			EFN  = 2,
+;     P 0921			IOSB = IO_STATUS[0],
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-8
+; Digital Equipment Corporation
+;
+;     P 0922			P1   = TERM_BUFFER,
+;     P 0923			P2   = TERM_BUFFER_LEN
+;     P 0924			);
+;	0925		    END;
+;	0926		END				! end of ACP wait loop
+;	0927	    END
+;	0928	
+;	0929	! If we time out of the loop, the ACP is hung for some reason (such as that
+;	0930	! the image wasn't an ACP). Bomb it and clean up.
+;	0931	!
+;	0932	
+;	0933	    THEN
+;	0934		BEGIN
+;	0935		$DELPRC (PIDADR = AQB[AQB$L_ACPPID]);
+;	0936		ERR_EXIT (MOUN$_ACPTIME);
+;	0937		END;
+;	0938	
+;	0939	! The ACP is really and truly now up. Dispose of the mailbox.
+;	0940	!
+;	0941	
+;	0942	    $DASSGN (CHAN = .MAILBOX_CHANNEL);
+;	0943	    CLEANUP_FLAGS[CLF_DEASSMBX] = 0;
+;	0944	    CLEANUP_FLAGS[CLF_DELAQB] = 0;
+;	0945	    END;				! end of ACP creation
+;	0946	
+;	0947	
+;	0948	! Enable the device and issue the MOUNT QIO.
+;	0949	!
+;	0950	
+;	0951	UCB[UCB$V_MOUNTING] = 1;
+;	0952	VCB[VCB$L_AQB] = .AQB;
+;	0953	UCB[UCB$L_VCB] = .VCB;
+;	0954	
+;	0955	IF NOT .DEVICE_CHAR[DEV$V_SQD] 
+;	0956	THEN
+;	0957	    BEGIN
+;	0958	    IF .MOUNT_OPTIONS[OPT_IS_FILES11B]
+;	0959	    THEN SET_DATACHECK (.UCB, HOME_BLOCK)
+;	0960	    ELSE SET_DATACHECK (.UCB, 0);
+;	0961	    END;
+;	0962	
+;	0963	STATUS = $QIOW (CHAN = .CHANNEL,
+;     P 0964			FUNC = IO$_MOUNT,
+;     P 0965			IOSB = IO_STATUS[0]
+;     P 0966			);
+;	0967	
+;	0968	! If the MOUNT QIO directive fails, just unhook the VCB and drop the mount
+;	0969	! count in the AQB. If the AQB count goes to zero, wake the ACP who will
+;	0970	! clean himself up in the proper manner. This must be done this way to avoid
+;	0971	! timing windows which could conceivably lose I/O packets.
+;	0972	!
+;	0973	
+;	0974	IF .STATUS THEN STATUS = .IO_STATUS[0];
+;	0975	IF NOT .STATUS
+;	0976	THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-9
+; Digital Equipment Corporation
+;
+;	0977	    BEGIN
+;	0978	    LOCK_IODB ();
+;	0979	    UCB[UCB$V_MOUNTING] = 0;
+;	0980	    UCB[UCB$L_VCB] = 0;
+;	0981	    AQB[AQB$B_MNTCNT] = .AQB[AQB$B_MNTCNT] - 1;
+;	0982	    UNLOCK_IODB ();
+;	0983	    IF .AQB[AQB$B_MNTCNT] EQL 0
+;	0984	    THEN $WAKE (PIDADR = AQB[AQB$L_ACPPID]);
+;	0985	    ERR_EXIT (.STATUS);
+;	0986	    END;
+;	0987	
+;	0988	END;					! end of routine START_ACP
+
+
+							    .TITLE  STACP
+							    .IDENT  \X0009\
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .LONG   -5000000, -1					      ;
+					      00008 P.AAC:  .ASCII  \!AC!UW!AC\						      ;
+					      00011	    .BLKB   3
+					      00014 P.AAB:  .LONG   9							      ;
+					      00018 	    .ADDRESS  P.AAC						      ;
+					      0001C P.AAD:  .BYTE   3							      ;
+					      0001D 	    .ASCII  \ACP\						      ;
+					      00020 P.AAE:  .ASCII  \SYS$SYSTEM:\					      ;
+					      0002B	    .BLKB   1
+					      0002C P.AAF:  .ASCII  \[SYSEXE]\						      ;
+					      00034 P.AAG:  .ASCII  \AACP.EXE\						      ;
+					      0003C P.AAI:  .ASCII  \_TTB1:\						      ;
+					      00042	    .BLKB   2
+					      00044 P.AAH:  .LONG   6							      ;
+					      00048 	    .ADDRESS  P.AAI						      ;
+					      0004C P.AAJ:  .LONG   -1, -1						      ;
+					      00054 P.AAK:  .LONG   -5000000, -1					      ;
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00000 MAILBOX_CHAR:
+							    .BLKB   16
+					      00010 MAILBOX_DESC:
+							    .LONG   16							      ;
+					      00014 	    .ADDRESS  MAILBOX_CHAR					      ;
+					      00018 TERM_BUFFER:
+							    .BLKB   8
+					      00020 PROC_NAME:
+							    .BLKB   8
+					      00028 PROCBUF:.BLKB   16
+					      00038 FILE_NAME:
+							    .BLKB   8
+					      00040 FILEBUF:.BLKB   64
+					      00080 IO_STATUS:
+							    .BLKB   8
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-10
+; Digital Equipment Corporation
+;
+							    .GLOBL  DEVICE_CHAR, MOUNT_OPTIONS, CLEANUP_FLAGS, CHANNEL
+							    .GLOBL  MAILBOX_CHANNEL, HOME_BLOCK, ACP_STRING, REAL_AQB
+							    .GLOBL  SCH$GL_CURPCB, IOC$GL_AQBLIST, EXE$GL_FLAGS, ACP$GW_WORKSET
+							    .GLOBL  ACP$GW_MAPCACHE, ACP$GW_HDRCACHE, ACP$GW_DIRCACHE
+							    .GLOBL  ACP$GB_SWAPFLGS, ACP$GB_BASEPRIO, EXE$V_MULTACP
+							    .GLOBL  EXE$V_INIT, ACP$V_SWAPSYS, ACP$V_SWAPGRP, ACP$V_SWAPPRV
+							    .GLOBL  ACP$V_SWAPMAG, LOCK_IODB, UNLOCK_IODB, ALLOCATE_MEM
+							    .GLOBL  DEALLOCATE_MEM, SET_DATACHECK, IOC$SEARCHDEV, SYS$SETIMR
+							    .GLOBL  SYS$WAITFR, SYS$FAO, SYS$CREMBX, SYS$GETCHN, SYS$CREPRC
+							    .GLOBL  SYS$QIO, SYS$WFLOR, SYS$CANTIM, SYS$DELPRC, SYS$DASSGN
+							    .GLOBL  SYS$QIOW, SYS$WAKE
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00000 	    .ENTRY  START_ACP, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0482
+		         5E	       0C  C2 00002 	    SUBL2   #12, SP						      ;
+		         59	  04   AC  D0 00005 	    MOVL    UCB, R9						      ; 0636
+		         5B	       3C  D0 00009 	    MOVL    #60, J						      ; 0629
+		  0000G  CF	       00  FB 0000C 1$:     CALLS   #0, LOCK_IODB					      ; 0632
+				       58  D4 00011 	    CLRL    CREATE_ACP						      ; 0634
+		         50	  24   A9  D0 00013 	    MOVL    36(R9), R0						      ; 0636
+		         5A	  13   A0  90 00017 	    MOVB    19(R0), CLASS					      ;
+	   03	  0000G  CF	       02  E1 0001B 	    BBC     #2, MOUNT_OPTIONS+3, 3$				      ; 0638
+				     00B3  31 00021 2$:     BRW     13$							      ;
+	   F7	  0000G  CF	       04  E0 00024 3$:     BBS     #4, MOUNT_OPTIONS+3, 2$				      ;
+	   6C	  0000G  CF	       03  E1 0002A 	    BBC     #3, MOUNT_OPTIONS+3, 7$				      ; 0645
+		         51	0000G  CF  9E 00030 	    MOVAB   ACP_STRING, ACP_DEVICE				      ; 0650
+		         54 00000000G  9F  D0 00035 	    MOVL    @#SCH$GL_CURPCB, R4					      ; 0651
+			    00000000G  9F  16 0003C 	    JSB     @#IOC$SEARCHDEV					      ;
+		         6E	       50  D0 00042 	    MOVL    R0, STATUS						      ;
+		         57	       51  D0 00045 	    MOVL    ACP_DEVICE, ACP_UCB					      ; 0652
+		         0E	       6E  E8 00048 	    BLBS    STATUS, 4$						      ; 0654
+		  0000G  CF	       00  FB 0004B 	    CALLS   #0, UNLOCK_IODB					      ; 0657
+				       6E  DD 00050 	    PUSHL   STATUS						      ; 0658
+	      00000000G  00	       01  FB 00052 	    CALLS   #1, LIB$STOP					      ;
+	   09	    36   A7	       03  E1 00059 4$:     BBC     #3, 54(ACP_UCB), 5$					      ; 0660
+	   04	    35   A7	       06  E1 0005E 	    BBC     #6, 53(ACP_UCB), 5$					      ; 0661
+		         12	  37   A7  E9 00063 	    BLBC    55(ACP_UCB), 6$					      ; 0662
+		  0000G  CF	       00  FB 00067 5$:     CALLS   #0, UNLOCK_IODB					      ; 0665
+			    00728094   8F  DD 0006C 	    PUSHL   #7504020						      ; 0666
+	      00000000G  00	       01  FB 00072 	    CALLS   #1, LIB$STOP					      ;
+		         50	  30   A7  D0 00079 6$:     MOVL    48(ACP_UCB), R0					      ; 0668
+		         56	  10   A0  D0 0007D 	    MOVL    16(R0), AQB						      ;
+		    0C   AC	  15   A6  91 00081 	    CMPB    21(AQB), TYPE					      ; 0669
+				       52  13 00086 	    BEQL    14$							      ;
+		  0000G  CF	       00  FB 00088 	    CALLS   #0, UNLOCK_IODB					      ; 0672
+			    007280A4   8F  DD 0008D 	    PUSHL   #7504036						      ; 0673
+	      00000000G  00	       01  FB 00093 	    CALLS   #1, LIB$STOP					      ;
+				       3E  11 0009A 	    BRB     14$							      ; 0645
+		         56 00000000G  9F  D0 0009C 7$:     MOVL    @#IOC$GL_AQBLIST, AQB				      ; 0684
+				       56  D5 000A3 8$:     TSTL    AQB							      ; 0685
+				       2C  13 000A5 	    BEQL    12$							      ;
+	   12 00000000G  9F	       00  E1 000A7 	    BBC     #EXE$V_MULTACP, @#EXE$GL_FLAGS, 9$			      ; 0687
+	   19	    14   A6	       01  E1 000AF 	    BBC     #1, 20(AQB), 11$					      ; 0690
+		    0C   AC	  15   A6  91 000B4 	    CMPB    21(AQB), TYPE					      ; 0691
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-11
+; Digital Equipment Corporation
+;
+				       12  12 000B9 	    BNEQ    11$							      ;
+		         5A	  16   A6  91 000BB 	    CMPB    22(AQB), CLASS					      ; 0692
+				       0A  11 000BF 	    BRB     10$							      ;
+	   07	    14   A6	       02  E1 000C1 9$:     BBC     #2, 20(AQB), 11$					      ; 0698
+		    0C   AC	  15   A6  91 000C6 	    CMPB    21(AQB), TYPE					      ; 0699
+				       06  13 000CB 10$:    BEQL    12$							      ;
+		         56	  10   A6  D0 000CD 11$:    MOVL    16(AQB), AQB					      ; 0703
+				       D0  11 000D1 	    BRB     8$							      ; 0685
+				       56  D5 000D3 12$:    TSTL    AQB							      ; 0705
+				       03  12 000D5 	    BNEQ    14$							      ;
+		         58	       01  D0 000D7 13$:    MOVL    #1, CREATE_ACP					      ;
+		         64	       58  E9 000DA 14$:    BLBC    CREATE_ACP, 19$					      ; 0713
+		         7E	       18  7D 000DD 	    MOVQ    #24, -(SP)						      ; 0716
+		  0000G  CF	       02  FB 000E0 	    CALLS   #2, ALLOCATE_MEM					      ;
+		         56	       50  D0 000E5 	    MOVL    R0, AQB						      ;
+		    0A   A6	0103   8F  B0 000E8 	    MOVW    #259, 10(AQB)					      ; 0717
+		    14   A6	       08  88 000EE 	    BISB2   #8, 20(AQB)						      ; 0719
+		    15   A6	  0C   AC  90 000F2 	    MOVB    TYPE, 21(AQB)					      ; 0720
+	   06	  0000G  CF	       02  E0 000F7 	    BBS     #2, MOUNT_OPTIONS+3, 15$				      ; 0721
+	   06	  0000G  CF	       04  E1 000FD 	    BBC     #4, MOUNT_OPTIONS+3, 16$				      ;
+		    14   A6	       01  88 00103 15$:    BISB2   #1, 20(AQB)						      ; 0723
+				       16  11 00107 	    BRB     18$							      ; 0721
+	   0A 00000000G  9F	       00  E1 00109 16$:    BBC     #EXE$V_MULTACP, @#EXE$GL_FLAGS, 17$			      ; 0724
+		    14   A6	       02  88 00111 	    BISB2   #2, 20(AQB)						      ; 0727
+		    16   A6	       5A  90 00115 	    MOVB    CLASS, 22(AQB)					      ; 0728
+				       04  11 00119 	    BRB     18$							      ; 0724
+		    14   A6	       04  88 0011B 17$:    BISB2   #4, 20(AQB)						      ; 0731
+		         66	       56  D0 0011F 18$:    MOVL    AQB, (AQB)						      ; 0732
+		    04   A6	       56  D0 00122 	    MOVL    AQB, 4(AQB)						      ; 0733
+		    10   A6 00000000G  9F  D0 00126 	    MOVL    @#IOC$GL_AQBLIST, 16(AQB)				      ; 0734
+	      00000000G  9F	       56  D0 0012E 	    MOVL    AQB, @#IOC$GL_AQBLIST				      ; 0735
+		  0000G  CF	       56  D0 00135 	    MOVL    AQB, REAL_AQB					      ; 0736
+		  0000G  CF	       04  88 0013A 	    BISB2   #4, CLEANUP_FLAGS					      ; 0737
+				       3F  11 0013F 	    BRB     24$							      ; 0738
+	   05	    14   A6	       03  E0 00141 19$:    BBS     #3, 20(AQB), 20$					      ; 0748
+				  0B   A6  96 00146 	    INCB    11(AQB)						      ; 0751
+				       35  11 00149 	    BRB     24$							      ; 0752
+		  0000G  CF	       00  FB 0014B 20$:    CALLS   #0, UNLOCK_IODB					      ; 0756
+				       7E  7C 00150 	    CLRQ    -(SP)						      ; 0763
+				0000'  CF  9F 00152 	    PUSHAB  P.AAA						      ;
+				       01  DD 00156 	    PUSHL   #1							      ;
+	      00000000G  9F	       04  FB 00158 	    CALLS   #4, @#SYS$SETIMR					      ;
+		         09	       50  E9 0015F 	    BLBC    R0, 21$						      ;
+				       01  DD 00162 	    PUSHL   #1							      ; 0764
+	      00000000G  9F	       01  FB 00164 	    CALLS   #1, @#SYS$WAITFR					      ;
+		         02	       5B  F5 0016B 21$:    SOBGTR  J, 22$						      ; 0629
+				       03  11 0016E 	    BRB     23$							      ;
+				     FE99  31 00170 22$:    BRW     1$							      ;
+			    00728154   8F  DD 00173 23$:    PUSHL   #7504212						      ; 0772
+	      00000000G  00	       01  FB 00179 	    CALLS   #1, LIB$STOP					      ;
+		  0000G  CF	       00  FB 00180 24$:    CALLS   #0, UNLOCK_IODB					      ; 0776
+		         03	       58  E8 00185 	    BLBS    CREATE_ACP, 25$					      ; 0787
+				     0281  31 00188 	    BRW     47$							      ;
+		  0000'  CF	       10  D0 0018B 25$:    MOVL    #16, PROC_NAME					      ; 0790
+		  0000'  CF	0000'  CF  9E 00190 	    MOVAB   PROCBUF, PROC_NAME+4				      ; 0791
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-12
+; Digital Equipment Corporation
+;
+				0000'  CF  9F 00197 	    PUSHAB  P.AAD						      ; 0800
+		         7E	  48   A9  3C 0019B 	    MOVZWL  72(R9), -(SP)					      ;
+		         58	  24   A9  D0 0019F 	    MOVL    36(R9), R8						      ;
+				  14   A8  9F 001A3 	    PUSHAB  20(R8)						      ;
+				0000'  CF  9F 001A6 	    PUSHAB  PROC_NAME						      ;
+				0000'  CF  9F 001AA 	    PUSHAB  PROC_NAME						      ;
+				0000'  CF  9F 001AE 	    PUSHAB  P.AAB						      ;
+	      00000000G  9F	       06  FB 001B2 	    CALLS   #6, @#SYS$FAO					      ;
+	   0A 00000000G  9F	       00  E1 001B9 	    BBC     #EXE$V_INIT, @#EXE$GL_FLAGS, 26$			      ; 0802
+		         57	       0B  D0 001C1 	    MOVL    #11, FILE_PREF_LEN					      ; 0805
+		         50	0000'  CF  9E 001C4 	    MOVAB   P.AAE, FILE_PREF					      ; 0806
+				       08  11 001C9 	    BRB     27$							      ; 0802
+		         57	       08  D0 001CB 26$:    MOVL    #8, FILE_PREF_LEN					      ; 0810
+		         50	0000'  CF  9E 001CE 	    MOVAB   P.AAF, FILE_PREF					      ; 0811
+		  0000'  CF	0000'  CF  9E 001D3 27$:    MOVAB   FILEBUF, FILE_NAME+4				      ; 0814
+	   2C	  0000G  CF	       04  E1 001DA 	    BBC     #4, MOUNT_OPTIONS+3, 28$				      ; 0815
+    0000'  CF	  0000G  CF	       57  C1 001E0 	    ADDL3   FILE_PREF_LEN, ACP_STRING, FILE_NAME		      ; 0818
+		         5A	0000'  CF  D0 001E8 	    MOVL    FILE_NAME, R10					      ; 0820
+		         5B	0000'  CF  9E 001ED 	    MOVAB   FILEBUF, R11					      ; 0819
+	   00	         60	       57  2C 001F2 	    MOVC5   FILE_PREF_LEN, (FILE_PREF), #0, R10, (R11)		      ;
+		         6B	       5A     001F6									      ;
+				       55  18 001F8 	    BGEQ    30$							      ;
+		         5B	       57  C0 001FA 	    ADDL2   FILE_PREF_LEN, R11					      ;
+		         5A	       57  C2 001FD 	    SUBL2   FILE_PREF_LEN, R10					      ;
+	   00	  0000G  DF	0000G  CF  2C 00200 	    MOVC5   ACP_STRING, @ACP_STRING+4, #0, R10, (R11)		      ;
+		         6B	       5A     00208									      ;
+				       43  11 0020A 	    BRB     30$							      ; 0815
+	   51	         57	       0B  C1 0020C 28$:    ADDL3   #11, FILE_PREF_LEN, R1				      ; 0824
+		  0000'  CF	       51  D0 00210 	    MOVL    R1, FILE_NAME					      ;
+		         5A	       51  D0 00215 	    MOVL    R1, R10						      ; 0827
+		         5B	0000'  CF  9E 00218 	    MOVAB   FILEBUF, R11					      ; 0825
+	   00	         60	       57  2C 0021D 	    MOVC5   FILE_PREF_LEN, (FILE_PREF), #0, R10, (R11)		      ;
+		         6B	       5A     00221									      ;
+				       1D  18 00223 	    BGEQ    29$							      ;
+		         5B	       57  C0 00225 	    ADDL2   FILE_PREF_LEN, R11					      ;
+		         5A	       57  C2 00228 	    SUBL2   FILE_PREF_LEN, R10					      ;
+	   00	    10   A8	       03  2C 0022B 	    MOVC5   #3, 16(R8), #0, R10, (R11)				      ;
+		         6B	       5A     00230									      ;
+				       0E  18 00232 	    BGEQ    29$							      ;
+		         5B	       03  C0 00234 	    ADDL2   #3, R11						      ;
+		         5A	       03  C2 00237 	    SUBL2   #3, R10						      ;
+	   00	  0000'  CF	       08  2C 0023A 	    MOVC5   #8, P.AAG, #0, R10, (R11)				      ;
+		         6B	       5A     00240									      ;
+	   07	  0000G  CF	       22  E1 00242 29$:    BBC     #34, MOUNT_OPTIONS, 30$				      ; 0828
+		  0000'CF47	  42   8F  90 00248 	    MOVB    #66, FILEBUF+3[FILE_PREF_LEN]			      ; 0829
+				0000G  CF  D4 0024F 30$:    CLRL    MAILBOX_CHANNEL					      ; 0836
+				       7E  7C 00253 	    CLRQ    -(SP)						      ; 0838
+		         7E	FFED   8F  3C 00255 	    MOVZWL  #65517, -(SP)					      ;
+				       7E  7C 0025A 	    CLRQ    -(SP)						      ;
+				0000G  CF  9F 0025C 	    PUSHAB  MAILBOX_CHANNEL					      ;
+				       7E  D4 00260 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       07  FB 00262 	    CALLS   #7, @#SYS$CREMBX					      ;
+		         6E	       50  D0 00269 	    MOVL    R0, STATUS						      ;
+		         09	       6E  E8 0026C 	    BLBS    STATUS, 31$						      ; 0839
+				       6E  DD 0026F 	    PUSHL   STATUS						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-13
+; Digital Equipment Corporation
+;
+	      00000000G  00	       01  FB 00271 	    CALLS   #1, LIB$STOP					      ;
+		  0000G  CF	       08  88 00278 31$:    BISB2   #8, CLEANUP_FLAGS					      ; 0840
+				       7E  7C 0027D 	    CLRQ    -(SP)						      ; 0843
+				0000'  CF  9F 0027F 	    PUSHAB  MAILBOX_DESC					      ;
+				       7E  D4 00283 	    CLRL    -(SP)						      ;
+				0000G  CF  DD 00285 	    PUSHL   MAILBOX_CHANNEL					      ;
+	      00000000G  9F	       05  FB 00289 	    CALLS   #5, @#SYS$GETCHN					      ;
+		         52	       04  D0 00290 	    MOVL    #4, SWAP_FLAG					      ; 0845
+	   05	  0000G  CF	       05  E1 00293 	    BBC     #5, DEVICE_CHAR, 32$				      ; 0846
+		         50	       00  9A 00299 	    MOVZBL  #ACP$V_SWAPMAG, R0					      ;
+				       22  11 0029C 	    BRB     36$							      ;
+	   0A	    14   A6	       02  E0 0029E 32$:    BBS     #2, 20(AQB), 33$					      ; 0847
+	   05	    14   A6	       01  E0 002A3 	    BBS     #1, 20(AQB), 33$					      ;
+		         05	0000G  CF  E9 002A8 	    BLBC    MOUNT_OPTIONS+1, 34$				      ; 0848
+		         50	       00  9A 002AD 33$:    MOVZBL  #ACP$V_SWAPSYS, R0					      ; 0847
+				       0E  11 002B0 	    BRB     36$							      ;
+	   05	  0000G  CF	       07  E1 002B2 34$:    BBC     #7, MOUNT_OPTIONS, 35$				      ; 0849
+		         50	       00  9A 002B8 	    MOVZBL  #ACP$V_SWAPGRP, R0					      ;
+				       03  11 002BB 	    BRB     36$							      ;
+		         50	       00  9A 002BD 35$:    MOVZBL  #ACP$V_SWAPPRV, R0					      ;
+	   02 00000000G  9F	       50  E1 002C0 36$:    BBC     R0, @#ACP$GB_SWAPFLGS, 37$				      ; 0846
+				       52  D4 002C8 	    CLRL    SWAP_FLAG						      ; 0852
+	   06	  0000G  CF	       05  E1 002CA 37$:    BBC     #5, DEVICE_CHAR, 38$				      ; 0857
+		         50	  80   8F  9A 002D0 	    MOVZBL  #128, WORKING_SET					      ; 0859
+				       29  11 002D4 	    BRB     39$							      ; 0857
+		         50 00000000G  9F  3C 002D6 38$:    MOVZWL  @#ACP$GW_WORKSET, WORKING_SET			      ; 0862
+				       20  12 002DD 	    BNEQ    39$							      ; 0863
+		         51 00000000G  9F  3C 002DF 	    MOVZWL  @#ACP$GW_MAPCACHE, R1				      ; 0864
+		         53 00000000G  9F  3C 002E6 	    MOVZWL  @#ACP$GW_HDRCACHE, R3				      ;
+		         51	       53  C0 002ED 	    ADDL2   R3, R1						      ;
+		         54 00000000G  9F  3C 002F0 	    MOVZWL  @#ACP$GW_DIRCACHE, R4				      ;
+		         51	       54  C0 002F7 	    ADDL2   R4, R1						      ;
+		         50	0096   C1  9E 002FA 	    MOVAB   150(R1), WORKING_SET				      ;
+		    04   AE	       0A  90 002FF 39$:    MOVB    #10, QUOTA_LIST					      ; 0867
+		    05   AE	       50  D0 00303 	    MOVL    WORKING_SET, QUOTA_LIST+1				      ; 0868
+				  09   AE  94 00307 	    CLRB    QUOTA_LIST+5					      ; 0869
+				       52  DD 0030A 	    PUSHL   SWAP_FLAG						      ; 0882
+		         7E	0000'  CF  3C 0030C 	    MOVZWL  MAILBOX_CHAR+12, -(SP)				      ;
+			    00010003   8F  DD 00311 	    PUSHL   #65539						      ;
+		         7E 00000000G  9F  9A 00317 	    MOVZBL  @#ACP$GB_BASEPRIO, -(SP)				      ;
+				0000'  CF  9F 0031E 	    PUSHAB  PROC_NAME						      ;
+				  18   AE  9F 00322 	    PUSHAB  QUOTA_LIST						      ;
+				0000'  CF  9F 00325 	    PUSHAB  P.AAJ						      ;
+				       7E  7C 00329 	    CLRQ    -(SP)						      ;
+				0000'  CF  9F 0032B 	    PUSHAB  P.AAH						      ;
+				0000'  CF  9F 0032F 	    PUSHAB  FILE_NAME						      ;
+				  0C   A6  9F 00333 	    PUSHAB  12(AQB)						      ;
+	      00000000G  9F	       0C  FB 00336 	    CALLS   #12, @#SYS$CREPRC					      ;
+		         6E	       50  D0 0033D 	    MOVL    R0, STATUS						      ;
+		         09	       6E  E8 00340 	    BLBS    STATUS, 40$						      ; 0884
+				       6E  DD 00343 	    PUSHL   STATUS						      ;
+	      00000000G  00	       01  FB 00345 	    CALLS   #1, LIB$STOP					      ;
+				       7E  7C 0034C 40$:    CLRQ    -(SP)						      ; 0898
+				       7E  7C 0034E 	    CLRQ    -(SP)						      ;
+				       08  DD 00350 	    PUSHL   #8							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-14
+; Digital Equipment Corporation
+;
+				0000'  CF  9F 00352 	    PUSHAB  TERM_BUFFER						      ;
+				       7E  7C 00356 	    CLRQ    -(SP)						      ;
+				0000'  CF  9F 00358 	    PUSHAB  IO_STATUS						      ;
+				       31  DD 0035C 	    PUSHL   #49							      ;
+				0000G  CF  DD 0035E 	    PUSHL   MAILBOX_CHANNEL					      ;
+				       02  DD 00362 	    PUSHL   #2							      ;
+	      00000000G  9F	       0C  FB 00364 	    CALLS   #12, @#SYS$QIO					      ;
+		         52	       3C  D0 0036B 	    MOVL    #60, J						      ; 0901
+				       7E  7C 0036E 41$:    CLRQ    -(SP)						      ; 0903
+				0000'  CF  9F 00370 	    PUSHAB  P.AAK						      ;
+				       01  DD 00374 	    PUSHL   #1							      ;
+	      00000000G  9F	       04  FB 00376 	    CALLS   #4, @#SYS$SETIMR					      ;
+		         0B	       50  E9 0037D 	    BLBC    R0, 42$						      ;
+				       06  DD 00380 	    PUSHL   #6							      ; 0904
+				       01  DD 00382 	    PUSHL   #1							      ;
+	      00000000G  9F	       02  FB 00384 	    CALLS   #2, @#SYS$WFLOR					      ;
+	   6C	    14   A6	       03  E1 0038B 42$:    BBC     #3, 20(AQB), 46$					      ; 0906
+				0000'  CF  D5 00390 	    TSTL    IO_STATUS						      ; 0909
+				       4A  13 00394 	    BEQL    45$							      ;
+				       7E  7C 00396 	    CLRQ    -(SP)						      ; 0912
+	      00000000G  9F	       02  FB 00398 	    CALLS   #2, @#SYS$CANTIM					      ;
+		         0B	0000'  CF  E8 0039F 	    BLBS    IO_STATUS, 43$					      ; 0913
+				0000'  CF  DD 003A4 	    PUSHL   IO_STATUS						      ;
+	      00000000G  00	       01  FB 003A8 	    CALLS   #1, LIB$STOP					      ;
+		         03	0000'  CF  B1 003AF 43$:    CMPW    TERM_BUFFER, #3					      ; 0914
+				       0B  12 003B4 	    BNEQ    44$							      ;
+				0000'  CF  DD 003B6 	    PUSHL   TERM_BUFFER+4					      ; 0915
+	      00000000G  00	       01  FB 003BA 	    CALLS   #1, LIB$STOP					      ;
+				       7E  7C 003C1 44$:    CLRQ    -(SP)						      ; 0924
+				       7E  7C 003C3 	    CLRQ    -(SP)						      ;
+				       08  DD 003C5 	    PUSHL   #8							      ;
+				0000'  CF  9F 003C7 	    PUSHAB  TERM_BUFFER						      ;
+				       7E  7C 003CB 	    CLRQ    -(SP)						      ;
+				0000'  CF  9F 003CD 	    PUSHAB  IO_STATUS						      ;
+				       31  DD 003D1 	    PUSHL   #49							      ;
+				0000G  CF  DD 003D3 	    PUSHL   MAILBOX_CHANNEL					      ;
+				       02  DD 003D7 	    PUSHL   #2							      ;
+	      00000000G  9F	       0C  FB 003D9 	    CALLS   #12, @#SYS$QIO					      ;
+		         8B	       52  F5 003E0 45$:    SOBGTR  J, 41$						      ; 0901
+				       7E  D4 003E3 	    CLRL    -(SP)						      ; 0935
+				  0C   A6  9F 003E5 	    PUSHAB  12(AQB)						      ;
+	      00000000G  9F	       02  FB 003E8 	    CALLS   #2, @#SYS$DELPRC					      ;
+			    0072814C   8F  DD 003EF 	    PUSHL   #7504204						      ; 0936
+	      00000000G  00	       01  FB 003F5 	    CALLS   #1, LIB$STOP					      ;
+				0000G  CF  DD 003FC 46$:    PUSHL   MAILBOX_CHANNEL					      ; 0942
+	      00000000G  9F	       01  FB 00400 	    CALLS   #1, @#SYS$DASSGN					      ;
+		  0000G  CF	       0C  8A 00407 	    BICB2   #12, CLEANUP_FLAGS					      ; 0944
+		    59   A9	       02  88 0040C 47$:    BISB2   #2, 89(R9)						      ; 0951
+		         50	  08   AC  D0 00410 	    MOVL    VCB, R0						      ; 0952
+		    10   A0	       56  D0 00414 	    MOVL    AQB, 16(R0)						      ;
+		    30   A9	       50  D0 00418 	    MOVL    R0, 48(R9)						      ; 0953
+	   15	  0000G  CF	       05  E0 0041C 	    BBS     #5, DEVICE_CHAR, 50$				      ; 0955
+	   06	  0000G  CF	       22  E1 00422 	    BBC     #34, MOUNT_OPTIONS, 48$				      ; 0958
+				0000G  CF  9F 00428 	    PUSHAB  HOME_BLOCK						      ; 0959
+				       02  11 0042C 	    BRB     49$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-15
+; Digital Equipment Corporation
+;
+				       7E  D4 0042E 48$:    CLRL    -(SP)						      ; 0960
+				       59  DD 00430 49$:    PUSHL   R9							      ;
+		  0000G  CF	       02  FB 00432 	    CALLS   #2, SET_DATACHECK					      ;
+				       7E  7C 00437 50$:    CLRQ    -(SP)						      ; 0966
+				       7E  7C 00439 	    CLRQ    -(SP)						      ;
+				       7E  7C 0043B 	    CLRQ    -(SP)						      ;
+				       7E  7C 0043D 	    CLRQ    -(SP)						      ;
+				0000'  CF  9F 0043F 	    PUSHAB  IO_STATUS						      ;
+				       39  DD 00443 	    PUSHL   #57							      ;
+				0000G  CF  DD 00445 	    PUSHL   CHANNEL						      ;
+				       7E  D4 00449 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       0C  FB 0044B 	    CALLS   #12, @#SYS$QIOW					      ;
+		         6E	       50  D0 00452 	    MOVL    R0, STATUS						      ;
+		         08	       6E  E9 00455 	    BLBC    STATUS, 51$						      ; 0974
+		         6E	0000'  CF  D0 00458 	    MOVL    IO_STATUS, STATUS					      ;
+		         2E	       6E  E8 0045D 	    BLBS    STATUS, 53$						      ; 0975
+		  0000G  CF	       00  FB 00460 51$:    CALLS   #0, LOCK_IODB					      ; 0978
+		    59   A9	       02  8A 00465 	    BICB2   #2, 89(R9)						      ; 0979
+				  30   A9  D4 00469 	    CLRL    48(R9)						      ; 0980
+				  0B   A6  97 0046C 	    DECB    11(AQB)						      ; 0981
+		  0000G  CF	       00  FB 0046F 	    CALLS   #0, UNLOCK_IODB					      ; 0982
+				  0B   A6  95 00474 	    TSTB    11(AQB)						      ; 0983
+				       0C  12 00477 	    BNEQ    52$							      ;
+				       7E  D4 00479 	    CLRL    -(SP)						      ; 0984
+				  0C   A6  9F 0047B 	    PUSHAB  12(AQB)						      ;
+	      00000000G  9F	       02  FB 0047E 	    CALLS   #2, @#SYS$WAKE					      ;
+				       6E  DD 00485 52$:    PUSHL   STATUS						      ; 0985
+	      00000000G  00	       01  FB 00487 	    CALLS   #1, LIB$STOP					      ;
+					   04 0048E 53$:    RET     							      ; 0482
+
+; Routine Size:  1167 bytes
+
+
+;	0989	
+;	0990	END
+;	0991	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $OWN$          	   136    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $PLIT$         	    92  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	  1167  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 00:12:24	DBB3:[MOUNT.SRC]STACP.B32;16					Page 2-16
+; Digital Equipment Corporation
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        50         0       265
+
+
+
+
+
+; Size:		1167 code + 228 data bytes
+; Run Time:	00:45.3
+; Elapsed Time:	01:48.8
+; Memory Used:	550 pages
+; Compilation Complete

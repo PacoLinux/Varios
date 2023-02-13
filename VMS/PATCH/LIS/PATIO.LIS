@@ -1,0 +1,1285 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE PATIO (%IF %VARIANT EQL 1				! I/O ROUTINES FOR PATCH
+;     L 0002			%THEN
+;	0003				ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE,
+;	0004						 NONEXTERNAL = LONG_RELATIVE),
+;	0005			%FI
+;	0006			IDENT = 'X01.06'
+;	0007			) =
+;	0008	BEGIN
+;	0009	
+;	0010	!
+;	0011	! COPYRIGHT (C) 1977,1978
+;	0012	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0013	!
+;	0014	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0015	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0016	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0017	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0018	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0019	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0020	! REMAIN IN DEC.
+;	0021	!
+;	0022	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0023	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0024	! CORPORATION.
+;	0025	!
+;	0026	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0027	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0028	
+;	0029	!++
+;	0030	! FACILITY: PATCH
+;	0031	!
+;	0032	! ABSTRACT: THESE ROUTINES HANDLE THE I/O AND CLOSE ALL FILES.
+;	0033	!
+;	0034	! ENVIRONMENT: IT IS PART OF THE IMAGE FILE PATCH UTILTIY.
+;	0035	!
+;	0036	! AUTHOR: K.D. MORSE	, CREATION DATE: 3-OCT-77
+;	0037	!
+;	0038	! MODIFICATIONS:
+;	0039	!
+;	0040	!  NO	DATE		PROGRAMMER		PURPOSE
+;	0041	!  --	----		----------		-------
+;	0042	!
+;	0043	!  01	14-FEB-78	K.D. MORSE		ADD ROUTINES PAT$WRITE_EXP1,
+;	0044	!						PAT$WRITE_NAME, AND PAT$WRITE_INS.
+;	0045	!  02	7-MAR-78	K.D. MORSE		ADD ROUTINE PAT$OUT_PAL_EXP AND
+;	0046	!						CALLS TO IT.
+;	0047	!  03	25-APR-78	K.D. MORSE		CONVERT TO NATIVE COMPILER.
+;	0048	!  04	05-MAY-78	K.D. MORSE		ADD CALL TO PAT$REDUCE_INS.
+;	0049	!  05	13-JUN-78	K.D. MORSE		ADD FAO COUNTS TO SIGNALS.
+;	0050	!  06	15-JUN-78	K.D. MORSE		ADD OUTPUT TO APPENDED PATCH
+;	0051	!						COMMAND TEXT BUFFERS.
+;	0052	!
+;	0053	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 2
+; Digital Equipment Corporation
+;
+;	0054	!
+;	0055	! TABLE OF CONTENTS:
+;	0056	!
+;	0057	
+;	0058	FORWARD ROUTINE
+;	0059		PAT$WRITEFILE : NOVALUE,				! OUTPUTS TO A FILE
+;	0060		PAT$WRITE_EXP1 : NOVALUE,				! WRITES EXPRESSIONS TO COMMAND FILE
+;	0061		PAT$WRITE_NAME : NOVALUE,				! WRITES NAMES TO COMMAND FILE
+;	0062		PAT$WRITE_INS : NOVALUE,				! WRITES COMMANDS WITH INSTRUCTIONS TO COMMAND FILE
+;	0063		PAT$OUT_PAL_EXP : NOVALUE,				! OUTPUTS PATCH AREA ADDRESSES AS NAME+OFFSET
+;	0064		PAT$CLOSEFILES : NOVALUE;				! CLOSES ALL PATCH FILES OPEN
+;	0065	
+;	0066	!
+;	0067	! INCLUDE FILES:
+;	0068	!
+;	0069	
+;	0070	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0071	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0111	REQUIRE 'SRC$:PATPCT.REQ';					! DEFINE PSECTS
+;	0127	REQUIRE 'SRC$:PREFIX.REQ';					! UTILITY MACROS
+;	0310	REQUIRE 'SRC$:PATPRE.REQ';					! COMMAND LINE LITERALS
+;	0450	REQUIRE 'LIB$:PATMSG.REQ';					! PATCH ERROR MESSAGE CODES
+;	0608	REQUIRE 'SRC$:SYSLIT.REQ';					! DEFINE OUTPUT BUFFER SIZE
+;	0643	REQUIRE 'SRC$:PATTER.REQ';					! PATCH COMMAND TOKENS
+;	0723	REQUIRE 'SRC$:PATGEN.REQ';					! DEFINE CONTEXT AND MODE BITS
+;	0902	REQUIRE 'SRC$:PATRST.REQ';					! DEFINE MODULE CHAIN OFFSETS
+;	1960	REQUIRE 'SRC$:BSTRUC.REQ';					! STRUCTURE DEFINITIONS
+;	2011	REQUIRE 'SRC$:LISTEL.REQ';					! DEFINE ARGUMENT LIST OFFSETS
+;	2030	REQUIRE 'SRC$:DLLNAM.REQ';					! DEFINE SYMBOLIC NAME STRUCTURES
+;	2063	
+;	2064	!
+;	2065	! MACROS:
+;	2066	!
+;	2067	
+;	2068	!
+;	2069	! EQUATED SYMBOLS:
+;	2070	!
+;	2071	
+;	2072	!
+;	2073	! OWN STORAGE:
+;	2074	!
+;	2075	
+;	2076	!
+;	2077	! EXTERNAL REFERENCES:
+;	2078	!
+;	2079	
+;	2080	EXTERNAL ROUTINE
+;	2081		PAT$FIND_VAL,						! Searches user-defined symbols for closest value
+;	2082		PAT$FAO_PUT,						! FORMATS AN OUTPUT LINE
+;	2083		PAT$FREEZ,						! Allocates free storage and zeroes it
+;	2084		PAT$REDUCE_INS : NOVALUE;				! REDUCES EXPRESSIONS AND SYMBOLS INSIDE INSTRUCTIONS
+;	2085	
+;	2086	EXTERNAL
+;	2087		PAT$GL_SYMTBPTR,					! Pointer to current symbol table
+;	2088		PAT$GL_SYMHEAD,						! Pointer to listhead entry of user-defined symbol table
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 2-1
+; Digital Equipment Corporation
+;
+;	2089		PAT$GL_PAL_LHD,						! POINTER TO PATCH AREA LIST (PAL)
+;	2090		PAT$GL_LAST_LOC,					! LAST LOCATION EXAMINED
+;	2091		PAT$GL_CONTEXT : BITVECTOR,				! CONTEXT BITS FOR COMMAND
+;	2092		PAT$GL_SEMAN1 : VECTOR,					! PARSE STACK
+;	2093		PAT$CP_OUT_STR,						! POINTER TO OUTPUT STRING
+;	2094		PAT$GL_BUF_SIZ,						! SIZE OF TEXT IN OUTPUT BUFFER
+;	2095		PAT$GB_MOD_PTR : REF VECTOR[,BYTE],
+;	2096		PAT$GL_HEAD_LST,					! POINTER TO ARGUMENT LIST FOR COMMAND
+;	2097		PAT$GL_COMRAB,						! RAB FOR COMMAND FILE
+;	2098				! POINTER TO MODE LEVEL
+;	2099		PAT$GL_ISVADDR : VECTOR [,LONG],			! VIRTUAL ADDRESSES OF LAST IMAGE SECTION MAPPED
+;	2100		PAT$GL_EXPANDVA,					! FIRST EXPREG ADDRESS
+;	2101		PAT$GL_ERRCODE,						! ERROR CODE
+;	2102		PAT$GL_FLAGS,						! CLI FLAGS
+;	2103		PAT$GL_OLDNBK : BLOCK[,BYTE],				! INPUT IMAGE FILE FAB
+;	2104		PAT$GL_NEWNBK : BLOCK[,BYTE],				! OUTPUT IMAGE FILE FAB
+;	2105		PAT$GL_JNLNBK : BLOCK[,BYTE],				! JOURNAL FILE FAB
+;	2106		PAT$GL_COMNBK : BLOCK[,BYTE],				! OUTPUT COMMAND FILE FAB
+;	2107		PAT$GL_INPFAB : BLOCK[,BYTE],				! INPUT COMMAND CHANNEL FAB
+;	2108		PAT$GL_OUTFAB : BLOCK[,BYTE],				! INFORMATION CHANNEL FAB
+;	2109		PAT$GL_ERRFAB : BLOCK[,BYTE],				! ERROR CHANNEL FAB
+;	2110		PAT$GL_OLDFAB : BLOCK[,BYTE],				! INPUT IMAGE FILE NBK
+;	2111		PAT$GL_NEWFAB : BLOCK[,BYTE],				! OUTPUT IMAGE FILE NBK
+;	2112		PAT$GL_JNLFAB : BLOCK[,BYTE],				! JOURNAL FILE NBK
+;	2113		PAT$GL_COMFAB : BLOCK[,BYTE],				! OUTPUT COMMAND FILE NBK
+;	2114		PAT$GB_OLDNAME,						! OLD IMAGE FILE NAME
+;	2115		PAT$GB_NEWNAME,						! NEW IMAGE FILE NAME
+;	2116		PAT$GB_JNLNAME,						! JOURNAL FILE NAME
+;	2117		PAT$GB_COMNAME,						! OUTPUT COMMAND FILE NAME
+;	2118		PAT$GL_TXTLHD : REF BLOCK[,BYTE],			! Pointer to first text buffer
+;	2119		PAT$GL_TXTTAIL : REF BLOCK[,BYTE],			! Pointer to last text buffer
+;	2120		PAT$GL_TXTFREE : REF VECTOR[,BYTE];			! Pointer to next free byte in last text buffer
+;	2121	
+;	2122	!++
+;	2123	! FAO CONTROL STRINGS
+;	2124	!--
+;	2125	BIND
+;	2126		ASC_STG = UPLIT BYTE (%ASCIC '''!AD'''),		! FOR ASCII MODE
+;	2127		COM_HYP_STG = UPLIT BYTE (%ASCIC ',-'),			! CONTINUATION FOR EXAMINE COMMANDS
+;	2128		EXP_STG = UPLIT BYTE (%ASCIC '^X!XL'),			! FOR NUMERICAL EXPRESSIONS
+;	2129		RAN_STG = UPLIT BYTE (%ASCIC '^X!XL:^X!XL'),		! FOR NUMERICAL EXPRESSIONS
+;	2130		NAM_OFF_STG = UPLIT BYTE (%ASCIC '!AD+^X!XL'),		! FOR SYMBOLIC NAME + OFFSET
+;	2131		NAM_OFF_RAN_STG = UPLIT BYTE (%ASCIC '!AD+^X!XL:!AD+^X!XL'),	! FOR SYMBOLIC NAME + OFFSET RANGES
+;	2132		INS_STG = UPLIT BYTE (%ASCIC '''!AD'''),		! FOR SYMBOLIC INSTRUCTIONS
+;	2133		MOD_STG = UPLIT BYTE (%ASCIC '!AC'),			! FOR MODULE NAMES
+;	2134		NAM_STG = UPLIT BYTE (%ASCIC '!AS'),			! FOR NAMES
+;	2135	
+;	2136	!++
+;	2137	! COMMAND STRING FOR EXIT.
+;	2138	!--
+;	2139		EXIT_CMD = UPLIT BYTE (%ASCIC 'EXIT') : VECTOR[,BYTE];	! EXIT COMMAND STRING
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 3
+; Digital Equipment Corporation
+;
+;	2140	GLOBAL ROUTINE PAT$WRITEFILE (MSGSIZ,MSGADR,WRTRAB) :NOVALUE =	! WRITES FORMATTED MSG TO FILE
+;	2141	
+;	2142	!++
+;	2143	! FUNCTIONAL DESCRIPTION:
+;	2144	!
+;	2145	!	This routine outputs formatted messages to files.  If the file is the
+;	2146	!	output command file, then the output is also written into the appended
+;	2147	!	patch command text buffers and only written to the command file if one
+;	2148	!	is open for output.  In case of error, an appropriate message is SIGNALed.
+;	2149	!
+;	2150	! FORMAL PARAMETERS:
+;	2151	!
+;	2152	!	MSGSIZ - SIZE IN BYTES OF THE MESSAGE TO BE OUTPUT
+;	2153	!	MSGADR - ADDRESS OF THE MESSAGE TO BE OUTPUT
+;	2154	!	WRTRAB - RAB OF THE FILE MESSAGE IS TO OUTPUT TO
+;	2155	!
+;	2156	! IMPLICIT INPUTS:
+;	2157	!
+;	2158	!	MESSAGE IS ALREADY FORMATTED, FILE IS ALREADY OPEN, AND
+;	2159	!	CHANNEL IS ALREADY CONNECTED.
+;	2160	!	PAT$GL_TXTFREE - Pointer to next free byte in last text block
+;	2161	!	PAT$GL_TXTLHD -  Pointer to first block of command text
+;	2162	!	PAT$GL_TXTTAIL - Pointer to last block of command text
+;	2163	!
+;	2164	! IMPLICIT OUTPUTS:
+;	2165	!
+;	2166	!	THE MESSAGE IS WRITTEN TO THE FILE.  IN CASE OF ERROR, AN
+;	2167	!	ERROR MESSAGE IS WRITTEN TO THE JOURNAL FILE AND 'SYS$ERROR'.
+;	2168	!
+;	2169	! ROUTINE VALUE:
+;	2170	!
+;	2171	! COMPLETION CODES:
+;	2172	!
+;	2173	!	NONE
+;	2174	!
+;	2175	! SIDE EFFECTS:
+;	2176	!
+;	2177	!	NONE
+;	2178	!
+;	2179	!--
+;	2180	
+;	2181	BEGIN
+;	2182	
+;	2183	MAP
+;	2184		WRTRAB : REF BLOCK [,BYTE];					! DEFINE AS VECTOR OF BYTES
+;	2185	
+;	2186	LOCAL
+;	2187		FAB_ADDR : REF BLOCK[,BYTE],				! ADDRESS OF FAB
+;	2188		NAM_BLK_ADDR : REF BLOCK[,BYTE];			! ADDRESS OF NAME BLOCK
+;	2189	
+;	2190	!++
+;	2191	! First check if this write is going to the command file.  If so, add it
+;	2192	! to the text buffer.  Text buffers are allocated one block at a time.
+;	2193	! The first longword of the block points the next block of text, zero indicates
+;	2194	! no next block.  The commands are written into the buffer as ASCIC strings.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 3-1
+; Digital Equipment Corporation
+;
+;	2195	! They do NOT cross block boundaries.
+;	2196	!--
+;	2197	IF (.WRTRAB EQL PAT$GL_COMRAB)
+;	2198	THEN
+;	2199		BEGIN
+;	2200		IF (.PAT$GL_TXTFREE+.MSGSIZ+1 GTRU .PAT$GL_TXTTAIL+A_PAGE)
+;	2201		THEN
+;	2202			BEGIN
+;	2203			!++
+;	2204			! Allocate a new block of command text and update pointers.
+;	2205			!--
+;	2206			PAT$GL_TXTFREE = PAT$FREEZ((A_PAGE + 3)/4);
+;	2207			PAT$GL_TXTTAIL[TXT$L_NXTBLK] = .PAT$GL_TXTFREE;
+;	2208			PAT$GL_TXTTAIL = .PAT$GL_TXTFREE;
+;	2209			PAT$GL_TXTFREE = .PAT$GL_TXTFREE + TXT$C_SIZE;
+;	2210			END;
+;	2211		CH$MOVE(.MSGSIZ, .MSGADR, CH$PTR(.PAT$GL_TXTFREE, 1));
+;	2212		PAT$GL_TXTFREE[0] = .MSGSIZ;
+;	2213		PAT$GL_TXTFREE = CH$PTR(.PAT$GL_TXTFREE, .MSGSIZ+1);
+;	2214		IF (.PAT$GL_FLAGS AND PAT$M_COMMAND) EQL 0
+;	2215		THEN
+;	2216			RETURN;
+;	2217		END;
+;	2218	
+;	2219	!++
+;	2220	! SET UP THE RAB FOR OUTPUT.
+;	2221	!--
+;	2222	WRTRAB[RAB$W_RSZ]=.MSGSIZ;					! SET SIZE OF MSG
+;	2223	WRTRAB[RAB$L_RBF]=.MSGADR;					! SET MESSAGE ADDRESS
+;	2224	PAT$GL_ERRCODE = $PUT(RAB=.WRTRAB);				! OUTPUT MESSAGE
+;	2225	IF NOT .PAT$GL_ERRCODE		 				! IF ERROR,
+;	2226	THEN								! OUTPUT AN
+;	2227		BEGIN
+;	2228		FAB_ADDR=.WRTRAB[RAB$L_FAB];				! GET ADDRESS OF FAB
+;	2229		NAM_BLK_ADDR=.FAB_ADDR[FAB$L_NAM];			! GET ADDRESS OF NAME BLOCK
+;	2230		SIGNAL(PAT$_PUTERR,3,.PAT$GL_ERRCODE,.NAM_BLK_ADDR[NAM$B_RSL],.NAM_BLK_ADDR[NAM$L_RSA]);	! APPROPRIATE MESSAGE
+;	2231		END;
+;	2232	END;								! END OF PAT$WRITEFILE
+
+
+							    .TITLE  PATIO
+							    .IDENT  \X01.06\
+
+							    .PSECT  _PAT$PLIT,NOWRT,NOEXE,0
+
+					      00000 P.AAA:  .ASCII  <5>\'!AD'\						      ;
+					      00006	    .BLKB   2
+					      00008 P.AAB:  .ASCII  <2>\,-\						      ;
+					      0000B	    .BLKB   1
+					      0000C P.AAC:  .ASCII  <5>\^X!XL\						      ;
+					      00012	    .BLKB   2
+					      00014 P.AAD:  .ASCII  <11>\^X!XL:^X!XL\					      ;
+					      00020 P.AAE:  .ASCII  <9>\!AD+^X!XL\					      ;
+					      0002A	    .BLKB   2
+					      0002C P.AAF:  .ASCII  <19>\!AD+^X!XL:!AD+^X!XL\				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 3-2
+; Digital Equipment Corporation
+;
+					      00040 P.AAG:  .ASCII  <5>\'!AD'\						      ;
+					      00046	    .BLKB   2
+					      00048 P.AAH:  .ASCII  <3>\!AC\						      ;
+					      0004C P.AAI:  .ASCII  <3>\!AS\						      ;
+					      00050 P.AAJ:  .ASCII  <4>\EXIT\						      ;
+					      00055	    .BLKB   3
+
+						    ISE$C_SIZE==	20
+						    TXT$C_SIZE==	4
+						    PAL$C_SIZE==	16
+						    ASD$C_SIZE==	9
+						    FWR$C_SIZE==	24
+						    ASC_STG=		P.AAA
+						    COM_HYP_STG=	P.AAB
+						    EXP_STG=		P.AAC
+						    RAN_STG=		P.AAD
+						    NAM_OFF_STG=	P.AAE
+						    NAM_OFF_RAN_STG=	P.AAF
+						    INS_STG=		P.AAG
+						    MOD_STG=		P.AAH
+						    NAM_STG=		P.AAI
+						    EXIT_CMD=		P.AAJ
+							    .GLOBL  PAT$GL_RST_BEGN, PAT$FIND_VAL, PAT$FAO_PUT, PAT$FREEZ
+							    .GLOBL  PAT$REDUCE_INS, PAT$GL_SYMTBPTR, PAT$GL_SYMHEAD
+							    .GLOBL  PAT$GL_PAL_LHD, PAT$GL_LAST_LOC, PAT$GL_CONTEXT
+							    .GLOBL  PAT$GL_SEMAN1, PAT$CP_OUT_STR, PAT$GL_BUF_SIZ
+							    .GLOBL  PAT$GB_MOD_PTR, PAT$GL_HEAD_LST, PAT$GL_COMRAB
+							    .GLOBL  PAT$GL_ISVADDR, PAT$GL_EXPANDVA, PAT$GL_ERRCODE
+							    .GLOBL  PAT$GL_FLAGS, PAT$GL_OLDNBK, PAT$GL_NEWNBK, PAT$GL_JNLNBK
+							    .GLOBL  PAT$GL_COMNBK, PAT$GL_INPFAB, PAT$GL_OUTFAB, PAT$GL_ERRFAB
+							    .GLOBL  PAT$GL_OLDFAB, PAT$GL_NEWFAB, PAT$GL_JNLFAB, PAT$GL_COMFAB
+							    .GLOBL  PAT$GB_OLDNAME, PAT$GB_NEWNAME, PAT$GB_JNLNAME
+							    .GLOBL  PAT$GB_COMNAME, PAT$GL_TXTLHD, PAT$GL_TXTTAIL
+							    .GLOBL  PAT$GL_TXTFREE, SYS$PUT
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 0EFC 00000 	    .ENTRY  PAT$WRITEFILE, Save R2,R3,R4,R5,R6,R7,R9,R10,R11	      ; 2140
+		         59 00000000G  EF  9E 00002 	    MOVAB   PAT$GL_ERRCODE, R9					      ;
+		         5A 00000000G  EF  9E 00009 	    MOVAB   PAT$GL_TXTTAIL, R10					      ;
+		         5B 00000000G  EF  9E 00010 	    MOVAB   PAT$GL_TXTFREE, R11					      ;
+		         57	  0C   AC  D0 00017 	    MOVL    WRTRAB, R7						      ; 2197
+		         50 00000000G  EF  9E 0001B 	    MOVAB   PAT$GL_COMRAB, R0					      ;
+		         50	       57  D1 00022 	    CMPL    R7, R0						      ;
+				       4A  12 00025 	    BNEQ    2$							      ;
+	   50	         6B	  04   AC  C1 00027 	    ADDL3   MSGSIZ, PAT$GL_TXTFREE, R0				      ; 2200
+				       50  D6 0002C 	    INCL    R0							      ;
+	   51	         6A 00000200   8F  C1 0002E 	    ADDL3   #512, PAT$GL_TXTTAIL, R1				      ;
+		         51	       50  D1 00036 	    CMPL    R0, R1						      ;
+				       18  1B 00039 	    BLEQU   1$							      ;
+		         7E	  80   8F  9A 0003B 	    MOVZBL  #128, -(SP)						      ; 2206
+	      00000000G  EF	       01  FB 0003F 	    CALLS   #1, PAT$FREEZ					      ;
+		         6B	       50  D0 00046 	    MOVL    R0, PAT$GL_TXTFREE					      ;
+		    00   BA	       6B  D0 00049 	    MOVL    PAT$GL_TXTFREE, @PAT$GL_TXTTAIL			      ; 2207
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 3-3
+; Digital Equipment Corporation
+;
+		         6A	       6B  D0 0004D 	    MOVL    PAT$GL_TXTFREE, PAT$GL_TXTTAIL			      ; 2208
+		         6B	       04  C0 00050 	    ADDL2   #4, PAT$GL_TXTFREE					      ; 2209
+		         56	       6B  D0 00053 1$:     MOVL    PAT$GL_TXTFREE, R6					      ; 2211
+      01   A6	    08   BC	  04   AC  28 00056 	    MOVC3   MSGSIZ, @MSGADR, 1(R6)				      ;
+		         66	  04   AC  90 0005D 	    MOVB    MSGSIZ, (R6)					      ; 2212
+	   50	         6B	  04   AC  C1 00061 	    ADDL3   MSGSIZ, PAT$GL_TXTFREE, R0				      ; 2213
+	   6B	         50	       01  C1 00066 	    ADDL3   #1, R0, PAT$GL_TXTFREE				      ;
+		         39 00000000G  EF  E9 0006A 	    BLBC    PAT$GL_FLAGS, 3$					      ; 2214
+		    22   A7	  04   AC  B0 00071 2$:     MOVW    MSGSIZ, 34(R7)					      ; 2222
+		    28   A7	  08   AC  D0 00076 	    MOVL    MSGADR, 40(R7)					      ; 2223
+				       57  DD 0007B 	    PUSHL   R7							      ; 2224
+	      00000000G  9F	       01  FB 0007D 	    CALLS   #1, @#SYS$PUT					      ;
+		         69	       50  D0 00084 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         20	       69  E8 00087 	    BLBS    PAT$GL_ERRCODE, 3$					      ; 2225
+		         50	  3C   A7  D0 0008A 	    MOVL    60(R7), FAB_ADDR					      ; 2228
+		         50	  28   A0  D0 0008E 	    MOVL    40(FAB_ADDR), NAM_BLK_ADDR				      ; 2229
+				  04   A0  DD 00092 	    PUSHL   4(NAM_BLK_ADDR)					      ; 2230
+		         7E	  03   A0  9A 00095 	    MOVZBL  3(NAM_BLK_ADDR), -(SP)				      ;
+				       69  DD 00099 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 0009B 	    PUSHL   #3							      ;
+			    006D81E4   8F  DD 0009D 	    PUSHL   #7176676						      ;
+	      00000000G  00	       05  FB 000A3 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 000AA 3$:     RET     							      ; 2140
+
+; Routine Size:  171 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 4
+; Digital Equipment Corporation
+;
+;	2233	GLOBAL ROUTINE PAT$WRITE_EXP1 (SEMSP) : NOVALUE =
+;	2234	
+;	2235	!++
+;	2236	! FUNCTIONAL DESCRIPTION:
+;	2237	!
+;	2238	!	THIS ROUTINE WRITES OUT A SERIES OF EXPRESSIONS TO THE COMMAND FILE.
+;	2239	!	THE EXPRESSIONS ARE TAKEN FROM THE COMMAND ARGUMENT LIST.  IF THE
+;	2240	!	CURRENT MODE IS ASCII, THEN THE ARGUMENTS ARE WRITTEN AS ASCII
+;	2241	!	CHARACTERS WITHIN QUOTES.  ONE EXPRESSION IS WRITTEN PER LINE.
+;	2242	!
+;	2243	!	IF THE COMMAND IS THE "EXAMINE" COMMAND, THEN THE EXPRESSIONS MUST
+;	2244	!	BE FOLLOWED BY A CONTINUATION CHARACTER AS THE "EXAMINE" COMMAND
+;	2245	!	DOES NOT PROMPT.
+;	2246	!
+;	2247	! FORMAL PARAMETERS:
+;	2248	!
+;	2249	!	SEMSP - PARSE STACK OFFSET TO COMMAND VERB TOKEN
+;	2250	!
+;	2251	! IMPLICIT INPUTS:
+;	2252	!
+;	2253	!	THE ARGUMENT LIST FOR THE COMMAND POINTED TO BY PAT$GL_HEAD_LST.
+;	2254	!
+;	2255	! IMPLICIT OUTPUTS:
+;	2256	!
+;	2257	!	THE EXPRESSION IS WRITTEN TO THE COMMAND FILE.  IN CASE OF ERROR, AN
+;	2258	!	ERROR MESSAGE IS WRITTEN TO THE JOURNAL FILE AND 'SYS$ERROR'.
+;	2259	!
+;	2260	! ROUTINE VALUE:
+;	2261	!
+;	2262	!	NONE
+;	2263	!
+;	2264	! COMPLETION CODES:
+;	2265	!
+;	2266	!	NONE
+;	2267	!
+;	2268	! SIDE EFFECTS:
+;	2269	!
+;	2270	!	PAT$CP_OUT_STR AND PAT$GL_BUF_SIZ ARE DESTROYED.
+;	2271	!
+;	2272	!--
+;	2273	
+;	2274	BEGIN
+;	2275	
+;	2276	LITERAL
+;	2277		HYPHEN = %X'2D';					! CONTINUATION CHARACTER (HYPHEN)
+;	2278	
+;	2279	LOCAL
+;	2280		OUTPUT_BUFFER : BLOCK[TTY_OUT_WIDTH,BYTE],		! OUTPUT BUFFER
+;	2281		POINTER;						! POINTER TO CURRENT ARGUMENT
+;	2282	
+;	2283	!++
+;	2284	! INITIALIZE THE POINTER TO THE FIRST ARGUMENT.
+;	2285	!--
+;	2286	POINTER = .PAT$GL_HEAD_LST;
+;	2287	IF (.PAT$GL_SEMAN1[.SEMSP] EQL EXAMINE_TOKEN) AND
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 4-1
+; Digital Equipment Corporation
+;
+;	2288	   (.POINTER EQLA 0)
+;	2289	THEN
+;	2290		BEGIN
+;	2291		PAT$GL_BUF_SIZ = 0;
+;	2292		PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2293		PAT$OUT_PAL_EXP(.PAT$GL_LAST_LOC, 0);
+;	2294		PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2295		END;
+;	2296	
+;	2297	!++
+;	2298	! LOOP, WRITING OUT EACH EXPRESSION.  IF THE CURRENT MODE IS ASCII, WRITE
+;	2299	! THE EXPRESSION AS AN ASCII STRING CONTAINED WITHIN QUOTES.
+;	2300	!--
+;	2301	WHILE .POINTER NEQA 0
+;	2302	DO
+;	2303		BEGIN
+;	2304		PAT$GL_BUF_SIZ = 0;
+;	2305		PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2306		IF .PAT$GB_MOD_PTR[MODE_ASCII]
+;	2307		THEN
+;	2308			PAT$FAO_PUT(ASC_STG, .PAT$GB_MOD_PTR[MODE_LENGTH],
+;	2309					LIST_ELEM_EXP1(.POINTER))
+;	2310		ELSE
+;	2311			IF (.LIST_ELEM_EXP2(.POINTER) EQL 0) OR
+;	2312			   (.LIST_ELEM_EXP1(.POINTER) EQL .LIST_ELEM_EXP2(.POINTER))
+;	2313			THEN
+;	2314				PAT$OUT_PAL_EXP(.LIST_ELEM_EXP1(.POINTER), 0)
+;	2315			ELSE
+;	2316				PAT$OUT_PAL_EXP(.LIST_ELEM_EXP1(.POINTER),
+;	2317						.LIST_ELEM_EXP2(.POINTER));
+;	2318		IF (.PAT$GL_SEMAN1[.SEMSP] EQL EXAMINE_TOKEN) AND
+;	2319		   (.LIST_ELEM_FLINK(.POINTER) NEQA 0)
+;	2320		THEN
+;	2321			PAT$FAO_PUT(COM_HYP_STG);
+;	2322		PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2323		POINTER = .LIST_ELEM_FLINK(.POINTER);
+;	2324		END;
+;	2325	RETURN;
+;	2326	
+;	2327	END;								! END OF PAT$WRITE_EXP1
+
+
+
+
+
+					 0FEC 000AB 	    .ENTRY  PAT$WRITE_EXP1, Save R2,R3,R5,R6,R7,R8,R9,R10,R11	      ; 2233
+		         55 00000000G  EF  9E 000AD 	    MOVAB   PAT$FAO_PUT, R5					      ;
+		         56	FF48   CF  9E 000B4 	    MOVAB   PAT$WRITEFILE, R6					      ;
+		         57 00000000G  EF  9E 000B9 	    MOVAB   PAT$GL_COMRAB, R7					      ;
+		         58 00000000V  EF  9E 000C0 	    MOVAB   PAT$OUT_PAL_EXP, R8					      ;
+		         59 00000000G  EF  9E 000C7 	    MOVAB   PAT$CP_OUT_STR, R9					      ;
+		         5A 00000000G  EF  9E 000CE 	    MOVAB   PAT$GL_SEMAN1, R10					      ;
+		         5B 00000000G  EF  9E 000D5 	    MOVAB   PAT$GL_BUF_SIZ, R11					      ;
+		         5E	FF7C   CE  9E 000DC 	    MOVAB   -132(SP), SP					      ;
+		         52 00000000G  EF  D0 000E1 	    MOVL    PAT$GL_HEAD_LST, POINTER				      ; 2286
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 4-2
+; Digital Equipment Corporation
+;
+		         53	  04   AC  D0 000E8 	    MOVL    SEMSP, R3						      ; 2287
+		         09	     6A43  D1 000EC 	    CMPL    PAT$GL_SEMAN1[R3], #9				      ;
+				       1E  12 000F0 	    BNEQ    1$							      ;
+				       52  D5 000F2 	    TSTL    POINTER						      ; 2288
+				       1A  12 000F4 	    BNEQ    1$							      ;
+				       6B  D4 000F6 	    CLRL    PAT$GL_BUF_SIZ					      ; 2291
+		         69	       6E  9E 000F8 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2292
+				       7E  D4 000FB 	    CLRL    -(SP)						      ; 2293
+			    00000000G  EF  DD 000FD 	    PUSHL   PAT$GL_LAST_LOC					      ;
+		         68	       02  FB 00103 	    CALLS   #2, PAT$OUT_PAL_EXP					      ;
+				       57  DD 00106 	    PUSHL   R7							      ; 2294
+				  04   AE  9F 00108 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 0010B 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         66	       03  FB 0010D 	    CALLS   #3, PAT$WRITEFILE					      ;
+				       52  D5 00110 1$:     TSTL    POINTER						      ; 2301
+				       5C  13 00112 	    BEQL    8$							      ;
+				       6B  D4 00114 	    CLRL    PAT$GL_BUF_SIZ					      ; 2304
+		         69	       6E  9E 00116 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2305
+		         50 00000000G  EF  D0 00119 	    MOVL    PAT$GB_MOD_PTR, R0					      ; 2306
+		         12	  04   A0  E9 00120 	    BLBC    4(R0), 2$						      ;
+				  04   A2  9F 00124 	    PUSHAB  4(POINTER)						      ; 2309
+		         7E	  01   A0  9A 00127 	    MOVZBL  1(R0), -(SP)					      ; 2308
+			    00000000'  EF  9F 0012B 	    PUSHAB  ASC_STG						      ; 2233
+		         65	       03  FB 00131 	    CALLS   #3, PAT$FAO_PUT					      ; 2308
+				       18  11 00134 	    BRB     6$							      ; 2306
+		         50	  08   A2  D0 00136 2$:     MOVL    8(POINTER), R0					      ; 2311
+				       06  13 0013A 	    BEQL    3$							      ;
+		         50	  04   A2  D1 0013C 	    CMPL    4(POINTER), R0					      ; 2312
+				       04  12 00140 	    BNEQ    4$							      ;
+				       7E  D4 00142 3$:     CLRL    -(SP)						      ; 2314
+				       02  11 00144 	    BRB     5$							      ;
+				       50  DD 00146 4$:     PUSHL   R0							      ; 2316
+				  04   A2  DD 00148 5$:     PUSHL   4(POINTER)						      ;
+		         68	       02  FB 0014B 	    CALLS   #2, PAT$OUT_PAL_EXP					      ;
+		         09	     6A43  D1 0014E 6$:     CMPL    PAT$GL_SEMAN1[R3], #9				      ; 2318
+				       0D  12 00152 	    BNEQ    7$							      ;
+				       62  D5 00154 	    TSTL    (POINTER)						      ; 2319
+				       09  13 00156 	    BEQL    7$							      ;
+			    00000000'  EF  9F 00158 	    PUSHAB  COM_HYP_STG						      ; 2233
+		         65	       01  FB 0015E 	    CALLS   #1, PAT$FAO_PUT					      ; 2321
+				       57  DD 00161 7$:     PUSHL   R7							      ; 2322
+				  04   AE  9F 00163 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 00166 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         66	       03  FB 00168 	    CALLS   #3, PAT$WRITEFILE					      ;
+		         52	       62  D0 0016B 	    MOVL    (POINTER), POINTER					      ; 2323
+				       A0  11 0016E 	    BRB     1$							      ; 2301
+					   04 00170 8$:     RET     							      ; 2233
+
+; Routine Size:  198 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 5
+; Digital Equipment Corporation
+;
+;	2328	GLOBAL ROUTINE PAT$WRITE_NAME (SEMSP) : NOVALUE =
+;	2329	
+;	2330	!++
+;	2331	! FUNCTIONAL DESCRIPTION:
+;	2332	!
+;	2333	!	THIS ROUTINE WRITES OUT A SERIES OF NAMES TO THE COMMAND FILE.
+;	2334	!	THE NAMES ARE TAKEN FROM THE COMMAND ARGUMENT LIST.  ONE NAME IS
+;	2335	!	WRITTEN PER LINE.
+;	2336	!
+;	2337	! FORMAL PARAMETERS:
+;	2338	!
+;	2339	!	SEMSP - OFFSET TO VERB TOKEN ON PARSE STACK
+;	2340	!
+;	2341	! IMPLICIT INPUTS:
+;	2342	!
+;	2343	!	THE COMMAND ARGUMENT LIST POINTED TO BY PAT$GL_HEAD_LST.
+;	2344	!
+;	2345	! IMPLICIT OUTPUTS:
+;	2346	!
+;	2347	!	THE NAME IS WRITTEN TO THE COMMAND FILE.  IN CASE OF ERROR, AN
+;	2348	!	ERROR MESSAGE IS WRITTEN TO THE JOURNAL FILE AND 'SYS$ERROR'.
+;	2349	!
+;	2350	! ROUTINE VALUE:
+;	2351	!
+;	2352	!	NONE
+;	2353	!
+;	2354	! COMPLETION CODES:
+;	2355	!
+;	2356	!	NONE
+;	2357	!
+;	2358	! SIDE EFFECTS:
+;	2359	!
+;	2360	!	PAT$CP_OUT_STR AND PAT$GL_BUF_SIZ ARE DESTROYED.
+;	2361	!
+;	2362	!--
+;	2363	
+;	2364	BEGIN
+;	2365	
+;	2366	LOCAL
+;	2367		MC_PTR : REF MC_RECORD,					! POINTER TO MODULE CHAIN ENTRY
+;	2368		OUTPUT_BUFFER : VECTOR[TTY_OUT_WIDTH,BYTE],		! OUTPUT BUFFER
+;	2369		POINTER;						! POINTER TO CURRENT NAME
+;	2370	
+;	2371	!++
+;	2372	! INITIALIZE THE POINTER TO THE FIRST ARGUMENT.
+;	2373	!--
+;	2374	POINTER = .PAT$GL_HEAD_LST;
+;	2375	
+;	2376	!++
+;	2377	! LOOP, WRITING OUT EACH EXPRESSION.  IF THE CURRENT MODE IS ASCII, WRITE
+;	2378	! THE EXPRESSION AS AN ASCII STRING CONTAINED WITHIN QUOTES.
+;	2379	!--
+;	2380	WHILE .POINTER NEQA 0
+;	2381	DO
+;	2382		BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 5-1
+; Digital Equipment Corporation
+;
+;	2383		PAT$GL_BUF_SIZ = 0;
+;	2384		PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2385		IF .PAT$GL_CONTEXT[MODULE_BIT]
+;	2386		THEN
+;	2387			BEGIN
+;	2388			MC_PTR = .LIST_ELEM_EXP1(.POINTER);
+;	2389			PAT$FAO_PUT(MOD_STG, MC_PTR[MC_NAME_CS]);
+;	2390			END
+;	2391		ELSE
+;	2392			PAT$FAO_PUT(NAM_STG, .LIST_ELEM_EXP1(.POINTER));
+;	2393		PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2394		IF .PAT$GL_SEMAN1[.SEMSP] EQL DEFINE_TOKEN
+;	2395		THEN
+;	2396			BEGIN
+;	2397			PAT$GL_BUF_SIZ = 0;
+;	2398			PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2399			PAT$OUT_PAL_EXP(.LIST_ELEM_EXP2(.POINTER), 0);
+;	2400			PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2401			END;
+;	2402		POINTER = .LIST_ELEM_FLINK(.POINTER);
+;	2403		END;
+;	2404	RETURN;
+;	2405	
+;	2406	END;								! END OF PAT$WRITE_NAME
+
+
+
+
+
+					 0F1C 00171 	    .ENTRY  PAT$WRITE_NAME, Save R2,R3,R4,R8,R9,R10,R11		      ; 2328
+		         58	FE89   CF  9E 00173 	    MOVAB   PAT$WRITEFILE, R8					      ;
+		         59 00000000G  EF  9E 00178 	    MOVAB   PAT$GL_COMRAB, R9					      ;
+		         5A 00000000G  EF  9E 0017F 	    MOVAB   PAT$CP_OUT_STR, R10					      ;
+		         5B 00000000G  EF  9E 00186 	    MOVAB   PAT$GL_BUF_SIZ, R11					      ;
+		         5E	FF7C   CE  9E 0018D 	    MOVAB   -132(SP), SP					      ;
+		         52 00000000G  EF  D0 00192 	    MOVL    PAT$GL_HEAD_LST, POINTER				      ; 2374
+		         53	  04   AC  D0 00199 	    MOVL    SEMSP, R3						      ; 2394
+				       52  D5 0019D 1$:     TSTL    POINTER						      ; 2380
+				       68  13 0019F 	    BEQL    5$							      ;
+				       6B  D4 001A1 	    CLRL    PAT$GL_BUF_SIZ					      ; 2383
+		         6A	       6E  9E 001A3 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2384
+	   17 00000000G  EF	       07  E1 001A6 	    BBC     #7, PAT$GL_CONTEXT, 2$				      ; 2385
+		         54	  04   A2  D0 001AE 	    MOVL    4(POINTER), MC_PTR					      ; 2388
+	   50	         54 00000000G  EF  C1 001B2 	    ADDL3   PAT$GL_RST_BEGN, MC_PTR, R0				      ; 2389
+				  0C   A0  9F 001BA 	    PUSHAB  12(R0)						      ;
+			    00000000'  EF  9F 001BD 	    PUSHAB  MOD_STG						      ; 2328
+				       09  11 001C3 	    BRB     3$							      ; 2389
+				  04   A2  DD 001C5 2$:     PUSHL   4(POINTER)						      ; 2392
+			    00000000'  EF  9F 001C8 	    PUSHAB  NAM_STG						      ; 2328
+	      00000000G  EF	       02  FB 001CE 3$:     CALLS   #2, PAT$FAO_PUT					      ; 2392
+				       59  DD 001D5 	    PUSHL   R9							      ; 2393
+				  04   AE  9F 001D7 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 001DA 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         68	       03  FB 001DC 	    CALLS   #3, PAT$WRITEFILE					      ;
+		         05 00000000GEF43  D1 001DF 	    CMPL    PAT$GL_SEMAN1[R3], #5				      ; 2394
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 5-2
+; Digital Equipment Corporation
+;
+				       1B  12 001E7 	    BNEQ    4$							      ;
+				       6B  D4 001E9 	    CLRL    PAT$GL_BUF_SIZ					      ; 2397
+		         6A	       6E  9E 001EB 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2398
+				       7E  D4 001EE 	    CLRL    -(SP)						      ; 2399
+				  08   A2  DD 001F0 	    PUSHL   8(POINTER)						      ;
+	      00000000V  EF	       02  FB 001F3 	    CALLS   #2, PAT$OUT_PAL_EXP					      ;
+				       59  DD 001FA 	    PUSHL   R9							      ; 2400
+				  04   AE  9F 001FC 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 001FF 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         68	       03  FB 00201 	    CALLS   #3, PAT$WRITEFILE					      ;
+		         52	       62  D0 00204 4$:     MOVL    (POINTER), POINTER					      ; 2402
+				       94  11 00207 	    BRB     1$							      ; 2380
+					   04 00209 5$:     RET     							      ; 2328
+
+; Routine Size:  153 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 6
+; Digital Equipment Corporation
+;
+;	2407	GLOBAL ROUTINE PAT$WRITE_INS (SEMSP) : NOVALUE =
+;	2408	
+;	2409	!++
+;	2410	! FUNCTIONAL DESCRIPTION:
+;	2411	!
+;	2412	!	THIS ROUTINE WRITES OUT THE ARGUMENTS TO THE COMMAND FILE FOR THE
+;	2413	!	FOLLOWING COMMAND VERBS, "DEPOSIT", "INSERT", "REPLACE", AND
+;	2414	!	"VERIFY".  THE ARGUMENTS CONSIST OF AN ADDRESS, FOLLOWED BY ONE OR TWO
+;	2415	!	LISTS OF INSTRUCTIONS (DEPENDING UPON THE COMMAND).
+;	2416	!	THE INSTRUCTIONS ARE TAKEN FROM THE COMMAND ARGUMENT LIST.
+;	2417	!	ONE INSTRUCTION IS WRITTEN PER LINE.
+;	2418	!
+;	2419	! FORMAL PARAMETERS:
+;	2420	!
+;	2421	!	SEMSP - OFFSET ONTO PARSE STACK FOR COMMAND VERB TOKEN
+;	2422	!
+;	2423	! IMPLICIT INPUTS:
+;	2424	!
+;	2425	!	THE COMMAND ARGUMENT LIST POINTED TO BY PAT$GL_HEAD_LST.
+;	2426	!	THE PARSE STACK, PAT$GL_SEMAN1, HOLDS THE COMMAND VERB.
+;	2427	!
+;	2428	! IMPLICIT OUTPUTS:
+;	2429	!
+;	2430	!	THE COMMAND ARGUMENTS ARE WRITTEN TO THE COMMAND FILE.  IN CASE OF
+;	2431	!	ERROR, AN ERROR MESSAGE IS WRITTEN TO THE JOURNAL FILE AND 'SYS$ERROR'.
+;	2432	!
+;	2433	! ROUTINE VALUE:
+;	2434	!
+;	2435	!	NONE
+;	2436	!
+;	2437	! COMPLETION CODES:
+;	2438	!
+;	2439	!	NONE
+;	2440	!
+;	2441	! SIDE EFFECTS:
+;	2442	!
+;	2443	!	PAT$CP_OUT_STR AND PAT$GL_BUF_SIZ ARE DESTROYED.
+;	2444	!
+;	2445	!--
+;	2446	
+;	2447	BEGIN
+;	2448	
+;	2449	LOCAL
+;	2450		EDITED_INS_DESC : BLOCK[12,BYTE],			! DESCRIPTOR FOR EDITED INSTRUCTIONS
+;	2451		EDITED_INS_BUF : VECTOR[TTY_OUT_WIDTH,BYTE],		! BUFFER FOR EDITED INSTRUCTION
+;	2452		OUTPUT_BUFFER : VECTOR[TTY_OUT_WIDTH,BYTE],		! OUTPUT BUFFER
+;	2453		POINTER;						! POINTER TO CURRENT NAME
+;	2454	
+;	2455	!++
+;	2456	! INITIALIZE THE POINTER TO THE FIRST ARGUMENT.
+;	2457	!--
+;	2458	POINTER = .PAT$GL_HEAD_LST;
+;	2459	
+;	2460	!++
+;	2461	! FIRST WRITE OUT THE LOCATION ADDRESS.  THIS IS ALWAYS THE FIRST ARGUMENT.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 6-1
+; Digital Equipment Corporation
+;
+;	2462	!--
+;	2463	PAT$GL_BUF_SIZ = 0;
+;	2464	PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2465	PAT$OUT_PAL_EXP(.LIST_ELEM_EXP1(.POINTER), 0);
+;	2466	PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2467	
+;	2468	!++
+;	2469	! NOW LOOP, WRITING OUT EACH ARGUMENT.
+;	2470	!--
+;	2471	WHILE (POINTER = .LIST_ELEM_FLINK(.POINTER)) NEQA 0
+;	2472	DO
+;	2473		BEGIN
+;	2474		PAT$GL_BUF_SIZ = 0;
+;	2475		PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2476		IF .PAT$GB_MOD_PTR[MODE_INSTRUC]
+;	2477		THEN
+;	2478			BEGIN
+;	2479			EDITED_INS_DESC[DSC$W_LENGTH] = 0;
+;	2480			EDITED_INS_DESC[DSC$A_POINTER] = EDITED_INS_BUF;
+;	2481			EDITED_INS_DESC[DSC$W_MAXLEN] = TTY_OUT_WIDTH;
+;	2482			PAT$REDUCE_INS(.LIST_ELEM_EXP1(.POINTER), EDITED_INS_DESC);
+;	2483			PAT$GL_BUF_SIZ = 0;
+;	2484			PAT$CP_OUT_STR = CH$PTR(OUTPUT_BUFFER, 0);
+;	2485			PAT$FAO_PUT(INS_STG, .EDITED_INS_DESC[DSC$W_LENGTH], EDITED_INS_BUF);
+;	2486			END
+;	2487		ELSE
+;	2488			IF .PAT$GB_MOD_PTR[MODE_ASCII]
+;	2489			THEN
+;	2490				PAT$FAO_PUT(ASC_STG, .PAT$GB_MOD_PTR[MODE_LENGTH],
+;	2491						LIST_ELEM_EXP1(.POINTER))
+;	2492			ELSE
+;	2493				PAT$OUT_PAL_EXP(.LIST_ELEM_EXP1(.POINTER), 0);
+;	2494		PAT$WRITEFILE(.PAT$GL_BUF_SIZ, OUTPUT_BUFFER, PAT$GL_COMRAB);
+;	2495		IF .PAT$GL_SEMAN1[.SEMSP] EQL REPLACE_TOKEN
+;	2496		THEN
+;	2497			IF .LIST_ELEM_EXP2(.POINTER) EQL EXIT_TOKEN
+;	2498			THEN
+;	2499				PAT$WRITEFILE(.EXIT_CMD[0], EXIT_CMD[1], PAT$GL_COMRAB);
+;	2500		END;
+;	2501	RETURN;
+;	2502	
+;	2503	END;								! END OF PAT$WRITE_INS
+
+
+
+
+
+					 0FDC 0020A 	    .ENTRY  PAT$WRITE_INS, Save R2,R3,R4,R6,R7,R8,R9,R10,R11	      ; 2407
+		         56 00000000V  EF  9E 0020C 	    MOVAB   PAT$OUT_PAL_EXP, R6					      ;
+		         57	FDE9   CF  9E 00213 	    MOVAB   PAT$WRITEFILE, R7					      ;
+		         58 00000000G  EF  9E 00218 	    MOVAB   PAT$GL_COMRAB, R8					      ;
+		         59 00000000G  EF  9E 0021F 	    MOVAB   PAT$CP_OUT_STR, R9					      ;
+		         5A 00000000'  EF  9E 00226 	    MOVAB   INS_STG, R10					      ;
+		         5B 00000000G  EF  9E 0022D 	    MOVAB   PAT$GL_BUF_SIZ, R11					      ;
+		         5E	FEEC   CE  9E 00234 	    MOVAB   -276(SP), SP					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 6-2
+; Digital Equipment Corporation
+;
+		         53 00000000G  EF  D0 00239 	    MOVL    PAT$GL_HEAD_LST, POINTER				      ; 2458
+				       6B  D4 00240 	    CLRL    PAT$GL_BUF_SIZ					      ; 2463
+		         69	       6E  9E 00242 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2464
+				       7E  D4 00245 	    CLRL    -(SP)						      ; 2465
+				  04   A3  DD 00247 	    PUSHL   4(POINTER)						      ;
+		         66	       02  FB 0024A 	    CALLS   #2, PAT$OUT_PAL_EXP					      ;
+				       58  DD 0024D 	    PUSHL   R8							      ; 2466
+				  04   AE  9F 0024F 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 00252 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         67	       03  FB 00254 	    CALLS   #3, PAT$WRITEFILE					      ;
+		         54	  04   AC  D0 00257 	    MOVL    SEMSP, R4						      ; 2495
+		         53	       63  D0 0025B 1$:     MOVL    (POINTER), POINTER					      ; 2471
+				       01  12 0025E 	    BNEQ    2$							      ;
+					   04 00260 	    RET     							      ;
+				       6B  D4 00261 2$:     CLRL    PAT$GL_BUF_SIZ					      ; 2474
+		         69	       6E  9E 00263 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2475
+		         52 00000000G  EF  D0 00266 	    MOVL    PAT$GB_MOD_PTR, R2					      ; 2476
+		         2C	  03   A2  E9 0026D 	    BLBC    3(R2), 3$						      ;
+				  F4   AD  B4 00271 	    CLRW    EDITED_INS_DESC					      ; 2479
+		    F8   AD	0084   CE  9E 00274 	    MOVAB   EDITED_INS_BUF, EDITED_INS_DESC+4			      ; 2480
+		    FC   AD	  84   8F  9B 0027A 	    MOVZBW  #132, EDITED_INS_DESC+8				      ; 2481
+				  F4   AD  9F 0027F 	    PUSHAB  EDITED_INS_DESC					      ; 2482
+				  04   A3  DD 00282 	    PUSHL   4(POINTER)						      ;
+	      00000000G  EF	       02  FB 00285 	    CALLS   #2, PAT$REDUCE_INS					      ;
+				       6B  D4 0028C 	    CLRL    PAT$GL_BUF_SIZ					      ; 2483
+		         69	       6E  9E 0028E 	    MOVAB   OUTPUT_BUFFER, PAT$CP_OUT_STR			      ; 2484
+				0084   CE  9F 00291 	    PUSHAB  EDITED_INS_BUF					      ; 2485
+		         7E	  F4   AD  3C 00295 	    MOVZWL  EDITED_INS_DESC, -(SP)				      ;
+				       5A  DD 00299 	    PUSHL   R10							      ; 2407
+				       0E  11 0029B 	    BRB     4$							      ; 2485
+		         13	  04   A2  E9 0029D 3$:     BLBC    4(R2), 5$						      ; 2488
+				  04   A3  9F 002A1 	    PUSHAB  4(POINTER)						      ; 2491
+		         7E	  01   A2  9A 002A4 	    MOVZBL  1(R2), -(SP)					      ; 2490
+				  C0   AA  9F 002A8 	    PUSHAB  ASC_STG						      ; 2407
+	      00000000G  EF	       03  FB 002AB 4$:     CALLS   #3, PAT$FAO_PUT					      ; 2490
+				       08  11 002B2 	    BRB     6$							      ; 2488
+				       7E  D4 002B4 5$:     CLRL    -(SP)						      ; 2493
+				  04   A3  DD 002B6 	    PUSHL   4(POINTER)						      ;
+		         66	       02  FB 002B9 	    CALLS   #2, PAT$OUT_PAL_EXP					      ;
+				       58  DD 002BC 6$:     PUSHL   R8							      ; 2494
+				  04   AE  9F 002BE 	    PUSHAB  OUTPUT_BUFFER					      ;
+				       6B  DD 002C1 	    PUSHL   PAT$GL_BUF_SIZ					      ;
+		         67	       03  FB 002C3 	    CALLS   #3, PAT$WRITEFILE					      ;
+		         0C 00000000GEF44  D1 002C6 	    CMPL    PAT$GL_SEMAN1[R4], #12				      ; 2495
+				       8B  12 002CE 	    BNEQ    1$							      ;
+		         0A	  08   A3  D1 002D0 	    CMPL    8(POINTER), #10					      ; 2497
+				       85  12 002D4 	    BNEQ    1$							      ;
+				       58  DD 002D6 	    PUSHL   R8							      ; 2499
+				  11   AA  9F 002D8 	    PUSHAB  EXIT_CMD+1						      ;
+		         7E	  10   AA  9A 002DB 	    MOVZBL  EXIT_CMD, -(SP)					      ;
+		         67	       03  FB 002DF 	    CALLS   #3, PAT$WRITEFILE					      ;
+				     FF76  31 002E2 	    BRW     1$							      ; 2471
+					   04 002E5 7$:     RET     							      ; 2407
+
+; Routine Size:  220 bytes
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 6-3
+; Digital Equipment Corporation
+;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 7
+; Digital Equipment Corporation
+;
+;	2504	GLOBAL ROUTINE PAT$OUT_PAL_EXP (EXPR1, EXPR2) : NOVALUE =
+;	2505	
+;	2506	!++
+;	2507	! FUNCTIONAL DESCRIPTION:
+;	2508	!
+;	2509	!	THIS ROUTINE FORMATS EXPRESSIONS FOR OUTPUT TO THE COMMAND FILE.
+;	2510	!	IF AN EXPRESSION FALLS WITHIN A PATCH AREA, THEN THE EXPRESSION
+;	2511	!	MUST BE WRITTEN AS A SYMBOLIC NAME PLUS OFFSET.  OTHERWISE IT MAY
+;	2512	!	BE WRITTEN AS AN ABSOLUTE VALUE.  THE PATCH AREA LIST (PAL) IS
+;	2513	!	SEARCHED TO DETERMINE IF THE EXPRESSION FALLS WITHIN A PATCH AREA.
+;	2514	!
+;	2515	!	IF AN EXPRESSION RANGE IS PROVIDED AS INPUT (I.E., EXPR2 IS NOT 0),
+;	2516	!	THEN THE UPPER LIMIT OF THE RANGE IS TREATED IN THE SAME MANNER AS
+;	2517	!	THE LOWER LIMIT WAS TREATED.
+;	2518	!
+;	2519	! FORMAL PARAMETERS:
+;	2520	!
+;	2521	!	EXPR1 - EXPRESSION TO OUTPUT (IF EXPR2 NEQ 0, THEN LOWER LIMIT OF RANGE)
+;	2522	!	EXPR2 - IF NEQ 0, THEN LOWER LIMIT OF RANGE
+;	2523	!		IF EQL 0, THEN INDICATES SINGLE EXPRESSION NOT RANGE
+;	2524	!
+;	2525	! IMPLICIT INPUTS:
+;	2526	!
+;	2527	!	THE PATCH AREA LIST (PAL).
+;	2528	!	THE USER DEFINED SYMBOL TABLE.
+;	2529	!	PAT$GL_BUF_SIZ AND PAT$CP_OUT_STR MUST BE INITIALIZED.
+;	2530	!
+;	2531	! IMPLICIT OUTPUTS:
+;	2532	!
+;	2533	!	THE EXPRESSION IS WRITTEN INTO THE OUTPUT BUFFER SPECIFIED BY
+;	2534	!	PAT$GL_BUF_SIZ AND PAT$CP_OUT_STR.
+;	2535	!
+;	2536	! ROUTINE VALUE:
+;	2537	!
+;	2538	!	NONE
+;	2539	!
+;	2540	! COMPLETION CODES:
+;	2541	!
+;	2542	!	NONE
+;	2543	!
+;	2544	! SIDE EFFECTS:
+;	2545	!
+;	2546	!	PAT$CP_OUT_STR AND PAT$GL_BUF_SIZ ARE UPDATED TO INCLUDE THE EXPRESSION.
+;	2547	!
+;	2548	!--
+;	2549	
+;	2550	BEGIN
+;	2551	
+;	2552	LOCAL
+;	2553		TEMP_PTR : REF BLOCK[,BYTE],				! POINTER TO CURRENT PAL ENTRY
+;	2554		SYM_PTR;						! POINTER TO SYMBOL TABLE ENTRY
+;	2555	
+;	2556	!++
+;	2557	! INITIALIZE THE POINTER TO THE FIRST PATCH AREA IN THE LIST.
+;	2558	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 7-1
+; Digital Equipment Corporation
+;
+;	2559	TEMP_PTR = .PAT$GL_PAL_LHD;
+;	2560	
+;	2561	!++
+;	2562	! SEARCH THE PATCH AREA LIST FOR A PATCH AREA WHICH INCLUDES THE EXPRESSION.
+;	2563	! IF FOUND, THEN SEARCH THE SYMBOL TABLE FOR A CORRESPONDING SYMBOLIC NAME.
+;	2564	! IF THE EXPRESSION IS NOT WITHIN A PATCH AREA, THEN OUTPUT IT AS AN ABSOLUTE
+;	2565	! VALUE.  OTHERWISE, OUTPUT IT AS A SYMBOLIC NAME PLUS OFFSET.
+;	2566	!--
+;	2567	IF (.EXPR1 NEQ 0)						! PREVENT NULL PATCH AREA ADDRESS REPLACING ZERO VALUES
+;	2568	THEN
+;	2569		BEGIN
+;	2570		WHILE .TEMP_PTR NEQA 0
+;	2571		DO
+;	2572			BEGIN
+;	2573			IF (.EXPR1 LEQU .TEMP_PTR[PAL$L_END_ADR]) AND
+;	2574			   (.EXPR1 GEQU .TEMP_PTR[PAL$L_START_ADR])
+;	2575			THEN
+;	2576				BEGIN
+;	2577				PAT$GL_SYMTBPTR = .PAT$GL_SYMHEAD;
+;	2578				SYM_PTR = PAT$FIND_VAL(.EXPR1, FALSE);
+;	2579				IF .EXPR2 EQL 0
+;	2580				THEN
+;	2581					PAT$FAO_PUT(NAM_OFF_STG,
+;	2582						.SYM_CHCOUNT(.SYM_PTR), SYM_NAME(.SYM_PTR),
+;	2583						(.EXPR1-.SYM_VALUE(.SYM_PTR)))
+;	2584				ELSE
+;	2585					PAT$FAO_PUT(NAM_OFF_RAN_STG,
+;	2586						.SYM_CHCOUNT(.SYM_PTR), SYM_NAME(.SYM_PTR),
+;	2587						(.EXPR1-.SYM_VALUE(.SYM_PTR)),
+;	2588						.SYM_CHCOUNT(.SYM_PTR), SYM_NAME(.SYM_PTR),
+;	2589						(.EXPR2-.SYM_VALUE(.SYM_PTR)));
+;	2590				RETURN;
+;	2591				END;
+;	2592			TEMP_PTR = .TEMP_PTR[PAL$L_FLINK];
+;	2593			END;
+;	2594		END;
+;	2595	
+;	2596	!++
+;	2597	! EXPRESSION DID NOT FALL WITHIN A PATCH AREA.  THEREFORE, OUTPUT IT AS
+;	2598	! AN ABSOLUTE VALUE.
+;	2599	!--
+;	2600	IF .EXPR2 EQL 0
+;	2601	THEN
+;	2602		PAT$FAO_PUT(EXP_STG, .EXPR1)
+;	2603	ELSE
+;	2604		PAT$FAO_PUT(RAN_STG, .EXPR1, .EXPR2);
+;	2605	
+;	2606	RETURN;
+;	2607	
+;	2608	END;								! END OF PAT$OUT_PAL_EXP
+
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 7-2
+; Digital Equipment Corporation
+;
+					 0C1C 002E6 	    .ENTRY  PAT$OUT_PAL_EXP, Save R2,R3,R4,R10,R11		      ; 2504
+		         5A 00000000G  EF  9E 002E8 	    MOVAB   PAT$FAO_PUT, R10					      ;
+		         5B 00000000'  EF  9E 002EF 	    MOVAB   NAM_OFF_STG, R11					      ;
+		         53 00000000G  EF  D0 002F6 	    MOVL    PAT$GL_PAL_LHD, TEMP_PTR				      ; 2559
+		         54	  04   AC  D0 002FD 	    MOVL    EXPR1, R4						      ; 2567
+				       6B  13 00301 	    BEQL    4$							      ;
+				       53  D5 00303 1$:     TSTL    TEMP_PTR						      ; 2570
+				       67  13 00305 	    BEQL    4$							      ;
+		    08   A3	       54  D1 00307 	    CMPL    R4, 8(TEMP_PTR)					      ; 2573
+				       5C  1A 0030B 	    BGTRU   3$							      ;
+		    04   A3	       54  D1 0030D 	    CMPL    R4, 4(TEMP_PTR)					      ; 2574
+				       56  1F 00311 	    BLSSU   3$							      ;
+	      00000000G  EF 00000000G  EF  D0 00313 	    MOVL    PAT$GL_SYMHEAD, PAT$GL_SYMTBPTR			      ; 2577
+				       7E  D4 0031E 	    CLRL    -(SP)						      ; 2578
+				       54  DD 00320 	    PUSHL   R4							      ;
+	      00000000G  EF	       02  FB 00322 	    CALLS   #2, PAT$FIND_VAL					      ;
+		         52	       50  D0 00329 	    MOVL    R0, SYM_PTR						      ;
+				  08   AC  D5 0032C 	    TSTL    EXPR2						      ; 2579
+				       15  12 0032F 	    BNEQ    2$							      ;
+	   7E	         54	  08   A2  C3 00331 	    SUBL3   8(SYM_PTR), R4, -(SP)				      ; 2583
+				  0D   A2  9F 00336 	    PUSHAB  13(SYM_PTR)						      ; 2582
+		         50	       52  D0 00339 	    MOVL    SYM_PTR, R0						      ;
+		         7E	  0C   A0  9A 0033C 	    MOVZBL  12(R0), -(SP)					      ; 2581
+				       5B  DD 00340 	    PUSHL   R11							      ; 2504
+		         6A	       04  FB 00342 	    CALLS   #4, PAT$FAO_PUT					      ; 2581
+					   04 00345 	    RET     							      ; 2579
+	   7E	    08   AC	  08   A2  C3 00346 2$:     SUBL3   8(SYM_PTR), EXPR2, -(SP)				      ; 2589
+				  0D   A2  9F 0034C 	    PUSHAB  13(SYM_PTR)						      ; 2588
+		         50	       52  D0 0034F 	    MOVL    SYM_PTR, R0						      ;
+		         7E	  0C   A0  9A 00352 	    MOVZBL  12(R0), -(SP)					      ; 2585
+	   7E	         54	  08   A2  C3 00356 	    SUBL3   8(SYM_PTR), R4, -(SP)				      ; 2587
+				  0D   A2  9F 0035B 	    PUSHAB  13(SYM_PTR)						      ; 2586
+		         7E	  0C   A0  9A 0035E 	    MOVZBL  12(R0), -(SP)					      ; 2585
+				  0C   AB  9F 00362 	    PUSHAB  NAM_OFF_RAN_STG					      ; 2504
+		         6A	       07  FB 00365 	    CALLS   #7, PAT$FAO_PUT					      ; 2585
+					   04 00368 	    RET     							      ; 2590
+		         53	       63  D0 00369 3$:     MOVL    (TEMP_PTR), TEMP_PTR				      ; 2592
+				       95  11 0036C 	    BRB     1$							      ; 2570
+				  08   AC  D5 0036E 4$:     TSTL    EXPR2						      ; 2600
+				       09  12 00371 	    BNEQ    5$							      ;
+				       54  DD 00373 	    PUSHL   R4							      ; 2602
+				  EC   AB  9F 00375 	    PUSHAB  EXP_STG						      ; 2504
+		         6A	       02  FB 00378 	    CALLS   #2, PAT$FAO_PUT					      ; 2602
+					   04 0037B 	    RET     							      ; 2600
+				  08   AC  DD 0037C 5$:     PUSHL   EXPR2						      ; 2604
+				       54  DD 0037F 	    PUSHL   R4							      ;
+				  F4   AB  9F 00381 	    PUSHAB  RAN_STG						      ; 2504
+		         6A	       03  FB 00384 	    CALLS   #3, PAT$FAO_PUT					      ; 2604
+					   04 00387 	    RET     							      ; 2504
+
+; Routine Size:  162 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 8
+; Digital Equipment Corporation
+;
+;	2609	GLOBAL ROUTINE PAT$CLOSEFILES : NOVALUE =	! CLOSE ALL OPEN FILES
+;	2610	
+;	2611	!++
+;	2612	! FUNCTIONAL DESCRIPTION:
+;	2613	!
+;	2614	!	THIS ROUTINE CLOSES ALL THE OPEN FILES BEING USED BY PATCH.
+;	2615	!
+;	2616	! FORMAL PARAMETERS:
+;	2617	!
+;	2618	!	NONE
+;	2619	!
+;	2620	! IMPLICIT INPUTS:
+;	2621	!
+;	2622	!	ALL FABS AND RABS MUST HAVE BEEN INITIALIZED.
+;	2623	!
+;	2624	! IMPLICIT OUTPUTS:
+;	2625	!
+;	2626	!	NONE
+;	2627	!
+;	2628	! ROUTINE VALUE:
+;	2629	!
+;	2630	! COMPLETION CODES:
+;	2631	!
+;	2632	!	NONE
+;	2633	!
+;	2634	! SIDE EFFECTS:
+;	2635	!
+;	2636	!	ALL FILES ARE CLOSED.
+;	2637	!	IF ERRORS OCCUR, APPROPRIATE ERROR MESSAGES ARE OUTPUT TO THE
+;	2638	!	JOURNAL FILE AND 'SYS$ERROR'.
+;	2639	!
+;	2640	!--
+;	2641	
+;	2642	BEGIN
+;	2643	
+;	2644	LITERAL
+;	2645		START_OFF = 0,						! START VIR ADDR OFFSET
+;	2646		END_OFF = 1;						! END VIR ADDR OFFSET
+;	2647	
+;	2648	!++
+;	2649	! CLOSE OUTPUT COMMAND FILE, IF IT WAS OPEN.
+;	2650	!--
+;	2651	IF (.PAT$GL_FLAGS AND PAT$M_COMMAND) NEQ 0			! IF /COMMAND WAS SPECIFIED
+;	2652	THEN
+;	2653		BEGIN
+;	2654		PAT$GL_ERRCODE = $CLOSE(FAB=PAT$GL_COMFAB);		! CLOSE COMMAND FILE
+;	2655		IF NOT .PAT$GL_ERRCODE
+;	2656		THEN
+;	2657			SIGNAL(PAT$_CLSERR,3,.PAT$GL_ERRCODE,.PAT$GL_COMNBK[NAM$B_RSL],
+;	2658				PAT$GB_COMNAME);			! REPORT CLOSE FAILURE
+;	2659		END;
+;	2660	
+;	2661	!++
+;	2662	! CLOSE JOURNAL FILE, IF OPEN.
+;	2663	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 8-1
+; Digital Equipment Corporation
+;
+;	2664	IF (.PAT$GL_FLAGS AND PAT$M_JOURNAL) NEQ 0			! IF JOURNAL IS OPEN
+;	2665	THEN
+;	2666		BEGIN
+;	2667		PAT$GL_ERRCODE = $CLOSE(FAB=PAT$GL_JNLFAB);		! CLOSE JOURNAL FILE
+;	2668		IF NOT .PAT$GL_ERRCODE
+;	2669		THEN
+;	2670			SIGNAL(PAT$_CLSERR,3,.PAT$GL_ERRCODE,.PAT$GL_JNLNBK[NAM$B_RSL],
+;	2671				PAT$GB_JNLNAME);			! REPORT CLOSE FAILURE
+;	2672		END;
+;	2673	
+;	2674	!++
+;	2675	! CLOSE INPUT IMAGE FILE, IF OPEN.  BUT FIRST CANCEL ALL IMAGE SECTIONS MAPPED TO IT.
+;	2676	!--
+;	2677	PAT$GL_ISVADDR[START_OFF] = .PAT$GL_EXPANDVA;			! SET FIRST ADDRESS MAPPED
+;	2678	PAT$GL_ERRCODE = $DELTVA( INADR = PAT$GL_ISVADDR);		! DELETE VIRTUAL ADDRESSES
+;	2679	IF NOT .PAT$GL_ERRCODE
+;	2680	THEN
+;	2681		SIGNAL(PAT$_DELTVA, 3, .PAT$GL_ERRCODE, .PAT$GL_ISVADDR[START_OFF], .PAT$GL_ISVADDR[END_OFF]);
+;	2682	IF (.PAT$GL_FLAGS AND PAT$M_INPUT) NEQ 0			! IF INPUT IMAGE FILE IS OPEN
+;	2683	THEN
+;	2684		BEGIN
+;	2685		PAT$GL_ERRCODE = $CLOSE(FAB=PAT$GL_OLDFAB);		! CLOSE INPUT IMAGE FILE
+;	2686		IF NOT .PAT$GL_ERRCODE
+;	2687		THEN
+;	2688			SIGNAL(PAT$_CLSERR,3,.PAT$GL_ERRCODE,.PAT$GL_OLDNBK[NAM$B_RSL],
+;	2689				PAT$GB_OLDNAME);			! REPORT CLOSE FAILURE
+;	2690		END;
+;	2691	
+;	2692	!++
+;	2693	! CLOSE OUTPUT IMAGE FILE, IF OPEN.
+;	2694	!--
+;	2695	IF (.PAT$GL_FLAGS AND PAT$M_OUTPUT) NEQ 0			! IF OUTPUT IMAGE FILE IS OPEN
+;	2696	THEN
+;	2697		BEGIN
+;	2698		PAT$GL_ERRCODE = $CLOSE(FAB=PAT$GL_NEWFAB);		! CLOSE OUTPUT IMAGE FILE
+;	2699		IF NOT .PAT$GL_ERRCODE
+;	2700		THEN
+;	2701			SIGNAL(PAT$_CLSERR,3,.PAT$GL_ERRCODE,.PAT$GL_NEWNBK[NAM$B_RSL],
+;	2702				PAT$GB_NEWNAME);			! REPORT CLOSE FAILURE
+;	2703		END;
+;	2704	
+;	2705	!++
+;	2706	! CLOSE OTHER MESSAGE CHANNELS.
+;	2707	--!
+;	2708	$CLOSE(FAB=PAT$GL_INPFAB);					! CLOSE INPUT COMMAND FILE
+;	2709	$CLOSE(FAB=PAT$GL_OUTFAB);					! CLOSE OUTPUT INFORMATION FILE
+;	2710	$CLOSE(FAB=PAT$GL_ERRFAB);					! CLOSE ERROR FILE
+;	2711	
+;	2712	END;								! END OF PAT$CLOSEFILES
+
+
+
+							    .GLOBL  SYS$CLOSE, SYS$DELTVA
+
+					 0F80 00388 	    .ENTRY  PAT$CLOSEFILES, Save R7,R8,R9,R10,R11		      ; 2609
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 8-2
+; Digital Equipment Corporation
+;
+		         57 00000000G  EF  9E 0038A 	    MOVAB   PAT$GL_ISVADDR, R7					      ;
+		         58 00000000G  EF  9E 00391 	    MOVAB   PAT$GL_FLAGS, R8					      ;
+		         59 00000000G  00  9E 00398 	    MOVAB   LIB$SIGNAL, R9					      ;
+		         5A 00000000G  9F  9E 0039F 	    MOVAB   @#SYS$CLOSE, R10					      ;
+		         5B 00000000G  EF  9E 003A6 	    MOVAB   PAT$GL_ERRCODE, R11					      ;
+		         29	       68  E9 003AD 	    BLBC    PAT$GL_FLAGS, 1$					      ; 2651
+			    00000000G  EF  9F 003B0 	    PUSHAB  PAT$GL_COMFAB					      ; 2654
+		         6A	       01  FB 003B6 	    CALLS   #1, SYS$CLOSE					      ;
+		         6B	       50  D0 003B9 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         1A	       6B  E8 003BC 	    BLBS    PAT$GL_ERRCODE, 1$					      ; 2655
+			    00000000G  EF  9F 003BF 	    PUSHAB  PAT$GB_COMNAME					      ; 2657
+		         7E 00000000G  EF  9A 003C5 	    MOVZBL  PAT$GL_COMNBK+3, -(SP)				      ;
+				       6B  DD 003CC 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 003CE 	    PUSHL   #3							      ;
+			    006D815C   8F  DD 003D0 	    PUSHL   #7176540						      ;
+		         69	       05  FB 003D6 	    CALLS   #5, LIB$SIGNAL					      ;
+	   29	         68	       01  E1 003D9 1$:     BBC     #1, PAT$GL_FLAGS, 2$				      ; 2664
+			    00000000G  EF  9F 003DD 	    PUSHAB  PAT$GL_JNLFAB					      ; 2667
+		         6A	       01  FB 003E3 	    CALLS   #1, SYS$CLOSE					      ;
+		         6B	       50  D0 003E6 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         1A	       6B  E8 003E9 	    BLBS    PAT$GL_ERRCODE, 2$					      ; 2668
+			    00000000G  EF  9F 003EC 	    PUSHAB  PAT$GB_JNLNAME					      ; 2670
+		         7E 00000000G  EF  9A 003F2 	    MOVZBL  PAT$GL_JNLNBK+3, -(SP)				      ;
+				       6B  DD 003F9 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 003FB 	    PUSHL   #3							      ;
+			    006D815C   8F  DD 003FD 	    PUSHL   #7176540						      ;
+		         69	       05  FB 00403 	    CALLS   #5, LIB$SIGNAL					      ;
+		         67 00000000G  EF  D0 00406 2$:     MOVL    PAT$GL_EXPANDVA, PAT$GL_ISVADDR			      ; 2677
+				       7E  7C 0040D 	    CLRQ    -(SP)						      ; 2678
+				       57  DD 0040F 	    PUSHL   R7							      ;
+	      00000000G  9F	       03  FB 00411 	    CALLS   #3, @#SYS$DELTVA					      ;
+		         6B	       50  D0 00418 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         10	       6B  E8 0041B 	    BLBS    PAT$GL_ERRCODE, 3$					      ; 2679
+		         7E	       67  7D 0041E 	    MOVQ    PAT$GL_ISVADDR, -(SP)				      ; 2681
+				       6B  DD 00421 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 00423 	    PUSHL   #3							      ;
+			    006D8174   8F  DD 00425 	    PUSHL   #7176564						      ;
+		         69	       05  FB 0042B 	    CALLS   #5, LIB$SIGNAL					      ;
+	   29	         68	       02  E1 0042E 3$:     BBC     #2, PAT$GL_FLAGS, 4$				      ; 2682
+			    00000000G  EF  9F 00432 	    PUSHAB  PAT$GL_OLDFAB					      ; 2685
+		         6A	       01  FB 00438 	    CALLS   #1, SYS$CLOSE					      ;
+		         6B	       50  D0 0043B 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         1A	       6B  E8 0043E 	    BLBS    PAT$GL_ERRCODE, 4$					      ; 2686
+			    00000000G  EF  9F 00441 	    PUSHAB  PAT$GB_OLDNAME					      ; 2688
+		         7E 00000000G  EF  9A 00447 	    MOVZBL  PAT$GL_OLDNBK+3, -(SP)				      ;
+				       6B  DD 0044E 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 00450 	    PUSHL   #3							      ;
+			    006D815C   8F  DD 00452 	    PUSHL   #7176540						      ;
+		         69	       05  FB 00458 	    CALLS   #5, LIB$SIGNAL					      ;
+	   29	         68	       03  E1 0045B 4$:     BBC     #3, PAT$GL_FLAGS, 5$				      ; 2695
+			    00000000G  EF  9F 0045F 	    PUSHAB  PAT$GL_NEWFAB					      ; 2698
+		         6A	       01  FB 00465 	    CALLS   #1, SYS$CLOSE					      ;
+		         6B	       50  D0 00468 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         1A	       6B  E8 0046B 	    BLBS    PAT$GL_ERRCODE, 5$					      ; 2699
+			    00000000G  EF  9F 0046E 	    PUSHAB  PAT$GB_NEWNAME					      ; 2701
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 8-3
+; Digital Equipment Corporation
+;
+		         7E 00000000G  EF  9A 00474 	    MOVZBL  PAT$GL_NEWNBK+3, -(SP)				      ;
+				       6B  DD 0047B 	    PUSHL   PAT$GL_ERRCODE					      ;
+				       03  DD 0047D 	    PUSHL   #3							      ;
+			    006D815C   8F  DD 0047F 	    PUSHL   #7176540						      ;
+		         69	       05  FB 00485 	    CALLS   #5, LIB$SIGNAL					      ;
+			    00000000G  EF  9F 00488 5$:     PUSHAB  PAT$GL_INPFAB					      ; 2708
+		         6A	       01  FB 0048E 	    CALLS   #1, SYS$CLOSE					      ;
+			    00000000G  EF  9F 00491 	    PUSHAB  PAT$GL_OUTFAB					      ; 2709
+		         6A	       01  FB 00497 	    CALLS   #1, SYS$CLOSE					      ;
+			    00000000G  EF  9F 0049A 	    PUSHAB  PAT$GL_ERRFAB					      ; 2710
+		         6A	       01  FB 004A0 	    CALLS   #1, SYS$CLOSE					      ;
+					   04 004A3 	    RET     							      ; 2609
+
+; Routine Size:  284 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:56:12	DBB3:[PATCH.SRC]PATIO.B32;15					Page 9
+; Digital Equipment Corporation
+;
+;	2713	END								! END OF PATIO
+;	2714	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  _PAT$PLIT      	    88  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(0)
+;  _PAT$CODE      	  1188  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        16         0       231
+
+
+
+
+
+; Size:		1188 code + 88 data bytes
+; Run Time:	00:52.9
+; Elapsed Time:	01:19.0
+; Memory Used:	387 pages
+; Compilation Complete

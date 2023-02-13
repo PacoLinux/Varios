@@ -1,0 +1,2315 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGACT ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000088') =
+;	0003	BEGIN
+;	0004	
+;	0005	!
+;	0006	!			  COPYRIGHT (c) 1977 BY
+;	0007	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0008	!
+;	0009	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0010	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0011	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0012	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0013	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0014	! TRANSFERRED.
+;	0015	!
+;	0016	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0017	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0018	! CORPORATION.
+;	0019	!
+;	0020	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0021	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0022	!
+;	0023	
+;	0024	!++
+;	0025	! FACILITY:	DEBUG (DBG)
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	End of command line action routine plus a few other parsing
+;	0029	!	action routines.
+;	0030	!
+;	0031	! ENVIRONMENT:	STARLET, user mode, interrupts disabled.
+;	0032	!
+;	0033	! Version:	88
+;	0034	!
+;	0035	! History:
+;	0036	!	Author:
+;	0037	!		Carol Peters, 03 Jul 1976: Version 01
+;	0038	!
+;	0039	!	Modified by:
+;	0040	!		Dale Roedger, 18 July 1978:	88
+;	0041	!
+;	0042	! Revision history:
+;	0043	!	26	15-03-77	CP	in perform_cmd, get START command to take the
+;	0044	!					start address from the command argument list.
+;	0045	!	27	30-03-77	CP	delete processing of CONTINUE command.
+;	0046	!					change START command to continue or start,
+;	0047	!					depending on state of things and on
+;	0048	!					presence or absence of argument to the
+;	0049	!					command. no longer need to set context bit
+;	0050	!					for START_PROGRAM.
+;	0051	!					change action for STEP command to a
+;	0052	!					block of code in perform_cmd.
+;	0053	!					renamed SET_CMD to SET_COMMAND, SHOW_CMD
+;	0054	!					to SHOW_COMMAND, SWITCH_CMD to SWITCH_COMMAND.
+;	0055	!					change DBG$ACHAARG to always set the CANCEL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					context bit, and to expect the EXCEPTION keyword
+;	0057	!					token at SEMSP + 2 if exception breakpoints
+;	0058	!					are being cancelled.
+;	0059	!	28	30-MAR-77	KGP	-TOOK OUT ALL REFERENCES
+;	0060	!					TO THE OLD ADR/DAT REFERENCES.
+;	0061	!	29	31-03-77	CP	change START_TOKEN to GO_TOKEN.
+;	0062	!	30	31-03-77	CP	delete DBG$NONE. simplify END_OF_CMD.
+;	0063	!					move SET_OVERS into this module.
+;	0064	!					move ABREACB, ABREACE, and ASETBRE into this
+;	0065	!					module.
+;	0066	!	31	08-04-77	CP	added handling for READ command
+;	0067	!					in perform_cmd. this is an interim hack
+;	0068	!					to allow the user to specify the name
+;	0069	!					of a file containing global symbol
+;	0070	!					definitions as prepared by the Linker.
+;	0071	!	32	08-04-77	CP	fixed a bug that caused a DEPOSIT
+;	0072	!					PC = ??? command to be ignored if
+;	0073	!					the program was subsequently restarted
+;	0074	!					with a STEP command.
+;	0075	!					Also, change EVALUATE_TOKEN case
+;	0076	!					of perform_cmd to call DBG$OUT_MEM_LOC.
+;	0077	!					Change EXAMINE_TOKEN case to set
+;	0078	!					the context bit EXAMINE in DBG$GL_CONTEXT.
+;	0079	!					Change AEXALOC to EXAMINE_CMD.
+;	0080	!					Change ADEPADP to DEPOSIT_CMD.
+;	0081	!	33	11-04-77	CP	Add select choice to perform_cmdE
+;	0082	!					to handle a single carriage return
+;	0083	!					as a full command line.
+;	0084	!	34	14-04-77	CP	Add handling for the command
+;	0085	!					SET TRACE ALL and CANCEL TRACE
+;	0086	!					ALL. Delete routine SET_COMMAND
+;	0087	!					and put it directly in perform_cmd.
+;	0088	!					Fix GO_TOKEN and STEP_TOKEN
+;	0089	!					processing in perform_cmd so that
+;	0090	!					they only get program running
+;	0091	!					again if the start address is
+;	0092	!					non-zero.
+;	0093	!	35	19-04-77	CP	Add context bit STEPPING to be
+;	0094	!					turned on when stepping program.
+;	0095	!					It causes stepping to work even
+;	0096	!					when SET TRACE ALL is on.
+;	0097	!	36	20-04-77	CP	Change name of VAXDEB.BEG to
+;	0098	!					DBGGEN.BEG. Add DBGPCT.BEG for
+;	0099	!					PSECT declarations.
+;	0100	!	37	22-04-77	CP	Move token name declarations
+;	0101	!					into MARTOK.BEG.
+;	0102	!	38	26-04-77	CP	Add argument to INIT_MODES
+;	0103	!					call. Second argument is level
+;	0104	!					at which to find mode settings
+;	0105	!					that are to be restored to the
+;	0106	!					destination mode level.
+;	0107	!	39	29-04-77	CP	Remove references to PARS_MOR.
+;	0108	!					Have perform_cmd and ABREACE return
+;	0109	!					values if the parser should quit.
+;	0110	!					Add error reporting to STEP
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!					processing. Return false from
+;	0112	!					START, STEP, and EXIT commands
+;	0113	!					if they are semantically valid.
+;	0114	!					Change call at end of perform_cmd
+;	0115	!					to END_OF_CMD unless the final
+;	0116	!					token is carriage return.
+;	0117	!	40	14-07-77	CP	Remove routines dbg$abreacb
+;	0118	!					and dbg$abreace since they have
+;	0119	!					been subsumed by the macro
+;	0120	!					get_bpt_acts in the parser driver.
+;	0121	!					Also, remove references to
+;	0122	!					dbg$gb_no_action since this global
+;	0123	!					is no longer needed. Also delete
+;	0124	!					external declaration of
+;	0125	!					dbg$gl_lex_ptr. No longer any need
+;	0126	!					for dbg$end_of_line.
+;	0127	!					Change cancel_parm and SHOW_COMMAND
+;	0128	!					and SWITCH_COMMAND to distinguish
+;	0129	!					between showing and cancelling of
+;	0130	!					tracepoints versus breakpoints.
+;	0131	!					Modify DEFINE_TOKEN processing
+;	0132	!					to release free storage allocated
+;	0133	!					for input string after the
+;	0134	!					symbol is placed in storage.
+;	0135	!					This calls initsymbols to
+;	0136	!					map the image file. Change
+;	0137	!					initsymbols to find_dst call.
+;	0138	!					Add a call to SAVE_SCOPE in
+;	0139	!					the set command processing.
+;	0140	!					Expand show command processing
+;	0141	!					to handle show module and show
+;	0142	!					scope. Expand cancel_parm and switch_
+;	0143	!					command to cancel scope.
+;	0144	!					Remove processing of READ
+;	0145	!					command from perform_cmd. It is
+;	0146	!					now in dbg$init.
+;	0147	!	41	01-09-77	CP	In end_of_cmd, call dbg$build_path
+;	0148	!					to free storage used in accumulating
+;	0149	!					a path name. This is done already
+;	0150	!					except in the case of an error,
+;	0151	!					where this zeroing is critical for
+;	0152	!					any subsequent use of pathnames.
+;	0153	!	42	11-09-77	CP	Change SET_TOKEN processing in
+;	0154	!					perform_cmd to accommodate the SET
+;	0155	!					LANGUAGE command. This involves
+;	0156	!					testing for the DEFAULT or
+;	0157	!					LANGUAGE bit in the context word
+;	0158	!					before calling either DBG$SET_LANG
+;	0159	!					or DBG$SET_MOD_LST.
+;	0160	!	43	20-09-77	CP	Add a possibility to show_param,
+;	0161	!					to support SHOW CALLS command.
+;	0162	!					In perform_cmd, call traceback
+;	0163	!					routine if showing CALLS.
+;	0164	!	44	26-09-77	CP	In end_of_cmd, provide a phony
+;	0165	!					location in which to plug values
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	!					in the call to build_path, since
+;	0167	!					that routine often tries to stuff
+;	0168	!					information somewhere.
+;	0169	!	45	12-10-77	CP	Add CALL command. Replace calls
+;	0170	!					to error_reprt with SIGNALs.
+;	0171	!					In end_of_cmd, release the
+;	0172	!					storage for the current input
+;	0173	!					line as well. Rename asetbre to
+;	0174	!					break_setup. In perform_cmd, have
+;	0175	!					exit_token do the exit immediately.
+;	0176	!					In set_lang call, pass the argument
+;	0177	!					of the language to set.
+;	0178	!					Add to end_of_cmd the initialization
+;	0179	!					of the FORTRAN dimension vector.
+;	0180	!	46	26-10-77	CP	Free storage pointed to by
+;	0181	!					dbg$gl_frame_ptr in end_of_cmd.
+;	0182	!	47	27-10-77	CP	Add routine end_of_line. Have it
+;	0183	!					free storage for command line, and
+;	0184	!					take that code out of end_of_cmd.
+;	0185	!	48	01-11-77	CP	Get dbg$k_trace_all from DBGMSG.BEG.
+;	0186	!	49	02-11-77	CP	Change all dbg$gl_start_ads to
+;	0187	!					dbg$gl_uregs [offset_to_pc].
+;	0188	!	50	07-11-77	CP	Use new names for command
+;	0189	!					context bits; use based storage
+;	0190	!					off dbg$gl_runframe for registers
+;	0191	!					and run time context bits.
+;	0192	!					Change no_of_steps to step_num.
+;	0193	!	51	09-11-77	CP	Remove releasing of call frame
+;	0194	!					storage from end of command
+;	0195	!					processing.
+;	0196	!	52	09-11-77	CP	Add set and cancel module processing.
+;	0197	!	53	18-11-77	CP	Call the real traceback routine
+;	0198	!					to do symbolic traceback when a
+;	0199	!					SHOW CALLS command is given.
+;	0200	!	54	22-11-77	CP	Correct init_modes call in end_
+;	0201	!					of line to initialize modes
+;	0202	!					up to override level.
+;	0203	!	55	06-12-77	CP	Modify references to positions
+;	0204	!					on the parse stack to use literal
+;	0205	!					names defined in dbgmsg.beg.
+;	0206	!	56	15-12-77	CP	Add SET, SHOW, CANCEL WATCH
+;	0207	!					functions.
+;	0208	!	57	28-12-77	CP	Change token definitions due
+;	0209	!					to grammar changes. Change mars_token
+;	0210	!					to macro_token.
+;	0211	!	58	04-JAN-78	DAR	Changed require file MARTOK.BEG to
+;	0212	!					COMTER.BEG also changed "eocommand" to
+;	0213	!					"eol_token".
+;	0214	!	59	13-feb-78	KGP	-Call to SET_MODULE now has 1 parameter
+;	0215	!					 for the benefit of >SET SCOPE 
+;	0216	!					 automatically implying a >SET MODULE
+;	0217	!	60	03-mar-78	KGP	-Standardized REQUIRE names wrt [], etc.
+;	0218	!					 New diagnostic in cancel wa/br/tr routine.
+;	0219	!	61	10-mar-78	KGP	-GO <expr> now forces a clear of the
+;	0220	!					 FPD bit in the PSL.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1-4
+; Digital Equipment Corporation
+;
+;	0221	!	62	24-mar-78	KGP	-CANCEL_PARAM now checks for
+;	0222	!					 the given address being on a routine
+;	0223	!					 boundary for CAN T and CAN B so that you
+;	0224	!					 now SET and CANC a T/B the same way.
+;	0225	!	63	05-APR-78	DAR	In DBG$CANCEL_PARM the "trace_token"
+;	0226	!					case now looks for "calls_token" instead
+;	0227	!					of "all_token".
+;	0228	!					In DBG$PERFORM_CMD the set and show
+;	0229	!					cases are now SELECTONE statememts.
+;	0230	!	64	05-apr-78	KGP	-PERFORM_CMD doesn't perform the
+;	0231	!					 command if DBG$GB_TAKE_CMD is false.
+;	0232	!					 This is the case when GO or STEP is given
+;	0233	!					 in the middle of a command sequence.
+;	0234	!	65	05-APR-78	DAR	Changed context bit names as follows:
+;	0235	!					"set_trall" => "trce_call",
+;	0236	!					"set_resig" => "resignal",
+;	0237	!					"set_scope" => "scope".
+;	0238	!					defined new context bits:
+;	0239	!					"dbg$k_all_break", "dbg$k_all_watch",
+;	0240	!					"dbg$k_all_trace", "dbg$k_step".
+;	0241	!	66	05-APR-78	DAR	Modified DBG$CANCEL_PARM to set context
+;	0242	!					bits dbg$k_all_break, dbg$k_all_watch, &
+;	0243	!					dbg$k_all_trace where appropriate, and
+;	0244	!					SWITCH_COMMAND to look for them.
+;	0245	!	67	06-APR-78	DAR	Modified DBG$BREAK_SETUP to know about
+;	0246	!					the /AFTER switch on breakpoints.
+;	0247	!	68	06-apr-78	KGP	-Fixed bug which was that STEP 0
+;	0248	!					 caused debug to let the program run away.
+;	0249	!	69	11-APR-78	DAR	Changed formal parameter to DBG$SET_OVERS
+;	0250	!					to be the token to be set instead of the
+;	0251	!					stack pointer to the token.
+;	0252	!					Fixed DBG$BREAK_SETUP to load the after
+;	0253	!					count into DBG$GL_LIST[1] and the
+;	0254	!					break address into DBG$GL_LIST[0].
+;	0255	!	70	11-APR-78	DAR	Added temporary actions for: SET STEP,
+;	0256	!					SHOW STEP, and SHOW LANGUAGE.
+;	0257	!					Fixed SHOW CALL [n].
+;	0258	!	71	13-apr-78	KGP	-END_of_CMD now calls DELETE_PATH
+;	0259	!					 directly to throw away partially-
+;	0260	!					 collected pathanmes - instead of the
+;	0261	!					 old indirect way of using BUILD_PATH.
+;	0262	!					-SHOW LANG is now OK.
+;	0263	!					-SHOW CALLs now works ok - bug fix in
+;	0264	!					 passing on the N.
+;	0265	!	72	18-apr-78	KGP	-GO <address> is now rejected if <address>
+;	0266	!					 is not readable.  The old message,
+;	0267	!					 NOSTARTAD is now parameterized and
+;	0268	!					 called BADSTARTPC.
+;	0269	!	73	19-apr-78	KGP	-Implemented SHOW_STEP_TYPE
+;	0270	!	74	20-apr-78	KGP	-Implemented SET STEP in perform_cmd
+;	0271	!	75	27-APR-78	DAR	Modified require and library directives
+;	0272	!					for native build.
+;	0273	!	76	2-May-78	MCC	Redid 73 & 74 because of parallel changes
+;	0274	!					in DBGMOD.B32.
+;	0275	!	77	09-may-78	KGP	-Added case in switch_command to
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 1-5
+; Digital Equipment Corporation
+;
+;	0276	!					 implement CAN T/CALL
+;	0277	!	78	15-may-78	KGP	-Added SET/CAN TRACE /BRANCH functionality.
+;	0278	!					 (to make this work, commend IN all
+;	0279	!					  lines with !brch at beginning).
+;	0280	!	79	16-may-78	KGP	-Slight change in PERFORM_CMD so that
+;	0281	!					 ENDWITHGO doesn't come out when you
+;	0282	!					 give the null command after GO or STEP
+;	0283	!					 (i.e. we now excuse DBG>E R0; g; )
+;	0284	!	80	17-may-78	KGP	-Commented in the T/BRANCH code
+;	0285	!					 CAN T /ALL code in switch_command
+;	0286	!					 now cancels /CALL and /BRANCH tracing
+;	0287	!					-Fixed bug in PERFORM_CMD - we special-case
+;	0288	!					 ENDWITHGO when there was about to be
+;	0289	!					 a DBG>CALL command executed because we
+;	0290	!					 have cleanup to do that doesn't get
+;	0291	!					 done otherwise.
+;	0292	!	81	26-may-78	KGP	-Added new parameter to all calls to
+;	0293	!					 out_mem_loc (we pass on NT_PTR)
+;	0294	!	82	31-may-78	KGP	-removed entries in SHOW_TABLE (used
+;	0295	!					 by SHOW_PARAM) for SHO CALLs since this
+;	0296	!					 is now done in the parser because it used
+;	0297	!					 to work here only becasue of a bug.
+;	0298	!	83	01-jun-78	KGP	-Special code in break_setup for the
+;	0299	!					 setting of watchpoints based on
+;	0300	!					 EQUIVALENCED symbols. (we now get the
+;	0301	!					 size right).
+;	0302	!	84	13-jun-78	KGP	-perform_cmd now calls evaluat_cmd
+;	0303	!					 for EValuate instead of trying to
+;	0304	!					 do it itself.
+;	0305	!	85	19-jun-78	KGP	-end_of_cmd now knows about the new
+;	0306	!					 length of dbg$gl_dimenlst
+;	0307	!	86	10-JUL-78	DAR	DBG$BREAK_SETUP passes watchpoint length
+;	0308	!					in dbg$gl_list[1].
+;	0309	!	87	14-JUL-78	DAR	DBG$END_OF_CMD loads the new variable
+;	0310	!					DBG$GL_ASCI_LEN with the current mode_lnegth
+;	0311	!	88	18-JUL-78	DAR	Deleted external declaration of DBG$OUT_MEM_LOC
+;	0312	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 2
+; Digital Equipment Corporation
+;
+;	0313	! TABLE OF CONTENTS
+;	0314	!--
+;	0315	FORWARD ROUTINE
+;	0316		dbg$break_setup : NOVALUE,	! ROUTINE TO PREPARE TO SET BREAKPOINTS
+;	0317		dbg$cancel_parm : NOVALUE,	! SETS CONTEXT BITS ABOUT WHAT IS BEING SWITCHED
+;	0318		dbg$end_of_cmd : NOVALUE,	! END OF COMMAND PROCESSING ROUTINE
+;	0319		dbg$end_of_line : NOVALUE,	! end of line processing routine
+;	0320		dbg$perform_cmd,		! EXECUTES A DEBUG COMMAND
+;	0321		dbg$set_overs : NOVALUE,	! SETS MODE LEVEL TO LOCAL OR OVERRIDE LEVEL
+;	0322		dbg$show_param : NOVALUE,	! SETS CONTEXT BITS ABOUT WHAT IS TO BE SHOWN
+;	0323		switch_command : NOVALUE;	! SWITCHES BREAKPOINTS, DEFAULTS, ETC.
+;	0324	
+;	0325	LITERAL
+;	0326		dbg_multi_lang	= 1,			! multiple syntaxes
+;	0327		mars_syntax	= 0,			! MARS syntax only
+;	0328		fortran_syntax	= 0,			! FORTRAN syntax only
+;	0329		bliss_syntax	= 0;			! BLISS syntax only
+;	0330	
+;	0331	!
+;	0332	! Require files:
+;	0333	!
+;	0334	%IF %VARIANT		! True for TEN.
+;     L 0335	%THEN
+;     U 0336	LIBRARY 'NEW:STARLE';
+;     U 0337	
+;     U 0338	REQUIRE 'DBGPCT.REQ';
+;     U 0339	REQUIRE 'VXSMAC.REQ';
+;     U 0340	REQUIRE 'DBGGEN.REQ';
+;     U 0341	REQUIRE 'DBGRST.REQ';
+;     U 0342	REQUIRE 'BSTRUC.REQ';
+;     U 0343	REQUIRE 'LISTEL.REQ';
+;     U 0344	REQUIRE 'DBGMSG.REQ';
+;     U 0345	REQUIRE 'VXPALT.REQ';
+;     U 0346	REQUIRE 'COMTER.REQ';
+;     U 0347	REQUIRE 'SYSSER.REQ';
+;     U 0348	%ELSE
+;	0349	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0350	
+;	0351	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0363	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0403	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0653	REQUIRE 'SRC$:DBGRST.REQ';
+;	1800	REQUIRE 'SRC$:BSTRUC.REQ';
+;	1851	REQUIRE 'SRC$:LISTEL.REQ';
+;	1885	REQUIRE 'LIB$:DBGMSG.REQ';
+;	2164	REQUIRE 'SRC$:VXPALT.REQ';
+;	2188	REQUIRE 'SRC$:COMTER.REQ';
+;	2280	REQUIRE 'SRC$:SYSSER.REQ';
+;      R2283	SWITCHES LIST (SOURCE);
+;      R2284	
+;      R2285	EXTERNAL ROUTINE
+;      R2286		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2287	
+;      R2288	SWITCHES LIST (NOSOURCE);
+;	2333	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 2-1
+; Digital Equipment Corporation
+;
+;	2334	
+;	2335	EXTERNAL ROUTINE
+;	2336		dbg$evaluat_cmd : novalue,		! handle the DEBUG EValuate command
+;	2337		dbg$srm_typ_len,			! map NT_TYPEs to sizes, in bytes.
+;	2338		dbg$set_optrace,			! SET/CANCEL opcode tracing.
+;	2339		dbg$language,				! report on the current language
+;	2340		dbg$is_it_entry,			! Determine if ADDR => routine.
+;	2341		dbg$delete_path,			! free up pathname storage
+;	2342		dbg$call_cmd,				! calls a user subroutine
+;	2343		dbg$canc_module,			! cancels symbols for modules
+;	2344		dbg$define_sym,				! DEFINE COMMAND
+;	2345		dbg$deposit_cmd,			! deposit COMMAND
+;	2346		dbg$examine_cmd,			! EXAMINE COMMAND
+;	2347		dbg$free_arg,				! FREES ELEMENTS OF A COMMAND ARGUMENT LIST
+;	2348		dbg$freerelease,			! releases storage in dynamic allocation area
+;	2349		dbg$init_modes,				! INITIALIZES MODES
+;	2350		dbg$set_mod_def,			! RESETS MODES TO INITIALIZATION MODE
+;	2351		dbg$save_bpt,				! SETS A BREAKPOINT
+;	2352		dbg$save_scope,				! saves a current path name
+;	2353		dbg$set_context,			! INITIALIZES CONTEXT BITS
+;	2354		dbg$set_lang : WEAK,			! sets the DEBUG input language
+;	2355		dbg$set_mod_lst,			! SETS MODE LIST
+;	2356		dbg$set_mod_lvl,			! SETS MODE pointer
+;	2357		dbg$set_module,				! sets up symbols for modules
+;	2358		dbg$set_new_mod,			! SETS NEW MODES
+;	2359		dbg$show_bpts,				! SHOW BREAK COMMAND
+;	2360		dbg$show_mode,				! SHOW MODE COMMAND
+;	2361		dbg$show_module,			! show module command
+;	2362		dbg$show_scope,				! show scope command
+;	2363		dbg$cancel_bpt,				! Routine to cancel one or more
+;	2364							! break, trace, or watchpoints.
+;	2365		dbg$traceback,				! shows current stack frame nesting
+;	2366		dbg$set_stp_def,			! RESETS STEP LEVELS TO DEFAULTS
+;	2367		dbg$show_step,				! display step settings
+;	2368		dbg$set_stp_lst;			! sets step list
+;	2369	
+;	2370	EXTERNAL
+;	2371		dbg$cp_inp_str : BLOCK [, BYTE],	! input string descriptor
+;	2372		dbg$gb_mod_ptr: REF VECTOR [,BYTE],	! Pointer to the mode structure
+;	2373		dbg$gb_exit_dbg: BYTE,			! EXIT FROM DEBUG
+;	2374		dbg$gb_resignal: BYTE,			! FLAG FOR RESIGNALING EXCEPTIONS
+;	2375		dbg$gb_take_cmd: BYTE,			! FLAG WHICH SAYS CONTINUE TO ACCEPT COMMANDS
+;	2376		dbg$gb_language: BYTE,			! contains index to current language
+;	2377		dbg$gl_asci_len,			! holds length of ascii string.
+;	2378		dbg$gl_context: BITVECTOR,		! CONTEXT WORD
+;	2379	
+;	2380	%IF dbg_multi_lang OR fortran_syntax
+;     L 2381	%THEN
+;	2382		dbg$gl_dimenlst : VECTOR,		! FORTRAN dimension list
+;	2383	%FI
+;	2384	
+;	2385		dbg$gl_head_lst,			! HEAD OF COMMAND ARGUMENT LIST
+;	2386		dbg$gl_list: VECTOR,			! LIST FOR EXPRESSIONS
+;	2387		dbg$gl_runframe : REF BLOCK [, BYTE],	! pointer to current run frame
+;	2388		dbg$gl_seman1: VECTOR,			! TOKEN STACK FOR PARSER
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 2-2
+; Digital Equipment Corporation
+;
+;	2389		dbg$gl_seman2: VECTOR,
+;	2390		dbg$GB_stp_ptr : ref vector[,byte],	! current step type
+;	2391		dbg$gl_step_num,			! number of steps to take in single step mode
+;	2392		dbg$pseudo_prog;			! Used for DEBUG's CALL command.
+;	2393	
+;	2394	LITERAL
+;	2395		dbg_act		= 0,			! for debugging purposes
+;	2396		dbg_act1	= 0,			! ditto
+;	2397		dbg_act2	= 0,			! set Step type
+;	2398		dbg_act3	= 0;			! get watchpoint size correct
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 3
+; Digital Equipment Corporation
+;
+;	2399	!++
+;	2400	!	Definition of the keyword "show" table.
+;	2401	!
+;	2402	!	This table defines only some of the valid things you can SHOW
+;	2403	!	because its method (in SHOW_PARAM) of looking ahead on the
+;	2404	!	SEMAN1 stack is valid only when the production which
+;	2405	!	corresponds to this command consists ONLY of terminals up to
+;	2406	!	and including the keyword after SHOW.  (i.e. those productions
+;	2407	!	which begin with the non-terminal SHOW_COMMAND can not use
+;	2408	!	the mechanism which this table is set up for because the
+;	2409	!	stack has been overwritten by the time SHOW_PARAM is called).
+;	2410	!
+;	2411	! The following table holds the valid show keywords and the offset to the
+;	2412	! bit in the context word that corresponds to that keyword. Each entry
+;	2413	! has two fields -- the keyword token and its corresponding bit.
+;	2414	!
+;	2415	!	byte 1		byte 0
+;	2416	!	----------------------------------
+;	2417	!	|  bit offset  |  keyword_token  |
+;	2418	!	----------------------------------
+;	2419	!
+;	2420	!--
+;	2421	MACRO
+;	2422		keyword_field	= 0, 8, 0%,
+;	2423		bit_field	= 8, 8, 0%;
+;	2424	
+;	2425	LITERAL
+;	2426		show_entry_len	= 2;
+;	2427	
+;	2428	BIND
+;	2429		show_table = UPLIT BYTE (
+;	2430	
+;	2431		break_token, dbg$k_break,
+;	2432		mode_token, dbg$k_mode,
+;	2433		module_token, dbg$k_module,
+;	2434		scope_token, dbg$k_scope,
+;	2435		trace_token, dbg$k_trace,
+;	2436		watch_token, dbg$k_watch,
+;	2437		step_token, dbg$k_step,
+;	2438		language_token, dbg$k_language,
+;	2439		0
+;	2440	
+;	2441		) : BLOCK [, BYTE];
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 4
+; Digital Equipment Corporation
+;
+;	2442	GLOBAL ROUTINE dbg$break_setup (semsp) : NOVALUE =
+;	2443	!++
+;	2444	! FUNCTIONAL DESCRIPTION:
+;	2445	!	Sets the context bit that says the command is setting a breakpoint,
+;	2446	!	watchpoint, or tracepoint.  Saves the location at which to set the
+;	2447	!	BPT or watchpoint.
+;	2448	!
+;	2449	! FORMAL PARAMETERS:
+;	2450	!	semsp	- OFFSET TO TOP OF PARSE STACK
+;	2451	!		  HOLDS THE TOKEN FOR THE KEYWORD SET
+;	2452	!
+;	2453	! IMPLICIT INPUTS:
+;	2454	!	none
+;	2455	!
+;	2456	! IMPLICIT OUTPUTS:
+;	2457	!	none
+;	2458	!
+;	2459	! ROUTINE VALUE:
+;	2460	!	NOVALUE
+;	2461	!
+;	2462	! SIDE EFFECTS:
+;	2463	!	Sets a context bit based on the tokens on the semantic stack and
+;	2464	!	saves the location of the break, trace, or watchpoint.
+;	2465	!
+;	2466	!	Fills in entries of DBG$GL_LIST[0,1,2] since they are used to
+;	2467	!	communicate break/trace/watch-point info.
+;	2468	!--
+;	2469	
+;	2470		BEGIN
+;	2471	
+;	2472	%IF dbg_act1
+;     L 2473	%THEN
+;     U 2474		$fao_tt_out ('in break_setup, third token is !SL', .dbg$gl_seman1 [.semsp + dbg$k_spos_two]);
+;     U 2475	%FI
+;	2476	
+;	2477		SELECTONE .dbg$gl_seman1 [.semsp + dbg$k_spos_one] OF
+;	2478	
+;	2479		SET
+;	2480	
+;	2481		[exception_token]:	dbg$gl_context [dbg$k_resignal] = TRUE;
+;	2482	
+;	2483		[watch_token]:
+;	2484			BEGIN
+;	2485			LOCAL
+;	2486				nt_ptr : REF NT_RECORD;
+;	2487			BIND
+;	2488					! If the watchpoint is being set on an
+;	2489					! address which came from a symbol name,
+;	2490					! then the NT_PTR for this symbol has been
+;	2491					! placed on the SEMAN2 stack.  We use this
+;	2492					! info to deduce the length of the watchpoint
+;	2493					! if this is one of the standard SRM types.
+;	2494				nt_and_flag_ptr = dbg$gl_seman2[.semsp + DBG$K_SPOS_TWO + 1]
+;	2495						: vector[2,word];
+;	2496	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 4-1
+; Digital Equipment Corporation
+;
+;	2497			! Note that we are going to set a watchpoint.
+;	2498	
+;	2499			dbg$gl_context [dbg$k_watch] = TRUE;
+;	2500	
+;	2501			!+
+;	2502			! Use the 0th element of the list to pass on the watchpoint
+;	2503			! address, and the second element to pass on the element
+;	2504			! size, in bytes.
+;	2505			! We will use the mode length if we can't find the size.
+;	2506			!-
+;	2507	
+;	2508			dbg$gl_list[0] = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2509	%if dbg_act3
+;     L 2510	%then
+;     U 2511			$fao_tt_out('watch nt_ptr = !XW',.nt_and_flag_ptr[0]);
+;     U 2512	%fi
+;	2513			IF( (nt_ptr = .nt_and_flag_ptr[0]) NEQ 0 )
+;	2514			then
+;	2515				BEGIN
+;	2516	
+;	2517				! Pass on the element length, if it can be deduced.
+;	2518	
+;	2519				dbg$gl_list[1] = dbg$srm_typ_len( .nt_ptr[NT_TYPE] );
+;	2520	%if dbg_act3
+;     L 2521	%then
+;     U 2522				$fao_tt_out('element type = !SL, size = !SL',
+;     U 2523					.nt_ptr[ NT_TYPE ],.dbg$gl_list[1]);
+;     U 2524	%FI
+;	2525				END;
+;	2526			END;
+;	2527	
+;	2528		[trace_token]:
+;	2529			BEGIN
+;	2530			IF (.dbg$gl_seman1 [.semsp + dbg$k_spos_two] EQL slash_token)
+;	2531			THEN
+;	2532				BEGIN
+;	2533	
+;	2534				! Check for SET T/CALL or SET T/BRANCH.  If it
+;	2535				! isn't one, it must be the other because 
+;	2536				! the LEX/GRAMMAR ensures this.
+;	2537	
+;	2538				if( .dbg$gl_seman1[.semsp + dbg$k_spos_thre] EQL CALLS_TOKEN )
+;	2539				then
+;	2540					dbg$gl_context [dbg$k_trce_call] = TRUE
+;	2541				else
+;	2542					dbg$gl_context [dbg$k_trce_brch] = TRUE;
+;	2543				RETURN;
+;	2544				END
+;	2545			ELSE
+;	2546				BEGIN
+;	2547				dbg$gl_context [dbg$k_trace] = TRUE;
+;	2548				dbg$gl_list [0] = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2549				END;
+;	2550			END;
+;	2551	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 4-2
+; Digital Equipment Corporation
+;
+;	2552		[break_token]:
+;	2553			BEGIN
+;	2554			IF (.dbg$gl_seman1 [.semsp + dbg$k_spos_two] EQL slash_token)
+;	2555			THEN
+;	2556				BEGIN
+;	2557				dbg$gl_list[0] = .dbg$gl_seman1 [.semsp + dbg$k_spos_thre];
+;	2558				dbg$gl_list[1] = .list_elem_exp1 (.dbg$gl_head_lst);
+;	2559				END
+;	2560			ELSE
+;	2561				BEGIN
+;	2562				dbg$gl_list[0] = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2563				dbg$gl_list[1] = 1;
+;	2564				END;
+;	2565			dbg$gl_context [dbg$k_break] = TRUE;
+;	2566			END;
+;	2567	
+;	2568		TES;
+;	2569		dbg$gl_context [dbg$k_set_break] = TRUE;
+;	2570		END;
+
+
+							    .TITLE  DBGACT
+							    .IDENT  \000088\
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   7, 2, 31, 0, 32, 12, 44, 11, 51, 1, 52, 14, 47, 15, 27, - ;
+								    4, 0						      ;
+					      00011	    .BLKB   3
+
+						    SHOW_TABLE=		P.AAA
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$EVALUAT_CMD, DBG$SRM_TYP_LEN
+							    .GLOBL  DBG$SET_OPTRACE, DBG$LANGUAGE, DBG$IS_IT_ENTRY
+							    .GLOBL  DBG$DELETE_PATH, DBG$CALL_CMD, DBG$CANC_MODULE
+							    .GLOBL  DBG$DEFINE_SYM, DBG$DEPOSIT_CMD, DBG$EXAMINE_CMD
+							    .GLOBL  DBG$FREE_ARG, DBG$FREERELEASE, DBG$INIT_MODES
+							    .GLOBL  DBG$SET_MOD_DEF, DBG$SAVE_BPT, DBG$SAVE_SCOPE
+							    .GLOBL  DBG$SET_CONTEXT, DBG$SET_MOD_LST, DBG$SET_MOD_LVL
+							    .GLOBL  DBG$SET_MODULE, DBG$SET_NEW_MOD, DBG$SHOW_BPTS
+							    .GLOBL  DBG$SHOW_MODE, DBG$SHOW_MODULE, DBG$SHOW_SCOPE
+							    .GLOBL  DBG$CANCEL_BPT, DBG$TRACEBACK, DBG$SET_STP_DEF
+							    .GLOBL  DBG$SHOW_STEP, DBG$SET_STP_LST, DBG$CP_INP_STR
+							    .GLOBL  DBG$GB_MOD_PTR, DBG$GB_EXIT_DBG, DBG$GB_RESIGNAL
+							    .GLOBL  DBG$GB_TAKE_CMD, DBG$GB_LANGUAGE, DBG$GL_ASCI_LEN
+							    .GLOBL  DBG$GL_CONTEXT, DBG$GL_DIMENLST, DBG$GL_HEAD_LST
+							    .GLOBL  DBG$GL_LIST, DBG$GL_RUNFRAME, DBG$GL_SEMAN1, DBG$GL_SEMAN2
+							    .GLOBL  DBG$GB_STP_PTR, DBG$GL_STEP_NUM, DBG$PSEUDO_PROG
+							    .WEAK   ACCESS_CHECK, DBG$SET_LANG
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0E0C 00000 	    .ENTRY  DBG$BREAK_SETUP, Save R2,R3,R9,R10,R11		      ; 2442
+		         59 00000000G  EF  9E 00002 	    MOVAB   DBG$GL_LIST, R9					      ;
+		         5A 00000000G  EF  9E 00009 	    MOVAB   DBG$GL_CONTEXT, R10					      ;
+		         5B 00000000G  EF  9E 00010 	    MOVAB   DBG$GL_SEMAN1+16, R11				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 4-3
+; Digital Equipment Corporation
+;
+		         52	  04   AC  D0 00017 	    MOVL    SEMSP, R2						      ; 2477
+		         53	  F8 AB42  D0 0001B 	    MOVL    DBG$GL_SEMAN1+8[R2], R3				      ;
+		         12	       53  D1 00020 	    CMPL    R3, #18						      ;
+				       06  12 00023 	    BNEQ    1$							      ;
+		    01   AA	       04  88 00025 	    BISB2   #4, DBG$GL_CONTEXT+1				      ; 2481
+				       56  11 00029 	    BRB     5$							      ; 2477
+		         34	       53  D1 0002B 1$:     CMPL    R3, #52						      ;
+				       2A  12 0002E 	    BNEQ    2$							      ;
+		         50 00000000GEF42  DE 00030 	    MOVAL   DBG$GL_SEMAN2+20[R2], R0				      ; 2494
+		    01   AA	  40   8F  88 00038 	    BISB2   #64, DBG$GL_CONTEXT+1				      ; 2499
+		         69	     6B42  D0 0003D 	    MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_LIST			      ; 2508
+		         50	       60  3C 00041 	    MOVZWL  (R0), NT_PTR					      ; 2513
+				       6A  13 00044 	    BEQL    9$							      ;
+		         7E 00000000G  E0  9A 00046 	    MOVZBL  DBG$_RST_BEGIN+2(NT_PTR), -(SP)			      ; 2519
+	      00000000G  EF	       01  FB 0004D 	    CALLS   #1, DBG$SRM_TYP_LEN					      ;
+		    04   A9	       50  D0 00054 	    MOVL    R0, DBG$GL_LIST+4					      ;
+				       56  11 00058 	    BRB     9$							      ; 2477
+		         33	       53  D1 0005A 2$:     CMPL    R3, #51						      ;
+				       24  12 0005D 	    BNEQ    6$							      ;
+	      00000056   8F	     6B42  D1 0005F 	    CMPL    DBG$GL_SEMAN1+16[R2], #86				      ; 2530
+				       11  12 00067 	    BNEQ    4$							      ;
+		         09	  08 AB42  D1 00069 	    CMPL    DBG$GL_SEMAN1+24[R2], #9				      ; 2538
+				       05  12 0006E 	    BNEQ    3$							      ;
+		    01   AA	       01  88 00070 	    BISB2   #1, DBG$GL_CONTEXT+1				      ; 2540
+					   04 00074 	    RET     							      ; 2538
+		    02   AA	       08  88 00075 3$:     BISB2   #8, DBG$GL_CONTEXT+2				      ; 2542
+					   04 00079 	    RET     							      ; 2543
+		         6A	       02  88 0007A 4$:     BISB2   #2, DBG$GL_CONTEXT					      ; 2547
+		         69	     6B42  D0 0007D 	    MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_LIST			      ; 2548
+				       2D  11 00081 5$:     BRB     9$							      ; 2477
+		         07	       53  D1 00083 6$:     CMPL    R3, #7						      ;
+				       28  12 00086 	    BNEQ    9$							      ;
+	      00000056   8F	     6B42  D1 00088 	    CMPL    DBG$GL_SEMAN1+16[R2], #86				      ; 2554
+				       13  12 00090 	    BNEQ    7$							      ;
+		         69	  08 AB42  D0 00092 	    MOVL    DBG$GL_SEMAN1+24[R2], DBG$GL_LIST			      ; 2557
+		         50 00000000G  EF  D0 00097 	    MOVL    DBG$GL_HEAD_LST, R0					      ; 2558
+		    04   A9	  04   A0  D0 0009E 	    MOVL    4(R0), DBG$GL_LIST+4				      ;
+				       08  11 000A3 	    BRB     8$							      ; 2554
+		         69	     6B42  D0 000A5 7$:     MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_LIST			      ; 2562
+		    04   A9	       01  D0 000A9 	    MOVL    #1, DBG$GL_LIST+4					      ; 2563
+		         6A	       04  88 000AD 8$:     BISB2   #4, DBG$GL_CONTEXT					      ; 2565
+		         6A	       08  88 000B0 9$:     BISB2   #8, DBG$GL_CONTEXT					      ; 2569
+					   04 000B3 	    RET     							      ; 2442
+
+; Routine Size:  180 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 5
+; Digital Equipment Corporation
+;
+;	2571	GLOBAL ROUTINE dbg$cancel_parm (semsp) : NOVALUE =
+;	2572	!++
+;	2573	! FUNCTIONAL DESCRIPTION:
+;	2574	!	SETS THE CONTEXT BIT TO CANCEL.
+;	2575	!	ALSO SETS A CONTEXT BIT TO SAY WHETHER BREAKPOINTS,
+;	2576	!	TRACEPOINTS, MODES, OR ALL ARE TO BE SWITCHED.
+;	2577	!	ARE TO BE SWITCHED.
+;	2578	!
+;	2579	! INPUTS:
+;	2580	!	semsp - OFFSET IN PARSE STACK WHICH HOLDS CURRENT TOKEN
+;	2581	!		HOLDS THE KEYWORD CANCEL.
+;	2582	!
+;	2583	! IMPLICIT INPUTS:
+;	2584	!	4 (PARSE STACK) HOLDS THE KEYWORD MODE, BREAK, TRACE, OR ALL.
+;	2585	!	IF THE KEYWORD IS BREAK, 8 (PARSE STACK) HOLDS THE ADDRESS
+;	2586	!	OF THE BREAKPOINT TO BE SWITCHED OR THE EXCEPTION KEYWORD TOKEN.
+;	2587	!	IF THE KEYWORD IS TRACE, 8 (PARSE STACK) HOLDS THE ADDRESS
+;	2588	!	OF THE TRACEPOINT or the keyword ALL.
+;	2589	!
+;	2590	! OUTPUTS:
+;	2591	!	none
+;	2592	!
+;	2593	! IMPLICIT OUTPUTS:
+;	2594	!	dbg$gl_context IS SET.
+;	2595	!
+;	2596	! ROUTINE VALUE:
+;	2597	!	NOVALUE
+;	2598	!
+;	2599	! SIDE EFFECTS:
+;	2600	!	none
+;	2601	!--
+;	2602	
+;	2603		BEGIN
+;	2604	
+;	2605	%IF dbg_act1
+;     L 2606	%THEN
+;     U 2607		$fao_tt_out ('setting context bits for cancel command');
+;     U 2608		$fao_tt_out('spos_one = !XL, _two = !XL',
+;     U 2609			.dbg$gl_seman1[ .semsp+dbg$k_spos_one ],
+;     U 2610			.dbg$gl_seman1[ .semsp+dbg$K_spos_two ]);
+;     U 2611	%FI
+;	2612	
+;	2613		dbg$gl_context [dbg$k_cancel] = TRUE;
+;	2614		SELECTONE .dbg$gl_seman1 [.semsp + dbg$k_spos_one] OF
+;	2615	
+;	2616			SET
+;	2617	
+;	2618			[break_token]:
+;	2619				BEGIN
+;	2620				IF (.dbg$gl_seman1[.semsp+dbg$k_spos_two] EQL slash_token)
+;	2621				THEN
+;	2622					BEGIN
+;	2623					dbg$gl_context[dbg$k_all_break] = TRUE;
+;	2624					END
+;	2625				ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 5-1
+; Digital Equipment Corporation
+;
+;	2626					BEGIN
+;	2627					!+
+;	2628					! If the given BREAK address corresponds to a
+;	2629					! routine, then the break was actually set
+;	2630					! on routine+2 so that is what we should cancel.
+;	2631	
+;	2632					dbg$gl_list[1] = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2633	
+;	2634					IF ( DBG$IS_IT_ENTRY(.dbg$gl_list[1]) )
+;	2635					THEN	dbg$gl_list[1] = .dbg$gl_list[1] +2;
+;	2636					dbg$gl_context [dbg$k_break] = TRUE;
+;	2637					END
+;	2638				END;
+;	2639	
+;	2640	
+;	2641			[exception_token]:
+;	2642				dbg$gl_context [dbg$k_resignal] = TRUE;
+;	2643	
+;	2644	
+;	2645			[mode_token]:
+;	2646				dbg$gl_context [dbg$k_mode] = TRUE;
+;	2647	
+;	2648	
+;	2649			[module_token]:
+;	2650				dbg$gl_context [dbg$k_module] = TRUE;
+;	2651	
+;	2652	
+;	2653			[all_token]:
+;	2654				dbg$gl_context [dbg$k_all] = TRUE;
+;	2655	
+;	2656	
+;	2657			[scope_token]:
+;	2658				dbg$gl_context [dbg$k_scope] = TRUE;
+;	2659	
+;	2660	
+;	2661			[trace_token]:
+;	2662				BEGIN
+;	2663				LOCAL
+;	2664					at_pc;
+;	2665	
+;	2666				IF .dbg$gl_seman1[.semsp + dbg$k_spos_two] EQL slash_token
+;	2667				THEN
+;	2668					BEGIN
+;	2669					!++
+;	2670					! Tracing on call/branch-type instructions is to
+;	2671					! be canceled. Turn on the context bit
+;	2672					! that identifies this command and return.
+;	2673					!--
+;	2674					IF (.dbg$gl_seman1[.semsp + dbg$k_spos_thre] EQL calls_token)
+;	2675					THEN
+;	2676						dbg$gl_context [dbg$k_trce_call] = TRUE;
+;	2677					IF (.dbg$gl_seman1[.semsp + dbg$k_spos_thre] EQL branch_token)
+;	2678					THEN
+;	2679						dbg$gl_context [dbg$k_trce_brch] = TRUE;
+;	2680					!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 5-2
+; Digital Equipment Corporation
+;
+;	2681					! See if all tracing is to be turned off.
+;	2682					!--
+;	2683					IF (.dbg$gl_seman1[.semsp + dbg$k_spos_thre] EQL all_token)
+;	2684					THEN
+;	2685						dbg$gl_context[dbg$k_all_trace] = TRUE;
+;	2686					END
+;	2687				ELSE
+;	2688					BEGIN
+;	2689					!++
+;	2690					! This command cancels a trace point on a particular
+;	2691					! location. Save the address of the trace point
+;	2692					! and turn on the context bits for removal of
+;	2693					! the tracepoint from the breakpoint table.
+;	2694					! The same check for routine address is made
+;	2695					! here as is for BREAKs, above.
+;	2696					!--
+;	2697					at_pc = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2698					IF ( dbg$is_it_entry(.at_pc) )
+;	2699					THEN at_pc = .at_pc +2;
+;	2700					dbg$gl_context [dbg$k_trace] = TRUE;
+;	2701					dbg$gl_list [1] = .at_pc;
+;	2702					END
+;	2703				END;
+;	2704	
+;	2705	
+;	2706			[watch_token]:
+;	2707				BEGIN
+;	2708				IF (.dbg$gl_seman1[.semsp+dbg$k_spos_two] EQL slash_token)
+;	2709				THEN
+;	2710					BEGIN
+;	2711					dbg$gl_context[dbg$k_all_watch] = TRUE;
+;	2712					END
+;	2713				ELSE
+;	2714					BEGIN
+;	2715					dbg$gl_context [dbg$k_watch] = TRUE;
+;	2716					dbg$gl_list [1] = .dbg$gl_seman1 [.semsp + dbg$k_spos_two];
+;	2717					END;
+;	2718				END;
+;	2719	
+;	2720			TES;
+;	2721		END;
+
+
+
+
+
+					 0F1C 000B4 	    .ENTRY  DBG$CANCEL_PARM, Save R2,R3,R4,R8,R9,R10,R11	      ; 2571
+		         58 00000000G  EF  9E 000B6 	    MOVAB   DBG$IS_IT_ENTRY, R8					      ;
+		         59 00000000G  EF  9E 000BD 	    MOVAB   DBG$GL_LIST+4, R9					      ;
+		         5A 00000000G  EF  9E 000C4 	    MOVAB   DBG$GL_SEMAN1+16, R10				      ;
+		         5B 00000000G  EF  9E 000CB 	    MOVAB   DBG$GL_CONTEXT, R11					      ;
+		         6B	       20  88 000D2 	    BISB2   #32, DBG$GL_CONTEXT					      ; 2613
+		         52	  04   AC  D0 000D5 	    MOVL    SEMSP, R2						      ; 2614
+		         54	  F8 AA42  D0 000D9 	    MOVL    DBG$GL_SEMAN1+8[R2], R4				      ;
+		         07	       54  D1 000DE 	    CMPL    R4, #7						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 5-3
+; Digital Equipment Corporation
+;
+				       22  12 000E1 	    BNEQ    3$							      ;
+	      00000056   8F	     6A42  D1 000E3 	    CMPL    DBG$GL_SEMAN1+16[R2], #86				      ; 2620
+				       05  12 000EB 	    BNEQ    1$							      ;
+		    02   AB	       01  88 000ED 	    BISB2   #1, DBG$GL_CONTEXT+2				      ; 2623
+					   04 000F1 	    RET     							      ; 2619
+		         69	     6A42  D0 000F2 1$:     MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_LIST+4			      ; 2632
+				       69  DD 000F6 	    PUSHL   DBG$GL_LIST+4					      ; 2634
+		         68	       01  FB 000F8 	    CALLS   #1, DBG$IS_IT_ENTRY					      ;
+		         03	       50  E9 000FB 	    BLBC    R0, 2$						      ;
+		         69	       02  C0 000FE 	    ADDL2   #2, DBG$GL_LIST+4					      ; 2635
+		         6B	       04  88 00101 2$:     BISB2   #4, DBG$GL_CONTEXT					      ; 2636
+					   04 00104 	    RET     							      ; 2614
+		         12	       54  D1 00105 3$:     CMPL    R4, #18						      ;
+				       05  12 00108 	    BNEQ    4$							      ;
+		    01   AB	       04  88 0010A 	    BISB2   #4, DBG$GL_CONTEXT+1				      ; 2642
+					   04 0010E 	    RET     							      ; 2614
+		         1F	       54  D1 0010F 4$:     CMPL    R4, #31						      ;
+				       04  12 00112 	    BNEQ    5$							      ;
+		         6B	       01  88 00114 	    BISB2   #1, DBG$GL_CONTEXT					      ; 2646
+					   04 00117 	    RET     							      ; 2614
+		         20	       54  D1 00118 5$:     CMPL    R4, #32						      ;
+				       05  12 0011B 	    BNEQ    6$							      ;
+		    01   AB	       10  88 0011D 	    BISB2   #16, DBG$GL_CONTEXT+1				      ; 2650
+					   04 00121 	    RET     							      ; 2614
+		         03	       54  D1 00122 6$:     CMPL    R4, #3						      ;
+				       05  12 00125 	    BNEQ    7$							      ;
+		    01   AB	       02  88 00127 	    BISB2   #2, DBG$GL_CONTEXT+1				      ; 2654
+					   04 0012B 	    RET     							      ; 2614
+		         2C	       54  D1 0012C 7$:     CMPL    R4, #44						      ;
+				       05  12 0012F 	    BNEQ    8$							      ;
+		    01   AB	       08  88 00131 	    BISB2   #8, DBG$GL_CONTEXT+1				      ; 2658
+					   04 00135 	    RET     							      ; 2614
+		         33	       54  D1 00136 8$:     CMPL    R4, #51						      ;
+				       41  12 00139 	    BNEQ    13$							      ;
+	      00000056   8F	     6A42  D1 0013B 	    CMPL    DBG$GL_SEMAN1+16[R2], #86				      ; 2666
+				       21  12 00143 	    BNEQ    11$							      ;
+		         50	  08 AA42  D0 00145 	    MOVL    DBG$GL_SEMAN1+24[R2], R0				      ; 2674
+		         09	       50  D1 0014A 	    CMPL    R0, #9						      ;
+				       04  12 0014D 	    BNEQ    9$							      ;
+		    01   AB	       01  88 0014F 	    BISB2   #1, DBG$GL_CONTEXT+1				      ; 2676
+		         06	       50  D1 00153 9$:     CMPL    R0, #6						      ; 2677
+				       04  12 00156 	    BNEQ    10$							      ;
+		    02   AB	       08  88 00158 	    BISB2   #8, DBG$GL_CONTEXT+2				      ; 2679
+		         03	       50  D1 0015C 10$:    CMPL    R0, #3						      ; 2683
+				       38  12 0015F 	    BNEQ    15$							      ;
+		    02   AB	       04  88 00161 	    BISB2   #4, DBG$GL_CONTEXT+2				      ; 2685
+					   04 00165 	    RET     							      ; 2666
+		         53	     6A42  D0 00166 11$:    MOVL    DBG$GL_SEMAN1+16[R2], AT_PC				      ; 2697
+				       53  DD 0016A 	    PUSHL   AT_PC						      ; 2698
+		         68	       01  FB 0016C 	    CALLS   #1, DBG$IS_IT_ENTRY					      ;
+		         03	       50  E9 0016F 	    BLBC    R0, 12$						      ;
+		         53	       02  C0 00172 	    ADDL2   #2, AT_PC						      ; 2699
+		         6B	       02  88 00175 12$:    BISB2   #2, DBG$GL_CONTEXT					      ; 2700
+		         69	       53  D0 00178 	    MOVL    AT_PC, DBG$GL_LIST+4				      ; 2701
+					   04 0017B 	    RET     							      ; 2614
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 5-4
+; Digital Equipment Corporation
+;
+		         34	       54  D1 0017C 13$:    CMPL    R4, #52						      ;
+				       18  12 0017F 	    BNEQ    15$							      ;
+	      00000056   8F	     6A42  D1 00181 	    CMPL    DBG$GL_SEMAN1+16[R2], #86				      ; 2708
+				       05  12 00189 	    BNEQ    14$							      ;
+		    02   AB	       02  88 0018B 	    BISB2   #2, DBG$GL_CONTEXT+2				      ; 2711
+					   04 0018F 	    RET     							      ; 2708
+		    01   AB	  40   8F  88 00190 14$:    BISB2   #64, DBG$GL_CONTEXT+1				      ; 2715
+		         69	     6A42  D0 00195 	    MOVL    DBG$GL_SEMAN1+16[R2], DBG$GL_LIST+4			      ; 2716
+					   04 00199 15$:    RET     							      ; 2571
+
+; Routine Size:  230 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 6
+; Digital Equipment Corporation
+;
+;	2722	GLOBAL ROUTINE dbg$end_of_cmd : NOVALUE =
+;	2723	
+;	2724	!++
+;	2725	! FUNCTIONAL DESCRIPTION:
+;	2726	!	Resets all DEBUG context that is exclusive to a single
+;	2727	!	DEBUG command. This includes resetting default
+;	2728	!	modes from single line overrides back to the actual default
+;	2729	!	modes and resetting a large number of context bits.
+;	2730	!
+;	2731	!	Also frees all storage that was allocated in the course of
+;	2732	!	processing the command.
+;	2733	!
+;	2734	! INPUTS:
+;	2735	!	none
+;	2736	!
+;	2737	! IMPLICIT INPUTS:
+;	2738	!	none
+;	2739	!
+;	2740	! OUTPUTS:
+;	2741	!	none
+;	2742	!
+;	2743	! IMPLICIT OUTPUTS:
+;	2744	!	none
+;	2745	!
+;	2746	! ROUTINE VALUE:
+;	2747	!	novalue
+;	2748	!
+;	2749	! SIDE EFFECTS:
+;	2750	!	defaults are reestablished. Excess allocated storage
+;	2751	!	is freed.
+;	2752	!--
+;	2753	
+;	2754		BEGIN
+;	2755	
+;	2756		LOCAL
+;	2757			temp_loc;
+;	2758	
+;	2759	%IF dbg_act
+;     L 2760	%THEN
+;     U 2761		$fao_tt_out ('end of command clean up');
+;     U 2762	%FI
+;	2763	
+;	2764		!++
+;	2765		! Set the exit flag to true so that if an error occurs during
+;	2766		! the processing of this routine, that error is perceived
+;	2767		! as fatal. This routine guarantees the internal consistency
+;	2768		! of DEBUG, and must succeed or give up.
+;	2769		!--
+;	2770		dbg$gb_exit_dbg = TRUE;
+;	2771	
+;	2772		dbg$init_modes (override_mode, user_def_mode);
+;	2773		dbg$set_mod_lvl (user_def_mode);
+;	2774		dbg$set_context ();
+;	2775	
+;	2776		!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 6-1
+; Digital Equipment Corporation
+;
+;	2777		! Free all storage used in argument accumulation, pathname
+;	2778		! building, and for the input line itself.
+;	2779		!--
+;	2780		dbg$free_arg ();
+;	2781		dbg$delete_path();
+;	2782	
+;	2783		!++
+;	2784		! Zero out the locations that hold breakpoint setting data.
+;	2785		!--
+;	2786		dbg$gl_list [0] = 0;
+;	2787		dbg$gl_list [1] = 0;
+;	2788		dbg$gl_list [2] = 0;
+;	2789		dbg$gl_asci_len = .dbg$gb_mod_ptr[mode_length];	! Initialize ascii length
+;	2790	
+;	2791		!++
+;	2792		! If FORTRAN, or multi-language, zero out the array
+;	2793		! dimensions.
+;	2794		!--
+;	2795	%IF dbg_multi_lang OR fortran_syntax
+;     L 2796	%THEN
+;	2797		zerocor (dbg$gl_dimenlst, 10);
+;	2798	%FI
+;	2799	
+;	2800		!++
+;	2801		! Now cancel exit flag since all went well.
+;	2802		!--
+;	2803		dbg$gb_exit_dbg = FALSE;
+;	2804		END;
+
+
+
+
+
+					 083C 0019A 	    .ENTRY  DBG$END_OF_CMD, Save R2,R3,R4,R5,R11		      ; 2722
+		         5B 00000000G  EF  9E 0019C 	    MOVAB   DBG$GB_EXIT_DBG, R11				      ;
+		         6B	       01  90 001A3 	    MOVB    #1, DBG$GB_EXIT_DBG					      ; 2770
+				       01  DD 001A6 	    PUSHL   #1							      ; 2772
+				       02  DD 001A8 	    PUSHL   #2							      ;
+	      00000000G  EF	       02  FB 001AA 	    CALLS   #2, DBG$INIT_MODES					      ;
+				       01  DD 001B1 	    PUSHL   #1							      ; 2773
+	      00000000G  EF	       01  FB 001B3 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+	      00000000G  EF	       00  FB 001BA 	    CALLS   #0, DBG$SET_CONTEXT					      ; 2774
+	      00000000G  EF	       00  FB 001C1 	    CALLS   #0, DBG$FREE_ARG					      ; 2780
+	      00000000G  EF	       00  FB 001C8 	    CALLS   #0, DBG$DELETE_PATH					      ; 2781
+			    00000000G  EF  7C 001CF 	    CLRQ    DBG$GL_LIST						      ; 2786
+			    00000000G  EF  D4 001D5 	    CLRL    DBG$GL_LIST+8					      ; 2788
+		         50 00000000G  EF  D0 001DB 	    MOVL    DBG$GB_MOD_PTR, R0					      ; 2789
+	      00000000G  EF	  01   A0  9A 001E2 	    MOVZBL  1(R0), DBG$GL_ASCI_LEN				      ;
+	   00	         6E	       00  2C 001EA 	    MOVC5   #0, (SP), #0, #40, DBG$GL_DIMENLST			      ; 2797
+	      00000000G  EF	       28     001EE									      ;
+				       6B  94 001F4 	    CLRB    DBG$GB_EXIT_DBG					      ; 2803
+					   04 001F6 	    RET     							      ; 2722
+
+; Routine Size:  93 bytes
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 6-2
+; Digital Equipment Corporation
+;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 7
+; Digital Equipment Corporation
+;
+;	2805	GLOBAL ROUTINE dbg$end_of_line : NOVALUE =
+;	2806	
+;	2807	!++
+;	2808	! FUNCTIONAL DESCRIPTION:
+;	2809	!	Calls dbg$end_of_cmd to reset all single command context.
+;	2810	!	Then frees the storage that was allocated to hold the command
+;	2811	!	line.
+;	2812	!
+;	2813	! CALLING SEQUENCE:
+;	2814	!	dbg$end_of_line ()
+;	2815	!
+;	2816	! INPUTS:
+;	2817	!	none
+;	2818	!
+;	2819	! IMPLICIT INPUTS:
+;	2820	!	none
+;	2821	!
+;	2822	! OUTPUTS:
+;	2823	!	none
+;	2824	!
+;	2825	! IMPLICIT OUTPUTS:
+;	2826	!	none
+;	2827	!
+;	2828	! ROUTINE VALUE:
+;	2829	!	none
+;	2830	!
+;	2831	! SIDE EFFECTS:
+;	2832	!	Defaults are reestablished. Storage for input line is freed.
+;	2833	!--
+;	2834	
+;	2835		BEGIN
+;	2836		dbg$end_of_cmd ();
+;	2837	
+;	2838		!++
+;	2839		! Set the exit flag so that if any error occurs, DEBUG returns
+;	2840		! to CLI. These types of errors are not recoverable.
+;	2841		!--
+;	2842		dbg$gb_exit_dbg = TRUE;
+;	2843		IF .dbg$cp_inp_str [dsc$a_pointer] NEQ 0
+;	2844		THEN
+;	2845			BEGIN
+;	2846			dbg$freerelease (.dbg$cp_inp_str [dsc$a_pointer],
+;	2847				(.dbg$cp_inp_str [dsc$w_length] + 3) / %UPVAL);
+;	2848			dbg$cp_inp_str [dsc$a_pointer] = 0;
+;	2849			END;
+;	2850	
+;	2851		!++
+;	2852		! All went well. Reset exit flag.
+;	2853		!--
+;	2854		dbg$gb_exit_dbg = FALSE;
+;	2855		END;
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 7-1
+; Digital Equipment Corporation
+;
+
+					 0C00 001F7 	    .ENTRY  DBG$END_OF_LINE, Save R10,R11			      ; 2805
+		         5A 00000000G  EF  9E 001F9 	    MOVAB   DBG$GB_EXIT_DBG, R10				      ;
+		         5B 00000000G  EF  9E 00200 	    MOVAB   DBG$CP_INP_STR+4, R11				      ;
+		    8F   AF	       00  FB 00207 	    CALLS   #0, DBG$END_OF_CMD					      ; 2836
+		         6A	       01  90 0020B 	    MOVB    #1, DBG$GB_EXIT_DBG					      ; 2842
+		         51	       6B  D0 0020E 	    MOVL    DBG$CP_INP_STR+4, R1				      ; 2843
+				       16  13 00211 	    BEQL    1$							      ;
+		         50	  FC   AB  3C 00213 	    MOVZWL  DBG$CP_INP_STR, R0					      ; 2847
+		         50	       03  C0 00217 	    ADDL2   #3, R0						      ;
+	   7E	         50	       04  C7 0021A 	    DIVL3   #4, R0, -(SP)					      ;
+				       51  DD 0021E 	    PUSHL   R1							      ; 2846
+	      00000000G  EF	       02  FB 00220 	    CALLS   #2, DBG$FREERELEASE					      ;
+				       6B  D4 00227 	    CLRL    DBG$CP_INP_STR+4					      ; 2848
+				       6A  94 00229 1$:     CLRB    DBG$GB_EXIT_DBG					      ; 2854
+					   04 0022B 	    RET     							      ; 2805
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8
+; Digital Equipment Corporation
+;
+;	2856	GLOBAL ROUTINE dbg$perform_cmd (semsp) =
+;	2857	
+;	2858	!++
+;	2859	! FUNCTIONAL DESCRIPTION:
+;	2860	!	Action routine that executes a DEBUG command.
+;	2861	!	Then the one-line modes are reset to their default settings.
+;	2862	!
+;	2863	! CALLING SEQUENCE:
+;	2864	!	dbg$perform_cmd ()
+;	2865	!
+;	2866	! INPUTS:
+;	2867	!	semsp	- offset in parse stack that holds current token. This
+;	2868	!		  is always a command verb or an end of command token.
+;	2869	!
+;	2870	! IMPLICIT INPUTS:
+;	2871	!	DBG$GB_TAKE_CMD says if we are really supposed to do
+;	2872	!	the indicated command or not.
+;	2873	!
+;	2874	! OUTPUTS:
+;	2875	!	true or false, depending on whether parsing is to continue
+;	2876	!	or not.
+;	2877	!
+;	2878	! IMPLICIT OUTPUTS:
+;	2879	!	none
+;	2880	!
+;	2881	! ROUTINE VALUE:
+;	2882	!	 true or false
+;	2883	!
+;	2884	! SIDE EFFECTS:
+;	2885	!	A DEBUG command is actually executed.
+;	2886	!	A signal is done to get us out if we aren't supposed
+;	2887	!	to be executing user commands at this point.
+;	2888	!--
+;	2889	
+;	2890		BEGIN
+;	2891	
+;	2892	%IF dbg_act
+;     L 2893	%THEN
+;     U 2894		$fao_tt_out ('command token is !SL', .dbg$gl_seman1 [.semsp]);
+;     U 2895	%FI
+;	2896		! See if we are supposed to be taking commands at
+;	2897		! this point - since this is NOT the case if GO or
+;	2898		! STEP is given in the middle of a command 
+;	2899		! (or DO action) sequence.  The only exception to this
+;	2900		! is when GO or STEP is simply terminated with ';',
+;	2901		! i.e. the <null> command follows.
+;	2902	
+;	2903		IF( (NOT .DBG$GB_TAKE_CMD )
+;	2904		   AND
+;	2905		    (.dbg$gl_seman1[.semsp] NEQ EOL_TOKEN )
+;	2906		  )
+;	2907		THEN
+;	2908			BEGIN
+;	2909	
+;	2910			! Cause the command to be ignored, along with any
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-1
+; Digital Equipment Corporation
+;
+;	2911			! further commands that may be ahead.  If the previous
+;	2912			! command was to STEP, its context bit must also be
+;	2913			! cleared here as that is NOT done by the ordinary
+;	2914			! end-of-command (or SIGNAL) cleanup.
+;	2915	
+;	2916			dbg$gb_take_cmd = true;
+;	2917			dbg$gl_runframe[ dbg$v_stepping ] = false;
+;	2918			dbg$gl_step_num = 0;
+;	2919	
+;	2920			!+
+;	2921			! If the command we're now going to ignore was
+;	2922			! the DEBUG CALL command, we have to pop the
+;	2923			! runframe that CALL_CMD() built, and release
+;	2924			! the storage for the arg list and runframe.
+;	2925			!-
+;	2926	
+;	2927			IF( .dbg$gl_runframe[ DBG$L_USER_PC ] EQLA DBG$PSEUDO_PROG )
+;	2928			THEN
+;	2929				BEGIN
+;	2930				LOCAL
+;	2931					last_runframe,
+;	2932					arg_storage_ptr : ref vector[,long];
+;	2933	
+;	2934				! Extract the pointer from the current runframe
+;	2935				! to the previous one so that we can restore it.
+;	2936				! Then throw away the storage we allocated
+;	2937				! for this new runframe and arg list.  This code
+;	2938				! merely undoes what CALL_CMD does().
+;	2939	
+;	2940				last_runframe = .dbg$gl_runframe[ DBG$L_NEXT_LINK ];
+;	2941				arg_storage_ptr = .dbg$gl_runframe[ DBG$L_FRAME_PTR ];
+;	2942	%IF dbg_act
+;     L 2943	%THEN
+;     U 2944				$fao_tt_out('perform_cmd: releasing storage !XL and !XL',
+;     U 2945					.arg_storage_ptr, .dbg$gl_runframe );
+;     U 2946	%FI
+;	2947				dbg$freerelease( .arg_storage_ptr, .arg_storage_ptr[0] +1);
+;	2948				dbg$freerelease( .dbg$gl_runframe, (DBG$K_RUNFR_LEN+3)/%UPVAL );
+;	2949	
+;	2950				! Restore the previous context by popping a runframe.
+;	2951	
+;	2952				dbg$gl_runframe = .last_runframe;
+;	2953				END;
+;	2954	
+;	2955			signal(dbg$_ENDWITHGO);
+;	2956			! no return;
+;	2957			END;
+;	2958	
+;	2959		!++
+;	2960		! Execute the complete command now that it is safe to do so.
+;	2961		!--
+;	2962		SELECTONE .dbg$gl_seman1 [.semsp] OF
+;	2963	
+;	2964			SET
+;	2965	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-2
+; Digital Equipment Corporation
+;
+;	2966			[calls_token]:
+;	2967				BEGIN
+;	2968	%IF dbg_act
+;     L 2969	%THEN
+;     U 2970				$fao_tt_out ('call command, context is !XL', .dbg$gl_context);
+;     U 2971	%FI
+;	2972				dbg$call_cmd ();
+;	2973				END;
+;	2974	
+;	2975			[cancel_token]:
+;	2976				switch_command ();
+;	2977	
+;	2978	
+;	2979			[define_token]:
+;	2980				BEGIN
+;	2981	
+;	2982				LOCAL
+;	2983					desc_ptr : REF BLOCK [, BYTE],
+;	2984					pointer;
+;	2985	
+;	2986				pointer = .dbg$gl_head_lst;
+;	2987				WHILE .pointer NEQ 0
+;	2988				DO
+;	2989					BEGIN
+;	2990					dbg$define_sym (.list_elem_exp1 (.pointer), .list_elem_exp2 (.pointer));
+;	2991					desc_ptr = .list_elem_exp1 (.pointer);
+;	2992					dbg$freerelease (.desc_ptr, ((.desc_ptr [dsc$w_length] + 3) / %UPVAL) + 2);
+;	2993					pointer = .list_elem_flink (.pointer);
+;	2994					END;
+;	2995				END;
+;	2996	
+;	2997	
+;	2998			[deposit_token]:
+;	2999				dbg$deposit_cmd ();
+;	3000	
+;	3001	
+;	3002			[eol_token]:
+;	3003				BEGIN
+;	3004				dbg$end_of_line ();
+;	3005				RETURN FALSE
+;	3006				END;
+;	3007	
+;	3008	
+;	3009			[examine_token]:
+;	3010				BEGIN
+;	3011				dbg$gl_context [dbg$k_examine] = TRUE;
+;	3012				dbg$examine_cmd ();
+;	3013				END;
+;	3014	
+;	3015	
+;	3016			[evaluate_token]:
+;	3017				BEGIN
+;	3018	%IF dbg_act
+;     L 3019	%THEN
+;     U 3020				$fao_tt_out ('evaluating');
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-3
+; Digital Equipment Corporation
+;
+;     U 3021	%FI
+;	3022				dbg$evaluat_cmd();
+;	3023				END;
+;	3024	
+;	3025	
+;	3026			[exit_token]:
+;	3027				BEGIN
+;	3028				dbg$gb_exit_dbg = TRUE;
+;	3029				$exit (code = ss$_normal);
+;	3030				END;
+;	3031	
+;	3032	
+;	3033			[go_token]:
+;	3034				BEGIN
+;	3035				LOCAL
+;	3036					new_pc;
+;	3037				BUILTIN
+;	3038					PROBER;
+;	3039	%IF dbg_act
+;     L 3040	%THEN
+;     U 3041				$fao_tt_out ('starting program');
+;     U 3042	%FI
+;	3043				! If there is an associated arg, it is
+;	3044				! the new start address.  We make sure
+;	3045				! this supposed address is readable before
+;	3046				! we deposit that into the PC.
+;	3047	
+;	3048				IF .dbg$gl_head_lst NEQ 0
+;	3049				THEN
+;	3050					BEGIN
+;	3051	
+;	3052					! Pick up the new PC and check for read access.
+;	3053	
+;	3054					new_pc = .list_elem_exp1 (.dbg$gl_head_lst);
+;	3055	
+;	3056					IF( NOT PROBER( %REF(0), %REF(1), .new_pc ) )
+;	3057					then
+;	3058						signal(DBG$_BADSTARTPC, 1, .new_pc);
+;	3059						! no return
+;	3060	
+;	3061					! For "GO <expr>", we simply force the PC
+;	3062					! to be the given value, and then force a
+;	3063					! CLEAR of the FPD bit in the PSL since
+;	3064					! the GO <expr> will not work otherwise.
+;	3065	
+;	3066					dbg$gl_runframe [dbg$l_user_pc] = .new_pc;
+;	3067	%IF dbg_act
+;     L 3068	%THEN
+;     U 3069					$FAO_TT_OUT('dep to PC, PSL = !XL', .new_pc,
+;     U 3070						.DBG$GL_RUNFRAME[ DBG$L_USER_PSL ]);
+;     U 3071	%FI
+;	3072					dbg$gl_runframe[ dbg$l_user_psl ] = %X'F7FFFFFF' AND
+;	3073							.dbg$gl_runframe[ dbg$l_user_psl ];
+;	3074					END;
+;	3075	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-4
+; Digital Equipment Corporation
+;
+;	3076				! Pick up the supposed PC and check for read access.
+;	3077	
+;	3078				new_pc =  .dbg$gl_runframe [dbg$l_user_pc];
+;	3079				IF( NOT PROBER( %REF(0), %REF(1), .new_pc ) )
+;	3080				then
+;	3081					signal(DBG$_BADSTARTPC, 1, .new_pc);
+;	3082					! no return
+;	3083	
+;	3084				! OK. The next time around, USER_PROC will
+;	3085				! not ask for new commands but will instead
+;	3086				! return SS$_CONTINUE to EXC_HANDLER.
+;	3087	
+;	3088				dbg$gb_take_cmd = FALSE;
+;	3089				END;
+;	3090	
+;	3091	
+;	3092			[set_token]:
+;	3093				BEGIN
+;	3094	
+;	3095	%IF dbg_act
+;     L 3096	%THEN
+;     U 3097				$fao_tt_out ('set command, context is !XL', .dbg$gl_context);
+;     U 3098	%FI
+;	3099				SELECTONE TRUE OF
+;	3100				SET
+;	3101	
+;	3102				[.dbg$gl_context [dbg$k_set_break]]:
+;	3103					BEGIN
+;	3104					IF .dbg$gl_context [dbg$k_resignal]
+;	3105					THEN dbg$gb_resignal = FALSE
+;	3106					ELSE dbg$save_bpt (.dbg$gl_list[0], .dbg$gl_list[2], .dbg$gl_list[1])
+;	3107					END;
+;	3108				[.dbg$gl_context [dbg$k_trce_call]]:
+;	3109					BEGIN
+;	3110					dbg$gl_runframe [dbg$v_trace_all] = TRUE;
+;	3111					dbg$set_optrace(CALLS_TOKEN);
+;	3112					END;
+;	3113				[.dbg$gl_context [dbg$k_trce_brch]]:
+;	3114					BEGIN
+;	3115					dbg$gl_runframe [dbg$v_trace_all] = TRUE;
+;	3116					dbg$set_optrace(branch_TOKEN);
+;	3117					END;
+;	3118				[.dbg$gl_context [dbg$k_scope]]:
+;	3119					BEGIN
+;	3120					dbg$save_scope (TRUE)
+;	3121					END;
+;	3122				[.dbg$gl_context [dbg$k_mode]]:
+;	3123					BEGIN
+;	3124					dbg$set_mod_lst (user_def_mode)
+;	3125					END;
+;	3126				[.dbg$gl_context [dbg$k_module]]:
+;	3127					BEGIN
+;	3128					dbg$set_module (0)
+;	3129					END;
+;	3130				[.dbg$gl_context [dbg$k_language]]:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-5
+; Digital Equipment Corporation
+;
+;	3131					BEGIN
+;	3132					dbg$set_lang (.dbg$gl_seman2 [.semsp])
+;	3133					END;
+;	3134				[.dbg$gl_context [dbg$k_step]]:
+;	3135					BEGIN
+;	3136					dbg$set_stp_lst (user_def_step)
+;	3137					END;
+;	3138	
+;	3139	
+;	3140				TES;
+;	3141				END;
+;	3142	
+;	3143			[show_token]:
+;	3144				BEGIN
+;	3145	
+;	3146	%IF dbg_act
+;     L 3147	%THEN
+;     U 3148				$fao_tt_out ('show command, context bits are !XL', .dbg$gl_context);
+;     U 3149	%FI
+;	3150	
+;	3151				SELECTONE TRUE OF
+;	3152				SET
+;	3153	
+;	3154				[.dbg$gl_context [dbg$k_break]]:
+;	3155					BEGIN
+;	3156					dbg$show_bpts ();
+;	3157					END;
+;	3158				[.dbg$gl_context [dbg$k_trace]]:
+;	3159					BEGIN
+;	3160					dbg$show_bpts ();
+;	3161					END;
+;	3162				[.dbg$gl_context [dbg$k_watch]]:
+;	3163					BEGIN
+;	3164					dbg$show_bpts ();
+;	3165					END;
+;	3166				[.dbg$gl_context [dbg$k_mode]]:
+;	3167					BEGIN
+;	3168					dbg$show_mode ();
+;	3169					END;
+;	3170	
+;	3171				[.dbg$gl_context [dbg$k_module]]:
+;	3172					BEGIN
+;	3173					dbg$show_module ();
+;	3174					END;
+;	3175				[.dbg$gl_context [dbg$k_scope]]:
+;	3176					BEGIN
+;	3177					dbg$show_scope ();
+;	3178					END;
+;	3179				[.dbg$gl_context [dbg$k_traceback]]:
+;	3180					BEGIN
+;	3181					LOCAL
+;	3182						temp;
+;	3183	
+;	3184					IF (.dbg$gl_head_lst EQL 0)
+;	3185					THEN temp = -1
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-6
+; Digital Equipment Corporation
+;
+;	3186					ELSE temp = .list_elem_exp1 (.dbg$gl_head_lst);
+;	3187	%if dbg_act1
+;     L 3188	%then
+;     U 3189					$fao_tt_out('sho calls n=!SL',.temp);
+;     U 3190	%FI
+;	3191					dbg$traceback (.dbg$gl_runframe [dbg$l_user_pc],
+;	3192							.dbg$gl_runframe [dbg$l_user_fp],
+;	3193							(IF .dbg$gl_runframe [dbg$v_at_break]
+;	3194							 THEN fault_exc
+;	3195							 ELSE trap_exc),
+;	3196							.temp);
+;	3197					END;
+;	3198				[.dbg$gl_context [dbg$k_language]]:
+;	3199					BEGIN
+;	3200					$fao_tt_out ('language: !AC',dbg$language(.dbg$gb_language));
+;	3201					END;
+;	3202				[.dbg$gl_context [dbg$k_step]]:
+;	3203					BEGIN
+;	3204					dbg$show_step();
+;	3205					END;
+;	3206	
+;	3207				TES;
+;	3208				END;
+;	3209	
+;	3210	
+;	3211			[step_token]:
+;	3212				BEGIN
+;	3213				LOCAL
+;	3214					new_pc;
+;	3215				BUILTIN
+;	3216					PROBER;
+;	3217	
+;	3218				! Make sure that we can start execution
+;	3219				! at the currently-set start address.
+;	3220	
+;	3221				new_pc = .dbg$gl_runframe [ DBG$L_USER_PC ];
+;	3222				IF( NOT PROBER( %REF(0), %REF(1), .new_pc ) )
+;	3223				THEN
+;	3224					! You can't STEP if you can't start.
+;	3225					SIGNAL(DBG$_BADSTARTPC, 1, .new_pc);
+;	3226					! no return
+;	3227	
+;	3228				! Pick up new count or take default.
+;	3229	
+;	3230				IF .dbg$gl_head_lst NEQ 0
+;	3231				THEN dbg$gl_step_num = .list_elem_exp1 (.dbg$gl_head_lst)
+;	3232				ELSE dbg$gl_step_num = 1;
+;	3233	
+;	3234	%IF dbg_act
+;     L 3235	%THEN
+;     U 3236				$fao_tt_out ('stepping, count is !SL', .dbg$gl_step_num);
+;     U 3237	%FI
+;	3238				! Step_num is guaranteed NOT to be negative,
+;	3239				! the action routine looks after this, but it
+;	3240				! may be 0.  STEP 0 is a no-op command.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-7
+; Digital Equipment Corporation
+;
+;	3241	
+;	3242				IF( .DBG$GL_STEP_NUM GTR 0 )
+;	3243				THEN
+;	3244					BEGIN
+;	3245					dbg$gl_runframe [dbg$v_stepping] = TRUE;
+;	3246					dbg$gb_take_cmd = FALSE;
+;	3247					END;
+;	3248				END;
+;	3249	
+;	3250			TES;
+;	3251	
+;	3252	%IF dbg_act
+;     L 3253	%THEN
+;     U 3254		$fao_tt_out ('2nd item on stack is !SL', .dbg$gl_seman1 [.semsp + dbg$k_spos_one]);
+;     U 3255	%FI
+;	3256	
+;	3257		IF .dbg$gl_seman1 [.semsp + dbg$k_spos_one] EQL eol_token
+;	3258		THEN
+;	3259			BEGIN
+;	3260			dbg$end_of_line ();
+;	3261			RETURN FALSE
+;	3262			END
+;	3263		ELSE
+;	3264			BEGIN
+;	3265			dbg$end_of_cmd ();
+;	3266			RETURN TRUE
+;	3267			END;
+;	3268		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00014 P.AAB:  .BYTE   13							      ;
+					      00015 	    .ASCII  \language: !AC\					      ;
+					      00022	    .BLKB   2
+
+							    .GLOBL  SYS$EXIT
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 0022C 	    .ENTRY  DBG$PERFORM_CMD, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 2856
+		         56 00000000G  EF  9E 0022E 	    MOVAB   DBG$GL_SEMAN1, R6					      ;
+		         57 00000000G  EF  9E 00235 	    MOVAB   DBG$GL_HEAD_LST, R7					      ;
+		         58 00000000G  00  9E 0023C 	    MOVAB   LIB$SIGNAL, R8					      ;
+		         59 00000000G  EF  9E 00243 	    MOVAB   DBG$GL_STEP_NUM, R9					      ;
+		         5A 00000000G  EF  9E 0024A 	    MOVAB   DBG$GL_RUNFRAME, R10				      ;
+		         5B 00000000G  EF  9E 00251 	    MOVAB   DBG$GL_CONTEXT, R11					      ;
+		         56 00000000G  EF  E8 00258 	    BLBS    DBG$GB_TAKE_CMD, 2$					      ; 2903
+		         50	  04   AC  D0 0025F 	    MOVL    SEMSP, R0						      ; 2905
+	      00000063   8F	     6640  D1 00263 	    CMPL    DBG$GL_SEMAN1[R0], #99				      ;
+				       48  13 0026B 	    BEQL    2$							      ;
+	      00000000G  EF	       01  90 0026D 	    MOVB    #1, DBG$GB_TAKE_CMD					      ; 2916
+		         50	       6A  D0 00274 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 2917
+		    48   A0	       08  8A 00277 	    BICB2   #8, 72(R0)						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-8
+; Digital Equipment Corporation
+;
+				       69  D4 0027B 	    CLRL    DBG$GL_STEP_NUM					      ; 2918
+		         51 00000000G  EF  9E 0027D 	    MOVAB   DBG$PSEUDO_PROG, R1					      ; 2927
+		         51	  40   A0  D1 00284 	    CMPL    64(R0), R1						      ;
+				       22  12 00288 	    BNEQ    1$							      ;
+		         52	       60  D0 0028A 	    MOVL    (R0), LAST_RUNFRAME					      ; 2940
+		         50	  4E   A0  D0 0028D 	    MOVL    78(R0), ARG_STORAGE_PTR				      ; 2941
+	   7E	         60	       01  C1 00291 	    ADDL3   #1, (ARG_STORAGE_PTR), -(SP)			      ; 2947
+				       50  DD 00295 	    PUSHL   ARG_STORAGE_PTR					      ;
+	      00000000G  EF	       02  FB 00297 	    CALLS   #2, DBG$FREERELEASE					      ;
+				       19  DD 0029E 	    PUSHL   #25							      ; 2948
+				       6A  DD 002A0 	    PUSHL   DBG$GL_RUNFRAME					      ;
+	      00000000G  EF	       02  FB 002A2 	    CALLS   #2, DBG$FREERELEASE					      ;
+		         6A	       52  D0 002A9 	    MOVL    LAST_RUNFRAME, DBG$GL_RUNFRAME			      ; 2952
+			    00028270   8F  DD 002AC 1$:     PUSHL   #164464						      ; 2955
+		         68	       01  FB 002B2 	    CALLS   #1, LIB$SIGNAL					      ;
+		         53	  04   AC  D0 002B5 2$:     MOVL    SEMSP, R3						      ; 2962
+		         54	     6643  D0 002B9 	    MOVL    DBG$GL_SEMAN1[R3], R4				      ;
+		         09	       54  D1 002BD 	    CMPL    R4, #9						      ;
+				       09  12 002C0 	    BNEQ    3$							      ;
+	      00000000G  EF	       00  FB 002C2 	    CALLS   #0, DBG$CALL_CMD					      ; 2972
+				       79  11 002C9 	    BRB     10$							      ; 2962
+		         0A	       54  D1 002CB 3$:     CMPL    R4, #10						      ;
+				       07  12 002CE 	    BNEQ    4$							      ;
+		  0000V  CF	       00  FB 002D0 	    CALLS   #0, SWITCH_COMMAND					      ; 2976
+				       6D  11 002D5 	    BRB     10$							      ; 2962
+		         0C	       54  D1 002D7 4$:     CMPL    R4, #12						      ;
+				       30  12 002DA 	    BNEQ    6$							      ;
+		         52	       67  D0 002DC 	    MOVL    DBG$GL_HEAD_LST, POINTER				      ; 2986
+				       52  D5 002DF 5$:     TSTL    POINTER						      ; 2987
+				       78  13 002E1 	    BEQL    12$							      ;
+		         7E	  04   A2  7D 002E3 	    MOVQ    4(POINTER), -(SP)					      ; 2990
+	      00000000G  EF	       02  FB 002E7 	    CALLS   #2, DBG$DEFINE_SYM					      ;
+		         55	  04   A2  D0 002EE 	    MOVL    4(POINTER), DESC_PTR				      ; 2991
+		         50	       65  3C 002F2 	    MOVZWL  (DESC_PTR), R0					      ; 2992
+		         50	       03  C0 002F5 	    ADDL2   #3, R0						      ;
+		         50	       04  C6 002F8 	    DIVL2   #4, R0						      ;
+				  02   A0  9F 002FB 	    PUSHAB  2(R0)						      ;
+				       55  DD 002FE 	    PUSHL   DESC_PTR						      ;
+	      00000000G  EF	       02  FB 00300 	    CALLS   #2, DBG$FREERELEASE					      ;
+		         52	       62  D0 00307 	    MOVL    (POINTER), POINTER					      ; 2993
+				       D3  11 0030A 	    BRB     5$							      ; 2987
+		         0D	       54  D1 0030C 6$:     CMPL    R4, #13						      ; 2962
+				       09  12 0030F 	    BNEQ    7$							      ;
+	      00000000G  EF	       00  FB 00311 	    CALLS   #0, DBG$DEPOSIT_CMD					      ; 2999
+				       41  11 00318 	    BRB     12$							      ; 2962
+	      00000063   8F	       54  D1 0031A 7$:     CMPL    R4, #99						      ;
+				       03  12 00321 	    BNEQ    8$							      ;
+				     021D  31 00323 	    BRW     57$							      ;
+		         11	       54  D1 00326 8$:     CMPL    R4, #17						      ;
+				       0D  12 00329 	    BNEQ    9$							      ;
+		         6B	  40   8F  88 0032B 	    BISB2   #64, DBG$GL_CONTEXT					      ; 3011
+	      00000000G  EF	       00  FB 0032F 	    CALLS   #0, DBG$EXAMINE_CMD					      ; 3012
+				       23  11 00336 	    BRB     12$							      ; 2962
+		         10	       54  D1 00338 9$:     CMPL    R4, #16						      ;
+				       09  12 0033B 	    BNEQ    11$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-9
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       00  FB 0033D 	    CALLS   #0, DBG$EVALUAT_CMD					      ; 3022
+				       77  11 00344 10$:    BRB     19$							      ; 2962
+		         13	       54  D1 00346 11$:    CMPL    R4, #19						      ;
+				       12  12 00349 	    BNEQ    13$							      ;
+	      00000000G  EF	       01  90 0034B 	    MOVB    #1, DBG$GB_EXIT_DBG					      ; 3028
+				       01  DD 00352 	    PUSHL   #1							      ; 3029
+	      00000000G  9F	       01  FB 00354 	    CALLS   #1, @#SYS$EXIT					      ;
+				       7B  11 0035B 12$:    BRB     21$							      ; 2962
+		         16	       54  D1 0035D 13$:    CMPL    R4, #22						      ;
+				       44  12 00360 	    BNEQ    17$							      ;
+		         50	       67  D0 00362 	    MOVL    DBG$GL_HEAD_LST, R0					      ; 3048
+				       22  13 00365 	    BEQL    15$							      ;
+		         52	  04   A0  D0 00367 	    MOVL    4(R0), NEW_PC					      ; 3054
+	   62	         01	       00  0C 0036B 	    PROBER  #0, #1, (NEW_PC)					      ; 3056
+				       0D  12 0036F 	    BNEQ    14$							      ;
+				       52  DD 00371 	    PUSHL   NEW_PC						      ; 3058
+				       01  DD 00373 	    PUSHL   #1							      ;
+			    00028208   8F  DD 00375 	    PUSHL   #164360						      ;
+		         68	       03  FB 0037B 	    CALLS   #3, LIB$SIGNAL					      ;
+		         50	       6A  D0 0037E 14$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 3066
+		    40   A0	       52  D0 00381 	    MOVL    NEW_PC, 64(R0)					      ;
+		    47   A0	       08  8A 00385 	    BICB2   #8, 71(R0)						      ; 3072
+		         50	       6A  D0 00389 15$:    MOVL    DBG$GL_RUNFRAME, R0					      ; 3078
+		         52	  40   A0  D0 0038C 	    MOVL    64(R0), NEW_PC					      ;
+	   62	         01	       00  0C 00390 	    PROBER  #0, #1, (NEW_PC)					      ; 3079
+				       0D  12 00394 	    BNEQ    16$							      ;
+				       52  DD 00396 	    PUSHL   NEW_PC						      ; 3081
+				       01  DD 00398 	    PUSHL   #1							      ;
+			    00028208   8F  DD 0039A 	    PUSHL   #164360						      ;
+		         68	       03  FB 003A0 	    CALLS   #3, LIB$SIGNAL					      ;
+				     018C  31 003A3 16$:    BRW     55$							      ; 3088
+		         2D	       54  D1 003A6 17$:    CMPL    R4, #45						      ; 2962
+				       03  13 003A9 	    BEQL    18$							      ;
+				     00A4  31 003AB 	    BRW     32$							      ;
+	   28	         6B	       03  E1 003AE 18$:    BBC     #3, DBG$GL_CONTEXT, 22$				      ; 3099
+	   08	    01   AB	       02  E1 003B2 	    BBC     #2, DBG$GL_CONTEXT+1, 20$				      ; 3104
+			    00000000G  EF  94 003B7 	    CLRB    DBG$GB_RESIGNAL					      ; 3105
+				       6D  11 003BD 19$:    BRB     28$							      ; 3103
+			    00000000G  EF  DD 003BF 20$:    PUSHL   DBG$GL_LIST+4					      ; 3106
+			    00000000G  EF  DD 003C5 	    PUSHL   DBG$GL_LIST+8					      ;
+			    00000000G  EF  DD 003CB 	    PUSHL   DBG$GL_LIST						      ;
+	      00000000G  EF	       03  FB 003D1 	    CALLS   #3, DBG$SAVE_BPT					      ;
+				       76  11 003D8 21$:    BRB     31$							      ; 3099
+		         0B	  01   AB  E9 003DA 22$:    BLBC    DBG$GL_CONTEXT+1, 23$				      ;
+		         50	       6A  D0 003DE 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3110
+		    48   A0	       04  88 003E1 	    BISB2   #4, 72(R0)						      ;
+				       09  DD 003E5 	    PUSHL   #9							      ; 3111
+				       0E  11 003E7 	    BRB     24$							      ;
+	   12	    02   AB	       03  E1 003E9 23$:    BBC     #3, DBG$GL_CONTEXT+2, 25$				      ; 3099
+		         50	       6A  D0 003EE 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3115
+		    48   A0	       04  88 003F1 	    BISB2   #4, 72(R0)						      ;
+				       06  DD 003F5 	    PUSHL   #6							      ; 3116
+	      00000000G  EF	       01  FB 003F7 24$:    CALLS   #1, DBG$SET_OPTRACE					      ;
+				       7A  11 003FE 	    BRB     36$							      ; 3099
+	   0B	    01   AB	       03  E1 00400 25$:    BBC     #3, DBG$GL_CONTEXT+1, 26$				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-10
+; Digital Equipment Corporation
+;
+				       01  DD 00405 	    PUSHL   #1							      ; 3120
+	      00000000G  EF	       01  FB 00407 	    CALLS   #1, DBG$SAVE_SCOPE					      ;
+				       78  11 0040E 	    BRB     38$							      ; 3099
+		         0B	       6B  E9 00410 26$:    BLBC    DBG$GL_CONTEXT, 27$					      ;
+				       01  DD 00413 	    PUSHL   #1							      ; 3124
+	      00000000G  EF	       01  FB 00415 	    CALLS   #1, DBG$SET_MOD_LST					      ;
+				       78  11 0041C 	    BRB     40$							      ; 3099
+	   0B	    01   AB	       04  E1 0041E 27$:    BBC     #4, DBG$GL_CONTEXT+1, 29$				      ;
+				       7E  D4 00423 	    CLRL    -(SP)						      ; 3128
+	      00000000G  EF	       01  FB 00425 	    CALLS   #1, DBG$SET_MODULE					      ;
+				       68  11 0042C 28$:    BRB     40$							      ; 3099
+	   10	         6B	       04  E1 0042E 29$:    BBC     #4, DBG$GL_CONTEXT, 30$				      ;
+			    00000000GEF43  DD 00432 	    PUSHL   DBG$GL_SEMAN2[R3]					      ; 3132
+	      00000000G  EF	       01  FB 00439 	    CALLS   #1, DBG$SET_LANG					      ;
+				       54  11 00440 	    BRB     40$							      ; 3099
+	   4F	    01   AB	       07  E1 00442 30$:    BBC     #7, DBG$GL_CONTEXT+1, 40$				      ;
+				       01  DD 00447 	    PUSHL   #1							      ; 3136
+	      00000000G  EF	       01  FB 00449 	    CALLS   #1, DBG$SET_STP_LST					      ;
+				       75  11 00450 31$:    BRB     46$							      ; 2962
+		         2E	       54  D1 00452 32$:    CMPL    R4, #46						      ;
+				       03  13 00455 	    BEQL    33$							      ;
+				     00A0  31 00457 	    BRW     51$							      ;
+	   09	         6B	       02  E0 0045A 33$:    BBS     #2, DBG$GL_CONTEXT, 34$				      ; 3151
+	   05	         6B	       01  E0 0045E 	    BBS     #1, DBG$GL_CONTEXT, 34$				      ;
+	   09	    01   AB	       06  E1 00462 	    BBC     #6, DBG$GL_CONTEXT+1, 35$				      ;
+	      00000000G  EF	       00  FB 00467 34$:    CALLS   #0, DBG$SHOW_BPTS					      ; 3164
+				       7A  11 0046E 	    BRB     48$							      ; 3151
+		         09	       6B  E9 00470 35$:    BLBC    DBG$GL_CONTEXT, 37$					      ;
+	      00000000G  EF	       00  FB 00473 	    CALLS   #0, DBG$SHOW_MODE					      ; 3168
+				       7C  11 0047A 36$:    BRB     50$							      ; 3151
+	   09	    01   AB	       04  E1 0047C 37$:    BBC     #4, DBG$GL_CONTEXT+1, 39$				      ;
+	      00000000G  EF	       00  FB 00481 	    CALLS   #0, DBG$SHOW_MODULE					      ; 3173
+				       6E  11 00488 38$:    BRB     50$							      ; 3151
+	   09	    01   AB	       03  E1 0048A 39$:    BBC     #3, DBG$GL_CONTEXT+1, 41$				      ;
+	      00000000G  EF	       00  FB 0048F 	    CALLS   #0, DBG$SHOW_SCOPE					      ; 3177
+				       60  11 00496 40$:    BRB     50$							      ; 3151
+	   2C	    01   AB	       05  E1 00498 41$:    BBC     #5, DBG$GL_CONTEXT+1, 47$				      ;
+		         50	       67  D0 0049D 	    MOVL    DBG$GL_HEAD_LST, R0					      ; 3184
+				       05  12 004A0 	    BNEQ    42$							      ;
+		         51	       01  CE 004A2 	    MNEGL   #1, TEMP						      ; 3185
+				       04  11 004A5 	    BRB     43$							      ; 3184
+		         51	  04   A0  D0 004A7 42$:    MOVL    4(R0), TEMP						      ; 3186
+				       51  DD 004AB 43$:    PUSHL   TEMP						      ; 3191
+		         50	       6A  D0 004AD 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3193
+		         04	  48   A0  E9 004B0 	    BLBC    72(R0), 44$						      ;
+				       02  DD 004B4 	    PUSHL   #2							      ;
+				       02  11 004B6 	    BRB     45$							      ;
+				       01  DD 004B8 44$:    PUSHL   #1							      ;
+				  38   A0  DD 004BA 45$:    PUSHL   56(R0)						      ; 3191
+				  40   A0  DD 004BD 	    PUSHL   64(R0)						      ;
+	      00000000G  EF	       04  FB 004C0 	    CALLS   #4, DBG$TRACEBACK					      ;
+				       6F  11 004C7 46$:    BRB     56$							      ; 3151
+	   1F	         6B	       04  E1 004C9 47$:    BBC     #4, DBG$GL_CONTEXT, 49$				      ;
+		         7E 00000000G  EF  9A 004CD 	    MOVZBL  DBG$GB_LANGUAGE, -(SP)				      ; 3200
+	      00000000G  EF	       01  FB 004D4 	    CALLS   #1, DBG$LANGUAGE					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 8-11
+; Digital Equipment Corporation
+;
+				       50  DD 004DB 	    PUSHL   R0							      ;
+			    00000000'  EF  9F 004DD 	    PUSHAB  P.AAB						      ;
+	      00000000G  EF	       02  FB 004E3 	    CALLS   #2, DBG$FAO_OUT					      ;
+				       4C  11 004EA 48$:    BRB     56$							      ; 3151
+	   47	    01   AB	       07  E1 004EC 49$:    BBC     #7, DBG$GL_CONTEXT+1, 56$				      ;
+	      00000000G  EF	       00  FB 004F1 	    CALLS   #0, DBG$SHOW_STEP					      ; 3204
+				       3E  11 004F8 50$:    BRB     56$							      ; 2962
+		         2F	       54  D1 004FA 51$:    CMPL    R4, #47						      ;
+				       39  12 004FD 	    BNEQ    56$							      ;
+		         50	       6A  D0 004FF 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3221
+		         50	  40   A0  D0 00502 	    MOVL    64(R0), NEW_PC					      ;
+	   60	         01	       00  0C 00506 	    PROBER  #0, #1, (NEW_PC)					      ; 3222
+				       0D  12 0050A 	    BNEQ    52$							      ;
+				       50  DD 0050C 	    PUSHL   NEW_PC						      ; 3225
+				       01  DD 0050E 	    PUSHL   #1							      ;
+			    00028208   8F  DD 00510 	    PUSHL   #164360						      ;
+		         68	       03  FB 00516 	    CALLS   #3, LIB$SIGNAL					      ;
+		         50	       67  D0 00519 52$:    MOVL    DBG$GL_HEAD_LST, R0					      ; 3230
+				       06  13 0051C 	    BEQL    53$							      ;
+		         69	  04   A0  D0 0051E 	    MOVL    4(R0), DBG$GL_STEP_NUM				      ; 3231
+				       03  11 00522 	    BRB     54$							      ; 3230
+		         69	       01  D0 00524 53$:    MOVL    #1, DBG$GL_STEP_NUM					      ; 3232
+				       69  D5 00527 54$:    TSTL    DBG$GL_STEP_NUM					      ; 3242
+				       0D  15 00529 	    BLEQ    56$							      ;
+		         50	       6A  D0 0052B 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3245
+		    48   A0	       08  88 0052E 	    BISB2   #8, 72(R0)						      ;
+			    00000000G  EF  94 00532 55$:    CLRB    DBG$GB_TAKE_CMD					      ; 3246
+	      00000063   8F	  08 A643  D1 00538 56$:    CMPL    DBG$GL_SEMAN1+8[R3], #99				      ; 3257
+				       07  12 00541 	    BNEQ    58$							      ;
+		  FCAF   CF	       00  FB 00543 57$:    CALLS   #0, DBG$END_OF_LINE					      ; 3260
+				       09  11 00548 	    BRB     59$							      ; 3261
+		  FC4B   CF	       00  FB 0054A 58$:    CALLS   #0, DBG$END_OF_CMD					      ; 3265
+		         50	       01  D0 0054F 	    MOVL    #1, R0						      ; 3266
+					   04 00552 	    RET     							      ;
+				       50  D4 00553 59$:    CLRL    R0							      ; 2856
+					   04 00555 	    RET     							      ;
+
+; Routine Size:  810 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 9
+; Digital Equipment Corporation
+;
+;	3269	GLOBAL ROUTINE dbg$set_overs (level, token) : NOVALUE =
+;	3270	
+;	3271	!++
+;	3272	! FUNCTIONAL DESCRIPTION:
+;	3273	!	SETS OVERRIDE OR LOCAL MODES BY SETTING THE NEW
+;	3274	!	MODE level, AND THEN SETTING THE MODE ITSELF.
+;	3275	!
+;	3276	! INPUTS:
+;	3277	!	level		- level OF MODES TO SET
+;	3278	!	token		- mode token to be set in the mode stack.
+;	3279	!
+;	3280	! IMPLICIT INPUTS:
+;	3281	!	none
+;	3282	!
+;	3283	! OUTPUTS:
+;	3284	!	none
+;	3285	!
+;	3286	! IMPLICIT OUTPUTS:
+;	3287	!	none
+;	3288	!
+;	3289	! ROUTINE VALUE:
+;	3290	!	NOVALUE
+;	3291	!
+;	3292	! SIDE EFFECTS:
+;	3293	!	THE APPROPRIATE MODES ARE SET.
+;	3294	!--
+;	3295	
+;	3296		BEGIN
+;	3297		dbg$set_mod_lvl (.level);
+;	3298		dbg$set_new_mod (.token);
+;	3299		END;
+
+
+
+
+
+					 0000 00556 	    .ENTRY  DBG$SET_OVERS, Save nothing				      ; 3269
+				  04   AC  DD 00558 	    PUSHL   LEVEL						      ; 3297
+	      00000000G  EF	       01  FB 0055B 	    CALLS   #1, DBG$SET_MOD_LVL					      ;
+				  08   AC  DD 00562 	    PUSHL   TOKEN						      ; 3298
+	      00000000G  EF	       01  FB 00565 	    CALLS   #1, DBG$SET_NEW_MOD					      ;
+					   04 0056C 	    RET     							      ; 3269
+
+; Routine Size:  23 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 10
+; Digital Equipment Corporation
+;
+;	3300	GLOBAL ROUTINE dbg$show_param (semsp) : NOVALUE =
+;	3301	
+;	3302	!++
+;	3303	! FUNCTIONAL DESCRIPTION
+;	3304	!	Sets a context bit to say whether the show command is to be
+;	3305	!	applied to breakpoints, tracepoints, modes, modules, or scope.
+;	3306	!
+;	3307	! INPUTS:
+;	3308	!	semsp	- offset to current top of the parse stack. Points
+;	3309	!		  to the keyword SET, which is followed at 4 (parse_stack)
+;	3310	!		  by a keyword describing what is to be shown.
+;	3311	!
+;	3312	! IMPLICIT INPUTS:
+;	3313	!	The second token on the parse stack.
+;	3314	!	The show_table that contains each keyword_token that can be
+;	3315	!	specified with the SHOW verb, and its corresponding context bit.
+;	3316	!
+;	3317	! OUTPUTS:
+;	3318	!	none
+;	3319	!
+;	3320	! IMPLICIT OUTPUTS:
+;	3321	!	none
+;	3322	!
+;	3323	! ROUTINE VALUE:
+;	3324	!	novalue
+;	3325	!
+;	3326	! SIDE EFFECTS:
+;	3327	!	A bit is set in the context word
+;	3328	!--
+;	3329	
+;	3330		BEGIN
+;	3331	
+;	3332		LOCAL
+;	3333			offset;
+;	3334	
+;	3335	%IF dbg_act
+;     L 3336	%THEN
+;     U 3337		$fao_tt_out ('setting show bit, token is !SL', .dbg$gl_seman1 [.semsp + dbg$k_spos_one]);
+;     U 3338	%FI
+;	3339	
+;	3340		offset = 0;
+;	3341		REPEAT
+;	3342			BEGIN
+;	3343			IF .show_table [.offset, keyword_field] EQL 0
+;	3344			THEN EXITLOOP;
+;	3345			IF .dbg$gl_seman1 [.semsp + dbg$k_spos_one] EQL .show_table [.offset, keyword_field]
+;	3346			THEN
+;	3347				BEGIN
+;	3348				dbg$gl_context [.show_table [.offset, bit_field]] = TRUE;
+;	3349				EXITLOOP
+;	3350				END
+;	3351			ELSE offset = .offset + show_entry_len;
+;	3352			END;
+;	3353		END;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 10-1
+; Digital Equipment Corporation
+;
+
+
+
+
+					 000C 0056D 	    .ENTRY  DBG$SHOW_PARAM, Save R2,R3				      ; 3300
+				       50  D4 0056F 	    CLRL    OFFSET						      ; 3340
+		         51	  04   AC  D0 00571 	    MOVL    SEMSP, R1						      ; 3345
+		         52 00000000'EF40  9E 00575 1$:     MOVAB   SHOW_TABLE[OFFSET], R2				      ; 3343
+				       62  95 0057D 	    TSTB    (R2)						      ;
+				       1E  13 0057F 	    BEQL    3$							      ;
+	   62	         08	       00  ED 00581 	    CMPZV   #0, #8, (R2), DBG$GL_SEMAN1+8[R1]			      ; 3345
+			    00000000GEF41     00585									      ;
+				       0D  12 0058B 	    BNEQ    2$							      ;
+		         53	  01   A2  9A 0058D 	    MOVZBL  1(R2), R3						      ; 3348
+	   06 00000000G  EF	       53  E2 00591 	    BBSS    R3, DBG$GL_CONTEXT, 3$				      ;
+					   04 00599 	    RET     							      ; 3349
+		         50	       02  C0 0059A 2$:     ADDL2   #2, OFFSET						      ; 3351
+				       D6  11 0059D 	    BRB     1$							      ; 3340
+					   04 0059F 3$:     RET     							      ; 3300
+
+; Routine Size:  51 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 11
+; Digital Equipment Corporation
+;
+;	3354	ROUTINE switch_command : NOVALUE =
+;	3355	
+;	3356	!++
+;	3357	! FUNCTIONAL DESCRIPTION:
+;	3358	!	Cancels breakpoints, tracepoints, resignaling, modes, or
+;	3359	!	current scope settings.
+;	3360	!
+;	3361	! INPUTS:
+;	3362	!	none
+;	3363	!
+;	3364	! IMPLICIT INPUTS:
+;	3365	!	THE CONTEXT WORD CAN HAVE THE FOLLOWING BITS SET:
+;	3366	!		dbg$k_resignal	- SWITCH BREAKPOINTING ON ALL EXCEPTIONS.
+;	3367	!		dbg$k_all	- SWITCH ALL USER-SET DEFAULT MODES, AND
+;	3368	!				  ALL BREAKPOINTS, TRACEPOINTS, opcode tracing,
+;	3369	!				  and WATCHPOINTS.
+;	3370	!		dbg$k_break	- SWITCH ALL OR ONE USER-SET BREAKPOINT.
+;	3371	!		dbg$k_mode	- SWITCH USER SET DEFAULTS.
+;	3372	!		dbg$k_module	- cancel symbols for modules
+;	3373	!		dbg$k_scope	- cancel current scope path
+;	3374	!		dbg$k_all_break	- cancel all breakpoints
+;	3375	!		dbg$k_all_trace	- cancel all tracepoints and opcode tracing
+;	3376	!		dbg$k_trce_call	- cancel /CALL opcode tracing
+;	3377	!		dbg$k_trce_brch	- cancel /BRANCH opcode tracing
+;	3378	!		dbg$k_all_watch	- cancel all watchpoints
+;	3379	!
+;	3380	! OUTPUTS:
+;	3381	!	none
+;	3382	!
+;	3383	! IMPLICIT OUTPUTS:
+;	3384	!	none
+;	3385	!
+;	3386	! ROUTINE VALUE:
+;	3387	!	novalue
+;	3388	!
+;	3389	! SIDE EFFECTS:
+;	3390	!	THE CONTEXT OF DEBUG IS ALTERED ACCORDING TO THE SETTING OF THE
+;	3391	!	CONTEXT BITS.
+;	3392	!--
+;	3393	
+;	3394		BEGIN
+;	3395	
+;	3396	%IF dbg_act
+;     L 3397	%THEN
+;     U 3398		$fao_tt_out ('cancelling, context word is !XL', .dbg$gl_context);
+;     U 3399	%FI
+;	3400	
+;	3401		SELECTONE TRUE OF
+;	3402		SET
+;	3403	
+;	3404		[.dbg$gl_context [dbg$k_all]]:
+;	3405			BEGIN
+;	3406	
+;	3407			!++
+;	3408			! IF ALL WAS SPECIFIED WITHOUT QUALIFICATION, BREAKPOINTS,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 11-1
+; Digital Equipment Corporation
+;
+;	3409			! RESIGNALING OF EXCEPTIONS, AND DEFAULTS ARE ALL RESET TO
+;	3410			! THEIR STATE AT INITIALIZATION.  Tracepoint, watchpoints,
+;	3411			! and opcode tracing also get cancelled.
+;	3412			!--
+;	3413			dbg$cancel_bpt (all_bpts);
+;	3414			dbg$gl_runframe[dbg$v_trace_all] = FALSE;
+;	3415			dbg$set_optrace(CALLS_TOKEN);
+;	3416			dbg$set_optrace(BRANCH_TOKEN);
+;	3417			dbg$gb_resignal = TRUE;
+;	3418			dbg$set_mod_def ();
+;	3419			dbg$set_stp_def ();
+;	3420			dbg$save_scope (FALSE);
+;	3421			END;
+;	3422	
+;	3423		[.dbg$gl_context[dbg$k_break]]:
+;	3424			BEGIN
+;	3425			dbg$cancel_bpt (.dbg$gl_list [1]);
+;	3426			END;
+;	3427	
+;	3428		[.dbg$gl_context[dbg$k_trace]]:
+;	3429			BEGIN
+;	3430			dbg$cancel_bpt (.dbg$gl_list [1]);
+;	3431			END;
+;	3432	
+;	3433		[.dbg$gl_context[dbg$k_watch]]:
+;	3434			BEGIN
+;	3435			dbg$cancel_bpt (.dbg$gl_list [1]);
+;	3436			END;
+;	3437	
+;	3438		[.dbg$gl_context[dbg$k_mode]]:
+;	3439			BEGIN
+;	3440			dbg$set_mod_def ();
+;	3441			END;
+;	3442	
+;	3443	
+;	3444		[.dbg$gl_context[dbg$k_module]]:
+;	3445			BEGIN
+;	3446			dbg$canc_module ();
+;	3447			END;
+;	3448	
+;	3449		[.dbg$gl_context[dbg$k_resignal]]:
+;	3450			BEGIN
+;	3451			dbg$gb_resignal = TRUE;
+;	3452			END;
+;	3453	
+;	3454		[.dbg$gl_context[dbg$k_scope]]:
+;	3455			BEGIN
+;	3456			dbg$save_scope (FALSE);
+;	3457			END;
+;	3458	
+;	3459		[.dbg$gl_context[dbg$k_all_break]]:
+;	3460			BEGIN
+;	3461			dbg$cancel_bpt (-2);
+;	3462			END;
+;	3463	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 11-2
+; Digital Equipment Corporation
+;
+;	3464		[.dbg$gl_context[dbg$k_all_trace]]:
+;	3465			BEGIN
+;	3466			dbg$cancel_bpt (-3);
+;	3467			dbg$set_optrace(CALLS_TOKEN);
+;	3468			dbg$set_optrace(BRANCH_TOKEN);
+;	3469			dbg$gl_runframe[dbg$v_trace_all] = FALSE;
+;	3470			END;
+;	3471	
+;	3472		[.dbg$gl_context[dbg$k_all_watch]]:
+;	3473			BEGIN
+;	3474			dbg$cancel_bpt (-4);
+;	3475			END;
+;	3476	
+;	3477		[.dbg$gl_context[dbg$k_trce_call]]:
+;	3478			BEGIN
+;	3479			dbg$gl_runframe[dbg$v_trace_all] = dbg$set_optrace(CALLS_TOKEN);
+;	3480			END;
+;	3481	
+;	3482		[.dbg$gl_context[dbg$k_trce_brch]]:
+;	3483			BEGIN
+;	3484			dbg$gl_runframe[dbg$v_trace_all] = dbg$set_optrace(BRANCH_TOKEN);
+;	3485			END;
+;	3486	
+;	3487		[ otherwise ]:
+;	3488	%IF dbg_act
+;     L 3489	%THEN
+;     U 3490			$fao_tt_out ('No context changed, word is: !XL',.dbg$gl_context);
+;     U 3491	%FI
+;	3492	
+;	3493		TES;
+;	3494		END;
+
+
+
+
+
+					 0FC4 005A0 SWITCH_COMMAND:
+							    .WORD   Save R2,R6,R7,R8,R9,R10,R11				      ; 3354
+		         56 00000000G  EF  9E 005A2 	    MOVAB   DBG$SET_MOD_DEF, R6					      ;
+		         57 00000000G  EF  9E 005A9 	    MOVAB   DBG$GB_RESIGNAL, R7					      ;
+		         58 00000000G  EF  9E 005B0 	    MOVAB   DBG$CANCEL_BPT, R8					      ;
+		         59 00000000G  EF  9E 005B7 	    MOVAB   DBG$GL_RUNFRAME, R9					      ;
+		         5A 00000000G  EF  9E 005BE 	    MOVAB   DBG$SET_OPTRACE, R10				      ;
+		         5B 00000000G  EF  9E 005C5 	    MOVAB   DBG$GL_CONTEXT, R11					      ;
+	   26	    01   AB	       01  E1 005CC 	    BBC     #1, DBG$GL_CONTEXT+1, 1$				      ; 3401
+		         7E	       01  CE 005D1 	    MNEGL   #1, -(SP)						      ; 3413
+		         68	       01  FB 005D4 	    CALLS   #1, DBG$CANCEL_BPT					      ;
+		         50	       69  D0 005D7 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3414
+		    48   A0	       04  8A 005DA 	    BICB2   #4, 72(R0)						      ;
+				       09  DD 005DE 	    PUSHL   #9							      ; 3415
+		         6A	       01  FB 005E0 	    CALLS   #1, DBG$SET_OPTRACE					      ;
+				       06  DD 005E3 	    PUSHL   #6							      ; 3416
+		         6A	       01  FB 005E5 	    CALLS   #1, DBG$SET_OPTRACE					      ;
+		         67	       01  90 005E8 	    MOVB    #1, DBG$GB_RESIGNAL					      ; 3417
+		         66	       00  FB 005EB 	    CALLS   #0, DBG$SET_MOD_DEF					      ; 3418
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 11-3
+; Digital Equipment Corporation
+;
+	      00000000G  EF	       00  FB 005EE 	    CALLS   #0, DBG$SET_STP_DEF					      ; 3419
+				       37  11 005F5 	    BRB     7$							      ; 3420
+	   09	         6B	       02  E0 005F7 1$:     BBS     #2, DBG$GL_CONTEXT, 2$				      ; 3401
+	   05	         6B	       01  E0 005FB 	    BBS     #1, DBG$GL_CONTEXT, 2$				      ;
+	   08	    01   AB	       06  E1 005FF 	    BBC     #6, DBG$GL_CONTEXT+1, 3$				      ;
+			    00000000G  EF  DD 00604 2$:     PUSHL   DBG$GL_LIST+4					      ; 3435
+				       5A  11 0060A 	    BRB     11$							      ;
+		         04	       6B  E9 0060C 3$:     BLBC    DBG$GL_CONTEXT, 4$					      ; 3401
+		         66	       00  FB 0060F 	    CALLS   #0, DBG$SET_MOD_DEF					      ; 3440
+					   04 00612 	    RET     							      ; 3401
+	   08	    01   AB	       04  E1 00613 4$:     BBC     #4, DBG$GL_CONTEXT+1, 5$				      ;
+	      00000000G  EF	       00  FB 00618 	    CALLS   #0, DBG$CANC_MODULE					      ; 3446
+					   04 0061F 	    RET     							      ; 3401
+	   04	    01   AB	       02  E1 00620 5$:     BBC     #2, DBG$GL_CONTEXT+1, 6$				      ;
+		         67	       01  90 00625 	    MOVB    #1, DBG$GB_RESIGNAL					      ; 3451
+					   04 00628 	    RET     							      ; 3401
+	   0A	    01   AB	       03  E1 00629 6$:     BBC     #3, DBG$GL_CONTEXT+1, 8$				      ;
+				       7E  D4 0062E 7$:     CLRL    -(SP)						      ; 3456
+	      00000000G  EF	       01  FB 00630 	    CALLS   #1, DBG$SAVE_SCOPE					      ;
+					   04 00637 	    RET     							      ; 3401
+		         05	  02   AB  E9 00638 8$:     BLBC    DBG$GL_CONTEXT+2, 9$				      ;
+		         7E	       02  CE 0063C 	    MNEGL   #2, -(SP)						      ; 3461
+				       25  11 0063F 	    BRB     11$							      ;
+	   18	    02   AB	       02  E1 00641 9$:     BBC     #2, DBG$GL_CONTEXT+2, 10$				      ; 3401
+		         7E	       03  CE 00646 	    MNEGL   #3, -(SP)						      ; 3466
+		         68	       01  FB 00649 	    CALLS   #1, DBG$CANCEL_BPT					      ;
+				       09  DD 0064C 	    PUSHL   #9							      ; 3467
+		         6A	       01  FB 0064E 	    CALLS   #1, DBG$SET_OPTRACE					      ;
+				       06  DD 00651 	    PUSHL   #6							      ; 3468
+		         6A	       01  FB 00653 	    CALLS   #1, DBG$SET_OPTRACE					      ;
+		         50	       69  D0 00656 	    MOVL    DBG$GL_RUNFRAME, R0					      ; 3469
+		    48   A0	       04  8A 00659 	    BICB2   #4, 72(R0)						      ;
+					   04 0065D 	    RET     							      ; 3401
+	   07	    02   AB	       01  E1 0065E 10$:    BBC     #1, DBG$GL_CONTEXT+2, 12$				      ;
+		         7E	       04  CE 00663 	    MNEGL   #4, -(SP)						      ; 3474
+		         68	       01  FB 00666 11$:    CALLS   #1, DBG$CANCEL_BPT					      ;
+					   04 00669 	    RET     							      ; 3401
+		         07	  01   AB  E9 0066A 12$:    BLBC    DBG$GL_CONTEXT+1, 13$				      ;
+		         52	       69  D0 0066E 	    MOVL    DBG$GL_RUNFRAME, R2					      ; 3479
+				       09  DD 00671 	    PUSHL   #9							      ;
+				       0A  11 00673 	    BRB     14$							      ;
+	   0E	    02   AB	       03  E1 00675 13$:    BBC     #3, DBG$GL_CONTEXT+2, 15$				      ; 3401
+		         52	       69  D0 0067A 	    MOVL    DBG$GL_RUNFRAME, R2					      ; 3484
+				       06  DD 0067D 	    PUSHL   #6							      ;
+		         6A	       01  FB 0067F 14$:    CALLS   #1, DBG$SET_OPTRACE					      ;
+	   01	         02	       50  F0 00682 	    INSV    R0, #2, #1, 72(R2)					      ;
+				  48   A2     00686									      ;
+					   04 00688 15$:    RET     							      ; 3354
+
+; Routine Size:  233 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:59:23	DBB3:[DEBUG.SRC]DBGACT.B32;8					Page 12
+; Digital Equipment Corporation
+;
+;	3495	END
+;	3496	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$PLIT       	    36  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$CODE       	  1673  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         7         0       111
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      667	00:33.8		01:05.4
+;	FLOWAN	       29	00:05.1		00:10.5
+;	DELAY	       25	00:02.3		00:03.9
+;	TNBIND	       32	00:02.6		00:04.3
+;	CODE	       52	00:05.8		00:09.8
+;	FINAL	      110	00:12.4		00:21.1
+;	Total	      915	01:02.0		01:55.0
+
+; Size:		1673 code + 36 data bytes
+; Run Time:	01:02.6
+; Elapsed Time:	01:55.8
+; Memory Used:	345 pages
+; Compilation Complete

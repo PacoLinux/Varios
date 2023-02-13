@@ -1,0 +1,994 @@
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (2)     100  DECLARATIONS
+   (3)     100  LOCK/UNLOCK PAGES IN WORKING SET/MEMORY
+   (4)     100  UNLOCK GLOBAL PAGE FROM WORKING SET
+   (5)     100  LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY
+   (7)     100  SWAPLOCK - INTERFACE TO SWAPWSLE FROM LOCK/UNLO
+   (8)     100  SWAPWSLE - SWAP WORKING SET LIST ENTRIES
+   (10)    100  SCNWSLX - SCAN FOR WORKING SET LIST INDEX
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   1
+X0201                                                                                                                            (1)
+
+                                     0000   100 	.TITLE	SYSLKWSET - LOCK/UNLOCK FROM WORKING SET/MEMORY
+                                     0000   200 	.IDENT	/X0201/
+                                     0000   300 ;
+                                     0000   400 ; COPYRIGHT (C) 1978
+                                     0000   500 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000   600 ;
+                                     0000   700 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000   800 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000   900 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000  1000 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000  1100 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000  1200 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000  1300 ; REMAIN IN DEC.
+                                     0000  1400 ;
+                                     0000  1500 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000  1600 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000  1700 ; CORPORATION.
+                                     0000  1800 ;
+                                     0000  1900 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000  2000 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000  2100 
+                                     0000  2200 ;++
+                                     0000  2300 ; FACILITY:
+                                     0000  2400 ;
+                                     0000  2500 ; ABSTRACT:
+                                     0000  2600 ;
+                                     0000  2700 ; ENVIRONMENT:
+                                     0000  2800 ;
+                                     0000  2900 ; AUTHOR: PETER H. LIPMAN	, CREATION DATE: 24-APR-78
+                                     0000  3000 ;
+                                     0000  3100 ; MODIFIED BY:
+                                     0000  3200 ;
+                                     0000  3300 ;	, : VERSION
+                                     0000  3400 ; 01	- 
+                                     0000  3500 ;--
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   2
+X0201           DECLARATIONS                                                                                                     (2)
+
+                                     0000   100 	.SBTTL	DECLARATIONS
+                                     0000   200 ;
+                                     0000   300 ; INCLUDE FILES:
+                                     0000   400 ;
+                                     0000   410 	$IPLDEF				;PROCESSOR PRIORITY LEVELS
+                                     0000   420 	$PCBDEF				;PROCESS CONTROL BLOCK DEFINITIONS
+                                     0000   430 	$PFNDEF				;PAGE FRAME NUMBER DATA BASE
+                                     0000   440 	$PHDDEF				;PROCESS HEADER DEFINITIONS
+                                     0000   450 	$PRDEF				;PROCESSOR REGISTER DEFINTIONS
+                                     0000   460 	$PRVDEF				;PRIVILEGE BIT DEFINITIONS
+                                     0000   470 	$PTEDEF				;PAGE TABLE ENTRY DEFINITIONS
+                                     0000   490 	$SSDEF				;SYSTEM STATUS CODE DEFINTIONS
+                                     0000   500 	$VADEF				;VIRTUAL ADDRESS VIELDS
+                                     0000   510 	$WSLDEF				;WORKING SET LIST ENTRY DEFINTIONS
+                                     0000  2200 ;
+                                     0000  2300 ; EXTERNAL SYMBOLS:
+                                     0000  2400 ;
+                                     0000  2500 ;
+                                     0000  2600 ; MACROS:
+                                     0000  2700 ;
+                                     0000  2800 ;
+                                     0000  2900 ; EQUATED SYMBOLS:
+                                     0000  3000 ;
+                                     0000  3100 ; OFFSET FROM AP
+                                     0000  3200 ;
+                           00000004  0000  3300 	INADR		= 4		;OFFSET TO INPUT RANGE
+                           00000008  0000  3500 	RETADR		= 8		;OFFSET TO RETURN RANGE
+                           0000000C  0000  3600 	ACMODE		= 12		;ACCESS MODE
+                                     0000  5610 ;
+                                     0000  5620 ; BIT DEFINITIONS IN R8 CONTROL LONG WORD
+                                     0000  5630 ;
+                                     0000  5640 	_VIELD	LCK,8,<-
+                                     0000  5650 		<LCKPAG,,M>,-		;SET IF LOCKING, CLEAR IF UNLOCKING
+                                     0000  5660 		<GLOBAL,,M> -		;SET IF GLOBAL PAGE
+                                     0000  5670 		>
+                                     0000  5700 ;
+                                     0000  5800 ; OWN STORAGE:
+                                     0000  5900 ;
+                                 00000000  6000 	.PSECT	$$$210,LONG
+                                     0000  6100 
+                                     0000  6200 MMG$GL_PFNLOCK::
+                           40000000  0000  6300 	.LONG	1@30			;DOWN COUNTER OF PAGES REMAINING
+                                     0004  6400 					;THAT MAY BE LOCKED IN MEMORY
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   3
+X0201           LOCK/UNLOCK PAGES IN WORKING SET/MEMORY                                                                          (3)
+
+                                     0004   100 	.SBTTL	LOCK/UNLOCK PAGES IN WORKING SET/MEMORY
+                                     0004   200 ;++
+                                     0004   300 ; FUNCTIONAL DESCRIPTION:
+                                     0004   400 ;
+                                     0004   500 ;	THE LKWSET SYSTEM SERVICE LOCKS THE SPECIFIED RANGE OF PAGES
+                                     0004   600 ; INTO THE WORKING SET.  THE PAGES LOCKED ARE NO LONGER CANDIDATES
+                                     0004   700 ; FOR PAGE REPLACEMENT AND ARE THUS GUARANTEED RESIDENT IN MEMORY WHEN
+                                     0004   800 ; THE PROCESS IS IN THE BALANCE SET.
+                                     0004   900 ;	SINCE SOME REASONABLE NUMBER OF DYNAMIC PAGES IS REQUIRED IN ORDER
+                                     0004  1000 ; TO GUARANTEE THAT AN INSTRUCTION CAN RUN TO COMPLETION, THE NUMBER OF
+                                     0004  1100 ; PAGES THAT MAY BE LOCKED IN THE WORKING SET IS LIMITED.
+                                     0004  1200 ;	THE ULWSET SYSTEM SERVICE UNLOCK THE PAGES FROM THE WORKING SET.
+                                     0004  1300 ;
+                                     0004  1400 ; CALLING SEQUENCE:
+                                     0004  1500 ;
+                                     0004  1600 ;	CALLG	ARGLIST,G^SYS$LKWSET
+                                     0004  1700 ;	CALLG	ARGLIST,G^SYS$ULWSET
+                                     0004  1720 ;	CALLG	ARGLIST,G^SYS$LCKPAG
+                                     0004  1740 ;	CALLG	ARGLIST,G^SYS$ULKPAG
+                                     0004  1800 ;
+                                     0004  1900 ; INPUT PARAMETERS:
+                                     0004  2000 ;
+                                     0004  2100 ;	INADR(AP) = ADDRESS OF 2 LONG WORDS THE 1ST OF WHICH SPECIFIES
+                                     0004  2200 ;		THE STARTING VIRTUAL ADDRESS TO LOCK/UNLOCK, THE 2ND SPECIFIES
+                                     0004  2300 ;		THE ENDING VIRTUAL ADDRESS TO LOCK/UNLOCK (INCLUSIVE).
+                                     0004  2400 ;	RETADR(AP) = ADDRESS OF A 2 LONGWORD ARRAY INTO WHICH IS RETURNED
+                                     0004  2500 ;		THE STARTING AND ENDING VIRTUAL ADDRESSES (INCLUSIVE)
+                                     0004  2600 ;		OF THE PAGES JUST LOCKED/UNLOCKED
+                                     0004  2700 ;	ACMODE(AP) = THE ACCESS MODE (MAXIMIZED WITH CALLING MODE)
+                                     0004  2800 ;		ON BEHALF OF WHICH THE LOCK/UNLOCK IS TO BE DONE
+                                     0004  2900 ;		THIS MODE MUST BE AT LEAST AS PRIVILEGED AS THE MODE
+                                     0004  3000 ;		OF THE PAGE OWNER.
+                                     0004  3100 ;
+                                     0004  3200 ; IMPLICIT INPUTS:
+                                     0004  3300 ;
+                                     0004  3400 ;	NONE
+                                     0004  3500 ;
+                                     0004  3600 ; OUTPUT PARAMETERS:
+                                     0004  3700 ;
+                                     0004  3800 ;	R0 = SYSTEM STATUS CODE
+                                     0004  3900 ;
+                                     0004  4000 ; IMPLICIT OUTPUTS:
+                                     0004  4100 ;
+                                     0004  4200 ;	NONE
+                                     0004  4300 ;
+                                     0004  4400 ; COMPLETION CODES:
+                                     0004  4500 ;
+                                     0004  4600 ;	SS$_WASSET			;PREVIOUS STATE OF LOCK WAS SET
+                                     0004  4700 ;	SS$_WASCLR			;PREVIOUS STATE OF LOCK WAS CLEAR
+                                     0004  4800 ;	SS$_ACCVIO			;ACCESS VIOLATION
+                                     0004  4900 ;	SS$_NOPRIV			;NO PRIVILEGE TO LOCK/UNLOCK PAGE
+                                     0004  5000 ;	SS$_LKWSETFUL			;LOCKED PORTION OF WORKING SET IS FULL
+                                     0004  5050 ;	SS$_LCKPAGFUL			;NO MORE PAGES MAY BE LOCKED IN MEMORY
+                                     0004  5100 ;	SS$_PAGOWNVIO			;PAGE OWNER VIOLATION
+                                     0004  5200 ;
+                                     0004  5300 ; SIDE EFFECTS:
+                                     0004  5400 ;
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   4
+X0201           LOCK/UNLOCK PAGES IN WORKING SET/MEMORY                                                                          (3)
+
+                                     0004  5500 ;	NONE
+                                     0004  5600 ;
+                                     0004  5700 ;--
+                                     0004  5800 
+                                     0004  5900 ;
+                                     0004  6000 ; **********************************************************************
+                                     0004  6100 ;
+                                     0004  6200 ; **************** THE FOLLOWING CODE MAY BE PAGED *****************
+                                     0004  6300 ;
+                                 00000000  6400 	.PSECT	Y$EXEPAGED
+                                     0000  6500 ;
+                                     0000  6600 ; **********************************************************************
+                                     0000  6700 ;
+                                     0000  6800 	.ENABL	LSB
+                                     0000  6900 
+                               01FC' 0000  7000 	.ENTRY	EXE$ULWSET,^M<R2,R3,R4,R5,R6,R7,R8>
+                                     0002  7100 
+            58            20     9A  0002  7200 	MOVZBL	#WSL$M_WSLOCK,R8	;UNLOCKING FROM WORKING SET
+                          05     11  0005  7300 	BRB	10$
+                                     0007  7400 
+                               01FC' 0007  7500 	.ENTRY	EXE$ULKPAG,^M<R2,R3,R4,R5,R6,R7,R8>
+                                     0009  7600 
+            58            10     9A  0009  7700 	MOVZBL	#WSL$M_PFNLOCK,R8	;UNLOCKING FROM MEMORY
+            50            09     3C  000C  7800 10$:	MOVZWL	#SS$_WASSET,R0		;INIT TO 'PAGES WERE LOCKED'
+                          1B     11  000F  7900 	BRB	30$
+                                     0011  8000 
+                               01FC' 0011  8100 	.ENTRY	EXE$LKWSET,^M<R2,R3,R4,R5,R6,R7,R8>
+                                     0013  8200 
+            58            20     9A  0013  8300 	MOVZBL	#WSL$M_WSLOCK,R8	;LOCKING IN WORKING SET
+                          0D     11  0016  8400 	BRB	20$
+                                     0018  8500 
+                               01FC' 0018  8600 	.ENTRY	EXE$LCKPAG,^M<R2,R3,R4,R5,R6,R7,R8>
+                                     001A  8700 
+            50            24     3C  001A  8710 	MOVZWL	#SS$_NOPRIV,R0		;ASSUME CANNOT LOCK PAGES IN MEMORY
+                                     001D  8720 	IFNPRIV	PSWAPM,40$		;BRANCH IF CANNOT LOCK PAGES IN MEMORY?
+            58            10     9A  0022  8800 	MOVZBL	#WSL$M_PFNLOCK,R8	;LOCKING IN MEMORY
+            50            01     3C  0025  8900 20$:	MOVZWL	#SS$_WASCLR,R0		;INIT TO 'PAGES WERE UNLOCKED'
+            58            08     E2  0028  9000 	BBSS	#LCK_V_LCKPAG,R8,30$	;SET LOCK FLAG
+                          00         002B       
+            56   00000011'EF     DE  002C  9100 30$:	MOVAL	MMG$LCKULKPAG,R6	;ADDRESS OF PAGE LOCK/UNLOCK ROUTINE
+            10            50     F0  0033  9200 	INSV	R0,#16,#16,R8		;INITIAL STATUS IN HIGH 16 BITS
+            58            10         0036       
+            5E            00'    C2  0038  9300 	SUBL	S^#CDL$C_LENGTH,SP	;RESERVE SCRATCH AREA
+                          FFC2'  30  003B  9400 	BSBW	MMG$CRECOM1		;COMMON CREATE CODE
+                                 04  003E  9500 40$:	RET
+                                     003F  9600 
+                                     003F  9700 	.DSABL	LSB
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   5
+X0201           UNLOCK GLOBAL PAGE FROM WORKING SET                                                                              (4)
+
+                                     003F   100 	.SBTTL	UNLOCK GLOBAL PAGE FROM WORKING SET
+                                     003F   200 ;
+                                     003F   300 ; CALLING SEQUENCE:
+                                     003F   400 ;
+                                     003F   500 ;	BSBW	MMG$ULKGBLWSLE
+                                     003F   600 ;
+                                     003F   700 ; INPUTS:
+                                     003F   800 ;
+                                     003F   850 ;	IPL = SYNCH
+                                     003F   900 ;	R1 = WORKING SET LIST INDEX OF ENTRY TO UNLOCK (HIGH 16 BITS = 0)
+                                     003F  1000 ;	R2 = WORKING SET LIST ENTRY (VA AND PAGE TYPE)
+                                     003F  1100 ;	R3 = SYSTEM VIRTUAL ADDRESS OF PAGE TABLE ENTRY
+                                     003F  1200 ;	R4 = PROCESS CONTROL BLOCK ADDRESS
+                                     003F  1300 ;	R5 = PROCESS HEADER ADDRESS (P1 SPACE OK)
+                                     003F  1500 ;
+                                     003F  1600 ; OUTPUTS:
+                                     003F  1700 ;
+                                     003F  1800 ;	R2 PRESERVED
+                                     003F  1900 ;	R8 IS ALTERED
+                                     003F  2000 ;	PHD$W_WSDYN(R5) = NEW WORKING SET LIST INDEX FOR THE UNLOCKED PAGE
+                                     003F  2100 ;
+                                     003F  2120 ; **********************************************************************
+                                     003F  2130 ;
+                                     003F  2140 ; **************** THE FOLLOWING CODE MUST BE RESIDENT *****************
+                                     003F  2150 ;
+                                 00000000  2160 	.PSECT	$MMGCOD
+                                     0000  2170 ;
+                                     0000  2180 ; **********************************************************************
+                                     0000  2190 ;
+                                     0000  2200 MMG$ULKGBLWSLE::
+                          07     DD  0000  2300 	PUSHL	#IPL$_SYNCH		;SAVE IPL FOR ENBINT TO RESTORE
+            7E            51     7D  0002  2400 	MOVQ	R1,-(SP)		;PUSHL VA, PUSHL WSLX
+            50            63     D0  0005  2600 	MOVL	(R3),R0			;GET PAGE TABLE ENTRY
+            58   00090030 8F     D0  0008  2620 	MOVL	#<SS$_WASSET @16 ! -	;SET UNLOCK PARAMETER
+                                     000F  2640 		WSL$M_WSLOCK ! WSL$M_PFNLOCK>,R8 ;IN R8
+                          3D     11  000F  2700 	BRB	ULKGBLWSLE		;JOIN COMMON LOCK/UNLOCK CODE
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   6
+X0201           LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY                                                                    (5)
+
+                                     0011   100 	.SBTTL	LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY
+                                     0011   200 ;++
+                                     0011   300 ; FUNCTIONAL DESCRIPTION:
+                                     0011   400 ;
+                                     0011   500 ;
+                                     0011   600 ; CALLING SEQUENCE:
+                                     0011   700 ;
+                                     0011   800 ;	BSBW	MMG$LCKULKPAG
+                                     0011  1000 ;
+                                     0011  1100 ; INPUT PARAMETERS:
+                                     0011  1200 ;
+                                     0011  1300 ;	R0	  = ACCESS MODE TO CHECK AGAINST PAGE OWNER
+                                     0011  1310 ;	R2	  = VIRTUAL ADDRESS
+                                     0011  1320 ;	R4	  = PCB ADDRESS
+                                     0011  1330 ;	R5	  = PROCESS HEADER ADDRESS - P1 OR SYSTEM SPACE
+                                     0011  1340 ;	R6	  = COUNT - 1 OF PAGES REMAINING TO  BE DELETED INCLUDING THIS ONE
+                                     0011  1350 ;	R7	  = +^X200 IF GOING FORWARD IN ADDRESS SPACE
+                                     0011  1360 ;	  	  = -^X200 IF GOING BACKWARDS IN ADDRESS SPACE
+                                     0011  1700 ;	R8<0:7>	  = WSL$M_WSLOCK IF LOCKING IN WORKING SET
+                                     0011  1710 ;		  = WSL$M_PFNLOCK IF LOCKING IN PHYSICAL MEMORY
+                                     0011  1720 ;		  = EITHER OR BOTH OF THE ABOVE IF UNLOCKING
+                                     0011  1730 ;	R8<8>	  = LCK_V_LCKPAG SET IF LOCKING, CLEAR IF UNLOCKING
+                                     0011  1740 ;	R8<16:31> = SS$_WASSET OR SS$_WASCLR
+                                     0011  1800 ;
+                                     0011  1900 ; IMPLICIT INPUTS:
+                                     0011  2000 ;
+                                     0011  2100 ;	NONE
+                                     0011  2200 ;
+                                     0011  2300 ; OUTPUT PARAMETERS:
+                                     0011  2400 ;
+                                     0011  2500 ;	R0	  = SYSTEM STATUS CODE (INCLUDING 'WAS SET' BIT IF SUCCESSFUL)
+                                     0011  2600 ;	R2	  - PRESERVED
+                                     0011  2700 ;	R8<16:31> = SS$_WASSET IF LOCKING AND THE LOCK HAD ALREADY BEEN SET
+                                     0011  2800 ;		  = SS$_WASCLR IF UNLOCKING AND THE LOCK HAD ALREADY BEEN CLEAR
+                                     0011  2900 ;		  - OTHERWISE IT IS PRESERVED.
+                                     0011  3000 ;
+                                     0011  3100 ; IMPLICIT OUTPUTS:
+                                     0011  3200 ;
+                                     0011  3300 ;	NONE
+                                     0011  3400 ;
+                                     0011  3500 ; COMPLETION CODES:
+                                     0011  3600 ;
+                                     0011  3700 ;	SS$_WASSET			;IF LOCKING, WAS ALREADY LOCKED
+                                     0011  3800 ;	SS$_WASCLR			;IF UNLOCKING, WAS ALREADY UNLOCKED
+                                     0011  3900 ;	SS$_ACCVIO			;ACCESS VIOLATION
+                                     0011  4000 ;	SS$_PAGOWNVIO			;PAGE OWNER VIOLATION
+                                     0011  4100 ;	SS$_LKWSETFUL			;IF LOCKING, LOCKED PORTION OF WORK SET FULL
+                                     0011  4200 ;
+                                     0011  4300 ; SIDE EFFECTS:
+                                     0011  4400 ;
+                                     0011  4500 ;	NONE
+                                     0011  4600 ;
+                                     0011  4700 ;--
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   7
+X0201           LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY                                                                    (6)
+
+                                     0011   100 ;
+                                     0011   200 ; **********************************************************************
+                                     0011   300 ;
+                                     0011   400 ; **************** THE FOLLOWING CODE MUST BE RESIDENT *****************
+                                     0011   500 ;
+                                 00000011   600 	.PSECT	$MMGCOD
+                                     0011   700 ;
+                                     0011   800 ; **********************************************************************
+                                     0011   900 ;
+                                     0011  1000 	.ENABL	LSB
+                                     0011  1100 
+                                     0011  1200 MMG$LCKULKPAG::
+                          51     D4  0011  1300 	CLRL	R1			;NO WORKING SET LIST INDEX INPUT
+            58            09     E4  0013  1400 	BBSC	#LCK_V_GLOBAL,R8,15$	;ASSUME NOT A GLOBAL PAGE
+                          00         0016       
+            01            00     0C  0017  1500 15$:	PROBER	#0,#1,(R2)		;IS THIS PAGE ACCESSIBLE?
+                          62         001A       
+                          04     12  001B  1600 	BNEQ	30$			;BRANCH IF YES
+            50            0C     3C  001D  1700 	MOVZWL	#SS$_ACCVIO,R0		;ACCESS VIOLATION IF NOT
+                                 05  0020  1800 	RSB
+                          62     95  0021  1900 30$:	TSTB	(R2)			;FAULT THE PAGE INTO THE WORKING SET
+                                     0023  2000 ;
+                                     0023  2100 ; R0 = ACCESS MODE FOR PAGE OWNER CHECK
+                                     0023  2200 ; R1 = 0 INDICATING NO INPUT WORKING SET LIST INDEX
+                                     0023  2300 ; R2 = VIRTUAL ADDRESS
+                                     0023  2400 ;
+                                     0023  2500 	DSBINT	#IPL$_SYNCH		;RAISE TO SYNCH TO INTERLOCK PFN DATA
+                                     0029  2600 					;PUSHING CALLERS IPL
+                          07     BB  0029  2700 	PUSHR	#^M<R0,R1,R2>		;PUSH VA, LOCK/UNLOCK FLAG, ACCESS MODE
+                          FFD2'  30  002B  2800 	BSBW	MMG$SVAPTECHK		;RETURN R3 = SYS VA OF PAGE TABLE ENTRY
+            50            63     D0  002E  2900 	MOVL	(R3),R0			;R0 = PAGE TABLE ENTRY
+                          14     19  0031  3000 	BLSS	50$			;BRANCH IF IT'S VALID
+                                     0033  3100 ;
+                                     0033  3200 ; PAGE NOT VALID!!  MUST HAVE SWAPPED JUST AFTER TOUCHING IT, TRY AGAIN
+                                     0033  3300 ;
+                          07     BA  0033  3400 	POPR	#^M<R0,R1,R2>
+                                     0035  3500 	ENBINT				;SO WE CAN FAULT IT AGAIN
+                          E7     11  0038  3600 	BRB	30$			;TOUCH THE PAGE AGAIN
+                                     003A  3700 
+            50       01EC 8F     3C  003A  3800 40$:	MOVZWL	#SS$_PAGOWNVIO,R0	;PAGE OWNER VIOLATION
+                          03     11  003F  3900 	BRB	44$
+            50            24     3C  0041  4000 42$:	MOVZWL	#SS$_NOPRIV,R0		;NO PRIVILEGE
+                          00F5   31  0044  4100 44$:	BRW	110$
+                                     0047  4200 ;
+                                     0047  4300 ; THIS PAGE IS NOW VALID AND IN THE WORKING SET
+                                     0047  4400 ;
+            02            17     ED  0047  4500 50$:	CMPZV	#PTE$V_OWN,#PTE$S_OWN,R0,(SP)+ ;CHECK PAGE OWNERSHIP
+            8E            50         004A       
+                          EC     19  004C  4600 	BLSS	40$			;BRANCH IF OWNER VIOLATION
+                                     004E  4700 ULKGBLWSLE:
+            15            00     EF  004E  4800 	EXTZV	#PTE$V_PFN,#PTE$S_PFN,R0,R0 ;R0 = PAGE FRAME NUMBER
+            50            50         0051       
+            53       00C8 C5     C2  0053  4900 	SUBL	PHD$L_P0BR(R5),R3	;BYTE OFFSET OF PAGE TABLE ENTRY
+            53         F7 8F     78  0058  5000 	ASHL	#-9,R3,R2		;BYTE INDEX OF CONTAINING PAGE TABLE
+                          52         005C       
+                                     005D  5100 
+                                     005D  5200 	ASSUME	PFN$C_PROCESS EQ 0
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   8
+X0201           LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY                                                                    (6)
+
+                                     005D  5300 	ASSUME	PFN$C_SYSTEM  EQ 1
+                                     005D  5400 	ASSUME	PFN$C_GLOBAL  EQ 2
+                                     005D  5500 	ASSUME	PFN$C_GBLWRT  EQ 3
+                                     005D  5600 	ASSUME	PFN$C_PPGTBL  EQ 4
+                                     005D  5700 	ASSUME	PFN$C_GPGTBL  EQ 5
+                                     005D  5800 
+                          00     EE  005D  5900 	EXTV	#PFN$V_PAGTYP,#PFN$S_PAGTYP,- ;SEE IF PAGE IS A TYPE
+       0000'DF40          03         005F  6000 		@W^PFN$AB_TYPE[R0],R1	;THAT CAN BE LOCKED
+                          51         0064       
+                          2F     13  0065  6100 	BEQL	56$			;PROCESS PAGES MAY BE LOCKED
+            58            09     E2  0067  6200 	BBSS	#LCK_V_GLOBAL,R8,52$	;PAGE IS GLOBAL (OR ERROR)
+                          00         006A       
+            02            51     D1  006B  6300 52$:	CMPL	R1,#PFN$C_GLOBAL	;SEE IF PAGE IS GLOBAL OR GLOBAL WRITE
+                          06     13  006E  6400 	BEQL	54$			;BRANCH IF GLOBAL READ ONLY
+                          CF     19  0070  6500 	BLSS	42$			;BRANCH IF PAGE TYPE NOT LOCKABLE
+                                     0072  6600 ;
+                                     0072  6700 ; PAGE IS GLOBAL WRITE, MAY BE LOCKED IN MEMORY, BUT NOT IN WORKING SET BECAUSE
+                                     0072  6800 ; THE SWAPPER DROPS GLOBAL WRITABLE PAGES FROM THE WORKING SET ON OUTSWAP
+                                     0072  6900 ;
+            58            05     E0  0072  7000 	BBS	#WSL$V_WSLOCK,R8,42$	;CANNOT LOCK GLOBAL WRITE IN WORKING SET
+                          CB         0075       
+            51            6E     3C  0076  7100 54$:	MOVZWL	(SP),R1			;NORMALLY 0, WSLX IF ULKGBLWSLE
+                          21     12  0079  7200 	BNEQ	57$			;BRANCH IF IT IS A WSLX
+                                     007B  7300 ;
+                                     007B  7400 ; NEED TO SCAN FOR THE WORKING SET LIST INDEX SINCE THE WSLX ARRAY
+                                     007B  7500 ; DOES NOT CONTAIN THE BACKPOINTER FOR GLOBAL PAGES
+                                     007B  7600 ;
+                          52     DD  007B  7700 	PUSHL	R2			;SAVE INDEX OF PAGE TABLE CONTAINING THIS PAGE
+            52         08 AE     D0  007D  7800 	MOVL	8(SP),R2		;RECOVER VIRTUAL ADDRESS
+                          011F   30  0081  7900 	BSBW	MMG$SCNWSLX		;SCAN FOR WORKING SET LIST INDEX
+                                     0084  8000 ;
+                                     0084  8100 ; MAY HAVE BEEN SWAPPED, RECALCULATE PTE ADR, REFETCH PFN
+                                     0084  8200 ;
+                          00     EF  0084  8300 	EXTZV	#PTE$V_PFN,#PTE$S_PFN,- ;REFETCH PFN GIVEN THE
+       00C8 D543          15         0086  8400 		@PHD$L_P0BR(R5)[R3],R0	;BYTE OFFSET OF PTE IN PAGE TABLE
+                          50         008B       
+                          04     BA  008C  8500 	POPR	#^M<R2>			;RECOVER SAVE R2
+                          51     D5  008E  8600 	TSTL	R1			;FOUND THE WORKING SET LIST INDEX?
+                          0A     12  0090  8700 	BNEQ	57$			;BRANCH IF YES
+                                     0092  8800 ;
+                                     0092  8900 ; ERROR IF NOT IN WORKING SET LIST
+                                     0092  9000 ;
+                                     0092  9100 	BUG_CHECK GBLWSLXERR,FATAL	;GLOBAL PAGE NOT FOUND IN WS
+                                     0096  9200 ;
+                                     0096  9300 ; PROCESS PAGE, GET WORKING SET LIST INDEX FROM PFN DATA BASE
+                                     0096  9400 ;
+            51       0000'DF40   3C  0096  9500 56$:	MOVZWL	@W^PFN$AW_WSLX[R0],R1	;R1 = INDEX TO WORKING SET LIST ENTRY
+            53            6541   DE  009C  9600 57$:	MOVAL	(R5)[R1],R3		;R3 = ADDRESS OF ENTRY
+                                     00A0  9700 ;
+                                     00A0  9800 ; R0 = PAGE FRAME NUMBER
+                                     00A0  9900 ; R1 = WORKING SET LIST INDEX FOR THIS PAGE
+                                     00A0 10000 ; R2 = INDEX OF PAGE TABLE CONTAINING THIS PAGE
+                                     00A0 10100 ; R3 = WORKING SET LIST ENTRY ADDRESS
+                                     00A0 10200 ; 0(SP) = SCRATCH
+                                     00A0 10300 ; 4(SP) = SAVED VIRTUAL ADDRESS
+                                     00A0 10400 ;
+            58            08     E1  00A0 10500 58$:	BBC	#LCK_V_LCKPAG,R8,80$	;BRANCH IF UNLOCKING
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page   9
+X0201           LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY                                                                    (6)
+
+                          59         00A3       
+                                     00A4 10600 ;
+                                     00A4 10700 ; LOCK THE PAGE IN THE WORKING SET LIST
+                                     00A4 10800 ;
+            63            58     93  00A4 10900 	BITB	R8,(R3)			;ALREADY LOCKED?
+                          07     13  00A7 11000 	BEQL	60$			;BRANCH IF NOT
+            10            09     F0  00A9 11100 	INSV	#SS$_WASSET,#16,#16,R8	;PREVIOUS STATE OF LOCK WAS SET
+            58            10         00AC       
+                          76     11  00AE 11200 	BRB	96$			;NOTE INSV CLEARS Z BIT
+                                 8B  00B0 11300 60$:	BICB3	#^C<WSL$M_WSLOCK ! WSL$M_PFNLOCK>,- ;SAVE THE CURRENT STATE
+            63         CF 8F         00B1 11400 		(R3),(SP)		;OF THE LOCK BITS
+                          6E         00B4       
+                          0C     12  00B5 11500 	BNEQ	62$			;BRANCH IF NEITHER IS SET
+                       76 A5     B5  00B7 11600 	TSTW	PHD$W_EXTDYNWS(R5)	;POSSIBLE TO LOCK ANOTHER PAGE
+                          07     14  00BA 11700 	BGTR	62$			;BRANCH IF YES
+            50       0194 8F     3C  00BC 11720 	MOVZWL	#SS$_LKWSETFUL,R0	;LOCKED PORTION OF WORKING SET FULL
+                          79     11  00C1 11740 	BRB	110$
+            58            04     E1  00C3 11800 62$:	BBC	#WSL$V_PFNLOCK,R8,68$	;BRANCH IF LOCKING IN WORKING SET
+                          15         00C6       
+            58            09     E1  00C7 11900 	BBC	#LCK_V_GLOBAL,R8,64$	;BRANCH IF PAGE IS NOT GLOBAL
+                          0B         00CA       
+            01            01     3D  00CB 12000 	ACBW	#1,#1,@W^PFN$AW_WSLX[R0],64$ ;BRANCH IF FIRST LOCK IN
+            0002     0000'DF40       00CE       
+                                     00D4 12100 					;MEMORY OF THIS GLOBAL PAGE
+                          06     11  00D4 12200 	BRB	68$
+                     0000'CF     D7  00D6 12300 64$:	DECL	W^MMG$GL_PFNLOCK	;CAN ANY MORE PAGES BE LOCKED IN MEMORY?
+                          66     19  00DA 12400 	BLSS	150$			;BRANCH IF NO, TOO MANY ALREADY LOCKED
+            63            58     88  00DC 12500 68$:	BISB	R8,(R3)			;SET NEW LOCK BIT IN WSLE
+                          6E     95  00DF 12600 	TSTB	(SP)			;WAS ENTRY ALREADY IN LOCKED PART OF WS?
+                          54     12  00E1 12700 	BNEQ	100$			;BRANCH IF YES
+                                     00E3 12800 ;
+                                     00E3 12900 ; ENTRY MUST BE PLACED IN THE LOCKED PORTION OF THE WORKING SET
+                                     00E3 13000 ;
+                          71     10  00E3 13100 	BSBB	SWAPLOCK		;SWAP THE WORKING SET LIST ENTRIES
+                          62     96  00E5 13200 	INCB	(R2)			;COUNT ANOTHER LOCKED WSLE FOR THIS PAGE TABLE
+                          03     14  00E7 13300 	BGTR	70$			;BRANCH IF NOT THE FIRST IN THIS PT
+                       6C A5     B6  00E9 13400 	INCW	PHD$W_PTCNTLCK(R5)	;ANOTHER PAGE TABLE WITH LOCKED WSLE'S
+                       0E A5     B6  00EC 13500 70$:	INCW	PHD$W_WSDYN(R5)		;DYNAMIC PART OF LIST
+                                     00EF 13600 					;STARTS ONE ENTRY HIGHER
+         0E A5         10 A5     B1  00EF 13700 	CMPW	PHD$W_WSNEXT(R5),PHD$W_WSDYN(R5) ;IS WSNEXT NO LONGER
+                                     00F4 13800 					;POINTING INTO DYNAMIC REGION?
+                          3E     1E  00F4 13900 	BGEQU	98$			;BRANCH IF IT'S OK
+         10 A5         12 A5     B0  00F6 14000 	MOVW	PHD$W_WSLAST(R5),PHD$W_WSNEXT(R5) ;OTHERWISE POINT IT TO END
+                          37     11  00FB 14100 	BRB	98$			;EXIT SUCCESSFULLY
+                                     00FD 14200 ;
+                                     00FD 14300 ; UNLOCK PAGE FROM WORKING SET LIST
+                                     00FD 14400 ;
+            63            58     93  00FD 14500 80$:	BITB	R8,(R3)			;IS THIS PAGE LOCKED?
+                          07     12  0100 14600 	BNEQ	90$			;BRANCH IF YES
+            10            01     F0  0102 14700 	INSV	#SS$_WASCLR,#16,#16,R8	;AT LEAST ONE PAGE WAS ALREADY UNLOCKED
+            58            10         0105       
+                          2E     11  0107 14800 	BRB	100$
+            63            04     E1  0109 14900 90$:	BBC	#WSL$V_PFNLOCK,(R3),94$	;BRANCH IF PAGE NOT LOCKED IN MEMORY
+                          13         010C       
+            58            04     E1  010D 15000 	BBC	#WSL$V_PFNLOCK,R8,94$	;BRANCH IF NOT UNLOCKING IT FROM MEMORY
+                          0F         0110       
+            58            09     E1  0111 15100 	BBC	#LCK_V_GLOBAL,R8,92$	;BRANCH IF NOT A GLOBAL PAGE
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  10
+X0201           LOCK/UNLOCK SINGLE PAGE IN WORKING SET/MEMORY                                                                    (6)
+
+                          07         0114       
+                     0000'DF40   B7  0115 15200 	DECW	@W^PFN$AW_WSLX[R0]	;ONE LESS MEMORY LOCK FOR THIS GLOBAL
+                          04     14  011A 15300 	BGTR	94$			;BRANCH IF NOT LAST MEMORY LOCK
+                     0000'CF     D6  011C 15400 92$:	INCL	W^MMG$GL_PFNLOCK	;ANOTHER PAGE MAY BE LOCKED IN MEMORY
+            63            58     8A  0120 15500 94$:	BICB	R8,(R3)			;CLEAR THE DESIRED LOCK BIT(S)
+            63            30     93  0123 15600 	BITB	#<WSL$M_WSLOCK ! WSL$M_PFNLOCK>,(R3) ;MUST PAGE REMAIN IN THE
+                                     0126 15700 					;LOCKED PORTION OF THE WORKING SET?
+                          0F     12  0126 15800 96$:	BNEQ	100$			;BRANCH IF YES, IT IS STILL LOCKED
+                                     0128 15900 ;
+                                     0128 16000 ; MOVE THIS WORKING SET LIST ENTRY OUT OF THE LOCKED PORTION OF THE WORKING ET
+                                     0128 16100 ;
+                       0E A5     B7  0128 16200 	DECW	PHD$W_WSDYN(R5)		;INCLUDE LAST LOCKED SLOT IN DYNAMIC REGION
+                          29     10  012B 16300 	BSBB	SWAPLOCK		;SWAP ENTRIES WITH THE LAST LOCKED ONE
+                          62     97  012D 16400 	DECB	(R2)			;ONE LESS WSLE LOCKED IN THIS PT
+                          03     18  012F 16500 	BGEQ	98$			;BRANCH IF SOME STILL LOCKED IN THIS PT
+                       6C A5     B7  0131 16600 	DECW	PHD$W_PTCNTLCK(R5)	;ONE LESS PT WITH LOCKED WSLE'S
+                          FEC9'  30  0134 16700 98$:	BSBW	MMG$EXTRADYNWS		;RECALCULATE EXTRA DYNAMIC WSLE COUNT
+            58         F0 8F     78  0137 16800 100$:	ASHL	#-16,R8,R0		;RETURN WASSET OR WASCLR
+                          50         013B       
+                          06     BA  013C 16900 110$:	POPR	#^M<R1,R2>		;RESTORE R2 = VIRTUAL ADDRESS
+                                     013E 17000 	ENBINT				;AND RESTORE THE CALLING IPL
+                                 05  0141 17100 	RSB				;AND RETURN
+                                     0142 17200 
+                                     0142 17300 ;
+                                     0142 17400 ; TOO MANY PAGES LOCKED IN MEMORY TO ALLOW ANOTHER TO BE LOCKED
+                                     0142 17500 ;
+            58            09     E1  0142 17600 150$:	BBC	#LCK_V_GLOBAL,R8,155$	;BRANCH IF PAGE NOT GLOBAL
+                          05         0145       
+                     0000'DF40   B7  0146 17700 	DECW	@W^PFN$AW_WSLX[R0]	;THIS GLOBAL PAGE NOT LOCKED IN MEMORY
+                     0000'CF     D6  014B 17800 155$:	INCL	W^MMG$GL_PFNLOCK	;FIX THE COUNTER
+            50       00D4 8F     3C  014F 17900 	MOVZWL	#SS$_LCKPAGFUL,R0	;NO MORE PAGES MAY BE LOCKED IN MEMORY
+                          E6     11  0154 18000 	BRB	110$
+                                     0156 18100 
+                                     0156 18800 	.DSABL	LSB
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  11
+X0201           SWAPLOCK - INTERFACE TO SWAPWSLE FROM LOCK/UNLO                                                                  (7)
+
+                                     0156   100 	.SBTTL	SWAPLOCK - INTERFACE TO SWAPWSLE FROM LOCK/UNLOCK
+                                     0156   200 
+                                     0156   300 ;
+                                     0156   400 ; INPUTS:
+                                     0156   500 ;
+                                     0156   600 ;	R0 = PFN OF THE FIRST WORKING SET LIST SLOT
+                                     0156   700 ;	R1 = INDEX TO FIRST WORKING SET LIST SLOT (WSLX1)
+                                     0156   800 ;	R2 = BYTE INDEX OF PAGE TABLE CONTAINING THE PAGE BEING LOCKED/UNLOCKED
+                                     0156   900 ;	R4 = PCB ADDRESS
+                                     0156  1000 ;	R5 = PROCESS HEADER ADDRESS - P1 OR SYSTEM SPACE
+                                     0156  1100 ;	IPL = SYNCH, ESSENTIAL FOR MANIPULATING WORKING SET LIST
+                                     0156  1200 ;		FOR SYSTEM SPACE, AND BECAUSE PFN DATA BASE IS CHANGED
+                                     0156  1300 ;
+                                     0156  1400 ; OUTPUTS:
+                                     0156  1500 ;
+                                     0156  1600 ;	R0 PRESERVED
+                                     0156  1700 ;	R2 = ADDRESS OF BYTE CONTAINING COUNT OF LOCKED WORKING SET LIST
+                                     0156  1800 ;		ENTRIES IN THE PAGE TABLE
+                                     0156  1900 ;	SPECIFIED WORKING SET LIST ENTRIES ARE SWAPPED
+                                     0156  2000 ;
+                                     0156  2100 SWAPLOCK:
+                          52     DD  0156  2200 	PUSHL	R2			;SAVE PAGE TABLE NUMBER
+            52         0E A5     3C  0158  2300 	MOVZWL	PHD$W_WSDYN(R5),R2	;INDEX TO SECOND WORKING SET LIST SLOT (WSLX2)
+                          09     10  015C  2400 	BSBB	MMG$SWAPWSLE		;SWAP THE WORKING SET LIST ENTRIES
+            55         64 A5     C1  015E  2500 	ADDL3	PHD$L_PTWSLELCK(R5),R5,R2 ;BASE ADDRESS OF ARRAY OF COUNTS OF
+                          52         0162       
+                                     0163  2600 					;LOCKED WORKING SET LIST ENTRIES
+            52            8E     C0  0163  2700 	ADDL	(SP)+,R2		;ADDRESS OF COUNT BYTE FOR # OF LOCKED
+                                     0166  2800 					;WSLE'S IN THE PAGE TABLE
+                                 05  0166  2900 	RSB
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  12
+X0201           SWAPWSLE - SWAP WORKING SET LIST ENTRIES                                                                         (8)
+
+                                     0167   100 	.SBTTL	SWAPWSLE - SWAP WORKING SET LIST ENTRIES
+                                     0167   200 ;++
+                                     0167   300 ; FUNCTIONAL DESCRIPTION:
+                                     0167   400 ;
+                                     0167   500 ;	THIS ROUTINE SWAPS THE CONTENTS OF THE FIRST WORKING SET LIST SLOT
+                                     0167   600 ; WHICH MUST BE ACTIVE WITH THAT OF THE SECOND WORKING SET LIST SLOT
+                                     0167   700 ; WHICH MAY BE EITHER ACTIVE OR FREE.
+                                     0167   800 ;
+                                     0167   900 ; CALLING SEQUENCE:
+                                     0167  1000 ;
+                                     0167  1100 ;	BSBW	MMG$SWAPWSLE
+                                     0167  1200 ;
+                                     0167  1300 ; INPUT PARAMETERS:
+                                     0167  1400 ;
+                                     0167  1500 ;	R0 = PFN OF THE FIRST WORKING SET LIST SLOT
+                                     0167  1600 ;	R1 = INDEX TO FIRST WORKING SET  LIST SLOT (WSLX1)
+                                     0167  1700 ;	R2 = INDEX TO SECOND WORKING SET LIST SLOT (WSLX2)
+                                     0167  1800 ;	R4 = PCB ADDRESS
+                                     0167  1900 ;	R5 = PROCESS HEADER ADDRESS - P1 OR SYSTEM SPACE
+                                     0167  2000 ;	IPL = SYNCH, ESSENTIAL FOR MANIPULATING WORKING SET LIST
+                                     0167  2100 ;		FOR SYSTEM SPACE, AND BECAUSE PFN DATA BASE IS CHANGED
+                                     0167  2200 ;
+                                     0167  2300 ; IMPLICIT INPUTS:
+                                     0167  2400 ;
+                                     0167  2500 ;	NONE
+                                     0167  2600 ;
+                                     0167  2700 ; OUTPUT PARAMETERS:
+                                     0167  2800 ;
+                                     0167  2900 ;	R0 PRESERVED
+                                     0167  3000 ;
+                                     0167  3100 ; IMPLICIT OUTPUTS:
+                                     0167  3200 ;
+                                     0167  3300 ;	NONE
+                                     0167  3400 ;
+                                     0167  3500 ; COMPLETION CODES:
+                                     0167  3600 ;
+                                     0167  3700 ;	NONE
+                                     0167  3800 ;
+                                     0167  3900 ; SIDE EFFECTS:
+                                     0167  4000 ;
+                                     0167  4100 ;	NONE
+                                     0167  4200 ;
+                                     0167  4300 ;--
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  13
+X0201           SWAPWSLE - SWAP WORKING SET LIST ENTRIES                                                                         (9)
+
+                                     0167   100 ;
+                                     0167   200 ; **********************************************************************
+                                     0167   300 ;
+                                     0167   400 ; **************** THE FOLLOWING CODE MUST BE RESIDENT *****************
+                                     0167   500 ;
+                                 00000167   600 	.PSECT	$MMGCOD
+                                     0167   700 ;
+                                     0167   800 ; **********************************************************************
+                                     0167   900 ;
+                                     0167  1000 	.ENABL	LSB
+                                     0167  1100 
+                                     0167  1200 MMG$SWAPWSLE::
+            52            51     D1  0167  1300 	CMPL	R1,R2			;IS THE SWAP A NOP?
+                          32     13  016A  1400 	BEQL	90$			;BRANCH IF YES
+                          6541   DD  016C  1500 	PUSHL	(R5)[R1]		;PUSH WSLE1
+                          05     BB  016F  1600 	PUSHR	#^M<R0,R2>		;PUSH WSLX2, PFN(WSLX1)
+            52            6542   D0  0171  1700 	MOVL	(R5)[R2],R2		;GET WSLE2
+                          05     12  0175  1800 	BNEQ	50$			;BRANCH IF NOT AN EMPTY ENTRY
+                          6541   D4  0177  1900 	CLRL	(R5)[R1]		;JUST FREE WSLX1
+                          0F     11  017A  2000 	BRB	70$			;AND GO SET UP WSLX2
+            20            52     E9  017C  2100 50$:	BLBC	R2,SWAPWSLEBUG		;BRANCH IF WSLE NOT VALID, ERROR
+                          51     DD  017F  2200 	PUSHL	R1			;SAVE WSLX1
+                          FE7C'  30  0181  2300 	BSBW	MMG$SVAPTECHK		;RETURN R3 = SYS VA OF PAGE TABLE ENTRY
+                          FE79'  30  0184  2400 	BSBW	MMG$WSLEPFN		;GET PFN FROM SVAPTE OF THIS WSLE
+                          02     BA  0187  3000 	POPR	#^M<R1>			;R1 = WSLX1
+                          02     10  0189  3100 	BSBB	SETWSLE			;STORE WSLE AND WSLX
+                                     018B  3200 ;
+                                     018B  3300 ; MOVE THE OLD WSLE1 INTO SLOT INDEXED BY WSLX2
+                                     018B  3400 ; 0(SP) = PFN OF WSLE1, 4(SP) = WSLX2, 8(SP) = WSLE1
+                                     018B  3500 ;
+                          07     BA  018B  3600 70$:	POPR	#^M<R0,R1,R2>		;R0=PFN, R1=WSLX2, R2=WSLE1
+                                     018D  3700 ;
+                                     018D  3800 ; STORE WORKING SET LIST ENTRY INTO ITS WORKING SET LIST ENTRY SLOT
+                                     018D  3900 ; AND STORE WSLX INTO PFN DATA BASE IF PAGE TYPE IS NOT GLOBAL
+                                     018D  4000 ; R0 = PAGE FRAME NUMBER
+                                     018D  4100 ; R1 = WSLX, R2 = WORKING SET LIST ENTRY WITH PAGE TYPE
+                                     018D  4200 ;
+                                     018D  4300 SETWSLE:
+            6541          52     D0  018D  4400 	MOVL	R2,(R5)[R1]		;STORE WORKING SET LIST ENTRY
+            03            01     EC  0191  4500 	CMPV	#WSL$V_PAGTYP,#WSL$S_PAGTYP,R2,#PFN$C_GLOBAL ;GLOBAL PAGE?
+            02            52         0194       
+                          06     18  0196  4600 	BGEQ	90$			;BRANCH IF NOT
+       0000'DF40          51     B0  0198  4700 	MOVW	R1,@W^PFN$AW_WSLX[R0]	;SET PFN WSLX
+                                 05  019E  4800 90$:	RSB				;AND RETURN
+                                     019F  4900 ;
+                                     019F  5000 ; LENGTH VIOLATION FOR VIRTUAL ADDRESS IN WORKING SET LIST
+                                     019F  5100 ;
+                                     019F  5200 SWAPWSLEBUG:
+                                     019F  5300 	BUG_CHECK SWAPWSLE,FATAL
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  14
+X0201           SCNWSLX - SCAN FOR WORKING SET LIST INDEX                                                                       (10)
+
+                                     01A3   100 	.SBTTL	SCNWSLX - SCAN FOR WORKING SET LIST INDEX
+                                     01A3   200 ;++
+                                     01A3   300 ;
+                                     01A3   400 ; FUNCTIONAL DESCRIPTION:
+                                     01A3   500 ;
+                                     01A3   600 ;	THIS ROUTINE SCANS THE ENTIRE WORKING SET FOR THE SPECIFIED
+                                     01A3   700 ; VIRTUAL ADDRESS.  IT IS CALLED AT IPL=SYNCH, LOWERS TO IPL=ASTDEL
+                                     01A3   800 ; TO DO THE SCAN AND RAISES BACK TO SYNCH WHEN COMPLETED.
+                                     01A3   900 ;	DROPPING IPL TO ASTDEL AND THUS MAKING THE PROCESS ELIGIBLE 
+                                     01A3  1000 ; FOR SWAPPING, PLACES THE FOLLOWING RESTRICTIONS ON THIS CODE AND
+                                     01A3  1100 ; ITS CALLERS.
+                                     01A3  1200 ;
+                                     01A3  1300 ;	1) THIS CODE MAY NOT FAULT PROCESS PAGES SINCE THAT MIGHT
+                                     01A3  1400 ; FAULT OUT THE DESIRED WORKING SET LIST ENTRY.
+                                     01A3  1500 ;	2) THE CALLING CODE MAY NOT KEEP ANY SYSTEM SPACE ADDRESSES
+                                     01A3  1600 ; FOR THE PROCESS HEADER OR PAGE TABLE ENTRIES SINCE THE HEADER BASE
+                                     01A3  1700 ; ADDRESS MAY CHANGE IF THE PROCESS IS SWAPPED.
+                                     01A3  1800 ;	3) THE CALLING CODE MAY NOT HOLD A PFN FOR A GIVEN PAGE SINCE
+                                     01A3  1900 ; THAT TOO COULD CHANGE IF THE PROCESS WERE SWAPPED.
+                                     01A3  2000 ;
+                                     01A3  2100 ; CALLING SEQUENCE:
+                                     01A3  2200 ;
+                                     01A3  2300 ;	BSBW	MMG$SCNWSLX
+                                     01A3  2400 ;
+                                     01A3  2500 ; INPUTS:
+                                     01A3  2600 ;
+                                     01A3  2700 ;	R2  = VIRTUAL ADDRESS TO SCAN FOR
+                                     01A3  2800 ;	R5  = P1 ADDRESS OF PROCESS HEADER
+                                     01A3  2900 ;	IPL = SYNCH, DROPS TO ASTDEL, RESTORES TO SYNCH ON RETURN
+                                     01A3  3000 ;	      SEE FUNCTIONAL DESCRIPTION ABOVE!
+                                     01A3  3100 ;
+                                     01A3  3200 ; OUTPUTS:
+                                     01A3  3300 ;
+                                     01A3  3400 ;	R1  = WORKING SET LIST INDEX IF FOUND
+                                     01A3  3500 ;	    = 0 IF NOT FOUND
+                                     01A3  3600 ;	R3  = PRESERVED
+                                     01A3  3700 ;	IPL = IS LOWERED TO ASTDEL AND RESTORED TO SYNCH ON RETURN
+                                     01A3  3800 ;	      SEE FUNCTIONAL DESCRIPTION ABOVE!
+                                     01A3  3900 ;--
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  15
+X0201           SCNWSLX - SCAN FOR WORKING SET LIST INDEX                                                                       (11)
+
+                                     01A3   100 ;
+                                     01A3   200 ; **********************************************************************
+                                     01A3   300 ;
+                                     01A3   400 ; **************** THE FOLLOWING CODE MUST BE RESIDENT *****************
+                                     01A3   500 ;
+                                 000001A3   600 	.PSECT	$MMGCOD
+                                     01A3   700 ;
+                                     01A3   800 ; **********************************************************************
+                                     01A3   900 ;
+                                     01A3  1000 MMG$SCNWSLX::
+                                     01A3  1100 	SETIPL	#IPL$_ASTDEL		;LOWER IPL FROM SYNCH TO ASTDEL
+            52         F7 8F     78  01A6  1200 	ASHL	#-VA$S_BYTE,R2,R2	;JUST INTERESTED IN PAGE NUMBER BITS
+                          52         01AA       
+            51         0C A5     3C  01AB  1300 	MOVZWL	PHD$W_WSLOCK(R5),R1	;INDEX TO FIRST NON-PERMANENT WSLE
+            51            6541   DE  01AF  1400 	MOVAL	(R5)[R1],R1		;ADDRESS OF FIRST WSLE
+            50         12 A5     3C  01B3  1500 	MOVZWL	PHD$W_WSLAST(R5),R0	;INDEX TO LAST (INCLUSIVE) WSLE
+            50            6540   DE  01B7  1600 	MOVAL	(R5)[R0],R0		;ADDRESS OF LAST WSLE
+            17            09     EC  01BB  1700 20$:	CMPV	#VA$V_VPG,#VA$S_VPG,(R1),R2 ;IS THIS THE DESIRED WSLE?
+            52            61         01BE       
+                          0C     13  01C0  1800 	BEQL	40$			;BRANCH IF YES
+            04            50     F1  01C2  1900 	ACBL	R0,#4,R1,20$		;LOOP THROUGH ALL THE SLOTS
+            FFF3          51         01C5       
+                                     01C8  2000 ;
+                                     01C8  2100 ; WORKING SET LIST ENTRY NOT FOUND FOR SPECIFIED VIRTUAL ADDRESS
+                                     01C8  2200 ;
+                          51     D4  01C8  2300 30$:	CLRL	R1			;RETURN IMPOSSIBLE WSLX
+                                     01CA  2400 	SETIPL	#IPL$_SYNCH		;RESTORE IPL SYNCH
+                                 05  01CD  2500 	RSB				;AND RETURN TO CALLER
+                                     01CE  2600 ;
+                                     01CE  2700 ; FOUND THE WORKING SET LIST ENTRY
+                                     01CE  2800 ;
+                                     01CE  2900 40$:	SETIPL	#IPL$_SYNCH		;BACK TO IPL SYNCH
+            F4            61     E9  01D1  3000 	BLBC	(R1),30$		;MAKE SURE SWAPPER DIDN'T JUST
+                                     01D4  3100 					;RIP THE ENTRY OUT FROM UNDER US
+            51            55     C2  01D4  3200 	SUBL	R5,R1			;CONVERT ADDRESS
+            51            1E     9C  01D7  3300 	ROTL	#<32-2>,R1,R1		;BACK TO INDEX
+                          51         01DA       
+                                 05  01DB  3400 	RSB				;RETURN WITH WSLX IN R1
+                                     01DC  3500 
+                                     01DC  3600 
+                                     01DC  3700 
+                                     01DC  3800 	.END
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  16
+SYMBOL TABLE                                                                                                                    (11)
+
+ACMODE         = 0000000C            PCB$L_WSSWP      00000024            PFN$C_RDERR    = 00000004            
+BIT...         = 0000000A            PCB$L_WTIME      0000002C            PFN$C_RDINPROG = 00000006            
+BUG$_GBLWSLXERR  ********   X   05   PCB$T_LNAME      0000006C            PFN$C_RELPEND  = 00000003            
+BUG$_SWAPWSLE    ********   X   05   PCB$V_ASTPEN   = 00000011            PFN$C_SYSTEM   = 00000001            
+CDL$C_LENGTH     ********   X   04   PCB$V_BATCH    = 0000000E            PFN$C_WRTINPROG= 00000005            
+EXE$LCKPAG       00000018 RG    04   PCB$V_DELPEN   = 00000001            PFN$M_BADPAG   = 00000020            
+EXE$LKWSET       00000011 RG    04   PCB$V_FORCPEN  = 00000002            PFN$M_BAK      = 007FFFFF            
+EXE$ULKPAG       00000007 RG    04   PCB$V_HIBER    = 00000013            PFN$M_COLLISION= 00000010            
+EXE$ULWSET       00000000 RG    04   PCB$V_INQUAN   = 00000003            PFN$M_DELCON   = 00000010            
+GBL...         = 00000000            PCB$V_LOGIN    = 00000014            PFN$M_GBLBAK   = 00800000            
+INADR          = 00000004            PCB$V_NETWRK   = 00000015            PFN$M_LOC      = 00000007            
+IPL$_ASTDEL    = 00000002            PCB$V_NOACNT   = 0000000F            PFN$M_MODIFY   = 00000080            
+IPL$_HWCLK     = 00000018            PCB$V_NODELET  = 00000017            PFN$M_PAGTYP   = 00000007            
+IPL$_IOPOST    = 00000004            PCB$V_PHDRES   = 00000012            PFN$M_PGFLX    = FF000000            
+IPL$_MAILBOX   = 0000000B            PCB$V_PSWAPM   = 00000004            PFN$M_RPTEVT   = 00000040            
+IPL$_POWER     = 0000001F            PCB$V_PWRAST   = 00000016            PFN$S_BAK      = 00000017            
+IPL$_QUEUEAST  = 00000006            PCB$V_RES      = 00000000            PFN$S_GBLBAK   = 00000001            
+IPL$_SCHED     = 00000003            PCB$V_RESPEN   = 00000005            PFN$S_LOC      = 00000003            
+IPL$_SYNCH     = 00000007            PCB$V_SSFEXC   = 00000006            PFN$S_PAGTYP   = 00000003            
+IPL$_TIMER     = 00000007            PCB$V_SSFEXCE  = 00000007            PFN$S_PGFLX    = 00000008            
+LCK_M_GLOBAL   = 00000200            PCB$V_SSFEXCS  = 00000008            PFN$V_BADPAG   = 00000005            
+LCK_M_LCKPAG   = 00000100            PCB$V_SSFEXCU  = 00000009            PFN$V_BAK      = 00000000            
+LCK_V_GLOBAL   = 00000009            PCB$V_SSRWAIT  = 0000000A            PFN$V_COLLISION= 00000004            
+LCK_V_LCKPAG   = 00000008            PCB$V_SUSPEN   = 0000000B            PFN$V_DELCON   = 00000004            
+MMG$CRECOM1      ********   X   04   PCB$V_SWPVBN   = 00000010            PFN$V_GBLBAK   = 00000017            
+MMG$EXTRADYNWS   ********   X   05   PCB$V_WAKEPEN  = 0000000C            PFN$V_LOC      = 00000000            
+MMG$GL_PFNLOCK   00000000 RG    03   PCB$V_WALL     = 0000000D            PFN$V_MODIFY   = 00000007            
+MMG$LCKULKPAG    00000011 RG    05   PCB$W_APTCNT     00000034            PFN$V_PAGTYP   = 00000000            
+MMG$SCNWSLX      000001A3 RG    05   PCB$W_ASTCNT     0000003C            PFN$V_PGFLX    = 00000018            
+MMG$SVAPTECHK    ********   X   05   PCB$W_BIOCNT     0000003E            PFN$V_RPTEVT   = 00000006            
+MMG$SWAPWSLE     00000167 RG    05   PCB$W_BIOLM      00000040            PHD$B_ASTLVL     000000CF            
+MMG$ULKGBLWSLE   00000000 RG    05   PCB$W_BYTCNT     00000042            PHD$B_DFPFC      00000038            
+MMG$WSLEPFN      ********   X   05   PCB$W_BYTLM      00000068            PHD$B_PAGFIL     0000001F            
+PCB$B_ASTACT     0000000C            PCB$W_DIOCNT     00000044            PHD$B_PGTBPFC    00000039            
+PCB$B_ASTEN      0000000D            PCB$W_DIOLM      00000046            PHD$C_LENGTH     00000118            
+PCB$B_PRI        0000000B            PCB$W_FILCNT     00000048            PHD$C_PHDPAGCTX= 00000008            
+PCB$B_PRIB       00000033            PCB$W_GPGCNT     00000038            PHD$K_LENGTH     00000118            
+PCB$B_TYPE       0000000A            PCB$W_GRP        00000022            PHD$L_BIOCNT     00000054            
+PCB$B_WEFC       00000032            PCB$W_MEM        00000020            PHD$L_CPULIM     00000058            
+PCB$C_LENGTH     0000007C            PCB$W_MTXCNT     0000000E            PHD$L_CPUTIM     0000003C            
+PCB$K_LENGTH     0000007C            PCB$W_PPGCNT     0000003A            PHD$L_DIOCNT     00000050            
+PCB$L_ASTQBL     00000014            PCB$W_PRCCNT     0000006A            PHD$L_ESP        0000007C            
+PCB$L_ASTQFL     00000010            PCB$W_SIZE       00000008            PHD$L_FREP0VA    00000028            
+PCB$L_EFC2P      00000058            PCB$W_STATE      00000030            PHD$L_FREP1VA    00000030            
+PCB$L_EFC3P      0000005C            PCB$W_TMBU       00000036            PHD$L_FREPTECNT  0000002C            
+PCB$L_EFCS       00000050            PCB$W_TQCNT      0000004A            PHD$L_KSP        00000078            
+PCB$L_EFCU       00000054            PFN$AB_TYPE      ********   X   05   PHD$L_P0BR       000000C8            
+PCB$L_EFWM       0000004C            PFN$AW_WSLX      ********   X   05   PHD$L_P0LRASTL   000000CC            
+PCB$L_OWNER      0000001C            PFN$C_ACTIVE   = 00000007            PHD$L_P1BR       000000D0            
+PCB$L_PHD        00000064            PFN$C_BADPAGLST= 00000002            PHD$L_P1LR       000000D4            
+PCB$L_PHYPCB     00000018            PFN$C_FREPAGLST= 00000000            PHD$L_PAGEFLTS   0000004C            
+PCB$L_PID        00000060            PFN$C_GBLWRT   = 00000003            PHD$L_PAGFIL     0000001C            
+PCB$L_PQB        0000004C            PFN$C_GLOBAL   = 00000002            PHD$L_PC         000000C0            
+PCB$L_SQBL       00000004            PFN$C_GPGTBL   = 00000005            PHD$L_PCB        00000078            
+PCB$L_SQFL       00000000            PFN$C_MFYPAGLST= 00000001            PHD$L_PGFLCNT    00000034            
+PCB$L_STS        00000028            PFN$C_PPGTBL   = 00000004            PHD$L_PGFLQUOTA  0000005C            
+PCB$L_UIC        00000020            PFN$C_PROCESS  = 00000000            PHD$L_PSL        000000C4            
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  17
+SYMBOL TABLE                                                                                                                    (11)
+
+PHD$L_PSTBASOFF  00000020            PHD$W_WSLX       0000004A            PRV$V_OPER     = 00000012            
+PHD$L_PTWSLELCK  00000064            PHD$W_WSNEXT     00000010            PRV$V_PHY_IO   = 00000016            
+PHD$L_PTWSLEVAL  00000068            PHD$W_WSQUOTA    00000018            PRV$V_PRMCEB   = 0000000A            
+PHD$L_R0         00000088            PR$_ACCR       = 00000029            PRV$V_PRMGBL   = 00000018            
+PHD$L_R1         0000008C            PR$_ACCS       = 00000028            PRV$V_PRMMBX   = 0000000B            
+PHD$L_R10        000000B0            PR$_ASTLVL     = 00000013            PRV$V_PSWAPM   = 0000000C            
+PHD$L_R11        000000B4            PR$_ESP        = 00000001            PRV$V_SETPRI   = 0000000D            
+PHD$L_R12        000000B8            PR$_ICCS       = 00000018            PRV$V_SETPRV   = 0000000E            
+PHD$L_R13        000000BC            PR$_ICR        = 0000001A            PRV$V_SYSGBL   = 00000019            
+PHD$L_R2         00000090            PR$_IPL        = 00000012            PRV$V_SYSNAM   = 00000002            
+PHD$L_R3         00000094            PR$_ISP        = 00000004            PRV$V_TMPMBX   = 0000000F            
+PHD$L_R4         00000098            PR$_KSP        = 00000000            PRV$V_VOLPRO   = 00000015            
+PHD$L_R5         0000009C            PR$_MAPEN      = 00000038            PRV$V_WORLD    = 00000010            
+PHD$L_R6         000000A0            PR$_NICR       = 00000019            PTE$C_EOWN     = 00800000            
+PHD$L_R7         000000A4            PR$_P0BR       = 00000008            PTE$C_ER       = 38000000            
+PHD$L_R8         000000A8            PR$_P0LR       = 00000009            PTE$C_ERKW     = 30000000            
+PHD$L_R9         000000AC            PR$_P1BR       = 0000000A            PTE$C_EW       = 28000000            
+PHD$L_REFERFLT   00000014            PR$_P1LR       = 0000000B            PTE$C_KOWN     = 00000000            
+PHD$L_SSP        00000080            PR$_PCBB       = 00000010            PTE$C_KR       = 18000000            
+PHD$L_USP        00000084            PR$_PME        = 0000003D            PTE$C_KW       = 10000000            
+PHD$L_WSL        00000118            PR$_RXCS       = 00000020            PTE$C_NA       = 00000000            
+PHD$M_DALCSTX  = 00000002            PR$_RXDB       = 00000021            PTE$C_SOWN     = 01000000            
+PHD$M_PFMFLG   = 00000001            PR$_SBIER      = 00000034            PTE$C_SR       = 58000000            
+PHD$M_WSPEAKCHK= 00000004            PR$_SBIFS      = 00000030            PTE$C_SREW     = 48000000            
+PHD$Q_PRIVMSK    00000000            PR$_SBIMT      = 00000033            PTE$C_SRKW     = 50000000            
+PHD$S_ASTLVL   = 00000008            PR$_SBIQC      = 00000036            PTE$C_SW       = 40000000            
+PHD$S_P0LR     = 00000018            PR$_SBIS       = 00000031            PTE$C_UOWN     = 01800000            
+PHD$V_ASTLVL   = 00000018            PR$_SBISC      = 00000032            PTE$C_UR       = 78000000            
+PHD$V_DALCSTX  = 00000001            PR$_SBITA      = 00000035            PTE$C_UREW     = 68000000            
+PHD$V_P0LR     = 00000000            PR$_SBR        = 0000000C            PTE$C_URKW     = 70000000            
+PHD$V_PFMFLG   = 00000000            PR$_SCBB       = 00000011            PTE$C_URSW     = 60000000            
+PHD$V_WSPEAKCHK= 00000002            PR$_SID        = 0000003E            PTE$C_UW       = 20000000            
+PHD$W_ASTLM      00000044            PR$_SIRR       = 00000014            PTE$M_CRF      = 00010000            
+PHD$W_BAK        00000048            PR$_SISR       = 00000015            PTE$M_DZRO     = 00020000            
+PHD$W_DFWSCNT    0000001A            PR$_SLR        = 0000000D            PTE$M_GPTX     = 003FFFFF            
+PHD$W_EMPTPG     000000D8            PR$_SSP        = 00000002            PTE$M_MODIFY   = 04000000            
+PHD$W_EXTDYNWS   00000076            PR$_TBIA       = 00000039            PTE$M_OWN      = 01800000            
+PHD$W_FILLM      00000060            PR$_TBIS       = 0000003A            PTE$M_PFN      = 001FFFFF            
+PHD$W_FLAGS      0000003A            PR$_TODR       = 0000001B            PTE$M_PGFLVB   = 003FFFFF            
+PHD$W_PHVINDEX   00000046            PR$_TXCS       = 00000022            PTE$M_PROT     = 78000000            
+PHD$W_PRCLM      00000042            PR$_TXDB       = 00000023            PTE$M_TYP0     = 00400000            
+PHD$W_PST        00000020            PR$_USP        = 00000003            PTE$M_TYP1     = 04000000            
+PHD$W_PSTBASMAX  0000004A            PR$_WCSA       = 0000002C            PTE$M_VALID    = 80000000            
+PHD$W_PSTFREE    00000026            PR$_WCSD       = 0000002D            PTE$M_WRT      = 00040000            
+PHD$W_PSTLAST    00000024            PRV$V_ALLSPOOL = 00000004            PTE$S_GPTX     = 00000016            
+PHD$W_PTCNTACT   00000070            PRV$V_BUGCHK   = 00000017            PTE$S_OWN      = 00000002            
+PHD$W_PTCNTLCK   0000006C            PRV$V_CMEXEC   = 00000001            PTE$S_PFN      = 00000015            
+PHD$W_PTCNTMAX   00000072            PRV$V_CMKRNL   = 00000000            PTE$S_PGFLVB   = 00000016            
+PHD$W_PTCNTVAL   0000006E            PRV$V_DETACH   = 00000005            PTE$S_PROT     = 00000004            
+PHD$W_QUANT      00000040            PRV$V_DIAGNOSE = 00000006            PTE$S_STX      = 00000010            
+PHD$W_TQLM       00000062            PRV$V_EXQUOTA  = 00000013            PTE$V_CRF      = 00000010            
+PHD$W_WSAUTH     0000000A            PRV$V_GROUP    = 00000008            PTE$V_DZRO     = 00000011            
+PHD$W_WSDYN      0000000E            PRV$V_GRPNAM   = 00000003            PTE$V_GPTX     = 00000000            
+PHD$W_WSFLUID    00000074            PRV$V_LOG_IO   = 00000007            PTE$V_MODIFY   = 0000001A            
+PHD$W_WSLAST     00000012            PRV$V_MOUNT    = 00000011            PTE$V_OWN      = 00000017            
+PHD$W_WSLIST     00000008            PRV$V_NETMBX   = 00000014            PTE$V_PFN      = 00000000            
+PHD$W_WSLOCK     0000000C            PRV$V_NOACNT   = 00000009            PTE$V_PGFLVB   = 00000000            
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  18
+SYMBOL TABLE                                                                                                                    (11)
+
+PTE$V_PROT     = 0000001B            SS$_DIRFULL    = 00000860            SS$_IVQUOTAL   = 00000164            
+PTE$V_STX      = 00000000            SS$_DRVERR     = 0000008C            SS$_IVSECFLG   = 0000016C            
+PTE$V_TYP0     = 00000016            SS$_DUPFILENAME= 00000868            SS$_IVSECIDCTL = 000002E4            
+PTE$V_TYP1     = 0000001A            SS$_DUPLNAM    = 00000094            SS$_IVSSRQ     = 00000174            
+PTE$V_VALID    = 0000001F            SS$_ENDOFFILE  = 00000870            SS$_IVSTSFLG   = 0000017C            
+PTE$V_WRT      = 00000012            SS$_ENDOFTAPE  = 00000878            SS$_IVTIME     = 00000184            
+RETADR         = 00000008            SS$_ENDOFUSRLBL= 00000970            SS$_LCKPAGFUL  = 000000D4            
+SETWSLE          0000018D R     05   SS$_EXQUOTA    = 0000001C            SS$_LENVIO     = 0000018C            
+SS$_ABORT      = 0000002C            SS$_EXTIDXFILE = 00000880            SS$_LKWSETFUL  = 00000194            
+SS$_ACCONFLICT = 00000800            SS$_FCPREADERR = 00000888            SS$_MBFULL     = 000008D8            
+SS$_ACCVIO     = 0000000C            SS$_FCPREPSTN  = 00000988            SS$_MBTOOSML   = 0000019C            
+SS$_ACPVAFUL   = 000002FC            SS$_FCPREWNDERR= 00000890            SS$_MCHECK     = 000002BC            
+SS$_ARTRES     = 00000474            SS$_FCPSPACERR = 00000898            SS$_MEDOFL     = 000001A4            
+SS$_ASTFLT     = 0000040C            SS$_FCPWRITERR = 000008A0            SS$_MSGNOTFND  = 00000621            
+SS$_BADATTRIB  = 00000034            SS$_FILACCERR  = 0000009C            SS$_MTLBLLONG  = 00000304            
+SS$_BADCHKSUM  = 00000808            SS$_FILALRACC  = 000000A4            SS$_MUSTCLOSEFL= 00000948            
+SS$_BADESCAPE  = 0000003C            SS$_FILELOCKED = 000008A8            SS$_NOAQB      = 00000314            
+SS$_BADFILEHDR = 00000810            SS$_FILENUMCHK = 000008B0            SS$_NODATA     = 000001AC            
+SS$_BADFILENAME= 00000818            SS$_FILESEQCHK = 000008B8            SS$_NOHANDLER  = 000008F8            
+SS$_BADFILEVER = 00000820            SS$_FILESTRUCT = 000008C0            SS$_NOHOMEBLK  = 000008E0            
+SS$_BADIMGHDR  = 00000044            SS$_FILNOTACC  = 000000AC            SS$_NOIOCHAN   = 000001B4            
+SS$_BADIRECTORY= 00000828            SS$_FILNOTCNTG = 000002AC            SS$_NOLINKS    = 0000027C            
+SS$_BADPARAM   = 00000014            SS$_FILNOTEXP  = 000000B4            SS$_NOLOGNAM   = 000001BC            
+SS$_BADSTACK   = 000002B4            SS$_FLTDIV     = 00000494            SS$_NOMBX      = 00000274            
+SS$_BEGOFFILE  = 00000938            SS$_FLTOVF     = 0000048C            SS$_NOMOREFILES= 00000930            
+SS$_BLOCKCNTERR= 00000940            SS$_FLTUND     = 0000049C            SS$_NONEXDRV   = 000001C4            
+SS$_BREAK      = 00000414            SS$_FORMAT     = 000000BC            SS$_NONEXPR    = 000008E8            
+SS$_BUFBYTALI  = 0000030C            SS$_GPTFULL    = 000000C4            SS$_NONLOCAL   = 000008F0            
+SS$_BUFFEROVF  = 00000601            SS$_GSDFULL    = 000000CC            SS$_NOPRIV     = 00000024            
+SS$_BUGCHECK   = 000002A4            SS$_HANGUP     = 000002CC            SS$_NORMAL     = 00000001            
+SS$_CANCEL     = 00000830            SS$_HEADERFULL = 000008C8            SS$_NOSIGNAL   = 00000900            
+SS$_CHANINTLK  = 0000004C            SS$_IDXFILEFULL= 000008D0            SS$_NOSOLICIT  = 00000284            
+SS$_CLIFRCEXT  = 00000980            SS$_ILLBLKNUM  = 000000DC            SS$_NOSUCHDEV  = 00000908            
+SS$_CMODSUPR   = 0000041C            SS$_ILLCNTRFUNC= 000000E4            SS$_NOSUCHFILE = 00000910            
+SS$_CMODUSER   = 00000424            SS$_ILLEFC     = 000000EC            SS$_NOSUCHNODE = 0000028C            
+SS$_COMPAT     = 0000042C            SS$_ILLIOFUNC  = 000000F4            SS$_NOSUCHSEC  = 00000978            
+SS$_CONTINUE   = 00000001            SS$_ILLLBLAST  = 00000968            SS$_NOTAPEOP   = 00000264            
+SS$_CONTROLC   = 00000651            SS$_ILLPAGCNT  = 000000FC            SS$_NOTFILEDEV = 000001CC            
+SS$_CONTROLO   = 00000609            SS$_ILLSEQOP   = 000002DC            SS$_NOTINTBLSZ = 000001D4            
+SS$_CONTROLY   = 00000611            SS$_ILLSER     = 00000104            SS$_NOTLABELMT = 000001DC            
+SS$_CREATED    = 00000619            SS$_ILLUSRLBLRD= 00000958            SS$_NOTMODIFIED= 00000659            
+SS$_CTRLERR    = 00000054            SS$_ILLUSRLBLWT= 00000960            SS$_NOTNETDEV  = 000002EC            
+SS$_DATACHECK  = 0000005C            SS$_INCVOLLABEL= 0000010C            SS$_NOTRAN     = 00000629            
+SS$_DATAOVERUN = 00000838            SS$_INSFARG    = 00000114            SS$_NOTSQDEV   = 000001E4            
+SS$_DEBUG      = 0000046C            SS$_INSFMEM    = 00000124            SS$_OPCCUS     = 00000434            
+SS$_DECOVF     = 000004A4            SS$_INSFRAME   = 0000012C            SS$_OPCDEC     = 0000043C            
+SS$_DEVACTIVE  = 000002C4            SS$_INSFWSL    = 0000011C            SS$_OPINCOMPL  = 000002D4            
+SS$_DEVALLOC   = 00000840            SS$_INTDIV     = 00000484            SS$_PAGOWNVIO  = 000001EC            
+SS$_DEVALRALLOC= 00000641            SS$_INTOVF     = 0000047C            SS$_PAGRDERR   = 00000444            
+SS$_DEVASSIGN  = 00000848            SS$_IVADDR     = 00000134            SS$_PARITY     = 000001F4            
+SS$_DEVFOREIGN = 00000064            SS$_IVCHAN     = 0000013C            SS$_PARTESCAPE = 000001FC            
+SS$_DEVICEFULL = 00000850            SS$_IVCHNLSEC  = 0000026C            SS$_PFMBSY     = 00000204            
+SS$_DEVMOUNT   = 0000006C            SS$_IVDEVNAM   = 00000144            SS$_PLHLDR     = 00000404            
+SS$_DEVNOTALLOC= 00000858            SS$_IVGSDNAM   = 0000014C            SS$_PSTFULL    = 0000020C            
+SS$_DEVNOTMBX  = 00000074            SS$_IVLOGNAM   = 00000154            SS$_RADRMOD    = 0000044C            
+SS$_DEVNOTMOUNT= 0000007C            SS$_IVLOGTAB   = 0000015C            SS$_REJECT     = 00000294            
+SS$_DEVOFFLINE = 00000084            SS$_IVPROTECT  = 000002F4            SS$_REMOTE     = 00000649            
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  19
+SYMBOL TABLE                                                                                                                    (11)
+
+SS$_RESIGNAL   = 00000918            WSL$V_PAGTYP   = 00000001            
+SS$_RESULTOVF  = 00000214            WSL$V_PFNLOCK  = 00000004            
+SS$_ROPRAND    = 00000454            WSL$V_VALID    = 00000000            
+SS$_SECTBLFUL  = 0000021C            WSL$V_WSLOCK   = 00000005            
+SS$_SSFAIL     = 0000045C            
+SS$_SUBRNG     = 000004AC            
+SS$_SUPERSEDE  = 00000631            
+SS$_TAPEPOSLOST= 00000224            
+SS$_TBIT       = 00000464            
+SS$_TIMEOUT    = 0000022C            
+SS$_TOOMANYVER = 00000990            
+SS$_TOOMUCHDATA= 0000029C            
+SS$_UNASEFC    = 00000234            
+SS$_UNSAFE     = 0000023C            
+SS$_UNWIND     = 00000920            
+SS$_UNWINDING  = 00000928            
+SS$_VASFULL    = 00000244            
+SS$_VECINUSE   = 0000024C            
+SS$_VOLINV     = 00000254            
+SS$_WAITUSRLBL = 00000950            
+SS$_WASCLR     = 00000001            
+SS$_WASECC     = 00000639            
+SS$_WASSET     = 00000009            
+SS$_WRITLCK    = 0000025C            
+SS$_WRONGACP   = 0000031C            
+SWAPLOCK         00000156 R     05   
+SWAPWSLEBUG      0000019F R     05   
+ULKGBLWSLE       0000004E R     05   
+VA$M_BYTE      = 000001FF            
+VA$M_P1        = 40000000            
+VA$M_SYSTEM    = 80000000            
+VA$M_VPG       = FFFFFE00            
+VA$M_VPN       = 3FFFFE00            
+VA$S_BYTE      = 00000009            
+VA$S_VPG       = 00000017            
+VA$S_VPN       = 00000015            
+VA$V_BYTE      = 00000000            
+VA$V_P1        = 0000001E            
+VA$V_SYSTEM    = 0000001F            
+VA$V_VPG       = 00000009            
+VA$V_VPN       = 00000009            
+WSL$C_GBLWRT   = 00000006            
+WSL$C_GLOBAL   = 00000004            
+WSL$C_GPGTBL   = 0000000A            
+WSL$C_LENGTH   = 00000004            
+WSL$C_PPGTBL   = 00000008            
+WSL$C_PROCESS  = 00000000            
+WSL$C_SYSTEM   = 00000002            
+WSL$M_GOODPAGE = 00000040            
+WSL$M_MODIFY   = 00000100            
+WSL$M_PAGTYP   = 0000000E            
+WSL$M_PFNLOCK  = 00000010            
+WSL$M_VALID    = 00000001            
+WSL$M_WSLOCK   = 00000020            
+WSL$S_PAGTYP   = 00000003            
+WSL$V_GOODPAGE = 00000006            
+WSL$V_MODIFY   = 00000008            
+SYSLKWSET       - LOCK/UNLOCK FROM WORKING SET/MEMORY           21-AUG-1978 20:35:31   VAX-11 MACRO X0.3-11               Page  20
+PROGRAM SECTION SYNOPSIS                                                                                                        (11)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            0000011C      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+$$$210           00000004      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT LONG  
+Y$EXEPAGED       0000003F      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$MMGCOD          000001DC      05     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+9712. BYTES LEFT IN FREE MEMORY POOL.
+2744. BYTES OF RECLAIMED MEMORY.
+OBJ$:SYSLKWSET,LIS$:SYSLKWSET/-SP=EXECML$/ML,SRC$:SYSLKWSET
+13 MLB DIR RDS - 930 GETS TO DEFINE 26 MACROS. 72 INTER. FILE WRITES. 

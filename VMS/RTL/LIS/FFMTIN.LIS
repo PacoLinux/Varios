@@ -1,0 +1,1169 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 1
+;
+;00100  0001	MODULE FOR$$FMT_INTRP (	! Fortran Format Statement Interpreter
+;00200  0002		IDENT = '2-19'	! File: FFMTIN.B32
+;00300  0003			) =
+;00400  0004	BEGIN
+;00500  0005	
+;00600  0006	!
+;00700  0007	! COPYRIGHT (C) 1977
+;00800  0008	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;00900  0009	!
+;01000  0010	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;01100  0011	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;01200  0012	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;01300  0013	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;01400  0014	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;01500  0015	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;01600  0016	! REMAIN IN DEC.
+;01700  0017	!
+;01800  0018	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;01900  0019	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;02000  0020	! CORPORATION.
+;02100  0021	!
+;02200  0022	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;02300  0023	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;02400  0024	
+;02500  0025	!++
+;02600  0026	! FACILITY: FORTRAN
+;02700  0027	!
+;02800  0028	! ABSTRACT:
+;02900  0029	!
+;03000  0030	!	This module interprets FORTRAN format statements which
+;03100  0031	!	have been pre-compiled into an encoded form by either the
+;03200  0032	!	FORTRAN compiler or the run-time format compiler, 
+;03300  0033	!	FOR$$FMT_COMPIL. This module is independent of READ and
+;03400  0034	!	WRITE semantics and is called from both the READ 
+;03500  0035	!	Formatted and WRITE Formatted User Data Formatters
+;03600  0036	!	(UDF) level of abstraction.
+;03700  0037	!
+;03800  0038	! ENVIRONMENT: User access mode; AST level or not
+;03900  0039	!
+;04000  0040	! AUTHOR: Peter Yuo, CREATION DATE: 17-Feb-77
+;04100  0041	!
+;04200  0042	! MODIFIED BY:
+;04300  0043	!	Peter Yuo, 25-Feb-77, Version 1
+;04400  0044	! 01	- 	Original
+;04500  0045	!
+;04600  0046	!	Richard Grove, 19-Aug-77, Version 2
+;04700  0047	! 2-01	-	Restructure decision logic to use attributes table and CASE
+;04800  0048	! 2-05	- I elem size > 4, use 4 defaults - TNH
+;04900  0049	! 2-07	- Use FOR$K_abcmnoxyz as EXTERNAL LITERALs.  TNH 27-Oct-77
+;05000  0050	! 2-08	- Use FERR.  TNH 16-Dec-77
+;05100  0051	! 2-09	- Take out external reference to FOR$SIGNAL.  JMT 14-Jan-78
+;05200  0052	! 2-10	- Global register CCB.  JMT 8-Apr-78
+;05300  0053	! 2-11	- Change REQUIRE files for VAX system build.  DGP 28-Apr-78
+;05400  0054	! 2-12	- Make JSB linkages.  TNH 21-May-78
+;05500  0055	! 2-13	- Init ISB$W_FMT_REP, ISB$B_FMT_P.  TNH 22-May-78
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 1-1
+;
+;05600  0056	! 2-14	- Format stack as word array, VFE error check.  TNH 2-Jun-78
+;05700  0057	! 2-17	- PIC dispatch tables.  TNH 6-June-78.
+;05800  0058	!
+;05810  0059	! 2-18	- Move format codes to FFMT.B32.  TNH 6-June-78
+;05900  0060	!--
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 2
+;
+;00100  0061	!
+;00200  0062	! LINKAGES:
+;00300  0063	!
+;00400  0064	REQUIRE 'RTLIN:FLNK';		! define all LINKAGES
+; %PRINT:	File: FLNK.B32; Version 1, edit 12, TNH 2-Aug-78
+;00500  0286	
+;00600  0287	!
+;00700  0288	! TABLE OF CONTENTS:
+;00800  0289	!
+;00900  0290	
+;01000  0291	FORWARD ROUTINE
+;01100  0292		FOR$$FMT_INTRP0: JSB_FMT0 NOVALUE,	! initialization
+;01200  0293		FOR$$FMT_INTRP1: CALL_CCB;		! Interpret until a data format code
+;01300  0294	
+;01400  0295	!
+;01500  0296	! INCLUDE FILES:
+;01600  0297	!
+;01700  0298		REQUIRE 'RTLML:FERR';		! FORTRAN error number definitions
+; %PRINT:	Filename: FERR.MDL! Version 0, edit 36, TNH 19-June-78
+;01800  0416		REQUIRE 'RTLML:FISB';		! I/O statement block (ISB)
+; %PRINT:	File: FISB.MDL which produces FISB.B32! Version 1, EDIT 16, DGP 02-Jun-78
+;01900  0625		REQUIRE 'RTLML:FLUB';		! needed only to get LUB length!
+; %PRINT:	File: FLUB.MDL which produces FLUB.B32! Version 0, edit 30, TNH, 17-June-78
+;02000  0793					! definitions
+;02100  0794		REQUIRE 'RTLIN:FFMT';		! Format statement codes (used
+; %PRINT:	Filename: FFMT.B32 ; Version 1, edit 11, TNH,  6-June-78
+;02200  0894					! in select labels)
+;02300  0895		REQUIRE 'RTLIN:FMAC';		! Macros
+; %PRINT:	Filename: FMAC.B32; Version 1, edit 29, TNH, 7-JUN-78
+; %PRINT:	 REQUIRE FILE: LPSECT.B32, VERSION 01-5, TNH, 27-Jun-78
+;02400  1075					! (bits 15:3)
+;02500  1076		REQUIRE 'RTLIN:ODBG';		! debugging aids
+; %PRINT:	Filename: NODBG.B32; Version 0, edit 20, JMT, 17-Jan-78
+;02600  1152	
+;02700  1153	!
+;02800  1154	! MACROS:
+;02900  1155	!
+;03000  1156	!	CH_WRITE_A(CS_POINTER_ADR.ma.r)	=character; ! Write character
+;03100  1157	!				! in string then advance pointer
+;03200  1158	!
+;03300  1159	
+;05700  1160	
+;05800  1161	!
+;05900  1162	! EQUATED SYMBOLS:
+;06000  1163	!
+;06100  1164	
+;06200  1165	!	NONE
+;06300  1166	
+;06400  1167	
+;06500  1168	!
+;06600  1169	! PSECT DECLARATIONS:
+;06700  1170	!
+;06800  1171	
+;06900  1172		DECLARE_PSECTS (FOR);	! declare PSECTs for FOR$ facility
+;07000  1173	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 2-1
+;
+;07100  1174	!
+;07200  1175	! OWN STORAGE:
+;07300  1176	!
+;07400  1177	!	NONE
+;07500  1178	!
+;07600  1179	
+;07700  1180	!
+;07800  1181	! EXTERNAL REFERENCES:
+;07900  1182	!
+;08000  1183	
+;08100  1184	!
+;08200  1185	!
+;08300  1186	EXTERNAL ROUTINE
+;08400  1187	
+;08500  1188		FOR$$SIGNAL_STO:NOVALUE,! Signal_stop FOR$_abcmnoxyz, given
+;08600  1189					! (short) Fortran error number (FOR$K_abcmnoxyz)
+;08700  1190					! as a parameter
+;08800  1191		FOR$$SIGNAL: NOVALUE;	! Signal FOR$_abcmnoxyz, given (short)
+;08900  1192					! FORTRAN error number (FOR$K_abcmnoxyz)
+;09000  1193					! as a parameter.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 3
+;
+;00100  1194	GLOBAL ROUTINE FOR$$FMT_INTRP0 (	! Format interpreter initialization
+;00200  1195		FORMAT_ADR)
+;00300  1196		: JSB_FMT0 NOVALUE =
+;00400  1197	
+;00500  1198	!++
+;00600  1199	! FUNCTIONAL DESCRIPTION:
+;00700  1200	!
+;00800  1201	!	Initializes the format interpreter
+;00900  1202	!
+;01000  1203	! CALLING SEQUENCE:
+;01100  1204	!
+;01200  1205	!	JSB FOR$$FMT_INTRP0 (R2=format_adr.mbu.ra)
+;01300  1206	!
+;01400  1207	! FORMAL PARAMETERS:
+;01500  1208	!
+;01600  1209	!	FORMAT_ADR.mbu.ra	Adr. of compiled format byte array
+;01700  1210	!				Can be modified READ nH
+;01800  1211	!
+;01900  1212	! IMPLICIT INPUTS:
+;02000  1213	!
+;02100  1214	!	CCB			Contains adr. of current LUB/ISB/RAB.
+;02200  1215	!
+;02300  1216	! IMPLICIT OUTPUTS:
+;02400  1217	!
+;02500  1218	!	CCB[ISB$W_FMT_REP]	Set repeat count to 0 to indicate no repeat
+;02600  1219	!				for this statement yet.
+;02700  1220	!	CCB[ISB$B_FMT_P]	Set P scale factor to 0 for this statement
+;02800  1221	!	CCB[ISB$A_FMT_PTR]	Initializes format pointer to
+;02900  1222	!				beginning
+;03000  1223	!	CCB[ISB$W_FMT_REVER]	Offset of current format reversion
+;03100  1224	!				point
+;03200  1225	!	CCB[ISB$B_FMT_DEP]	Depth of repeat group pushdown stack
+;03300  1226	!	CCB[ISB$A_FMT_BEG]	Adr. of beginning of format statement
+;03400  1227	!
+;03500  1228	! ROUTINE VALUE:
+;03600  1229	! COMPLETION CODES:
+;03700  1230	!
+;03800  1231	!	NONE
+;03900  1232	!
+;04000  1233	! SIDE EFFECTS:
+;04100  1234	!
+;04200  1235	!	NONE
+;04300  1236	!
+;04400  1237	!--
+;04500  1238	
+;04600  1239	    BEGIN
+;04700  1240	
+;04800  1241	    EXTERNAL REGISTER
+;04900  1242		CCB: REF BLOCK[, BYTE];
+;05000  1243	
+;05100  1244	    !+
+;05200  1245	    ! Print input formals and implicit inputs, if debugging
+;05300  1246	    !-
+;05400  1247	
+;05500  1248	    INPUT_FORMALS (FOR$$FMT_INTRP0, '.FORMAT_ADR', .FORMAT_ADR);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 3-1
+;
+;05600  1249	    IMPLICIT_INPUTS (FOR$$FMT_INTRP0, '.OTS$$A_CUR_LUB', .OTS$$A_CUR_LUB);
+;05700  1250	
+;05800  1251	    !+
+;05900  1252	    ! Set repeat count to 0 to indicate no repeat for this statement.
+;06000  1253	    !-
+;06100  1254	
+;06200  1255	    CCB[ISB$W_FMT_REP] = 0;
+;06300  1256	
+;06400  1257	    !+
+;06500  1258	    ! Set P scale factor to 0 for this statement (no scaling).
+;06600  1259	    !-
+;06700  1260	
+;06800  1261	    CCB[ISB$B_FMT_P] = 0;
+;06900  1262	
+;07000  1263	    !+
+;07100  1264	    ! Initialize format pointer to beginning of format byte array
+;07200  1265	    ! Also beginning pointer to format (used for repeat group stacking).
+;07300  1266	    ! Then position within format can be just a 16-bit offset with respect to ISB$A_FMT_BEG.
+;07400  1267	    !-
+;07500  1268	
+;07600  1269	    CCB[ISB$A_FMT_PTR] = .FORMAT_ADR;
+;07700  1270	    CCB[ISB$A_FMT_BEG] = .FORMAT_ADR;
+;07800  1271	
+;07900  1272	    !+
+;08000  1273	    ! Initialize format reversion point to beginning of format
+;08100  1274	    ! byte array. The reversion point is used when there are
+;08200  1275	    ! more user data elements than data format codes.
+;08300  1276	    ! Since it is a 16-bit offset with respect to ISB$A_FMT_BEG, set to 0.
+;08400  1277	    !-
+;08500  1278	
+;08600  1279	    CCB[ISB$W_FMT_REVER] = 0;
+;08700  1280	
+;08800  1281	    !+
+;08900  1282	    ! Initialize format repeat group push down stack depth
+;09000  1283	    ! to empty (-1).  0 = 1 item, 1 = 2 items in stack, etc.
+;09100  1284	    !-
+;09200  1285	
+;09300  1286	    CCB[ISB$B_FMT_DEP] = -1;
+;09400  1287	
+;09500  1288	    !+
+;09600  1289	    ! Print function value, output formals, and implicit outputs,
+;09700  1290	    ! if debugging
+;09800  1291	    !-
+;09900  1292	
+;10000  1293	    FUNCTION_VALUE (FOR$$FMT_INTRP0);
+;10100  1294	    OUTPUT_FORMALS (FOR$$FMT_INTRP0, '.FORMAT_ADR', .FORMAT_ADR);
+;10200  1295	    IMPLICIT_OUTPUT (FOR$$FMT_INTRP0, 'CCB[ISB$A_FMT_PTR]', .CCB[ISB$A_FMT_PTR],
+;10300P 1296		'.CCB[ISB$W_FMT_REVER]', .CCB[ISB$W_FMT_REVER],
+;10400P 1297		'.CCB[ISB$B_FMT_DEP]', .CCB[ISB$B_FMT_DEP]);
+;10500  1298	
+;10600  1299	    !+
+;10700  1300	    ! All other ISB locations and flags have already been
+;10800  1301	    ! initialized to 0 or a specified value by the I/O statement
+;10900  1302	    ! initialization for this I/O statement.
+;11000  1303	    !-
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 3-2
+;
+;11100  1304	
+;11200  1305	    RETURN;
+;11300  1306	    END;		! End of FOR$$FMT_INTRP0
+
+
+							    .TITLE  FOR$$FMT_INTRP
+							    .IDENT  \2-19\
+
+							    .EXTRN  FOR$$SIGNAL_STO, FOR$$SIGNAL
+
+							    .PSECT  FOR$CODE,NOWRT,  SHR,  PIC,2
+
+				  D1   AB  B4 00000 FOR$$FMT_INTRP0::
+							    CLRW    -47(CCB)						      ; 1255
+				  CC   AB  94 00003 	    CLRB    -52(CCB)						      ; 1261
+		    C0   AB	       52  D0 00006 	    MOVL    FORMAT_ADR, -64(CCB)				      ; 1269
+		    B4   AB	       52  D0 0000A 	    MOVL    FORMAT_ADR, -76(CCB)				      ; 1270
+				  D4   AB  B4 0000E 	    CLRW    -44(CCB)						      ; 1279
+		    D6   AB	       01  8E 00011 	    MNEGB   #1, -42(CCB)					      ; 1286
+					   05 00015 	    RSB     							      ; 1194
+
+; Routine Size:  22 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4
+;
+;00100  1307	GLOBAL ROUTINE FOR$$FMT_INTRP1 (	! Format interpret until data code
+;00200  1308		ELEM_SIZE)		! Size in addressable units of data elements
+;00300  1309		: CALL_CCB =			! Value is format code
+;00400  1310	
+;00500  1311	!++
+;00600  1312	! FUNCTIONAL DESCRIPTION:
+;00700  1313	!
+;00800  1314	!	FOR$$FMT_INTRP1 interprets FORTRAN format statements
+;00900  1315	!	which have been precompiled into an encoded form by either
+;01000  1316	!	the FORTRAN compiler or the run-time format compiler,
+;01100  1317	!	FOR$FMT_COMPIL. Only FOR$$FMT_INTRP1 understands the structure
+;01200  1318	!	and encoding of compiled format statements. Furthermore,
+;01300  1319	!	it is independent of READ and WRITE semantics.
+;01400  1320	!	Each call to FOR$$FMT_INTRP1 processes as many format
+;01500  1321	!	codes as possible until it encounters one which
+;01600  1322	!	needs to access user program data, needs to access the
+;01700  1323	!	data buffer, or depend on whether read or write. This
+;01800  1324	!	module is independent of whether a READ or WRITE is
+;01900  1325	!	being performed. It is called from both the formatted
+;02000  1326	!	READ and WRITE user data formatter routines (UDF).
+;02100  1327	!
+;02200  1328	!	Note: being compatible with -11 OTS, there is a
+;02300  1329	!	difference between nf and n(f) in that VFE's are evaluated only
+;02400  1330	!	once for the former and each time for the latter. The former
+;02500  1331	!	is termed, repeating a format code while the latter is
+;02600  1332	!	termed a repeat group.
+;02700  1333	!
+;02800  1334	! FORMAL PARAMETERS:
+;02900  1335	!
+;03000  1336	!	ELEM_SIZE.rlu.v		Size in addressable units of user
+;03100  1337	!				data element. Used to set default
+;03200  1338	!				widths (W) for default format.
+;03300  1339	!				A value of 0 indicates that this is
+;03400  1340	!				the end of the I/O list call and there is
+;03500  1341	!				no user I/O list element to be transmitted.
+;03600  1342	!
+;03700  1343	! IMPLICIT INPUTS:
+;03800  1344	!
+;03900  1345	!	OTS$$A_CUR_LUB		Adr. of current logical unit block
+;04000  1346	!				(LUB) Used to setup base (ISB) to
+;04100  1347	!				I/O statement block.
+;04200  1348	!
+;04300  1349	!    The following locations are set only by previous calls to
+;04400  1350	!    FOR$$FMT_INTRP1, i.e., are effectively OWN:
+;04500  1351	!
+;04600  1352	!	CCB[ISB$A_FMT_PTR]	Adr. of next byte in compiled
+;04700  1353	!				format byte array. A value of 0
+;04800  1354	!				indicates that this is the end of the
+;04900  1355	!				I/O list call and there is no user
+;05000  1356	!				I/O list element to be transmitted.
+;05100  1357	!	CCB[ISB$V_USER_ELEM]	0 until a user element format
+;05200  1358	!				code seen. Infinite loop preventer
+;05300  1359	!	CCB[ISB$W_FMT_REP]	Current format code repeat count (n)
+;05400  1360	!				or 0 if not repeating a single
+;05500  1361	!				format code. Note: the repeat
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-1
+;
+;05600  1362	!				count for a repeat group is kept
+;05700  1363	!				in the top of the format stack, not here.
+;05800  1364	!
+;05900  1365	!	CCB[ISB$A_FMT_BEG]	Adr. of beginning of format statement
+;06000  1366	!	CCB[ISB$B_FMT_DEP]	Depth of repeat group format pushdown stack.
+;06100  1367	!	CCB[ISB$W_FMT_STKP]	Stack of offsets to beginning of repeat groups
+;06200  1368	!	CCB[ISB$W_FMT_STKR]	Stack of group repeat counts
+;06300  1369	!	CCB[ISB$W_FMT_REVER]	Offset of current format reversion
+;06400  1370	!				point to revert to when end of format
+;06500  1371	!				statement is encountered with more data
+;06600  1372	!				elements to be transmitted.
+;06700  1373	!	CCB[ISB$V_USER_ELEM]	Flag: 1 if seen a user data element format code,
+;06800  1374	!				0 if not.  Used to check for infinite format loop
+;06900  1375	!				in which no user data element format codes are present
+;07000  1376	!
+;07100  1377	! IMPLICIT OUTPUTS:
+;07200  1378	!
+;07300  1379	!    The following are outputs only to a successive call to
+;07400  1380	!    FOR$$FMT_INTRP{0,1}, i.e., are effectively OWN.
+;07500  1381	!
+;07600  1382	!	CCB[ISB$V_USER_ELEM]	0 if no user data element format
+;07700  1383	!				code seen this repeat group, 1
+;07800  1384	!				if one or more
+;07900  1385	!	CCB[ISB$W_FMT_REP]	Current format code repeat count (n)
+;08000  1386	!				or 0 if not repeating a single
+;08100  1387	!				format code. Note: the repeat
+;08200  1388	!				count for a repeat group is kept
+;08300  1389	!				in the top of the format stack, not here.
+;08400  1390	!	CCB[ISB$B_FMT_DEP]	Depth of repeat group format pushdown stack.
+;08500  1391	!	CCB[ISB$W_FMT_STKP]	Stack of offsets to beginning of repeat groups
+;08600  1392	!	CCB[ISB$W_FMT_STKR]	Stack of group repeat counts
+;08700  1393	!	CCB[ISB$W_FMT_REVER]	Offset of current format reversion
+;08800  1394	!				point to revert to when end of format
+;08900  1395	!				statement is encountered with more data
+;09000  1396	!				elements to be transmitted.
+;09100  1397	!
+;09200  1398	!    The following are output to available to the caller (read
+;09300  1399	!    or write user data formatter):
+;09400  1400	!
+;09500  1401	!	CCB[ISB$A_FMT_PTR]	Adr. of next byte to be read from
+;09600  1402	!				the compiled format statement byte array
+;09700  1403	!				are pushed as a pair.
+;09800  1404	!	CCB[ISB$B_FMT_P]	Signed scale factor (P)
+;09900  1405	!	CCB[ISB$W_FMT_W]	Unsigned width of field (W)
+;10000  1406	!	CCB[ISB$B_FMT_D]	Unsigned number of digits in fraction (D)
+;10100  1407	!	CCB[ISB$B_FMT_E]	Unsigned number of characters
+;10200  1408	!				in exponent (E).
+;10300  1409	!	CCB[ISB$V_USER_ELEM]	Flag: 1 if seen a user data element format code,
+;10400  1410	!				0 if not.  Used to check for infinite format loop
+;10500  1411	!				in which no user data element format codes are present
+;10600  1412	!
+;10700  1413	! FUNCTION VALUE:
+;10800  1414	!
+;10900  1415	!	FORMAT CODE(CCB[ISB$B_FMT_CODE])
+;11000  1416	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-2
+;
+;11100  1417	! SIDE EFFECTS:
+;11200  1418	!
+;11300  1419	!	SIGNAL_STOPs FOR$_SYNERRFOR (62='SYNTAX ERROR IN FORMAT")
+;11400  1420	!	SIGNAL_STOPs FOR$_INFFORLOP (60="INFINITE FORMAT LOOP")
+;11500  1421	!	SIGNAL_STOPs FOR$_VFEVALERR (68="VFE VALUE ERROR")
+;11600  1422	!--
+;11700  1423	
+;11800  1424	    BEGIN
+;11900  1425	
+;12000  1426	    EXTERNAL REGISTER
+;12100  1427		CCB: REF BLOCK[, BYTE];
+;12200  1428	
+;12300  1429	    LOCAL
+;12400  1430		ACT: BLOCK[1,LONG],	! Action table entry for format code
+;12500  1431		FMT_CODE: BLOCK[1,LONG],! Compressed format code returned
+;12600  1432		FMT_REPR: BLOCK[1,LONG],! Copy of optional representation byte
+;12700  1433		P;			! Pointer to format byte stream
+;12800  1434	
+;12900  1435	    BUILTIN
+;13000  1436		TESTBITSC;
+;13100  1437	
+;13200  1438	    MACRO			! Field definitions for action table
+;13300  1439		FI_GETW = 0,7,1,0%,	! Get w value for format
+;13400  1440		FI_GETD = 0,6,1,0%,	! Get d value for format
+;13500  1441		FI_USER = 0,5,1,0%,	! Format code involves user data element
+;13600  1442		FI_EXIT = 0,4,1,0%,	! Exit from format interpreter loop
+;13700  1443		FI_DISPAT=0,0,3,0%;	! Dispatch table value for code-specific actions
+;13800  1444	
+;13900  1445	    MACRO			! Attriutes-packing macro for attributes table
+;14000  1446		A(W,D,U,X, NDX) = (W^7 + D^6 + U^5 +X^4 + NDX) %;
+;14100  1447	
+;14200  1448	    BIND
+;14300  1449		FI_ACT =		! Action table for FMT_INTRP1 format codes
+;14400  1450		    UPLIT BYTE(
+;14500  1451	
+;14600  1452	
+;14700  1453	!		  W D U E
+;14800  1454	!		      S X
+;14900  1455	!		      E I
+;15000  1456	!		      R T
+;15100  1457			A(0,0,0,1, 0),	! ER	= 0,	! 00	! Format syntax error
+;15200  1458			A(0,0,0,0, 2),	! LP	= 1,	! 01	! ( - Format reversion point
+;15300  1459			A(0,0,0,0, 3),	! NLP	= 2,	! 02	! n( - Left paren of repeat group
+;15400  1460			A(0,0,0,0, 4),	! RP	= 3,	! 03	! ) - Right paren of repeat group
+;15500  1461			A(0,0,0,1, 5),	! EOF	= 4,	! 04	! ) - End of format
+;15600  1462			A(0,0,0,1, 1),	! SLS	= 5,	! 05	! / - Record separator
+;15700  1463			A(0,0,0,1, 1),	! DLR	= 6,	! 06	! $ - Dollar sign: terminal I/O
+;15800  1464			A(0,0,0,1, 1),	! CLN	= 7,	! 07	! : - Colon: terminate if end of list
+;15900  1465			0,0,0,0,	! UNUSED  8:11
+;16000  1466			A(1,0,0,0, 6),	! _P	= 12,	! 0C	! sP - signed scale factor
+;16100  1467			A(1,0,0,1, 1),	! _T	= 13,	! 0D	! Tn - Tab Set
+;16200  1468			A(1,0,0,1, 1),	! _X	= 14,	! 0E	! nX - Skip n columns
+;16300  1469			A(1,0,0,1, 1),	! _H	= 15,	! 0F	! nHcccc - Hollerith
+;16400  1470			0,0,0,0,	! UNUSED  16:19
+;16500  1471			A(0,0,1,1, 1),	! _Q	= 20,	! 14	! Q
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-3
+;
+;16600  1472			A(1,0,1,1, 1),	! _A	= 21,	! 15	! nAw - Alpha numeric
+;16700  1473			A(1,0,1,1, 1),	! _L	= 22,	! 16	! nLw - Logical
+;16800  1474			A(1,0,1,1, 1),	! _O	= 23,	! 17	! nOw - Octal
+;16900  1475			A(1,0,1,1, 1),	! _I	= 24,	! 18	! nIw - Integer
+;17000  1476			A(1,0,1,1, 1),	! _Z	= 25,	! 19	! nZw - Hexadecimal
+;17100  1477			0,0,0,0,	! UNUSED  26:29
+;17200  1478			A(1,1,1,1, 1),	! _F	= 30,	! 1E	! nFw.d - Fixed format
+;17300  1479			A(1,1,1,1, 1),	! _E	= 31,	! 1F	! nEw.d - Scientific notation format
+;17400  1480			A(1,1,1,1, 1),	! _G	= 32,	! 20	! nGw.d - General format
+;17500  1481			A(1,1,1,1, 1),	! _D	= 33,	! 21	! nDw.d - Double Precision format
+;17600  1482			0,0,0,0,0,0,0,	! UNUSED  34:40
+;17700  1483			A(0,0,1,1, 1),	! _DA	= 41,	! 29	! nA - default A
+;17800  1484			A(0,0,1,1, 1),	! _DL	= 42,	! 2A	! nL - default L
+;17900  1485			A(0,0,1,1, 1),	! _DO	= 43,	! 2B	! nO - default O
+;18000  1486			A(0,0,1,1, 1),	! _DI	= 44,	! 2C	! nI - default I
+;18100  1487			A(0,0,1,1, 1),	! _DZ	= 45,	! 2D	! nZ - default Z
+;18200  1488			0,0,0,0,	! UNUSED  46:49
+;18300  1489			A(0,0,1,1, 1),	! _DF	= 50,	! 32	! nF - default F
+;18400  1490			A(0,0,1,1, 1),	! _DE	= 51,	! 33	! nE - default E
+;18500  1491			A(0,0,1,1, 1),	! _DG	= 52,	! 34	! nG - default G
+;18600  1492			A(0,0,1,1, 1)	! _DD	= 53,	! 35	! nD - default D
+;18700  1493		    ): VECTOR[54,BYTE];
+;18800  1494	
+;18900  1495	    !+
+;19000  1496	    ! Print input formals and implicit inputs, if debugging
+;19100  1497	    !-
+;19200  1498	
+;19300  1499	    INPUT_FORMALS (FOR$$FMT_INTRP1, '.ELEM_SIZE', .ELEM_SIZE);
+;19400  1500	    IMPLICIT_INPUTS (FOR$$FMT_INTRP1,
+;19500P 1501		'.OTS$$A_CUR_LUB', .OTS$$A_CUR_LUB,
+;19600P 1502		'.CCB[ISB$A_FMT_PTR]', .CCB[ISB$A_FMT_PTR],
+;19700P 1503		'.CCB[ISB$V_USER_ELEM]', .CCB[ISB$V_USER_ELEM],
+;19800P 1504		'.CCB[ISB$W_FMT_REP]', .CCB[ISB$W_FMT_REP],
+;19900P 1505		'.CCB[ISB$W_FMT_REVER]', .CCB[ISB$W_FMT_REVER],
+;20000P 1506		'.CCB[ISB$B_FMT_DEP]', .CCB[ISB$B_FMT_DEP],
+;20100P 1507		'.CCB[ISB$L_FMT_STK]', .(.ISB+ISB$S_FMT_STK),
+;20200P 1508		'.CCB[ISB$L_FMT_STK]+%UPVAL', .(.ISB+ISB$S_FMT_STK+%UPVAL),
+;20300P 1509		'.CCB[ISB$L_FMT_STK]+2*%UPVAL', .(.ISB+ISB$S_FMT_STK+2*%UPVAL),
+;20400P 1510		'.CCB[ISB$L_FMT_STK]+3*%UPVAL', .(.ISB+ISB$S_FMT_STK+3*%UPVAL),
+;20500P 1511		'.CCB[ISB$V_USER_ELEM]', .CCB[ISB$V_USER_ELEM]);
+;20600  1512	
+;20700  1513	    !+
+;20800  1514	    ! (NXTITM+1)
+;20900  1515	    ! Assume that a format code is being repeated.- nf not n(f).
+;21000  1516	    ! (as distinguished from a repeat group which is n(...))
+;21100  1517	    ! Decrement format repeat count (ISB$W_FMT_REP). Test
+;21200  1518	    ! if still more to repeat - if yes, skip usual format code
+;21300  1519	    ! dispatching by skipping loop altogether, redo defaults if
+;21400  1520	    ! default format codes and RETURN
+;21500  1521	    !-
+;21600  1522	
+;21700  1523	    CCB[ISB$W_FMT_REP] = .CCB[ISB$W_FMT_REP] - 1;
+;21800  1524	
+;21900  1525	    IF .CCB[ISB$W_FMT_REP] GTR 0
+;22000  1526	    THEN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-4
+;
+;22100  1527		FMT_CODE = .CCB[ISB$B_FMT_CODE]
+;22200  1528	
+;22300  1529	    ELSE
+;22400  1530		!+
+;22500  1531		! (FINTRP)
+;22600  1532		! Not in format code repeat - start format interpret loop
+;22700  1533		! Loop until encounter a format code which needs to access
+;22800  1534		! data (ER or explicit or default Q, A, L, O, I, Z, F, E, G, or D),
+;22900  1535		!  needs to access the data buffer (X, H, Q), or
+;23000  1536		! depends on whether read or write (), /, $, :, T).
+;23100  1537		!-
+;23200  1538	
+;23300  1539		BEGIN
+;23400  1540		P = .CCB[ISB$A_FMT_PTR];
+;23500  1541	
+;23600  1542		DO
+;23700  1543		    BEGIN
+;23800  1544	
+;23900  1545		    !+
+;24000  1546		    ! Pickup next format code byte from compiled format:
+;24100  1547		    ! If optional representation byte
+;24200  1548		    ! is present (V_FMT_REPRE=1), mask out flag bit
+;24300  1549		    ! in format code and copy next byte to BITVECTOR
+;24400  1550		    ! to indicate larger (less frequent) sizes of the
+;24500  1551		    ! code representation or Variable Field Expressions (VFE).
+;24600  1552		    !-
+;24700  1553	
+;24800  1554		    FMT_REPR = 0;
+;24900  1555		    FMT_CODE = RBYTE_A(P);
+;25000  1556	
+;25100  1557		    IF TESTBITSC( FMT_CODE[V_FMT_REPRE] )
+;25200  1558		    THEN
+;25300  1559			FMT_REPR = RBYTE_A(P);
+;25400  1560	
+;25500  1561		    ACT = .FI_ACT[.FMT_CODE];
+;25600  1562	
+;25700  1563		    !+
+;25800  1564		    ! Get repeat count (RC) from format and save in ISB$W_FMT_REP.
+;25900  1565		    ! If repeat count is a VFE (FMT_REPR[V_RC_VFE]=1), get VFE and
+;26000  1566		    ! check for out of range (1:32767).
+;26100  1567		    ! If explicitly represented, get byte or word value.
+;26200  1568		    ! Else set repeat count to 1. Possible for left paren
+;26300  1569		    ! of a repeat group (NLP) or A, L, O, Z, I, F, E, G, D
+;26400  1570		    ! or default A, L, O, Z, I, F, E, G, D.
+;26500  1571		    !-
+;26600  1572	
+;26700  1573		    CCB[ISB$W_FMT_REP] =
+;26800  1574			(IF .FMT_REPR[V_RC_VFE]
+;26900  1575			THEN
+;27000  1576			    BEGIN
+;27100  1577			    LOCAL T;
+;27200  1578			    T = CALL_VFE(P);
+;27300  1579			    IF .T GEQU 32768 OR .T EQL 0
+;27400  1580			    THEN
+;27500  1581				BEGIN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-5
+;
+;27600  1582				FOR$$SIGNAL (FOR$K_VFEVALERR);
+;27700  1583				1		! Force repeat count to 1 on error
+;27800  1584				END
+;27900  1585			    ELSE
+;28000  1586				.T		! Use user supplied value
+;28100  1587			    END
+;28200  1588			ELSE
+;28300  1589			    (CASE .FMT_REPR[V_RC_TYPE] FROM 0 TO 2 OF
+;28400  1590				SET
+;28500  1591				[0]: 1;
+;28600  1592				[1]: RBYTE_A(P);
+;28700  1593				[2]: RWORD_A(P);
+;28800  1594				TES)
+;28900  1595			);
+;29000  1596	
+;29100  1597		    !+
+;29200  1598		    ! For all user data element format codes
+;29300  1599		    ! (explicit and default Q, A, L, O, I, Z, F, E, G, D):
+;29400  1600		    ! Set user data element format code
+;29500  1601		    ! seen in this group, because not in an
+;29600  1602		    ! infinite format loop invoking for a user
+;29700  1603		    ! data element format code which doesn't exist.
+;29800  1604		    !-
+;29900  1605	
+;30000  1606		    IF .ACT[FI_USER]
+;30100  1607		    THEN
+;30200  1608			CCB[ISB$V_USER_ELEM] = 1;
+;30300  1609	
+;30400  1610		    !+
+;30500  1611		    ! P, T, X, H, A ,L, O, I, Z, F, E, G, D:
+;30600  1612		    ! Get field width (w) from format and
+;30700  1613		    ! set ISB$W_FMT_W. If width field is a
+;30800  1614		    ! VFE (V_W_VFE=1), get VFE value and check range;
+;30900  1615		    ! if P scale -128 to 127, else (field width w) 0 to 32767.
+;31000  1616		    ! If width of field is a byte (V_W_WORD=0), get byte
+;31100  1617		    ! else get word.  ISB$W_FMT_W is set as a
+;31200  1618		    ! zero extended word.
+;31300  1619		    !-
+;31400  1620	
+;31500  1621		    IF .ACT[FI_GETW]
+;31600  1622		    THEN
+;31700  1623			CCB[ISB$W_FMT_W] =
+;31800  1624			    (IF .FMT_REPR[V_W_VFE]
+;31900  1625			    THEN
+;32000  1626				BEGIN
+;32100  1627				LOCAL T;
+;32200  1628				T = CALL_VFE(P);
+;32300  1629				IF .ACT[FI_DISPAT] EQL 6
+;32400  1630				THEN
+;32500  1631				    BEGIN	! P scale
+;32600  1632				    IF .T LSS -128 OR .T GTR 127
+;32700  1633				    THEN
+;32800  1634					BEGIN
+;32900  1635					FOR$$SIGNAL (FOR$K_VFEVALERR);
+;33000  1636					T = 0	! Force P scale to 0
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-6
+;
+;33100  1637					END
+;33200  1638				    END
+;33300  1639				ELSE
+;33400  1640				    BEGIN	! Else w width of field
+;33500  1641				    IF .T LEQ 0
+;33600  1642				    THEN
+;33700  1643					BEGIN
+;33800  1644					FOR$$SIGNAL (FOR$K_VFEVALERR);
+;33900  1645					T = 25	! Max. default field width
+;34000  1646					END
+;34100  1647				    END;
+;34200  1648				.T	! return VFE value
+;34300  1649				END
+;34400  1650			    ELSE
+;34500  1651				IF .FMT_REPR[V_W_WORD]
+;34600  1652				THEN
+;34700  1653				    RWORD_A(P)
+;34800  1654				ELSE
+;34900  1655				    RBYTE_A(P)
+;35000  1656			    );
+;35100  1657	
+;35200  1658		    !+
+;35300  1659		    ! Get decimal part (d) from format and set
+;35400  1660		    ! ISB$B_FMT_D. If decimal part is a VFE
+;35500  1661		    ! (V_D_VFE=1) get VFE and check range (0:32767).
+;35600  1662		    ! Else get byte from format
+;35700  1663	
+;35800  1664		    ! Also set exponent width (ISB$B_FMT_E) to 4.
+;35900  1665		    ! (until introduction of syntax in compiler to
+;36000  1666		    ! specify width of exponent per ANSI FORTRAN-77).
+;36100  1667		    ! Not used by F format.
+;36200  1668		    !-
+;36300  1669	
+;36400  1670		    IF .ACT[FI_GETD]
+;36500  1671		    THEN
+;36600  1672			BEGIN
+;36700  1673			CCB[ISB$B_FMT_D] =
+;36800  1674			    (IF .FMT_REPR[V_D_VFE]
+;36900  1675			    THEN
+;37000  1676				BEGIN		! VFE
+;37100  1677				LOCAL T;
+;37200  1678				T = CALL_VFE(P);
+;37300  1679				IF .T GEQU 32768
+;37400  1680				THEN
+;37500  1681				    BEGIN
+;37600  1682				    FOR$$SIGNAL (FOR$K_VFEVALERR);
+;37700  1683				    1
+;37800  1684				    END
+;37900  1685				ELSE
+;38000  1686				    .T
+;38100  1687				END
+;38200  1688			    ELSE
+;38300  1689				RBYTE_A(P)
+;38400  1690			    );
+;38500  1691			CCB[ISB$B_FMT_E] = 4;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-7
+;
+;38600  1692			END;
+;38700  1693	
+;38800  1694		    !+
+;38900  1695		    ! Dispatch on format code and select appropriate actions:
+;39000  1696		    !-
+;39100  1697	
+;39200  1698		    CASE .ACT[FI_DISPAT] FROM 0 TO 6 OF
+;39300  1699			SET
+;39400  1700	
+;39500  1701			[0]:
+;39600  1702			    !+
+;39700  1703			    ! ER or undefined format code
+;39800  1704			    ! Bad format: Signal_stop SYNTAX ERROR IN FORMAT (FOR$_SYNERRFOR)
+;39900  1705			    !-
+;40000  1706	
+;40100  1707			    FOR$$SIGNAL_STO (FOR$K_SYNERRFOR);
+;40200  1708	
+;40300  1709			[1]:
+;40400  1710			    !+
+;40500  1711			    ! No special actions required.
+;40600  1712			    !-
+;40700  1713			    ;
+;40800  1714	
+;40900  1715			[2]:
+;41000  1716			    !+
+;41100  1717			    ! LP  Format reversion point: left paren of
+;41200  1718			    ! second outer-most pair. Remeber current format
+;41300  1719			    ! offset (ISB$W_FMT_REVER) in case more data
+;41400  1720			    ! element in I/O list than data format
+;41500  1721			    ! codes in format. Reset push down stack to
+;41600  1722			    ! empty (-1) since this is start of
+;41700  1723			    ! first group repeat. Clear user data element
+;41800  1724			    ! seen flag (ISB$V_USER_ELEM) as a defense
+;41900  1725			    ! against infinite loop with no data
+;42000  1726			    ! transmit format code
+;42100  1727			    ! Note: format text pointer already advanced to next byte
+;42200  1728			    !-
+;42300  1729	
+;42400  1730			    BEGIN
+;42500  1731			    CCB[ISB$B_FMT_DEP] = -1;
+;42600  1732			    CCB[ISB$W_FMT_REVER] = .P - .CCB[ISB$A_FMT_BEG];
+;42700  1733			    CCB[ISB$V_USER_ELEM] = 0;
+;42800  1734			    END;	! End LP
+;42900  1735	
+;43000  1736			[3]:
+;43100  1737			    !+
+;43200  1738			    ! NLP   Left paren of a repeat group: Push repeat
+;43300  1739			    ! count (ISB$W_FMT_REP) and current (ISB$A_FMT_PTR)
+;43400  1740			    ! onto format stacks
+;43500  1741			    !-
+;43600  1742	
+;43700  1743			    BEGIN
+;43800  1744			    CCB[ISB$B_FMT_DEP] = .CCB[ISB$B_FMT_DEP] + 1;
+;43900  1745			    VECTOR[CCB[ISB$W_FMT_STKR], .CCB[ISB$B_FMT_DEP]; , WORD, UNSIGNED] = .CCB[ISB$W_FMT_REP];
+;44000  1746			    VECTOR[CCB[ISB$W_FMT_STKP], .CCB[ISB$B_FMT_DEP]; , WORD, UNSIGNED] = .P - .CCB[ISB$A_FMT_BEG];
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-8
+;
+;44100  1747			    END;	! End NLP
+;44200  1748	
+;44300  1749			[4]:
+;44400  1750			    !+
+;44500  1751			    ! RP   Right paren of repeat group: Decrement
+;44600  1752			    ! current group repeat count (on top of
+;44700  1753			    ! stack)  If current group count still greater
+;44800  1754			    ! than 0, set current format pointer back to
+;44900  1755			    ! beginning of repeat group. Else pop off
+;45000  1756			    ! beginning of group pointer and group repeat count
+;45100  1757			    !-
+;45200  1758	
+;45300  1759			    IF (VECTOR[CCB[ISB$W_FMT_STKR], .CCB[ISB$B_FMT_DEP]; , WORD, UNSIGNED] = 
+;45400  1760				.VECTOR[CCB[ISB$W_FMT_STKR], .CCB[ISB$B_FMT_DEP]; , WORD, UNSIGNED] - 1) GTR 0
+;45500  1761			    THEN
+;45600  1762				! reset pointer to address of repeat group
+;45700  1763				!
+;45800  1764			        P = .CCB[ISB$A_FMT_BEG] + .VECTOR[CCB[ISB$W_FMT_STKP], .CCB[ISB$B_FMT_DEP]; , WORD, UNSIGNED] 
+;45900  1765			    ELSE
+;46000  1766				! pop off pointer and repeat count
+;46100  1767				!
+;46200  1768			        CCB[ISB$B_FMT_DEP] = .CCB[ISB$B_FMT_DEP] - 1;
+;46300  1769	
+;46400  1770			[5]:
+;46500  1771			    !+
+;46600  1772			    ! EOF   End of format:
+;46700  1773			    ! If not end of user I/O list (ELEM_SIZE=0)
+;46800  1774			    ! and no user data element format code
+;46900  1775			    ! (ISB$V_USER_ELEM=0), then Signal_stop. INFINITE
+;47000  1776			    ! FORMAT LOOP (FOR$_INFFORLOP).
+;47100  1777			    ! Reset current format pointer to reversion point
+;47200  1778			    ! (ISB$W_FMT_REVER). Initialize format stack depth.
+;47300  1779			    !-
+;47400  1780	
+;47500  1781			    BEGIN
+;47600  1782			    P = .CCB[ISB$A_FMT_BEG] + .CCB[ISB$W_FMT_REVER];
+;47700  1783			    CCB[ISB$B_FMT_DEP] = -1;
+;47800  1784	
+;47900  1785			    IF .ELEM_SIZE GTRU 0 AND NOT .CCB[ISB$V_USER_ELEM]
+;48000  1786			    THEN
+;48100  1787				FOR$$SIGNAL_STO (FOR$K_INFFORLOO);
+;48200  1788			    END;
+;48300  1789	
+;48400  1790			[6]:
+;48500  1791			    !+
+;48600  1792			    ! P   Scale factor (sP): -128 =< s =< 127
+;48700  1793			    ! Convert unsigned word width (w) (ISB$W_FMT_W)
+;48800  1794			    ! to signed byte ('s) and save in ISB$B_FMT_P.
+;48900  1795			    !-
+;49000  1796	
+;49100  1797			    BEGIN
+;49200  1798			    CCB[ISB$B_FMT_P] = .CCB[ISB$W_FMT_W];
+;49300  1799			    END;
+;49400  1800	
+;49500  1801			TES;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-9
+;
+;49600  1802	
+;49700  1803		    !+
+;49800  1804		    ! End of loop - continue if just format control
+;49900  1805		    ! ( (, n(, )) or not dependent on read/write
+;50000  1806		    ! and doesn't access data buffer (P)
+;50100  1807		    !
+;50200  1808		    ! EXITLOOP for format codes which access user data.
+;50300  1809		    ! (ER or explicit or  default A, L, O, I, Z, F, E, G or D),
+;50400  1810		    ! EXITLOOP for format codes which access data
+;50500  1811		    ! buffer (X, H, Q)  EXITLOOP for format codes
+;50600  1812		    ! which depend on whether read or write (end
+;50700  1813		    ! of format, /, $, :, T).
+;50800  1814		    !-
+;50900  1815	
+;51000  1816		    END
+;51100  1817	
+;51200  1818		UNTIL .ACT[FI_EXIT];
+;51300  1819	
+;51400  1820	
+;51500  1821		!+
+;51600  1822		! Reset format code and updated format text pointer in ISB.
+;51700  1823		!-
+;51800  1824	
+;51900  1825		CCB[ISB$B_FMT_CODE] = .FMT_CODE;
+;52000  1826		CCB[ISB$A_FMT_PTR]  = .P;
+;52100  1827	
+;52200  1828		END;
+;52300  1829	
+;52400  1830	
+;52500  1831	    !+
+;52600  1832	    ! Default data format codes - set defaults based on size of
+;52700  1833	    ! each user data element even if inside a format code repeat
+;52800  1834	    ! since the size could be different for each user data element
+;52900  1835	    !-
+;53000  1836	
+;53100  1837	    IF .FMT_CODE GEQU _DA
+;53200  1838	    THEN
+;53300  1839		BEGIN
+;53400  1840	
+;53500  1841		CASE .FMT_CODE FROM _DA TO _DD OF
+;53600  1842		    SET
+;53700  1843	
+;53800  1844		    [_DA]:
+;53900  1845			!+
+;54000  1846			! Default A: set w field (ISB$W_FMT_W) from
+;54100  1847			! size of user data element
+;54200  1848			!-
+;54300  1849	
+;54400  1850			CCB[ISB$W_FMT_W] = .ELEM_SIZE;
+;54500  1851	
+;54600  1852		    [_DL]:
+;54700  1853			!+
+;54800  1854			! Default L:  set w field (ISB$W_FMT_W) to 2
+;54900  1855			!-
+;55000  1856	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-10
+;
+;55100  1857			CCB[ISB$W_FMT_W] = 2;
+;55200  1858	
+;55300  1859		    [_DO,_DZ,_DI]:
+;55400  1860			!+
+;55500  1861			! Default O, Z, I:  Set w field (ISB$W_FMT_W) to
+;55600  1862			! 7 or 12 dependening on whether the user data
+;55700  1863			! element is a byte/word or a longword/greater
+;55800  1864			!-
+;55900  1865	
+;56000  1866			IF .ELEM_SIZE GEQU 4
+;56100  1867			THEN
+;56200  1868			    CCB[ISB$W_FMT_W] = 12
+;56300  1869			ELSE
+;56400  1870			    CCB[ISB$W_FMT_W] = 7;
+;56500  1871	
+;56600  1872		    [_DF,_DE,_DG,_DD]:
+;56700  1873			!+
+;56800  1874			! Default F, E, G, D:  Set w field (ISB$W_FMT_W) to
+;56900  1875			! 15 or 25 depending on whether user data element is
+;57000  1876			! floating or double. Set d field (ISB$B_FMT_D)
+;57100  1877			! to 7 or 16 depending on whether user data element
+;57200  1878			! is floating or double. Set e field (ISB$B_FMT_E) to 4.
+;57300  1879			! (not used by F)
+;57400  1880			!-
+;57500  1881	
+;57600  1882			BEGIN
+;57700  1883			CCB[ISB$B_FMT_E] = 4;
+;57800  1884	
+;57900  1885			IF .ELEM_SIZE EQL 4
+;58000  1886			THEN
+;58100  1887			    BEGIN
+;58200  1888			    CCB[ISB$W_FMT_W] = 15;
+;58300  1889			    CCB[ISB$B_FMT_D] = 7;
+;58400  1890			    END
+;58500  1891			ELSE
+;58600  1892			    BEGIN
+;58700  1893			    CCB[ISB$W_FMT_W] = 25;
+;58800  1894			    CCB[ISB$B_FMT_D] = 16;
+;58900  1895			    END;
+;59000  1896			END;
+;59100  1897	
+;59200  1898		    [INRANGE]:
+;59300  1899			;
+;59400  1900	
+;59500  1901		    TES;
+;59600  1902	
+;59700  1903		!+
+;59800  1904		! Translate default format code to corresponding explicit code.
+;59900  1905		!-
+;60000  1906	
+;60100  1907		FMT_CODE = .FMT_CODE - (_DA - _A);
+;60200  1908		END;
+;60300  1909	    !+
+;60400  1910	    ! Print output formals,  implicit outputs, and function value if debugging
+;60500  1911	    !-
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-11
+;
+;60600  1912	
+;60700  1913	    FUNCTION_VALUE (FOR$$FMT_INTRP1, '.FMT_CODE', .FMT_CODE);
+;60800  1914	    OUTPUT_FORMALS (FOR$$FMT_INTRP1);
+;60900  1915	    IMPLICIT_OUTPUT (FOR$$FMT_INTRP1,
+;61000P 1916		'.CCB[ISB$A_FMT_PTR]', .CCB[ISB$A_FMT_PTR],
+;61100P 1917		'.CCB[ISB$B_FMT_DEP]', .CCB[ISB$B_FMT_DEP],
+;61200P 1918		'.CCB[ISB$W_FMT_REP]', .CCB[ISB$W_FMT_REP],
+;61300P 1919		'.CCB[ISB$L_FMT_STK]', .(.ISB+ISB$S_FMT_STK),
+;61400P 1920		'.CCB[ISB$L_FMT_STK]+%UPVAL', .(.ISB+ISB$S_FMT_STK+%UPVAL),
+;61500P 1921		'.CCB[ISB$L_FMT_STK]+2*%UPVAL', .(.ISB+ISB$S_FMT_STK+2*%UPVAL),
+;61600P 1922		'.CCB[ISB$L_FMT_STK]+3*%UPVAL', .(.ISB+ISB$S_FMT_STK+3*%UPVAL),
+;61700P 1923		'.CCB[ISB$B_FMT_P]', .CCB[ISB$B_FMT_P],
+;61800P 1924		'.CCB[ISB$W_FMT_W]', .CCB[ISB$W_FMT_W],
+;61900P 1925		'.CCB[ISB$B_FMT_D]', .CCB[ISB$B_FMT_D],
+;62000P 1926		'.CCB[ISB$B_FMT_E]', .CCB[ISB$B_FMT_E],
+;62100P 1927		'.CCB[ISB$V_USER_ELEM]', .CCB[ISB$V_USER_ELEM]);
+;62200  1928	
+;62300  1929	    !+
+;62400  1930	    ! Return to read, write User Data Formatter (UDF). If default
+;62500  1931	    ! format code, return corresponding explicit format code
+;62600  1932	    ! to UDF. Else return the actual format code
+;62700  1933	    !-
+;62800  1934	
+;62900  1935	    RETURN .FMT_CODE
+;63000  1936	
+;63100  1937	    END;		! End of FOR$$FMT_INTRP1 Routine
+
+
+
+					      00016	    .BLKB   2
+  00  00  00  11  11  11  15  04  03  02  10  00018 P.AAA:  .BYTE   16, 2, 3, 4, 21, 17, 17, 17, 0, 0, 0, 0, -122, -111, -    ;
+  B1  31  00  00  00  00  91  91  91  86  00  00023		    -111, -111, 0, 0, 0, 0, 49, -79, -79, -79, -79, -79, 0, - ;
+  F1  F1  F1  00  00  00  00  B1  B1  B1  B1  0002E		    0, 0, 0, -15, -15, -15, -15, 0, 0, 0, 0, 0, 0, 0, 49, -   ;
+  31  31  31  00  00  00  00  00  00  00  F1  00039		    49, 49, 49, 49, 0, 0, 0, 0, 49, 49, 49, 49		      ;
+      31  31  31  31  00  00  00  00  31  31  00044									      ;
+					      0004E	    .BLKB   2
+
+						    FI_ACT=		P.AAA
+
+
+					 00FC 00050 	    .ENTRY  FOR$$FMT_INTRP1, Save R2,R3,R4,R5,R6,R7		      ; 1307
+		         57 	0000G  CF  9E 00052 	    MOVAB   FOR$$SIGNAL, R7					      ;
+				  D1   AB  B7 00057 	    DECW    -47(CCB)						      ; 1523
+				       07  15 0005A 	    BLEQ    1$							      ; 1525
+		         54 	  D3   AB  9A 0005C 	    MOVZBL  -45(CCB), FMT_CODE					      ; 1527
+				     017B  31 00060 	    BRW     32$							      ; 1525
+		         52 	  C0   AB  D0 00063 1$:     MOVL    -64(CCB), P						      ; 1540
+				       56  D4 00067 2$:     CLRL    FMT_REPR						      ; 1554
+		         54 	       82  9A 00069 	    MOVZBL  (P)+, FMT_CODE					      ; 1555
+	   03 	         54 	       07  E5 0006C 	    BBCC    #7, FMT_CODE, 3$					      ; 1557
+		         56 	       82  9A 00070 	    MOVZBL  (P)+, FMT_REPR					      ; 1559
+		         55 	  A1 AF44  9A 00073 3$:     MOVZBL  FI_ACT[FMT_CODE], ACT				      ; 1561
+	   1D 	         56 	       07  E1 00078 	    BBC     #7, FMT_REPR, 5$					      ; 1574
+		         50 	       82  D0 0007C 	    MOVL    (P)+, T						      ; 1578
+		       6240 	       00  FB 0007F 	    CALLS   #0, (P)[T]						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-12
+;
+	      00008000   8F	       50  D1 00083 	    CMPL    T, #32768						      ; 1579
+				       04  1E 0008A 	    BGEQU   4$							      ;
+				       50  D5 0008C 	    TSTL    T							      ;
+				       25  12 0008E 	    BNEQ    10$							      ;
+		         7E 	  44   8F  9A 00090 4$:     MOVZBL  #68, -(SP)						      ; 1582
+		         67 	       01  FB 00094 	    CALLS   #1, FOR$$SIGNAL					      ;
+				       0F  11 00097 	    BRB     7$							      ; 1579
+	   56 	         02 	       00  EF 00099 5$:     EXTZV   #0, #2, FMT_REPR, R1				      ; 1589
+				       51     0009D									      ;
+	   02 	         00 	       51  CF 0009E 	    CASEL   R1, #0, #2						      ;
+	 0010 	       000B 	     0006     000A2 6$:     .WORD   7$-6$,-						      ;
+								    8$-6$,-						      ;
+								    9$-6$						      ;
+		         50 	       01  D0 000A8 7$:     MOVL    #1, R0						      ;
+				       08  11 000AB 	    BRB     10$							      ;
+		         50 	       82  9A 000AD 8$:     MOVZBL  (P)+, R0						      ;
+				       03  11 000B0 	    BRB     10$							      ;
+		         50 	       82  3C 000B2 9$:     MOVZWL  (P)+, R0						      ;
+		    D1   AB	       50  B0 000B5 10$:    MOVW    R0, -47(CCB)					      ; 1573
+	   04 	         55 	       05  E1 000B9 	    BBC     #5, ACT, 11$					      ; 1606
+		    D7   AB	       02  88 000BD 	    BISB2   #2, -41(CCB)					      ; 1608
+	   52 	         55 	       07  E1 000C1 11$:    BBC     #7, ACT, 17$					      ; 1621
+	   3E 	         56 	       06  E1 000C5 	    BBC     #6, FMT_REPR, 14$					      ; 1624
+		         50 	       82  D0 000C9 	    MOVL    (P)+, T						      ; 1628
+		       6240 	       00  FB 000CC 	    CALLS   #0, (P)[T]						      ;
+		         53 	       50  D0 000D0 	    MOVL    R0, T						      ;
+	   55 	         03 	       00  ED 000D3 	    CMPZV   #0, #3, ACT, #6					      ; 1629
+				       06     000D7									      ;
+				       1D  12 000D8 	    BNEQ    13$							      ;
+	      FFFFFF80   8F	       53  D1 000DA 	    CMPL    T, #-128						      ; 1632
+				       09  19 000E1 	    BLSS    12$							      ;
+	      0000007F   8F	       53  D1 000E3 	    CMPL    T, #127						      ;
+				       27  15 000EA 	    BLEQ    16$							      ;
+		         7E 	  44   8F  9A 000EC 12$:    MOVZBL  #68, -(SP)						      ; 1635
+		         67 	       01  FB 000F0 	    CALLS   #1, FOR$$SIGNAL					      ;
+				       53  D4 000F3 	    CLRL    T							      ; 1636
+				       1C  11 000F5 	    BRB     16$							      ; 1629
+				       53  D5 000F7 13$:    TSTL    T							      ; 1641
+				       18  14 000F9 	    BGTR    16$							      ;
+		         7E 	  44   8F  9A 000FB 	    MOVZBL  #68, -(SP)						      ; 1644
+		         67 	       01  FB 000FF 	    CALLS   #1, FOR$$SIGNAL					      ;
+		         53 	       19  D0 00102 	    MOVL    #25, T						      ; 1645
+				       0C  11 00105 	    BRB     16$							      ; 1624
+	   05 	         56 	       02  E1 00107 14$:    BBC     #2, FMT_REPR, 15$					      ; 1651
+		         53 	       82  3C 0010B 	    MOVZWL  (P)+, R3						      ;
+				       03  11 0010E 	    BRB     16$							      ;
+		         53 	       82  9A 00110 15$:    MOVZBL  (P)+, R3						      ;
+		    CD   AB	       53  B0 00113 16$:    MOVW    R3, -51(CCB)					      ; 1623
+	   2B 	         55 	       06  E1 00117 17$:    BBC     #6, ACT, 20$					      ; 1670
+	   1C 	         56 	       05  E1 0011B 	    BBC     #5, FMT_REPR, 18$					      ; 1674
+		         50 	       82  D0 0011F 	    MOVL    (P)+, T						      ; 1678
+		       6240 	       00  FB 00122 	    CALLS   #0, (P)[T]						      ;
+	      00008000   8F	       50  D1 00126 	    CMPL    T, #32768						      ; 1679
+				       0F  1F 0012D 	    BLSSU   19$							      ;
+		         7E 	  44   8F  9A 0012F 	    MOVZBL  #68, -(SP)						      ; 1682
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-13
+;
+		         67 	       01  FB 00133 	    CALLS   #1, FOR$$SIGNAL					      ;
+		         50 	       01  D0 00136 	    MOVL    #1, R0						      ; 1679
+				       03  11 00139 	    BRB     19$							      ; 1674
+		         50 	       82  9A 0013B 18$:    MOVZBL  (P)+, R0						      ;
+		    CF   AB	       50  90 0013E 19$:    MOVB    R0, -49(CCB)					      ; 1673
+		    D0   AB	       04  90 00142 	    MOVB    #4, -48(CCB)					      ; 1691
+	   55 	         03 	       00  EF 00146 20$:    EXTZV   #0, #3, ACT, R3					      ; 1698
+				       53     0014A									      ;
+	   06 	         00 	       53  CF 0014B 	    CASEL   R3, #0, #6						      ;
+	 0012 	       0080 	     000E     0014F 21$:    .WORD   22$-21$,-						      ;
+	 005C 	       0038 	     0022     00155		    30$-21$,-						      ;
+				     007B     0015B		    23$-21$,-						      ;
+								    24$-21$,-						      ;
+								    25$-21$,-						      ;
+								    27$-21$,-						      ;
+								    29$-21$						      ;
+				       3E  DD 0015D 22$:    PUSHL   #62							      ; 1707
+				       62  11 0015F 	    BRB     28$							      ;
+		    D6   AB	       01  8E 00161 23$:    MNEGB   #1, -42(CCB)					      ; 1731
+      D4   AB	         52 	  B4   AB  A3 00165 	    SUBW3   -76(CCB), P, -44(CCB)				      ; 1732
+		    D7   AB	       02  8A 0016B 	    BICB2   #2, -41(CCB)					      ; 1733
+				       5E  11 0016F 	    BRB     30$							      ; 1698
+				  D6   AB  96 00171 24$:    INCB    -42(CCB)						      ; 1744
+		         50 	  D6   AB  9A 00174 	    MOVZBL  -42(CCB), R0					      ; 1745
+		    94 AB40	  D1   AB  B0 00178 	    MOVW    -47(CCB), -108(CCB)[R0]				      ;
+      84 AB40	         52 	  B4   AB  A3 0017E 	    SUBW3   -76(CCB), P, -124(CCB)[R0]				      ; 1746
+				       48  11 00185 	    BRB     30$							      ; 1698
+		         50 	  D6   AB  9A 00187 25$:    MOVZBL  -42(CCB), R0					      ; 1759
+		         51 	  94 AB40  3C 0018B 	    MOVZWL  -108(CCB)[R0], R1					      ; 1760
+				       51  D7 00190 	    DECL    R1							      ;
+		    94 AB40	       51  B0 00192 	    MOVW    R1, -108(CCB)[R0]					      ; 1759
+				       51  D5 00197 	    TSTL    R1							      ; 1760
+				       0B  15 00199 	    BLEQ    26$							      ;
+		         52 	  84 AB40  3C 0019B 	    MOVZWL  -124(CCB)[R0], P					      ; 1764
+		         52 	  B4   AB  C0 001A0 	    ADDL2   -76(CCB), P						      ;
+				       29  11 001A4 	    BRB     30$							      ; 1759
+				  D6   AB  97 001A6 26$:    DECB    -42(CCB)						      ; 1768
+				       24  11 001A9 	    BRB     30$							      ; 1698
+		         52 	  D4   AB  3C 001AB 27$:    MOVZWL  -44(CCB), P						      ; 1782
+		         52 	  B4   AB  C0 001AF 	    ADDL2   -76(CCB), P						      ;
+		    D6   AB	       01  8E 001B3 	    MNEGB   #1, -42(CCB)					      ; 1783
+				  04   AC  D5 001B7 	    TSTL    ELEM_SIZE						      ; 1785
+				       13  1B 001BA 	    BLEQU   30$							      ;
+	   0E 	    D7   AB	       01  E0 001BC 	    BBS     #1, -41(CCB), 30$					      ;
+				       3C  DD 001C1 	    PUSHL   #60							      ; 1787
+		  0000G  CF	       01  FB 001C3 28$:    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       05  11 001C8 	    BRB     30$							      ; 1698
+		    CC   AB	  CD   AB  90 001CA 29$:    MOVB    -51(CCB), -52(CCB)					      ; 1798
+	   03 	         55 	       04  E0 001CF 30$:    BBS     #4, ACT, 31$					      ; 1818
+				     FE91  31 001D3 	    BRW     2$							      ;
+		    D3   AB	       54  90 001D6 31$:    MOVB    FMT_CODE, -45(CCB)					      ; 1825
+		    C0   AB	       52  D0 001DA 	    MOVL    P, -64(CCB)						      ; 1826
+		         29 	       54  D1 001DE 32$:    CMPL    FMT_CODE, #41					      ; 1837
+				       5C  1F 001E1 	    BLSSU   41$							      ;
+	   0C 	         29 	       54  CF 001E3 	    CASEL   FMT_CODE, #41, #12					      ; 1841
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-14
+;
+	 0027 	       0021 	     001A     001E7 33$:    .WORD   34$-33$,-						      ;
+	 0055 	       0027 	     0027     001ED		    35$-33$,-						      ;
+	 0055 	       0055 	     0055     001F3		    36$-33$,-						      ;
+	 0039 	       0039 	     0039     001F9		    36$-33$,-						      ;
+				     0039     001FF		    36$-33$,-						      ;
+								    40$-33$,-						      ;
+								    40$-33$,-						      ;
+								    40$-33$,-						      ;
+								    40$-33$,-						      ;
+								    38$-33$,-						      ;
+								    38$-33$,-						      ;
+								    38$-33$,-						      ;
+								    38$-33$						      ;
+		    CD   AB	  04   AC  B0 00201 34$:    MOVW    ELEM_SIZE, -51(CCB)					      ; 1850
+				       34  11 00206 	    BRB     40$							      ; 1841
+		    CD   AB	       02  B0 00208 35$:    MOVW    #2, -51(CCB)					      ; 1857
+				       2E  11 0020C 	    BRB     40$							      ; 1841
+		         04 	  04   AC  D1 0020E 36$:    CMPL    ELEM_SIZE, #4					      ; 1866
+				       06  1F 00212 	    BLSSU   37$							      ;
+		    CD   AB	       0C  B0 00214 	    MOVW    #12, -51(CCB)					      ; 1868
+				       22  11 00218 	    BRB     40$							      ; 1866
+		    CD   AB	       07  B0 0021A 37$:    MOVW    #7, -51(CCB)					      ; 1870
+				       1C  11 0021E 	    BRB     40$							      ; 1841
+		    D0   AB	       04  90 00220 38$:    MOVB    #4, -48(CCB)					      ; 1883
+		         04 	  04   AC  D1 00224 	    CMPL    ELEM_SIZE, #4					      ; 1885
+				       0A  12 00228 	    BNEQ    39$							      ;
+		    CD   AB	       0F  B0 0022A 	    MOVW    #15, -51(CCB)					      ; 1888
+		    CF   AB	       07  90 0022E 	    MOVB    #7, -49(CCB)					      ; 1889
+				       08  11 00232 	    BRB     40$							      ; 1885
+		    CD   AB	       19  B0 00234 39$:    MOVW    #25, -51(CCB)					      ; 1893
+		    CF   AB	       10  90 00238 	    MOVB    #16, -49(CCB)					      ; 1894
+		         54 	       14  C2 0023C 40$:    SUBL2   #20, FMT_CODE					      ; 1907
+		         50 	       54  D0 0023F 41$:    MOVL    FMT_CODE, R0					      ; 1935
+					   04 00242 	    RET     							      ; 1307
+
+; Routine Size:  499 bytes
+
+
+;63200  1938	END			! End of module FOR$$FMT_INTRP
+;63300  1939	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  FOR$CODE       	   579  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+
+
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:18:34	DBB3:[RTL.SRC]FFMTIN.B32;8					Page 4-15
+;
+
+; Size:		521 code + 58 data bytes
+; Run Time:	00:23.3
+; Elapsed Time:	00:52.3
+; Memory Used:	208 pages
+; Compilation Complete

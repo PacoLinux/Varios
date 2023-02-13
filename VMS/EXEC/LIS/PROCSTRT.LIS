@@ -1,0 +1,737 @@
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)      41  DECLARATIONS
+   (1)     124  EXE$PROCSTRT - STARTUP NEW PROCESS
+   (1)     265  EXIT IMAGE AND RUN DOWN FILES
+   (1)     288  CATCH ALL CONDITION HANDLER
+   (1)     357  EXECUTIVE MODE EXIT HANDLER
+   (1)     384  CREATELOG - CREATE LOGICAL NAME
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   1
+0701                                                                                                                             (1)
+
+                                     0000     1 	.TITLE	PROCSTRT - PROCESS STARTUP AND INITIALIZATION
+                                     0000     2 	.IDENT	/0701/
+                                     0000     3 
+                                     0000     4 ;
+                                     0000     5 ; COPYRIGHT (C) 1977,1978
+                                     0000     6 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     7 ;
+                                     0000     8 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000     9 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000    10 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    11 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    12 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    13 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    14 ; REMAIN IN DEC.
+                                     0000    15 ;
+                                     0000    16 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    17 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    18 ; CORPORATION.
+                                     0000    19 ;
+                                     0000    20 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    21 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    22 
+                                     0000    23 ;++
+                                     0000    24 ; FACILITY: EXECUTIVE, PROCESS CREATION SYSTEM SERVICE
+                                     0000    25 ;
+                                     0000    26 ; ABSTRACT:
+                                     0000    27 ;	PROCSTRT CONTAINS THE CODE NECESSARY TO CONCLUDE THE CREATION
+                                     0000    28 ;	OF A PROCESS WHICH MUST BE EXECUTED IN THE CONTEXT OF THAT PROCESS.
+                                     0000    29 ;
+                                     0000    30 ; ENVIRONMENT:
+                                     0000    31 ;	MODE=KERNEL, EXECUTING IN CONTEXT OF NEW PROCESS
+                                     0000    32 ;
+                                     0000    33 ; AUTHOR: R. I. HUSTVEDT	, CREATION DATE: 27-DEC-76
+                                     0000    34 ;
+                                     0000    35 ; MODIFIED BY:
+                                     0000    36 ;
+                                     0000    37 ;  , VERSION  ,
+                                     0000    38 ; 01	- 
+                                     0000    39 ;--
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   2
+0701            DECLARATIONS                                                                                                     (1)
+
+                                     0000    41 	.SBTTL	DECLARATIONS
+                                     0000    42 ;
+                                     0000    43 ; INCLUDE FILES:
+                                     0000    44 ;
+                                     0000    45 
+                                     0000    46 	$CHFDEF				; CONDITION HANDLER DEFINITIONS
+                                     0000    47 	$CLIMSGDEF			; DEFINE COMMAND INTERPRETER STATUS CODES
+                                     0000    48 	$IHDDEF				; IMAGE HEADER DESCRIPTOR DEFINITIONS
+                                     0000    49 	$PCBDEF				; DEFINE PCB OFFSETS
+                                     0000    50 	$PHDDEF				; DEFINE PROCESS HEADER
+                                     0000    51 	$PQBDEF				; DEFINE PROCESS QUOTA BLOCK OFFSETS
+                                     0000    52 	$PRDEF				; DEFINE PROCESSOR REGISTERS
+                                     0000    53 	$PSLDEF				; DEFINE PSL FIELDS
+                                     0000    54 	$SSDEF				; DEFINE SYSTEM STATUS CODES
+                                     0000    55 	$STSDEF				; DEFINE STATUS CODE FIELDS
+                                     0000    56 ;
+                                     0000    57 ; MACROS:
+                                     0000    58 ;
+                                     0000    59 
+                                     0000    60 	.MACRO	CRELOG,SRC,RESULT	;
+                                     0000    61 	BSBW	CREATELOG		;
+                                     0000    62 	.BYTE	<SRC-DESCBASE>,<RESULT/4>	;
+                                     0000    63 	.ENDM	CRELOG			;
+                                     0000    64 ;
+                                     0000    65 ; EQUATED SYMBOLS:
+                                     0000    66 ;
+                                     0000    67 
+                                     0000    68 ;
+                                     0000    69 ; OWN STORAGE:
+                                     0000    70 ;
+                                     0000    71 
+                                 00000000    72 	.PSECT	YEXEPAGED,BYTE		; PAGED PSECT
+         54 55 50 4E 49 24 53 59 53  0000    73 INPNAM:	.ASCII	/SYS$INPUT/		; INPUT NAME STRING
+      54 55 50 54 55 4F 24 53 59 53  0009    74 OUTNAM:	.ASCII	/SYS$OUTPUT/		; OUTPUT NAME STRING
+         52 4F 52 52 45 24 53 59 53  0013    75 ERRNAM:	.ASCII	/SYS$ERROR/		; ERROR NAME STRING
+            4B 53 49 44 24 53 59 53  001C    76 DISKNAM:.ASCII	/SYS$DISK/		; DISK NAME STRING
+                              54 54  0024    77 TTNAM:	.ASCII	/TT/			; TT NAME STRING ***TEMP***
+                        45 58 45 2E  0026    78 DEFTYP:	.ASCII	/.EXE/			; DEFAULT IMAGE FILE NAME
+                                     002A    79 DESCBASE:				; DESCRIPTOR BASE
+                  00000000'00000009  002A    80 INPDESC:.LONG	9,INPNAM		; INPUT STRING DESCRIPTOR
+                  00000009'0000000A  0032    81 OUTDESC:.LONG	10,OUTNAM		; OUTPUT STRING DESCRIPTOR
+                  00000013'00000009  003A    82 ERRDESC:.LONG	9,ERRNAM		; ERROR STRING DESCRIPTOR
+                                     0042    83 EXE$GQ_SYSDISK::			; DESCRIPTOR FOR SYS$DISK
+                  0000001C'00000008  0042    84 	.LONG	8,DISKNAM		; 
+                  00000024'00000002  004A    85 TTDESC:	.LONG	2,TTNAM			; TT STRING DESCRIPTOR
+                  00000026'00000004  0052    86 DEFDESC:.LONG	4,DEFTYP		; DEFAULT TYPE DESCRIPTOR
+                                     005A    87  
+                                     005A    88 ;
+                                     005A    89 ; SYSTEM SUPPORTED EXCEPTION NAME TABLE FOR CATCH ALL HANDLER
+                                     005A    90 ;
+                                     005A    91  
+                                     005A    92 EXTABLE:				;
+                               0001  005A    93 	.WORD	SS$_ACCVIO/8		;
+                               008E  005C    94 	.WORD	SS$_ARTRES/8		;
+                               008F  005E    95 	.WORD	SS$_INTOVF/8		;
+                               0090  0060    96 	.WORD	SS$_INTDIV/8		;
+                               0091  0062    97 	.WORD	SS$_FLTOVF/8		;
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   3
+0701            DECLARATIONS                                                                                                     (1)
+
+                               0092  0064    98 	.WORD	SS$_FLTDIV/8		;
+                               0093  0066    99 	.WORD	SS$_FLTUND/8		;
+                               0094  0068   100 	.WORD	SS$_DECOVF/8		;
+                               0095  006A   101 	.WORD	SS$_SUBRNG/8		;
+                               0081  006C   102 	.WORD	SS$_ASTFLT/8		;
+                               0082  006E   103 	.WORD	SS$_BREAK/8		;
+                               0083  0070   104 	.WORD	SS$_CMODSUPR/8		;
+                               0084  0072   105 	.WORD	SS$_CMODUSER/8		;
+                               0085  0074   106 	.WORD	SS$_COMPAT/8		;
+                               008D  0076   107 	.WORD	SS$_DEBUG/8		;
+                               0086  0078   108 	.WORD	SS$_OPCCUS/8		;
+                               0087  007A   109 	.WORD	SS$_OPCDEC/8		;
+                               0088  007C   110 	.WORD	SS$_PAGRDERR/8		;
+                               0089  007E   111 	.WORD	SS$_RADRMOD/8		;
+                               008A  0080   112 	.WORD	SS$_ROPRAND/8		;
+                               008B  0082   113 	.WORD	SS$_SSFAIL/8		;
+                               008C  0084   114 	.WORD	SS$_TBIT/8		;
+                               0057  0086   115 	.WORD	SS$_MCHECK/8		;
+                           00000017  0088   116 EXSIZE=<.-EXTABLE>/2			;
+                                     0088   117  
+                                     0088   118 ;
+                                     0088   119 ; CATCH ALL HANDLER FATAL CONDITION MESSAGE SUFFIX
+                                     0088   120 ;
+                                     0088   121  
+66 20 74 69 78 65 20 65 67 61 6D 69  0088   122 SUFFIX:	.ASCIZ	/image exit forced./	;
+               00 2E 64 65 63 72 6F  0094       
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   4
+0701            EXE$PROCSTRT - STARTUP NEW PROCESS                                                                               (1)
+
+                                     009B   124 	.SBTTL	EXE$PROCSTRT - STARTUP NEW PROCESS
+                                     009B   125 ;++
+                                     009B   126 ; FUNCTIONAL DESCRIPTION:
+                                     009B   127 ;
+                                     009B   128 ; CALLING SEQUENCE:
+                                     009B   129 ;	NONE
+                                     009B   130 ;
+                                     009B   131 ; INPUT PARAMETERS:
+                                     009B   132 ;	SCH$GL_CURPCB - POINTS TO PCB OF CURRENT PROCESS
+                                     009B   133 ;	PCB$L_PQB - POINTER TO PROCESS QUOTA BLOCK
+                                     009B   134 ;
+                                     009B   135 ; IMPLICIT INPUTS:
+                                     009B   136 ;	IPL = IPL$_ASTDEL
+                                     009B   137 ;
+                                     009B   138 ; OUTPUT PARAMETERS:
+                                     009B   139 ;	NONE
+                                     009B   140 ;
+                                     009B   141 ; IMPLICIT OUTPUTS:
+                                     009B   142 ;	LOGICAL NAMES ARE DEFINED FOR 'SYS$INPUT', 'SYS$OUTPUT', AND 'SYS$ERROR'
+                                     009B   143 ;	BASED ON THE STRINGS PASSED IN THE PROCESS QUOTA BLOCK.
+                                     009B   144 ;
+                                     009B   145 ; COMPLETION CODES:
+                                     009B   146 ;	NONE
+                                     009B   147 ;
+                                     009B   148 ; SIDE EFFECTS:
+                                     009B   149 ;	NONE
+                                     009B   150 ;
+                                     009B   151 ;--
+                                     009B   152 
+                                     009B   153 
+                                     009B   154 EXE$PROCSTRT::				; STARTUP NEW PROCESS
+   00000000'GF   00000000'GF     D0  009B   155 	MOVL	G^MMG$GL_RMSBASE,G^CTL$GL_RMSBASE ; SET RMS DISPATCHER BASE
+            54   00000000'EF     D0  00A6   156 	MOVL	SCH$GL_CURPCB,R4	; GET POINTER TO CURRENT PCB
+            55   00000000'9F     D0  00AD   157 	MOVL	@#CTL$GL_PHD,R5		; GET SAFE POINTER TO PROCESS HEADER WINDOW
+            56         4C A4     D0  00B4   158 	MOVL	PCB$L_PQB(R4),R6	; AND GET POINTER TO PROCESS QUOTA BLOCK
+   00000000'9F       0184 C6     7D  00B8   159 	MOVQ	PQB$T_ACCOUNT(R6),@#CTL$T_ACCOUNT ; INHERIT ACCOUNT
+                          30     BB  00C1   160 	PUSHR	#^M<R4,R5>		; SAVE MOVC REGISTERS
+                     0178 C6     95  00C3   161 	TSTB	PQB$T_USERNAME(R6)	; TEST FOR NULL STRING
+                          0A     13  00C7   162 	BEQL	10$			; YES DONT MOVE
+       0178 C6            0C     28  00C9   163 	MOVC3	#12,PQB$T_USERNAME(R6),@#CTL$T_USERNAME ; AND USERNAME
+                 00000000'9F         00CE       
+                     018C C6     95  00D3   164 10$:	TSTB	PQB$T_DDSTRING(R6)	; CHECK FOR NULL STRING
+                          0A     13  00D7   165 	BEQL	20$			; YES, DONT MOVE ANYTHING
+       018C C6            20     28  00D9   166 	MOVC3	#32,PQB$T_DDSTRING(R6),@#PIO$GT_DDSTRING; AND DEFAULT DIRECTORY
+                 00000000'9F         00DE       
+                          30     BA  00E3   167 20$:	POPR	#^M<R4,R5>		; RESTORE MOVC REGISTERS
+                                     00E5   168 SETQUOTAS:				; SET PROPER QUOTAS FROM PQB
+         58 A5       0158 C6     D0  00E5   169 	MOVL	PQB$L_CPULM(R6),PHD$L_CPULIM(R5) ; SET CPU TIME LIMIT
+         44 A5       014C C6     F7  00EB   170 	CVTLW	PQB$L_ASTLM(R6),PHD$W_ASTLM(R5)  ; SET AST LIMIT
+         60 A5       0160 C6     F7  00F1   171 	CVTLW	PQB$L_FILLM(R6),PHD$W_FILLM(R5)	 ; SET OPEN FILE LIMIT
+         42 A5       0168 C6     F7  00F7   172 	CVTLW	PQB$L_PRCLM(R6),PHD$W_PRCLM(R5)	 ; SET SUB-PROCESS LIMIT
+         62 A5       016C C6     F7  00FD   173 	CVTLW	PQB$L_TQELM(R6),PHD$W_TQLM(R5)	 ; SET TIMER QUEUE QUOTA
+       0164 C6         5C A5     C2  0103   174 	SUBL	PHD$L_PGFLQUOTA(R5),PQB$L_PGFLQUOTA(R6)	; COMPUTE QUOTA DIFFERENCE
+         34 A5       0164 C6     C0  0109   175 	ADDL	PQB$L_PGFLQUOTA(R6),PHD$L_PGFLCNT(R5)	; ADD TO COUNT AND
+         5C A5       0164 C6     C0  010F   176 	ADDL	PQB$L_PGFLQUOTA(R6),PHD$L_PGFLQUOTA(R5)	;  PAGING FILE QUOTA
+            50         08 A5     3C  0115   177 	MOVZWL	PHD$W_WSLIST(R5),R0	; GET BASE OFFSET TO WORKING SET LIST
+            51       0170 C6     3C  0119   178 	MOVZWL	PQB$L_WSQUOTA(R6),R1	; GET NUMBER OF PAGES FOR WORKING SET
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   5
+0701            EXE$PROCSTRT - STARTUP NEW PROCESS                                                                               (1)
+
+            52   00000000'EF     D0  011E   179 	MOVL	SGN$GL_MAXWSCNT,R2	; GET MAXIMUM WORKING SET LIST LENGTH
+            52            51     D1  0125   180 	CMPL	R1,R2			; MINIMIZE WITH SPECIFIED QUOTA
+                          03     15  0128   181 	BLEQ	5$			; USE QUOTA
+            51            52     D0  012A   182 	MOVL	R2,R1			; USE MAXIMUM WORKING SET COUNT
+   00000000'EF   00000000'EF     C3  012D   183 5$:	SUBL3	SCH$GL_FREELIM,PFN$GL_PHYPGCNT,R2	; GET AVAILABLE PAGES
+                          52         0138       
+            52            51     D1  0139   184 	CMPL	R1,R2			; WILL IT FIT PHYSICALLY
+                          03     15  013C   185 	BLEQ	10$			; YES, USE IT AS IS
+            51            52     D0  013E   186 	MOVL	R2,R1			; FORCE TO PHYSICAL LIMIT
+            51            7041   9E  0141   187 10$:	MOVAB	-(R0)[R1],R1		; WSLIST+WSQUOTA-1
+         18 A5            51     B0  0145   188 	MOVW	R1,PHD$W_WSQUOTA(R5)	; SET AS BOTH QUOTA AND
+         0A A5            51     B0  0149   189 	MOVW	R1,PHD$W_WSAUTH(R5)	; AUTHORIZED VALUE
+            53       0174 C6     3C  014D   190 	MOVZWL	PQB$L_WSDEFAULT(R6),R3	; GET DESIRED DEFAULT
+            53            50     C0  0152   191 	ADDL	R0,R3			; ADD WSLIST-1
+         1A A5            53     B0  0155   192 	MOVW	R3,PHD$W_DFWSCNT(R5)	; SAVE DEFAULT WORKING SET SIZE
+            56         4C A4     D0  0159   193 	MOVL	PCB$L_PQB(R4),R6	; AND POINTER TO QUOTA BLOCK
+            01            13     EF  015D   194 	EXTZV	#PCB$V_HIBER,#1,PCB$L_STS(R4),R8; SAVE HIBERNATE CONTROL
+            58         28 A4         0160       
+         64 B4            66     7D  0163   195 	MOVQ	PQB$Q_PRVMSK(R6),@PCB$L_PHD(R4)	; SET PRIVILEGES FOR PROCESS
+   00000000'9F            66     7D  0167   196 	MOVQ	PQB$Q_PRVMSK(R6),@#CTL$GQ_PROCPRIV; BOTH PERMANENT AND CURRENT
+            5E       FE54 CE     DE  016E   197 	MOVAL	-PQB$C_LENGTH(SP),SP	; RESERVE SPACE FOR PQB ON STACK
+                          30     BB  0173   198 	PUSHR	#^M<R4,R5>		; SAVE PCB AND PHD POINTERS
+            66       01AC 8F     28  0175   199 	MOVC3	#PQB$C_LENGTH,(R6),8(SP); COPY PQB TO STACK
+                       08 AE         017A       
+                          30     BA  017C   200 	POPR	#^M<R4,R5>		; RESTORE PCB,PHD POINTERS
+            50            56     D0  017E   201 	MOVL	R6,R0			; PROCESS QUOTA BLOCK ADDRESS
+                 00000000'EF     16  0181   202 	JSB	EXE$DEANONPAGED		; DEALLOCATE IT
+            56            5E     D0  0187   203 	MOVL	SP,R6			; NOW POINT TO STACK COPY
+                                     018A   204 	SETIPL	#0			; AND DROP IPL **** ALLOW DELPRC NOW ****
+                                     018D   205 	CRELOG	INPDESC,PQB$T_INPUT	; CREATE INPUT LOGICAL NAME
+                                     0192   206 	CRELOG	OUTDESC,PQB$T_OUTPUT	; CREATE OUTPUT LOGICAL NAME
+                                     0197   207 	CRELOG	ERRDESC,PQB$T_ERROR	; CREATE ERROR LOGICAL NAME
+                                     019C   208 	CRELOG	TTDESC,PQB$T_INPUT	; CREATE TT LOGICAL NAME ***TEMP***
+                                     01A1   209 	CRELOG	EXE$GQ_SYSDISK,PQB$T_DISK;CREATE DEFAULT DISK DEVICE NAME
+            5C   00000000'9F     DE  01A6   210 	MOVAL	@#MMG$IMGHDRBUF,AP	; IMAGE HEADER BUFFER ADDRESS
+            6C         0C A6     9A  01AD   211 	MOVZBL	PQB$T_IMAGE(R6),(AP)	; SIZE OF IMAGE NAME STRING
+         04 AC         08 AC     DE  01B1   212 	MOVAL	8(AP),4(AP)		; ADDRESS OF IMAGE NAME STRING
+         0D A6            6C     28  01B6   213 	MOVC3	(AP),PQB$T_IMAGE+1(R6),8(AP) ; MOVE THE NAME STRING
+                       08 AC         01BA       
+                                     01BC   214 ;
+                                     01BC   215 ; R0-R5 DESTROYED BY ABOVE
+                                     01BC   216 ;
+            5E       01AC CE     DE  01BC   217 	MOVAL	PQB$C_LENGTH(SP),SP	; CLEAN PQB FORM STACK
+   00000000'9F   00000000'EF     7D  01C1   218 	MOVQ	EXE$GQ_SYSTIME,@#CTL$GQ_LOGIN	; SAVE LOGIN TIME
+            05            16     9C  01CC   219 	ROTL	#PSL$V_PRVMOD,#<PSL$C_EXEC@2+PSL$C_EXEC>,-(SP) ; FORM EXEC PSL
+                          7E         01CF       
+                          47     10  01D0   220 	BSBB	12$			; CHANGE TO EXEC MODE
+                                     01D2   221 	$IMGACT_S -			; ACTIVATE THE IMAGE
+                                     01D2   222 		NAME  =(AP),-		; DESCRIPTOR FOR IMAGE NAME
+                                     01D2   223 		DFLNAM=DEFDESC,-	; DEFAULT NAME DESCRIPTOR
+                                     01D2   224 		HDRBUF=(AP)		; ADDRESS IF IMAGE HEADER BUFFER
+            77            50     E9  01E3   225 	BLBC	R0,40$			; BRANCH IF IMGACT FAILED
+   00000000'GF         61'AF     9E  01E6   226 	MOVAB	B^EXE$CLI_UTILSRV+2,G^CTL$AL_CLICALBK ; SET CLI CALL BACK ADDRESS
+            05            16     9C  01EE   227 	ROTL	#PSL$V_PRVMOD,#<PSL$C_EXEC@2+PSL$C_EXEC>,-(SP) ; FORM EXEC PSL
+                          7E         01F1       
+                          25     10  01F2   228 	BSBB	12$			; CHANGE MODE TO EXECUTIVE
+            50   00000000'9F     9E  01F4   229 	MOVAB	@#PIO$AL_RMSEXH,R0	; GET ADDRESS OF EXIT HANDLER CONTROL BLOCK
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   6
+0701            EXE$PROCSTRT - STARTUP NEW PROCESS                                                                               (1)
+
+         04 A0       02F3'CF     9E  01FB   230 	MOVAB	W^EXE$RMSEXH,4(R0)	; SET ADDRESS OF RMS EXIT HANDLER
+                                     0201   231 	$DCLEXH_S (R0)			; DECLARE EXECUTIVE MODE EXIT HANDLER
+            50            50     E9  020A   232 	BLBC	R0,40$			; IF LBC ERROR
+            0F            16     9C  020D   233 	ROTL	#PSL$V_PRVMOD,#<PSL$C_USER@2+PSL$C_USER>,-(SP) ; FORM USER PSL
+                          7E         0210       
+                          06     10  0211   234 	BSBB	12$			; CHANGE TO USER MODE
+                          5D     D4  0213   235 	CLRL	FP			; TERMINATE CALL FRAME CHAIN
+         1A'AF            6C     FA  0215   236 	CALLG	(AP),B^15$		; CREATE TOP FRAME
+                                 02  0219   237 12$:	REI				; CHANGE TO NEW MODE
+                               0000  021A   238 15$:	.WORD	0			; ENTRY MASK 
+            6D         76'AF     9E  021C   239 	MOVAB	B^EXE$CATCH_ALL,(FP)	; SET EXCEPTION HANDLER ADDRESS
+                                     0220   240 	$SETEXV_S #2,B^EXE$CATCH_ALL	; DECLARE LAST CHANCE HANDLER
+                          58     DD  0230   241 	PUSHL	R8			; SAVE HIBERNATE FLAG
+            52            6C     7D  0232   242 20$:	MOVQ	(AP),R2			; GET IMAGE HEADER BLOCK DESCRIPTOR
+                          7E     D4  0235   243 	CLRL	-(SP)			; CLEAR COMMAND INTERPRETER FLAGS
+                       20 A2     DD  0237   244 	PUSHL	IHD$L_LNKFLAGS(R2)	; PUSH LINKER FLAGS
+            7E            52     7D  023A   245 	MOVQ	R2,-(SP)		; THIRD AND FOURTH ARGUMENTS TO PROG
+                       5F'AF     9F  023D   246 	PUSHAB	B^EXE$CLI_UTILSRV	; PUSH ADDRESS OF CLI CALL BACK ROUTINE
+            51         02 A2     3C  0240   247 	MOVZWL	IHD$W_ACTIVOFF(R2),R1	; OFFSET TO TRANSFER VECTOR
+            52            51     C0  0244   248 	ADDL	R1,R2			; FORM ADDRESS OF START VECTOR
+                          62     DF  0247   249 	PUSHAL	(R2)			; MOVE TO ARGUMENT LIST
+            07         18 AE     E9  0249   250 	BLBC	24(SP),30$		; BR IF NO HIBERNATE
+                                     024D   251 	$HIBER_S			; SET, HIBERNATE UNTIL SOME WAKE
+            92            06     FB  0254   252 30$:	CALLS	#6,@(R2)+		; CALL IMAGE
+            03            50     E9  0257   253 	BLBC	R0,40$			; EXIT IF NOT SUCCESS
+            D5            6E     E8  025A   254 	BLBS	(SP),20$		; CHECK FOR HIBERNATE AGAIN
+                          0A     11  025D   255 40$:	BRB	EXE$EXIT_IMAGE		;
+                                     025F   256  
+                                     025F   257 ;
+                                     025F   258 ; DUMMY COMMAND INTERPRETER CALL BACK ROUTINE
+                                     025F   259 ;
+                                     025F   260  
+                               0000' 025F   261 	.ENTRY	EXE$CLI_UTILSRV,^M<>
+            50   00038822 8F     D0  0261   262 	MOVL	#CLI$_INVREQTYP,R0	; SET INVALID REQUEST TYPE STATUS
+                                 04  0268   263 	RET				;
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   7
+0701            EXIT IMAGE AND RUN DOWN FILES                                                                                    (1)
+
+                                     0269   265 	.SBTTL	EXIT IMAGE AND RUN DOWN FILES
+                                     0269   266 ;+
+                                     0269   267 ;
+                                     0269   268 ; EXE$EXIT_IMAGE - EXIT IMAGE AND RUN DOWN FILES
+                                     0269   269 ;
+                                     0269   270 ; THIS ROUTINE IS JUMPED TO AT THE CONCLUSION OF IMAGE EXECUTION TO RUN DOWN
+                                     0269   271 ; RMS FILES AND TO RETURN THE FINAL IMAGE STATUS.
+                                     0269   272 ;
+                                     0269   273 ; INPUTS:
+                                     0269   274 ;
+                                     0269   275 ;	R0 = FINAL IMAGE STATUS.
+                                     0269   276 ;
+                                     0269   277 ; OUTPUTS:
+                                     0269   278 ;
+                                     0269   279 ;	IMAGE EXIT IS EXECUTED.
+                                     0269   280 ;-
+                                     0269   281  
+                                     0269   282 EXE$EXIT_IMAGE::			; EXIT IMAGE
+                          50     DD  0269   283 	PUSHL	R0			; SAVE FINAL IMAGE STATUS
+                          01     DD  026B   284 	PUSHL	#1			; SET NUMBER OF ARGUMENTS
+   00000000'9F            6E     FA  026D   285 10$:	CALLG	(SP),@#SYS$EXIT		; EXIT IMAGE
+                          F7     11  0274   286 	BRB	10$			;
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   8
+0701            CATCH ALL CONDITION HANDLER                                                                                      (1)
+
+                                     0276   288 	.SBTTL	CATCH ALL CONDITION HANDLER
+                                     0276   289 ;+
+                                     0276   290 ; EXE$CATCH_ALL - CATCH ALL CONDITION HANDLER
+                                     0276   291 ;
+                                     0276   292 ; THIS ROUTINE IS ENTERED AS THE RESULT OF AN UNFIELDED OR IMPROPERLY HANDLED
+                                     0276   293 ; EXCEPTION CONDITION OR SOFTWARE SIGNAL.
+                                     0276   294 ;
+                                     0276   295 ; INPUTS:
+                                     0276   296 ;
+                                     0276   297 ;	CHF$L_MCHARGLST(AP) = ADDRESS OF MECHANISM ARGUMENT LIST.
+                                     0276   298 ;	CHF$L_SIGARGLST(AP) = ADDRESS OF CONDITION ARGUMENT LIST.
+                                     0276   299 ;
+                                     0276   300 ; OUTPUTS:
+                                     0276   301 ;
+                                     0276   302 ;	A MESSAGE IS ISSUED USING THE SYS$PUTMSG SYSTEM SERVICE AND A TEST IS
+                                     0276   303 ;	MADE ON THE CONDITION NAME TO DETERMINE IF THE IMAGE SHOULD BE ALLOWED
+                                     0276   304 ;	TO CONTINUE EXECUTION. THE FOLLOWING CONDITIONS CAUSE A FORCED IMAGE
+                                     0276   305 ;	EXIT:
+                                     0276   306 ;
+                                     0276   307 ;		1. ANY ENTRY TO THIS ROUTINE VIA THE LAST CHANCE VECTOR.
+                                     0276   308 ;
+                                     0276   309 ;		2. THE CONDITION NAME HAS A SEVERITY OF "SEVERE ERROR".
+                                     0276   310 ;
+                                     0276   311 ;	IF A FORCED IMAGE EXIT IS PERFORMED, THEN A SUMMARY OF THE CONDITION
+                                     0276   312 ;	ARGUMENTS AND FINAL REGISTERS ARE WRITTEN TO SYS$OUTPUT.
+                                     0276   313 ;-
+                                     0276   314  
+                               0000' 0276   315 	.ENTRY	EXE$CATCH_ALL,^M<>
+                          00     DD  0278   316 	PUSHL	#0			; SET EXCEPTION NAME FLAG FALSE
+                          52     DD  027A   317 	PUSHL	R2			; SAVE REGISTER
+            52         04 AC     D0  027C   318 	MOVL	CHF$L_SIGARGLST(AP),R2	; GET ADDRESS OF SIGNAL ARGUMENTS
+                          62     DD  0280   319 	PUSHL	(R2)			; SAVE NUMBER OF ARGUMENTS
+                       06 A2     B5  0282   320 	TSTW	CHF$L_SIG_NAME+2(R2)	; POSSIBLY SYSTEM EXCEPTION NAME?
+                          1C     12  0285   321 	BNEQ	20$			; IF NEQ NO
+                       08 AE     D6  0287   322 	INCL	8(SP)			; SET EXCEPTION NAME FLAG TRUE
+            51            17     9A  028A   323 	MOVZBL	#EXSIZE,R1		; SET LOOP COUNT
+            50       FDC9 CF     9E  028D   324 	MOVAB	EXTABLE,R0		; GET ADDRESS OF EXCEPTION TABLE
+            7E            80     3C  0292   325 10$:	MOVZWL	(R0)+,-(SP)		; GET NEXT HARDWARE EXCEPTION CODE
+                          03     ED  0295   326 	CMPZV	#STS$V_CODE,#STS$S_CODE,- ; CONDITION VALUE HARDWARE CODE?
+         04 A2            0C         0297   327 		CHF$L_SIG_NAME(R2),(SP)+ ;
+                          8E         029A       
+                          09     13  029B   328 	BEQL	30$			; IF EQL YES
+            F2            51     F5  029D   329 	SOBGTR	R1,10$			; ANY MORE TO COMPARE?
+                       08 AE     D4  02A0   330 	CLRL	8(SP)			; SET EXCEPTION NAME FALG FALSE
+            62            02     C2  02A3   331 20$:	SUBL	#2,(R2)			; ADJUST LENGTH OF ARGUMENT LIST
+                          00     DD  02A6   332 30$:	PUSHL	#0			; CLEAR ADDRESS OF FACILITY NAME DESCRIPTOR
+                          00     DD  02A8   333 	PUSHL	#0			; CLEAR ADDRESS OF ACTION ROUTINE
+                          62     9F  02AA   334 	PUSHAB	(R2)			; SET ADDRESS OF MESSAGE VECTOR
+   00000000'9F            03     FB  02AC   335 	CALLS	#3,@#SYS$PUTMSG		; OUTPUT MESSAGE
+                          62   8ED0  02B3   336 	POPL	(R2)			; RESTORE ARGUMENT COUNT
+            50         04 A2     D0  02B6   337 	MOVL	CHF$L_SIG_NAME(R2),R0	; GET CONDITION NAME
+                          52   8ED0  02BA   338 	POPL	R2			; RESTORE REGISTER
+            51         08 AC     D0  02BD   339 	MOVL	CHF$L_MCHARGLST(AP),R1	; GET ADDRESS OF MECHANISM ARRAY
+         08 A1            03     C1  02C1   340 	ADDL3	#3,CHF$L_MCH_DEPTH(R1),-(SP) ; LAST CHANCE ENTRY?
+                          7E         02C5       
+                          0E     13  02C6   341 	BEQL	50$			; IF EQL YES
+            07            50     E8  02C8   342 	BLBS	R0,40$			; IF LBS SUCCESS CODE
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page   9
+0701            CATCH ALL CONDITION HANDLER                                                                                      (1)
+
+                          00     ED  02CB   343 	CMPZV	#STS$V_SEVERITY,#STS$S_SEVERITY,- ; SEVERE ERROR OR GREATER?
+            50            03         02CD   344 		R0,#STS$K_SEVERE 	;
+                          04         02CF       
+                          04     18  02D0   345 	BGEQ	50$			; IF GEQ YES
+            50            01     3C  02D2   346 40$:	MOVZWL	#SS$_CONTINUE,R0	; SET CONTINUATION CODE
+                                 04  02D5   347 	RET				;
+            12         04 AE     E9  02D6   348 50$:	BLBC	4(SP),60$		; IF LBC NOT EXCEPTION
+                          50     DD  02DA   349 	PUSHL	R0			; SAVE EXCEPTION NAME
+                          6C     9F  02DC   350 	PUSHAB	(AP)			; SET ADDRESS OF SIGNAL ARGUMENTS
+                     FDA6 CF     9F  02DE   351 	PUSHAB	SUFFIX			; SET ADDRESS OF MESSAGE SUFFIX
+   00000000'EF            02     FB  02E2   352 	CALLS	#2,EXE$EXCMSG		; OUTPUT EXCEPTION SUMMARY
+                          50   8ED0  02E9   353 	POPL	R0			; RESTORE EXCEPTION NAME
+            50            1C     E2  02EC   354 60$:	BBSS	#STS$V_INHIB_MSG,R0,70$	; SET INHIBIT MESSAGE BIT
+                          00         02EF       
+                          FF76   31  02F0   355 70$:	BRW	EXE$EXIT_IMAGE		;
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  10
+0701            EXECUTIVE MODE EXIT HANDLER                                                                                      (1)
+
+                                     02F3   357 	.SBTTL	EXECUTIVE MODE EXIT HANDLER
+                                     02F3   358 ;+
+                                     02F3   359 ; EXE$RMSEXH - EXECUTIVE MODE EXIT HANDLER
+                                     02F3   360 ;
+                                     02F3   361 ; THIS ROUTINE IS CALLED AS THE RESULT OF AN ATTEMPTED EXIT FROM EXECUTIVE MODE.
+                                     02F3   362 ; ITS FUNCTION IS TO RUN DOWN ALL RMS FILES.
+                                     02F3   363 ;
+                                     02F3   364 ; INPUTS:
+                                     02F3   365 ;
+                                     02F3   366 ;	NONE.
+                                     02F3   367 ;
+                                     02F3   368 ; OUTPUTS:
+                                     02F3   369 ;
+                                     02F3   370 ;	RMS FILES ARE RUN DOWN.
+                                     02F3   371 ;-
+                                     02F3   372  
+                               0000' 02F3   373 	.ENTRY	EXE$RMSEXH,^M<>
+            5E         80 AE     9E  02F5   374 	MOVAB	-128(SP),SP		; ALLOCATE STRING BUFFER
+                          6E     9F  02F9   375 	PUSHAB	(SP)			; BUILD BUFFER DESCRIPTOR
+                          00     DD  02FB   376 	PUSHL	#0			;
+            6E         80 8F     9A  02FD   377 10$:	MOVZBL	#128,(SP)		; SET LENGTH OF STRING BUFFER
+                          00     DD  0301   378 	PUSHL	#0			; RUN DOWN IMAGE AND INDIRECT PROC PERM
+                       04 AE     9F  0303   379 	PUSHAB	4(SP)			; PUSH ADDRESS OF BUFFER DESCRIPTOR
+   00000000'9F            02     FB  0306   380 	CALLS	#2,@#SYS$RMSRUNDWN	; RUN DOWN THE NEXT FILE
+            ED            50     E9  030D   381 	BLBC	R0,10$			; IF LBC MORE TO GO
+                                 04  0310   382 	RET				;
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  11
+0701            CREATELOG - CREATE LOGICAL NAME                                                                                  (1)
+
+                                     0311   384 	.SBTTL	CREATELOG - CREATE LOGICAL NAME
+                                     0311   385 ;++
+                                     0311   386 ; FUNCTIONAL DESCRIPTION:
+                                     0311   387 ;	CREATELOG CALLS THE CREATE LOGICAL NAME SYSTEM SERVICE
+                                     0311   388 ;	TO CREATE THE LOGICAL NAME EQUIVALENCES GIVEN IN THE QUOTA
+                                     0311   389 ;	BUFFER.
+                                     0311   390 ;
+                                     0311   391 ; CALLING SEQUENCE:
+                                     0311   392 ;	BSBW	CREATELOG
+                                     0311   393 ;	.BYTE	DESCRIPTOR-DESCBASE
+                                     0311   394 ;	.BYTE	PQB$T_<OFFSET>
+                                     0311   395 ;
+                                     0311   396 ; INPUT PARAMETERS:
+                                     0311   397 ;	R6 - ADDRESS OF PROCESS QUOTA BLOCK
+                                     0311   398 ;	@(SP) - BYTE OFFSET FROM DESCRIPTOR BASE TO DESCRIPTOR
+                                     0311   399 ;	1+@(SP) - PROCESS QUOTA BLOCK OFFSET
+                                     0311   400 ;
+                                     0311   401 ; OUTPUT PARAMETERS:
+                                     0311   402 ;	NONE
+                                     0311   403 ;
+                                     0311   404 ; IMPLICIT INPUTS:
+                                     0311   405 ;	NONE
+                                     0311   406 ;
+                                     0311   407 ; IMPLICIT OUTPUTS:
+                                     0311   408 ;	CREATION OF SPECIFIED LOGICAL NAMES
+                                     0311   409 ;
+                                     0311   410 ;--
+                                     0311   411 
+                                     0311   412 CREATELOG:				; CREATE LOGICAL NAME
+            52            6E     D0  0311   413 	MOVL	(SP),R2			; GET ARGUMENT POINTER
+            6E            02     C0  0314   414 	ADDL	#2,(SP)			; CORRECT RETURN PC VALUE
+            53            82     9A  0317   415 	MOVZBL	(R2)+,R3		; GET DESCRIPTOR OFFSET
+            53       FD0B CF43   9E  031A   416 	MOVAB	DESCBASE[R3],R3		; COMPUTE ADDRESS OF DESCRIPTOR
+            52            62     9A  0320   417 	MOVZBL	(R2),R2			; GET PROCESS QUOTA BLOCK OFFSET
+            52            6642   DE  0323   418 	MOVAL	(R6)[R2],R2		; COMPUTE ADDRESS OF STRING
+            51            82     9A  0327   419 	MOVZBL	(R2)+,R1		; GET STRING LENGTH
+                          18     13  032A   420 	BEQL	10$			; NULL, IGNORE
+            7E            51     7D  032C   421 	MOVQ	R1,-(SP)		; STACK STRING DESCRIPTOR
+            52            5E     D0  032F   422 	MOVL	SP,R2			; SAVE DESCRIPTOR ADDRESS
+                                     0332   423 	$CRELOG_S	#2,(R3),(R2),#1	; CREATE NAME
+            5E            08     C0  0341   424 	ADDL	#8,SP			; CLEAN STACK OF DESCRIPTOR
+                                 05  0344   425 10$:	RSB				; AND RETURN
+                                     0345   426 
+                                     0345   427 
+                                     0345   428 
+                                     0345   429 	.END
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  12
+SYMBOL TABLE                                                                                                                     (1)
+
+BIT...         = 00000020            CLI$_NOTNEG    = 000380D8            IHD$B_IMGTYPE    00000011            
+CHF$L_MCHARGLST  00000008            CLI$_NOVALU    = 000380D0            IHD$C_LENGTH     00000028            
+CHF$L_MCH_ARGS   00000000            CLI$_NOVALUE   = 0003882A            IHD$K_EXE      = 00000001            
+CHF$L_MCH_DEPTH  00000008            CLI$_NULFIL    = 000380E0            IHD$K_LENGTH     00000028            
+CHF$L_MCH_FRAME  00000004            CLI$_NUMBER    = 000380E8            IHD$K_LIM      = 00000002            
+CHF$L_MCH_SAVR0  0000000C            CLI$_ONCOMD    = 000380F0            IHD$K_MAJORID  = 00003230            
+CHF$L_MCH_SAVR1  00000010            CLI$_ONERR     = 000380F8            IHD$K_MINORID  = 00003130            
+CHF$L_SIGARGLST  00000004            CLI$_ONEVAL    = 00038158            IHD$L_IDENT      00000024            
+CHF$L_SIG_ARG1   00000008            CLI$_ONLEVL    = 00038100            IHD$L_LNKFLAGS   00000020            
+CHF$L_SIG_ARGS   00000000            CLI$_ONOVF     = 00038108            IHD$M_LNKDEBUG = 00000001            
+CHF$L_SIG_NAME   00000004            CLI$_OVRFLW    = 00038160            IHD$M_LNKNOTFR = 00000002            
+CLI$_ABFNAM    = 000381B8            CLI$_PARMDEL   = 00038110            IHD$M_MATCHCTL = 07000000            
+CLI$_ABKEYW    = 00038000            CLI$_PROC_ID   = 0003FFF1            IHD$M_NOP0BUFS = 00000004            
+CLI$_ABVERB    = 00038008            CLI$_QUEJOBCRE = 0003FFF9            IHD$M_PICIMG   = 00000008            
+CLI$_BADRET    = 00038198            CLI$_REQPRMABS = 00038812            IHD$Q_PRIVREQS   00000014            
+CLI$_BADTEXT   = 000381B0            CLI$_RSLOVF    = 00038118            IHD$S_MATCHCTL = 00000003            
+CLI$_BUFOVF    = 00038018            CLI$_SKPDAT    = 00038120            IHD$V_LNKDEBUG = 00000000            
+CLI$_COMPLX    = 00038020            CLI$_SPARE0    = 00038010            IHD$V_LNKNOTFR = 00000001            
+CLI$_CONFQUAL  = 00038802            CLI$_SPARE1    = 00038058            IHD$V_MATCHCTL = 00000018            
+CLI$_CREQUEJOB = 0003884A            CLI$_STKOVF    = 00038128            IHD$V_NOP0BUFS = 00000002            
+CLI$_DEFOVF    = 00038028            CLI$_SUBMITERR = 00038852            IHD$V_PICIMG   = 00000003            
+CLI$_DEVALSPL  = 0003885A            CLI$_SYMDEL    = 00038130            IHD$W_ACTIVOFF   00000002            
+CLI$_DEVNOTFOR = 0003887A            CLI$_SYMOVF    = 00038138            IHD$W_IMGIDOFF   00000006            
+CLI$_DEVNOTSPL = 00038862            CLI$_UNDFIL    = 00038188            IHD$W_IMGIOCNT   0000001E            
+CLI$_DIRECT    = 00038030            CLI$_UNDSYM    = 00038140            IHD$W_IOCHANCNT  0000001C            
+CLI$_EXPSYN    = 00038038            CLI$_UNPROPARM = 00038170            IHD$W_MAJORID    0000000C            
+CLI$_FILOPN    = 00038190            CLI$_UNPROQUAL = 00038168            IHD$W_MINORID    0000000E            
+CLI$_ILLVAL    = 0003883A            CLI$_USGOTO    = 00038148            IHD$W_PATCHOFF   00000008            
+CLI$_IMCHNG    = 00038040            CLI$_VALCNVERR = 00038832            IHD$W_SIZE       00000000            
+CLI$_IMGFNF    = 00038872            CLI$_VALREQ    = 00038150            IHD$W_SYMDBGOFF  00000004            
+CLI$_INSFPRM   = 00038048            CREATELOG        00000311 R     03   INPDESC          0000002A R     03   
+CLI$_INVKEY    = 00038178            CTL$AL_CLICALBK  ********   X   03   INPNAM           00000000 R     03   
+CLI$_INVQUAL   = 0003880A            CTL$GL_PHD       ********   X   03   MMG$GL_RMSBASE   ********   X   03   
+CLI$_INVQUALNUM= 0003881A            CTL$GL_RMSBASE   ********   X   03   MMG$IMGHDRBUF    ********   X   03   
+CLI$_INVREQTYP = 00038822            CTL$GQ_LOGIN     ********   X   03   OUTDESC          00000032 R     03   
+CLI$_INVRSP    = 00038180            CTL$GQ_PROCPRIV  ********   X   03   OUTNAM           00000009 R     03   
+CLI$_INVUIC    = 000381A8            CTL$T_ACCOUNT    ********   X   03   PCB$B_ASTACT     0000000C            
+CLI$_IVCHAR    = 00038050            CTL$T_USERNAME   ********   X   03   PCB$B_ASTEN      0000000D            
+CLI$_IVDEVTYPE = 0003886A            DEFDESC          00000052 R     03   PCB$B_PRI        0000000B            
+CLI$_IVFNAM    = 000381C0            DEFTYP           00000026 R     03   PCB$B_PRIB       00000033            
+CLI$_IVKEYW    = 00038060            DESCBASE         0000002A R     03   PCB$B_TYPE       0000000A            
+CLI$_IVOPER    = 00038068            DISKNAM          0000001C R     03   PCB$B_WEFC       00000032            
+CLI$_IVPROT    = 00038070            ERRDESC          0000003A R     03   PCB$C_LENGTH     0000007C            
+CLI$_IVQLOC    = 00038078            ERRNAM           00000013 R     03   PCB$K_LENGTH     0000007C            
+CLI$_IVSYMB    = 00038080            EXE$CATCH_ALL    00000276 RG    03   PCB$L_ASTQBL     00000014            
+CLI$_IVVALU    = 00038088            EXE$CLI_UTILSRV  0000025F RG    03   PCB$L_ASTQFL     00000010            
+CLI$_IVVERB    = 00038090            EXE$DEANONPAGED  ********   X   03   PCB$L_EFC2P      00000058            
+CLI$_MAXPARM   = 00038098            EXE$EXCMSG       ********   X   03   PCB$L_EFC3P      0000005C            
+CLI$_MULKEY    = 000381A0            EXE$EXIT_IMAGE   00000269 RG    03   PCB$L_EFCS       00000050            
+CLI$_NOATFIL   = 000380A0            EXE$GQ_SYSDISK   00000042 RG    03   PCB$L_EFCU       00000054            
+CLI$_NOCCAT    = 000380A8            EXE$GQ_SYSTIME   ********   X   03   PCB$L_EFWM       0000004C            
+CLI$_NOCOMD    = 000380B0            EXE$PROCSTRT     0000009B RG    03   PCB$L_OWNER      0000001C            
+CLI$_NOKEYW    = 000380B8            EXE$RMSEXH       000002F3 RG    03   PCB$L_PHD        00000064            
+CLI$_NOLIST    = 000380C0            EXSIZE         = 00000017            PCB$L_PHYPCB     00000018            
+CLI$_NOOPTPRS  = 00038842            EXTABLE          0000005A R     03   PCB$L_PID        00000060            
+CLI$_NOQUAL    = 000380C8            GBL...         = 00000000            PCB$L_PQB        0000004C            
+CLI$_NORMAL    = 00030001            IHD$B_HDRBLKCNT  00000010            PCB$L_SQBL       00000004            
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  13
+SYMBOL TABLE                                                                                                                     (1)
+
+PCB$L_SQFL       00000000            PHD$L_BIOCNT     00000054            PHD$W_FILLM      00000060            
+PCB$L_STS        00000028            PHD$L_CPULIM     00000058            PHD$W_FLAGS      0000003A            
+PCB$L_UIC        00000020            PHD$L_CPUTIM     0000003C            PHD$W_PHVINDEX   00000046            
+PCB$L_WSSWP      00000024            PHD$L_DIOCNT     00000050            PHD$W_PRCLM      00000042            
+PCB$L_WTIME      0000002C            PHD$L_ESP        0000007C            PHD$W_PST        00000020            
+PCB$T_LNAME      0000006C            PHD$L_FREP0VA    00000028            PHD$W_PSTBASMAX  0000004A            
+PCB$V_ASTPEN   = 00000011            PHD$L_FREP1VA    00000030            PHD$W_PSTFREE    00000026            
+PCB$V_BATCH    = 0000000E            PHD$L_FREPTECNT  0000002C            PHD$W_PSTLAST    00000024            
+PCB$V_DELPEN   = 00000001            PHD$L_KSP        00000078            PHD$W_PTCNTACT   00000070            
+PCB$V_FORCPEN  = 00000002            PHD$L_P0BR       000000C8            PHD$W_PTCNTLCK   0000006C            
+PCB$V_HIBER    = 00000013            PHD$L_P0LRASTL   000000CC            PHD$W_PTCNTMAX   00000072            
+PCB$V_INQUAN   = 00000003            PHD$L_P1BR       000000D0            PHD$W_PTCNTVAL   0000006E            
+PCB$V_LOGIN    = 00000014            PHD$L_P1LR       000000D4            PHD$W_QUANT      00000040            
+PCB$V_NETWRK   = 00000015            PHD$L_PAGEFLTS   0000004C            PHD$W_TQLM       00000062            
+PCB$V_NOACNT   = 0000000F            PHD$L_PAGFIL     0000001C            PHD$W_WSAUTH     0000000A            
+PCB$V_NODELET  = 00000017            PHD$L_PC         000000C0            PHD$W_WSDYN      0000000E            
+PCB$V_PHDRES   = 00000012            PHD$L_PCB        00000078            PHD$W_WSFLUID    00000074            
+PCB$V_PSWAPM   = 00000004            PHD$L_PGFLCNT    00000034            PHD$W_WSLAST     00000012            
+PCB$V_PWRAST   = 00000016            PHD$L_PGFLQUOTA  0000005C            PHD$W_WSLIST     00000008            
+PCB$V_RES      = 00000000            PHD$L_PSL        000000C4            PHD$W_WSLOCK     0000000C            
+PCB$V_RESPEN   = 00000005            PHD$L_PSTBASOFF  00000020            PHD$W_WSLX       0000004A            
+PCB$V_SSFEXC   = 00000006            PHD$L_PTWSLELCK  00000064            PHD$W_WSNEXT     00000010            
+PCB$V_SSFEXCE  = 00000007            PHD$L_PTWSLEVAL  00000068            PHD$W_WSQUOTA    00000018            
+PCB$V_SSFEXCS  = 00000008            PHD$L_R0         00000088            PIO$AL_RMSEXH    ********   X   03   
+PCB$V_SSFEXCU  = 00000009            PHD$L_R1         0000008C            PIO$GT_DDSTRING  ********   X   03   
+PCB$V_SSRWAIT  = 0000000A            PHD$L_R10        000000B0            PQB$B_STS        0000000B            
+PCB$V_SUSPEN   = 0000000B            PHD$L_R11        000000B4            PQB$B_TYPE       0000000A            
+PCB$V_SWPVBN   = 00000010            PHD$L_R12        000000B8            PQB$C_LENGTH     000001AC            
+PCB$V_WAKEPEN  = 0000000C            PHD$L_R13        000000BC            PQB$K_LENGTH     000001AC            
+PCB$V_WALL     = 0000000D            PHD$L_R2         00000090            PQB$L_ASTLM      0000014C            
+PCB$W_APTCNT     00000034            PHD$L_R3         00000094            PQB$L_BIOLM      00000150            
+PCB$W_ASTCNT     0000003C            PHD$L_R4         00000098            PQB$L_BYTLM      00000154            
+PCB$W_BIOCNT     0000003E            PHD$L_R5         0000009C            PQB$L_CPULM      00000158            
+PCB$W_BIOLM      00000040            PHD$L_R6         000000A0            PQB$L_DIOLM      0000015C            
+PCB$W_BYTCNT     00000042            PHD$L_R7         000000A4            PQB$L_FILLM      00000160            
+PCB$W_BYTLM      00000068            PHD$L_R8         000000A8            PQB$L_PGFLQUOTA  00000164            
+PCB$W_DIOCNT     00000044            PHD$L_R9         000000AC            PQB$L_PRCLM      00000168            
+PCB$W_DIOLM      00000046            PHD$L_REFERFLT   00000014            PQB$L_TQELM      0000016C            
+PCB$W_FILCNT     00000048            PHD$L_SSP        00000080            PQB$L_WSDEFAULT  00000174            
+PCB$W_GPGCNT     00000038            PHD$L_USP        00000084            PQB$L_WSQUOTA    00000170            
+PCB$W_GRP        00000022            PHD$L_WSL        00000118            PQB$Q_PRVMSK     00000000            
+PCB$W_MEM        00000020            PHD$M_DALCSTX  = 00000002            PQB$T_ACCOUNT    00000184            
+PCB$W_MTXCNT     0000000E            PHD$M_PFMFLG   = 00000001            PQB$T_DDSTRING   0000018C            
+PCB$W_PPGCNT     0000003A            PHD$M_WSPEAKCHK= 00000004            PQB$T_DISK       0000010C            
+PCB$W_PRCCNT     0000006A            PHD$Q_PRIVMSK    00000000            PQB$T_ERROR      0000004C            
+PCB$W_SIZE       00000008            PHD$S_ASTLVL   = 00000008            PQB$T_IMAGE      0000000C            
+PCB$W_STATE      00000030            PHD$S_P0LR     = 00000018            PQB$T_INPUT      0000008C            
+PCB$W_TMBU       00000036            PHD$V_ASTLVL   = 00000018            PQB$T_OUTPUT     000000CC            
+PCB$W_TQCNT      0000004A            PHD$V_DALCSTX  = 00000001            PQB$T_USERNAME   00000178            
+PFN$GL_PHYPGCNT  ********   X   03   PHD$V_P0LR     = 00000000            PQB$W_SIZE       00000008            
+PHD$B_ASTLVL     000000CF            PHD$V_PFMFLG   = 00000000            PR$_ACCR       = 00000029            
+PHD$B_DFPFC      00000038            PHD$V_WSPEAKCHK= 00000002            PR$_ACCS       = 00000028            
+PHD$B_PAGFIL     0000001F            PHD$W_ASTLM      00000044            PR$_ASTLVL     = 00000013            
+PHD$B_PGTBPFC    00000039            PHD$W_BAK        00000048            PR$_ESP        = 00000001            
+PHD$C_LENGTH     00000118            PHD$W_DFWSCNT    0000001A            PR$_ICCS       = 00000018            
+PHD$C_PHDPAGCTX= 00000008            PHD$W_EMPTPG     000000D8            PR$_ICR        = 0000001A            
+PHD$K_LENGTH     00000118            PHD$W_EXTDYNWS   00000076            PR$_IPL        = 00000012            
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  14
+SYMBOL TABLE                                                                                                                     (1)
+
+PR$_ISP        = 00000004            PSL$V_FU       = 00000006            SS$_DEVNOTMBX  = 00000074            
+PR$_KSP        = 00000000            PSL$V_IPL      = 00000010            SS$_DEVNOTMOUNT= 0000007C            
+PR$_MAPEN      = 00000038            PSL$V_IS       = 0000001A            SS$_DEVOFFLINE = 00000084            
+PR$_NICR       = 00000019            PSL$V_IV       = 00000005            SS$_DIRFULL    = 00000860            
+PR$_P0BR       = 00000008            PSL$V_PRVMOD   = 00000016            SS$_DRVERR     = 0000008C            
+PR$_P0LR       = 00000009            PSL$V_TBIT     = 00000004            SS$_DUPFILENAME= 00000868            
+PR$_P1BR       = 0000000A            PSL$V_TP       = 0000001E            SS$_DUPLNAM    = 00000094            
+PR$_P1LR       = 0000000B            SCH$GL_CURPCB    ********   X   03   SS$_ENDOFFILE  = 00000870            
+PR$_PCBB       = 00000010            SCH$GL_FREELIM   ********   X   03   SS$_ENDOFTAPE  = 00000878            
+PR$_PME        = 0000003D            SETQUOTAS        000000E5 R     03   SS$_ENDOFUSRLBL= 00000970            
+PR$_RXCS       = 00000020            SGN$GL_MAXWSCNT  ********   X   03   SS$_EXQUOTA    = 0000001C            
+PR$_RXDB       = 00000021            SS$_ABORT      = 0000002C            SS$_EXTIDXFILE = 00000880            
+PR$_SBIER      = 00000034            SS$_ACCONFLICT = 00000800            SS$_FCPREADERR = 00000888            
+PR$_SBIFS      = 00000030            SS$_ACCVIO     = 0000000C            SS$_FCPREPSTN  = 00000988            
+PR$_SBIMT      = 00000033            SS$_ACPVAFUL   = 000002FC            SS$_FCPREWNDERR= 00000890            
+PR$_SBIQC      = 00000036            SS$_ARTRES     = 00000474            SS$_FCPSPACERR = 00000898            
+PR$_SBIS       = 00000031            SS$_ASTFLT     = 0000040C            SS$_FCPWRITERR = 000008A0            
+PR$_SBISC      = 00000032            SS$_BADATTRIB  = 00000034            SS$_FILACCERR  = 0000009C            
+PR$_SBITA      = 00000035            SS$_BADCHKSUM  = 00000808            SS$_FILALRACC  = 000000A4            
+PR$_SBR        = 0000000C            SS$_BADESCAPE  = 0000003C            SS$_FILELOCKED = 000008A8            
+PR$_SCBB       = 00000011            SS$_BADFILEHDR = 00000810            SS$_FILENUMCHK = 000008B0            
+PR$_SID        = 0000003E            SS$_BADFILENAME= 00000818            SS$_FILESEQCHK = 000008B8            
+PR$_SIRR       = 00000014            SS$_BADFILEVER = 00000820            SS$_FILESTRUCT = 000008C0            
+PR$_SISR       = 00000015            SS$_BADIMGHDR  = 00000044            SS$_FILNOTACC  = 000000AC            
+PR$_SLR        = 0000000D            SS$_BADIRECTORY= 00000828            SS$_FILNOTCNTG = 000002AC            
+PR$_SSP        = 00000002            SS$_BADPARAM   = 00000014            SS$_FILNOTEXP  = 000000B4            
+PR$_TBIA       = 00000039            SS$_BADSTACK   = 000002B4            SS$_FLTDIV     = 00000494            
+PR$_TBIS       = 0000003A            SS$_BEGOFFILE  = 00000938            SS$_FLTOVF     = 0000048C            
+PR$_TODR       = 0000001B            SS$_BLOCKCNTERR= 00000940            SS$_FLTUND     = 0000049C            
+PR$_TXCS       = 00000022            SS$_BREAK      = 00000414            SS$_FORMAT     = 000000BC            
+PR$_TXDB       = 00000023            SS$_BUFBYTALI  = 0000030C            SS$_GPTFULL    = 000000C4            
+PR$_USP        = 00000003            SS$_BUFFEROVF  = 00000601            SS$_GSDFULL    = 000000CC            
+PR$_WCSA       = 0000002C            SS$_BUGCHECK   = 000002A4            SS$_HANGUP     = 000002CC            
+PR$_WCSD       = 0000002D            SS$_CANCEL     = 00000830            SS$_HEADERFULL = 000008C8            
+PSL$C_EXEC     = 00000001            SS$_CHANINTLK  = 0000004C            SS$_IDXFILEFULL= 000008D0            
+PSL$C_KERNEL   = 00000000            SS$_CLIFRCEXT  = 00000980            SS$_ILLBLKNUM  = 000000DC            
+PSL$C_SUPER    = 00000002            SS$_CMODSUPR   = 0000041C            SS$_ILLCNTRFUNC= 000000E4            
+PSL$C_USER     = 00000003            SS$_CMODUSER   = 00000424            SS$_ILLEFC     = 000000EC            
+PSL$M_CM       = 80000000            SS$_COMPAT     = 0000042C            SS$_ILLIOFUNC  = 000000F4            
+PSL$M_CURMOD   = 03000000            SS$_CONTINUE   = 00000001            SS$_ILLLBLAST  = 00000968            
+PSL$M_DV       = 00000080            SS$_CONTROLC   = 00000651            SS$_ILLPAGCNT  = 000000FC            
+PSL$M_FPD      = 08000000            SS$_CONTROLO   = 00000609            SS$_ILLSEQOP   = 000002DC            
+PSL$M_FU       = 00000040            SS$_CONTROLY   = 00000611            SS$_ILLSER     = 00000104            
+PSL$M_IPL      = 001F0000            SS$_CREATED    = 00000619            SS$_ILLUSRLBLRD= 00000958            
+PSL$M_IS       = 04000000            SS$_CTRLERR    = 00000054            SS$_ILLUSRLBLWT= 00000960            
+PSL$M_IV       = 00000020            SS$_DATACHECK  = 0000005C            SS$_INCVOLLABEL= 0000010C            
+PSL$M_PRVMOD   = 00C00000            SS$_DATAOVERUN = 00000838            SS$_INSFARG    = 00000114            
+PSL$M_SAFBITS  = 000037FF            SS$_DEBUG      = 0000046C            SS$_INSFMEM    = 00000124            
+PSL$M_TBIT     = 00000010            SS$_DECOVF     = 000004A4            SS$_INSFRAME   = 0000012C            
+PSL$M_TP       = 40000000            SS$_DEVACTIVE  = 000002C4            SS$_INSFWSL    = 0000011C            
+PSL$S_CURMOD   = 00000002            SS$_DEVALLOC   = 00000840            SS$_INTDIV     = 00000484            
+PSL$S_IPL      = 00000005            SS$_DEVALRALLOC= 00000641            SS$_INTOVF     = 0000047C            
+PSL$S_PRVMOD   = 00000002            SS$_DEVASSIGN  = 00000848            SS$_IVADDR     = 00000134            
+PSL$V_CM       = 0000001F            SS$_DEVFOREIGN = 00000064            SS$_IVCHAN     = 0000013C            
+PSL$V_CURMOD   = 00000018            SS$_DEVICEFULL = 00000850            SS$_IVCHNLSEC  = 0000026C            
+PSL$V_DV       = 00000007            SS$_DEVMOUNT   = 0000006C            SS$_IVDEVNAM   = 00000144            
+PSL$V_FPD      = 0000001B            SS$_DEVNOTALLOC= 00000858            SS$_IVGSDNAM   = 0000014C            
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  15
+SYMBOL TABLE                                                                                                                     (1)
+
+SS$_IVLOGNAM   = 00000154            SS$_RADRMOD    = 0000044C            STS$V_FAC_NO   = 00000010            
+SS$_IVLOGTAB   = 0000015C            SS$_REJECT     = 00000294            STS$V_FAC_SP   = 0000000F            
+SS$_IVPROTECT  = 000002F4            SS$_REMOTE     = 00000649            STS$V_INHIB_MSG= 0000001C            
+SS$_IVQUOTAL   = 00000164            SS$_RESIGNAL   = 00000918            STS$V_MSG_NO   = 00000003            
+SS$_IVSECFLG   = 0000016C            SS$_RESULTOVF  = 00000214            STS$V_SEVERITY = 00000000            
+SS$_IVSECIDCTL = 000002E4            SS$_ROPRAND    = 00000454            STS$V_SUCCESS  = 00000000            
+SS$_IVSSRQ     = 00000174            SS$_SECTBLFUL  = 0000021C            SUFFIX           00000088 R     03   
+SS$_IVSTSFLG   = 0000017C            SS$_SSFAIL     = 0000045C            SYS$CRELOG       ********   X   03   
+SS$_IVTIME     = 00000184            SS$_SUBRNG     = 000004AC            SYS$DCLEXH       ********   X   03   
+SS$_LCKPAGFUL  = 000000D4            SS$_SUPERSEDE  = 00000631            SYS$EXIT         ********   X   03   
+SS$_LENVIO     = 0000018C            SS$_TAPEPOSLOST= 00000224            SYS$HIBER        ********   X   03   
+SS$_LKWSETFUL  = 00000194            SS$_TBIT       = 00000464            SYS$IMGACT       ********   X   03   
+SS$_MBFULL     = 000008D8            SS$_TIMEOUT    = 0000022C            SYS$PUTMSG       ********   X   03   
+SS$_MBTOOSML   = 0000019C            SS$_TOOMANYVER = 00000990            SYS$RMSRUNDWN    ********   X   03   
+SS$_MCHECK     = 000002BC            SS$_TOOMUCHDATA= 0000029C            SYS$SETEXV       ********   X   03   
+SS$_MEDOFL     = 000001A4            SS$_UNASEFC    = 00000234            TTDESC           0000004A R     03   
+SS$_MSGNOTFND  = 00000621            SS$_UNSAFE     = 0000023C            TTNAM            00000024 R     03   
+SS$_MTLBLLONG  = 00000304            SS$_UNWIND     = 00000920            
+SS$_MUSTCLOSEFL= 00000948            SS$_UNWINDING  = 00000928            
+SS$_NOAQB      = 00000314            SS$_VASFULL    = 00000244            
+SS$_NODATA     = 000001AC            SS$_VECINUSE   = 0000024C            
+SS$_NOHANDLER  = 000008F8            SS$_VOLINV     = 00000254            
+SS$_NOHOMEBLK  = 000008E0            SS$_WAITUSRLBL = 00000950            
+SS$_NOIOCHAN   = 000001B4            SS$_WASCLR     = 00000001            
+SS$_NOLINKS    = 0000027C            SS$_WASECC     = 00000639            
+SS$_NOLOGNAM   = 000001BC            SS$_WASSET     = 00000009            
+SS$_NOMBX      = 00000274            SS$_WRITLCK    = 0000025C            
+SS$_NOMOREFILES= 00000930            SS$_WRONGACP   = 0000031C            
+SS$_NONEXDRV   = 000001C4            STS$K_ERROR    = 00000002            
+SS$_NONEXPR    = 000008E8            STS$K_INFO     = 00000003            
+SS$_NONLOCAL   = 000008F0            STS$K_SEVERE   = 00000004            
+SS$_NOPRIV     = 00000024            STS$K_SUCCESS  = 00000001            
+SS$_NORMAL     = 00000001            STS$K_WARNING  = 00000000            
+SS$_NOSIGNAL   = 00000900            STS$M_CODE     = 00007FF8            
+SS$_NOSOLICIT  = 00000284            STS$M_COND_ID  = 0FFFFFF8            
+SS$_NOSUCHDEV  = 00000908            STS$M_CONTROL  = F0000000            
+SS$_NOSUCHFILE = 00000910            STS$M_CUST_DEF = 08000000            
+SS$_NOSUCHNODE = 0000028C            STS$M_FAC_NO   = 0FFF0000            
+SS$_NOSUCHSEC  = 00000978            STS$M_FAC_SP   = 00008000            
+SS$_NOTAPEOP   = 00000264            STS$M_INHIB_MSG= 10000000            
+SS$_NOTFILEDEV = 000001CC            STS$M_MSG_NO   = 0000FFF8            
+SS$_NOTINTBLSZ = 000001D4            STS$M_SEVERITY = 00000007            
+SS$_NOTLABELMT = 000001DC            STS$M_SUCCESS  = 00000001            
+SS$_NOTMODIFIED= 00000659            STS$S_CODE     = 0000000C            
+SS$_NOTNETDEV  = 000002EC            STS$S_COND_ID  = 00000019            
+SS$_NOTRAN     = 00000629            STS$S_CONTROL  = 00000004            
+SS$_NOTSQDEV   = 000001E4            STS$S_CUST_DEF = 00000001            
+SS$_OPCCUS     = 00000434            STS$S_FAC_NO   = 0000000C            
+SS$_OPCDEC     = 0000043C            STS$S_FAC_SP   = 00000001            
+SS$_OPINCOMPL  = 000002D4            STS$S_INHIB_MSG= 00000001            
+SS$_PAGOWNVIO  = 000001EC            STS$S_MSG_NO   = 0000000D            
+SS$_PAGRDERR   = 00000444            STS$S_SEVERITY = 00000003            
+SS$_PARITY     = 000001F4            STS$S_SUCCESS  = 00000001            
+SS$_PARTESCAPE = 000001FC            STS$V_CODE     = 00000003            
+SS$_PFMBSY     = 00000204            STS$V_COND_ID  = 00000003            
+SS$_PLHLDR     = 00000404            STS$V_CONTROL  = 0000001C            
+SS$_PSTFULL    = 0000020C            STS$V_CUST_DEF = 0000001B            
+PROCSTRT        - PROCESS STARTUP AND INITIALIZATION             21-AUG-1978 20:06:58   VAX-11 MACRO X0.3-11               Page  16
+PROGRAM SECTION SYNOPSIS                                                                                                         (1)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            000001AC      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+YEXEPAGED        00000345      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+8668. BYTES LEFT IN FREE MEMORY POOL.
+2410. BYTES OF RECLAIMED MEMORY.
+OBJ$:PROCSTRT,LIS$:PROCSTRT/-SP=EXECML$/ML,SRC$:PROCSTRT
+18 MLB DIR RDS - 1019 GETS TO DEFINE 26 MACROS. 72 INTER. FILE WRITES. 

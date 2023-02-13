@@ -1,0 +1,1737 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DLE  (MAIN = DLE$MAIN,
+;	0002		     IDENT = 'X20'
+;	0003			) =
+;	0004	BEGIN
+;	0005	
+;	0006	!
+;	0007	! COPYRIGHT (C) 1977
+;	0008	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0009	!
+;	0010	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0011	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0012	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0013	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0014	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0015	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0016	! REMAIN IN DEC.
+;	0017	!
+;	0018	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0019	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0020	! CORPORATION.
+;	0021	!
+;	0022	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0023	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0024	
+;	0025	!++
+;	0026	! FACILITY:
+;	0027	!
+;	0028	!	DLE	- Direct Line Executive
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This is the main module of the DLE facility.  It is
+;	0033	!	responsible for initiating a downline load over the 
+;	0034	!	line whose name has been logically equated to SYS$ERROR.
+;	0035	!	
+;	0036	! ENVIRONMENT:
+;	0037	!
+;	0038	!	When NETACP senses that a line has entered MOP mode, it
+;	0039	!	equates the line name to SYS$ERROR and starts this process.
+;	0040	!	DLE initiates the downline load over the line by issuing
+;	0041	!	a NICE 'downline load' message to the Host node for the line.
+;	0042	!
+;	0043	!
+;	0044	! AUTHOR:  AL ELDRIDGE,   CREATION DATE: 23-MAY-78
+;	0045	!
+;	0046	! MODIFIED BY:
+;	0047	!
+;	0048	! 	, : VERSION
+;	0049	! 01	- 
+;	0050	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 2
+; Digital Equipment Corporation
+;
+;	0051	!
+;	0052	! TABLE OF CONTENTS:
+;	0053	!
+;	0054	
+;	0055	FORWARD ROUTINE
+;	0056	
+;	0057	  GET_LINE,
+;	0058	  LINK,
+;	0059	  XMT_RCV,
+;	0060	  TELL_OPERATOR : NOVALUE,
+;	0061	  GET_HOST,
+;	0062	  GET_REC,
+;	0063	  ACPQIO ;
+;	0064	
+;	0065	EXTERNAL ROUTINE
+;	0066	
+;	0067	  MATCHKEY,		! These routines come from module NCPSUB
+;	0068	  OPEN_FILE,		! which can most likely be found on one of
+;	0069	  CLOSE_FILE ;		! 'NCP' directories.
+;	0070	
+;	0071	
+;	0072	!
+;	0073	! INCLUDE FILES:
+;	0074	!
+;	0075	
+;	0076	  REQUIRE 'SRC$:NICDEF.B32' ;		! Supplies NICE symbol and field
+;	0968						! definitions.
+;	0969	
+;	0970	!
+;	0971	! MACROS:
+;	0972	!
+;	0973	
+;	0974	  ! Quadword descriptor block structure definition
+;	0975	
+;	0976	  LITERAL
+;	0977		DSC_SIZE	= 8 ;	! size of descriptor block in bytes
+;	0978	
+;	0979	  FIELD
+;	0980	    DSC_FIELDS =
+;	0981	       SET
+;	0982		LNG = [0,0,16,0],	! length field
+;	0983		PTR = [4,0,32,0]	! pointer field
+;	0984	       TES ;
+;	0985	
+;	0986	
+;	0987	  MACRO  ! Define the macro for the structure declaration
+;	0988	
+;	0989		DSC	= BLOCK [DSC_SIZE, BYTE]  FIELD (DSC_FIELDS) % ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 3
+; Digital Equipment Corporation
+;
+;	0990	!
+;	0991	! EQUATED SYMBOLS:
+;	0992	!
+;	0993	
+;	0994	LITERAL
+;	0995	
+;	0996	  NICEDEV_BUF_LNG = 50,	! Length of buffer which receives the
+;	0997				! task name string for the Network 
+;	0998				! logical link assignment.
+;	0999	
+;	1000	  IMSG_BUF_LNG = 10, 	! Input buffer length
+;	1001	  OMSG_BUF_LNG = 50,	! Outpur buffer length
+;	1002	  ASCLN_BUF_LNG = 8,	! Buffer length for ascii linename (e.g. XMA0).
+;	1003	  LN_BUF_LNG   =  4,	! Buffer length standard NICE type 1
+;	1004				! format linenames
+;	1005	  LND_BUF_LNG  =  7,	! Local node name buffer length
+;	1006	  LAST  = 0 ;
+;	1007	
+;	1008	
+;	1009	!
+;	1010	! OWN STORAGE:
+;	1011	!
+;	1012	
+;	1013	GLOBAL
+;	1014	
+;	1015	  NICEDEV_BUF : BLOCK [NICEDEV_BUF_LNG, BYTE],	! NICE taskname buffer
+;	1016	
+;	1017	  OMSG_BUF : BLOCK [OMSG_BUF_LNG, BYTE],	! Output message buffer
+;	1018	  IMSG_BUF : BLOCK [IMSG_BUF_LNG, BYTE],	! Input message buffer
+;	1019	  ASCLN_BUF : BLOCK [ASCLN_BUF_LNG, BYTE],	! Holds ascii linename
+;	1020	  LN_BUF   : BLOCK [LN_BUF_LNG, BYTE],		! Holds NICE format 
+;	1021							! linename.
+;	1022	  LND_BUF  : BLOCK [LND_BUF_LNG, BYTE],		! Local nodename buffer
+;	1023	  RND_REC  : BLOCK [RND$C_SIZE, BYTE],		! Holds RND record from
+;	1024							! configuration data base
+;	1025							! for the node to be
+;	1026							! loaded.
+;	1027	  LID_REC  : BLOCK [LID$C_SIZE, BYTE],		! Holds LID record from
+;	1028							! configuration data base
+;	1029							! for the line being
+;	1030							! attended.
+;	1031	
+;	1032	  !+
+;	1033	  ! Now define the descriptors to be used with the buffers
+;	1034	  ! listed above.
+;	1035	  !-
+;	1036	
+;	1037	  NICEDEV_DSC : DSC,
+;	1038	  ACPDEV_DSC  : DSC,
+;	1039	
+;	1040	  OMSG_DSC   : DSC,
+;	1041	  IMSG_DSC   : DSC,
+;	1042	  ASCLN_DSC  : DSC,
+;	1043	  LN_DSC     : DSC,
+;	1044	  LND_DSC    : DSC,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 3-1
+; Digital Equipment Corporation
+;
+;	1045	  HND_DSC    : DSC,
+;	1046	
+;	1047	  NICE_CHAN  : WORD,
+;	1048	  ACP_CHAN   : WORD ;
+;	1049	
+;	1050	
+;	1051	
+;	1052	!
+;	1053	! EXTERNAL REFERENCES:
+;	1054	!
+;	1055	
+;	1056	!	NONE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 4
+; Digital Equipment Corporation
+;
+;	1057	ROUTINE  DLE$MAIN =
+;	1058	
+;	1059	!++
+;	1060	! FUNCTIONAL DESCRIPTION:
+;	1061	!
+;	1062	!	This is the main routine.  It determines the name of the line
+;	1063	!	over which the downline load is to occur, and the name of its
+;	1064	!	host node.  It sets the line to the "off" state, builds a
+;	1065	!	downline load message and sends it the the NICE object on the
+;	1066	!	host node, and reports the success/failure of the load on the
+;	1067	!	system console.  If the load is successful then the state of the
+;	1068	!	line is set to "on".
+;	1069	!
+;	1070	! FORMAL PARAMETERS:
+;	1071	!
+;	1072	!	NONE
+;	1073	!
+;	1074	! IMPLICIT INPUTS:
+;	1075	!
+;	1076	!	- SYS$ERROR is logically equated to the name of the line in
+;	1077	!	  ascii format (e.g., XMA0).
+;	1078	!
+;	1079	! IMPLICIT OUTPUTS:
+;	1080	!
+;	1081	!	NONE
+;	1082	!
+;	1083	! ROUTINE VALUE:
+;	1084	! COMPLETION CODES:
+;	1085	!
+;	1086	!	NONE
+;	1087	!
+;	1088	! SIDE EFFECTS:
+;	1089	!
+;	1090	!	If the downline load fails, then the line is left in the "off"
+;	1091	!	state and is not assigned to any process.  It is the responsiblity
+;	1092	!	of the operator to read the error message on the console and take
+;	1093	!	action to restart the load via NCP.
+;	1094	!
+;	1095	!--
+;	1096	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 5
+; Digital Equipment Corporation
+;
+;	1097	BEGIN
+;	1098	LABEL	ALPHA ;
+;	1099	LOCAL	TMP,
+;	1100		DLE_STAT : SIGNED ;
+;	1101	
+;	1102	ALPHA :
+;	1103	
+;	1104	    BEGIN
+;	1105	
+;	1106	    !+
+;	1107	    ! Determine the name of the line over which the downline load
+;	1108	    ! is to occur.  LN_DSC will return the name of the line in its
+;	1109	    ! standard NICE format and ASCLN_DSC will return its ascii
+;	1110	    ! equivalent (e.g., XMA0).
+;	1111	
+;	1112	    IF NOT (DLE_STAT = GET_LINE ()) THEN LEAVE ALPHA ;
+;	1113	
+;	1114	    !+
+;	1115	    ! Create a channel to NETACP, and then use it to obtain
+;	1116	    ! the name of the local node.
+;	1117	
+;	1118	    ACPDEV_DSC [PTR] = UPLIT BYTE ('NET0:') ;
+;	1119	    ACPDEV_DSC [LNG] = 5 ;
+;	1120	
+;	1121	    IF  NOT $ASSIGN (DEVNAM=ACPDEV_DSC, CHAN=ACP_CHAN)
+;	1122	    THEN
+;	1123		LEAVE ALPHA WITH DLE_STAT=NIC$_RESRCERR ;
+;	1124	
+;	1125	    LND_DSC [PTR] = LND_BUF ;			! Prepare local node 
+;	1126	    LND_DSC [LNG] = LND_BUF_LNG ;		!  buffer descriptor
+;	1127	
+;	1128	    IF  ACPQIO (GET_LOCAL_NAME,0,0,TMP,LND_DSC)	! Get the local node name
+;	1129	    THEN
+;	1130		LND_DSC [LNG] = .TMP			! Complete node descriptor
+;	1131	    ELSE
+;	1132		LEAVE ALPHA WITH DLE_STAT=NIC$_RESRCERR ;
+;	1133	
+;	1134	    !+
+;	1135	    ! Set the line's state to OFF
+;	1136	
+;	1137	    IF  NOT ACPQIO (SET_LINE_STATE, %REF(OFF), ASCLN_DSC, 0, 0) 
+;	1138	    THEN
+;	1139		LEAVE ALPHA WITH DLE_STAT=NIC$_RESRCERR ;
+;	1140	
+;	1141	
+;	1142	    !+
+;	1143	    ! Get the name of the host node for the line -- HND_DSC returns
+;	1144	    ! the counted string nodename.
+;	1145	
+;	1146	    IF  NOT (DLE_STAT = GET_HOST ())  THEN LEAVE ALPHA ;
+;	1147	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 6
+; Digital Equipment Corporation
+;
+;	1148	    !+
+;	1149	    ! Build the NICE message which requests the downline load.
+;	1150	    ! The message consists of the downline load function code
+;	1151	    ! followed by the option code.  The option code indicates that the 
+;	1152	    ! NICE object is to identify the target, the server, and the linename
+;	1153	    ! from the command message, and that it is to boot the target in 
+;	1154	    ! order to get the program request data.  All other information is 
+;	1155	    ! to be obtained by the NICE object from the configuration data base.
+;	1156	    !-
+;	1157	
+;	1158	    TMP = CH$PTR (OMSG_BUF) ;
+;	1159	    CH$WCHAR_A (NIC$K_DLL, TMP) ;			! Function code
+;	1160	    CH$WCHAR_A (6, TMP) ;				! Option bit map
+;	1161	    !+
+;	1162	    ! Enter the counted string naming the target node.  Get this name
+;	1163	    ! from the data base record for the server line (note that this node
+;	1164	    ! is also the server node).
+;	1165	    !-
+;	1166	    TMP = CH$MOVE (.LID_REC[LID$B_NODE]+1,LID_REC[LID$B_NODE],.TMP) ;
+;	1167	    TMP = CH$MOVE (.LND_DSC[LNG],.LND_DSC[PTR],.TMP) ;	! Enter server node
+;	1168								! name - the local node
+;	1169	    CH$WCHAR_A (1,TMP) ;				! Enter linename
+;	1170								! format type.
+;	1171	    TMP = CH$MOVE (.LN_DSC[LNG],.LN_DSC[PTR],.TMP) ;	! Enter linename
+;	1172	    OMSG_DSC [PTR] = OMSG_BUF ;				! Build a descriptor
+;	1173	    OMSG_DSC [LNG] = .TMP - OMSG_BUF ;			! of the message.
+;	1174	
+;	1175	
+;	1176	    !+
+;	1177	    ! Create a link to the local NICE object, and then send it the
+;	1178	    ! downline load message, and process the reply.
+;	1179	    !-
+;	1180	
+;	1181	    IF  NOT LINK (NICE_CHAN,HND_DSC)
+;	1182	    THEN
+;	1183		LEAVE ALPHA WITH DLE_STAT=NIC$_NOREMNICE ;
+;	1184	
+;	1185	    IF NOT (DLE_STAT=XMT_RCV ())  THEN LEAVE ALPHA ;
+;	1186	
+;	1187	
+;	1188	    !+
+;	1189	    ! Return the line to the 'ON' state.  First build the line's 'LIN'
+;	1190	    ! data base (defined in NCBDEF.B32).
+;	1191	    !-
+;	1192	
+;	1193	    BEGIN
+;	1194	    LOCAL  BUFFER : BLOCK [LIN$K_SIZE,BYTE] ;
+;	1195	    LOCAL  TMP_DSC : DSC ;
+;	1196	    LOCAL  TMP ;
+;	1197	    TMP = .LID_REC[LID$B_CNTRL] + 'A' ;
+;	1198	    CH$COPY (.ASCLN_DSC[LNG], .ASCLN_DSC[PTR],
+;	1199		     1, TMP,
+;	1200		     1, LID_REC[LID$B_LINE],
+;	1201		     1, LID_REC[LID$B_ADDRESS],
+;	1202		     2, LID_REC[LID$W_CHAR],
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 6-1
+; Digital Equipment Corporation
+;
+;	1203		     LID$S_NODE+1, LID_REC[LID$B_NODE],
+;	1204		     2, LID_REC[LID$W_BUFSIZE],
+;	1205		     1, LID_REC[LID$B_NUMBUF],
+;	1206		     0,
+;	1207		     LIN$K_SIZE, BUFFER
+;	1208		    ) ;
+;	1209	
+;	1210	    TMP_DSC[LNG] = LIN$K_SIZE ;
+;	1211	    TMP_DSC[PTR] = BUFFER ;
+;	1212	
+;	1213	    IF  NOT ACPQIO (SET_LINE_STATE, %REF(ON), TMP_DSC, 0, 0)
+;	1214	    THEN
+;	1215		LEAVE ALPHA WITH DLE_STAT=NIC$_RESRCERR ;
+;	1216	    END ;
+;	1217	
+;	1218	    DLE_STAT = NIC$_SUCCESS ;
+;	1219	    END ;
+;	1220	
+;	1221	!+
+;	1222	! All that's left to do is to print a message on the console.  First map
+;	1223	! the status code into its NICE protocol counterpart.
+;	1224	!-
+;	1225	
+;	1226	IF  .DLE_STAT NEQ NIC$_SUCCESS  THEN DLE_STAT = .DLE_STAT/2 ;
+;	1227	
+;	1228	TELL_OPERATOR (.DLE_STAT) ;
+;	1229	END ;
+
+
+							    .TITLE  DLE
+							    .IDENT  \X20\
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .ASCII  \NET0:\						      ;
+					      00005	    .BLKB   3
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 NICEDEV_BUF::
+							    .BLKB   50
+					      00032	    .BLKB   2
+					      00034 OMSG_BUF::
+							    .BLKB   50
+					      00066	    .BLKB   2
+					      00068 IMSG_BUF::
+							    .BLKB   10
+					      00072	    .BLKB   2
+					      00074 ASCLN_BUF::
+							    .BLKB   8
+					      0007C LN_BUF::.BLKB   4
+					      00080 LND_BUF::
+							    .BLKB   7
+					      00087	    .BLKB   1
+					      00088 RND_REC::
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 6-2
+; Digital Equipment Corporation
+;
+							    .BLKB   195
+					      0014B	    .BLKB   1
+					      0014C LID_REC::
+							    .BLKB   42
+					      00176	    .BLKB   2
+					      00178 NICEDEV_DSC::
+							    .BLKB   8
+					      00180 ACPDEV_DSC::
+							    .BLKB   8
+					      00188 OMSG_DSC::
+							    .BLKB   8
+					      00190 IMSG_DSC::
+							    .BLKB   8
+					      00198 ASCLN_DSC::
+							    .BLKB   8
+					      001A0 LN_DSC::.BLKB   8
+					      001A8 LND_DSC::
+							    .BLKB   8
+					      001B0 HND_DSC::
+							    .BLKB   8
+					      001B8 NICE_CHAN::
+							    .BLKB   2
+					      001BA ACP_CHAN::
+							    .BLKB   2
+
+							    .GLOBL  MATCHKEY, OPEN_FILE, CLOSE_FILE, SYS$ASSIGN
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00000 DLE$MAIN:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 1057
+		         5A	0000V  CF  9E 00002 	    MOVAB   ACPQIO, R10						      ;
+		         5B	0000'  CF  9E 00007 	    MOVAB   LND_DSC, R11					      ;
+		         5E	       28  C2 0000C 	    SUBL2   #40, SP						      ;
+		  0000V  CF	       00  FB 0000F 	    CALLS   #0, GET_LINE					      ; 1112
+		         56	       50  D0 00014 	    MOVL    R0, DLE_STAT					      ;
+		         57	       56  E9 00017 	    BLBC    DLE_STAT, 3$					      ;
+		    DC   AB	0000'  CF  9E 0001A 	    MOVAB   P.AAA, ACPDEV_DSC+4					      ; 1118
+		    D8   AB	       05  B0 00020 	    MOVW    #5, ACPDEV_DSC					      ; 1119
+				       7E  7C 00024 	    CLRQ    -(SP)						      ; 1121
+				  12   AB  9F 00026 	    PUSHAB  ACP_CHAN						      ;
+				  D8   AB  9F 00029 	    PUSHAB  ACPDEV_DSC						      ;
+	      00000000G  9F	       04  FB 0002C 	    CALLS   #4, @#SYS$ASSIGN					      ;
+		         2D	       50  E9 00033 	    BLBC    R0, 1$						      ;
+		    04   AB	FED8   CB  9E 00036 	    MOVAB   LND_BUF, LND_DSC+4					      ; 1125
+		         6B	       07  B0 0003C 	    MOVW    #7, LND_DSC						      ; 1126
+				       5B  DD 0003F 	    PUSHL   R11							      ; 1128
+				  0C   AE  9F 00041 	    PUSHAB  TMP							      ;
+				       7E  7C 00044 	    CLRQ    -(SP)						      ;
+				       07  DD 00046 	    PUSHL   #7							      ;
+		         6A	       05  FB 00048 	    CALLS   #5, ACPQIO						      ;
+		         15	       50  E9 0004B 	    BLBC    R0, 1$						      ;
+		         6B	  08   AE  B0 0004E 	    MOVW    TMP, LND_DSC					      ; 1130
+				       7E  7C 00052 	    CLRQ    -(SP)						      ; 1137
+				  F0   AB  9F 00054 	    PUSHAB  ASCLN_DSC						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 6-3
+; Digital Equipment Corporation
+;
+		    0C   AE	       01  D0 00057 	    MOVL    #1, 12(SP)						      ;
+				  0C   AE  9F 0005B 	    PUSHAB  12(SP)						      ;
+				       01  DD 0005E 	    PUSHL   #1							      ;
+		         6A	       05  FB 00060 	    CALLS   #5, ACPQIO						      ;
+		         03	       50  E8 00063 1$:     BLBS    R0, 2$						      ;
+				     0119  31 00066 	    BRW     7$							      ;
+		  0000V  CF	       00  FB 00069 2$:     CALLS   #0, GET_HOST					      ; 1146
+		         56	       50  D0 0006E 	    MOVL    R0, DLE_STAT					      ;
+		         62	       56  E9 00071 3$:     BLBC    DLE_STAT, 4$					      ;
+		    08   AE	FE8C   CB  9E 00074 	    MOVAB   OMSG_BUF, TMP					      ; 1158
+		    08   BE	       02  90 0007A 	    MOVB    #2, @TMP						      ; 1159
+				  08   AE  D6 0007E 	    INCL    TMP							      ;
+		    08   BE	       06  90 00081 	    MOVB    #6, @TMP						      ; 1160
+				  08   AE  D6 00085 	    INCL    TMP							      ;
+		         50	  C2   AB  9A 00088 	    MOVZBL  LID_REC+30, R0					      ; 1166
+				       50  D6 0008C 	    INCL    R0							      ;
+      08   BE	    C2   AB	       50  28 0008E 	    MOVC3   R0, LID_REC+30, @TMP				      ;
+		    08   AE	       53  D0 00094 	    MOVL    R3, TMP						      ;
+      08   BE	    04   BB	       6B  28 00098 	    MOVC3   LND_DSC, @LND_DSC+4, @TMP				      ; 1167
+		    08   AE	       53  D0 0009E 	    MOVL    R3, TMP						      ;
+		    08   BE	       01  90 000A2 	    MOVB    #1, @TMP						      ; 1169
+				  08   AE  D6 000A6 	    INCL    TMP							      ;
+      08   BE	    FC   BB	  F8   AB  28 000A9 	    MOVC3   LN_DSC, @LN_DSC+4, @TMP				      ; 1171
+		    08   AE	       53  D0 000B0 	    MOVL    R3, TMP						      ;
+		    E4   AB	FE8C   CB  9E 000B4 	    MOVAB   OMSG_BUF, OMSG_DSC+4				      ; 1172
+		         50	FE8C   CB  9E 000BA 	    MOVAB   OMSG_BUF, R0					      ; 1173
+      E0   AB	    08   AE	       50  A3 000BF 	    SUBW3   R0, TMP, OMSG_DSC					      ;
+				  08   AB  9F 000C5 	    PUSHAB  HND_DSC						      ; 1181
+				  10   AB  9F 000C8 	    PUSHAB  NICE_CHAN						      ;
+		  0000V  CF	       02  FB 000CB 	    CALLS   #2, LINK						      ;
+		         06	       50  E8 000D0 	    BLBS    R0, 5$						      ;
+		         56	       2A  CE 000D3 	    MNEGL   #42, DLE_STAT					      ; 1183
+				     00B1  31 000D6 4$:     BRW     9$							      ;
+		  0000V  CF	       00  FB 000D9 5$:     CALLS   #0, XMT_RCV						      ; 1185
+		         56	       50  D0 000DE 	    MOVL    R0, DLE_STAT					      ;
+		         F2	       56  E9 000E1 	    BLBC    DLE_STAT, 4$					      ;
+		    04   AE	  BD   AB  9A 000E4 	    MOVZBL  LID_REC+25, TMP					      ; 1197
+		    04   AE 00000041   8F  C0 000E9 	    ADDL2   #65, TMP						      ;
+		         59	  F0   AB  3C 000F1 	    MOVZWL  ASCLN_DSC, R9					      ; 1198
+		         57	       13  D0 000F5 	    MOVL    #19, R7						      ;
+		         58	  14   AE  9E 000F8 	    MOVAB   BUFFER, R8						      ;
+	   00	    F4   BB	       59  2C 000FC 	    MOVC5   R9, @ASCLN_DSC+4, #0, R7, (R8)			      ;
+		         68	       57     00101									      ;
+				       61  18 00103 	    BGEQ    6$							      ;
+		         58	       59  C0 00105 	    ADDL2   R9, R8						      ;
+		         57	       59  C2 00108 	    SUBL2   R9, R7						      ;
+	   00	    04   AE	       01  2C 0010B 	    MOVC5   #1, TMP, #0, R7, (R8)				      ;
+		         68	       57     00110									      ;
+				       52  18 00112 	    BGEQ    6$							      ;
+				       58  D6 00114 	    INCL    R8							      ;
+				       57  D7 00116 	    DECL    R7							      ;
+	   00	    BE   AB	       01  2C 00118 	    MOVC5   #1, LID_REC+26, #0, R7, (R8)			      ;
+		         68	       57     0011D									      ;
+				       45  18 0011F 	    BGEQ    6$							      ;
+				       58  D6 00121 	    INCL    R8							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 6-4
+; Digital Equipment Corporation
+;
+				       57  D7 00123 	    DECL    R7							      ;
+	   00	    BF   AB	       01  2C 00125 	    MOVC5   #1, LID_REC+27, #0, R7, (R8)			      ;
+		         68	       57     0012A									      ;
+				       38  18 0012C 	    BGEQ    6$							      ;
+				       58  D6 0012E 	    INCL    R8							      ;
+				       57  D7 00130 	    DECL    R7							      ;
+	   00	    C0   AB	       02  2C 00132 	    MOVC5   #2, LID_REC+28, #0, R7, (R8)			      ;
+		         68	       57     00137									      ;
+				       2B  18 00139 	    BGEQ    6$							      ;
+		         58	       02  C0 0013B 	    ADDL2   #2, R8						      ;
+		         57	       02  C2 0013E 	    SUBL2   #2, R7						      ;
+	   00	    C2   AB	       07  2C 00141 	    MOVC5   #7, LID_REC+30, #0, R7, (R8)			      ;
+		         68	       57     00146									      ;
+				       1C  18 00148 	    BGEQ    6$							      ;
+		         58	       07  C0 0014A 	    ADDL2   #7, R8						      ;
+		         57	       07  C2 0014D 	    SUBL2   #7, R7						      ;
+	   00	    C9   AB	       02  2C 00150 	    MOVC5   #2, LID_REC+37, #0, R7, (R8)			      ;
+		         68	       57     00155									      ;
+				       0D  18 00157 	    BGEQ    6$							      ;
+		         58	       02  C0 00159 	    ADDL2   #2, R8						      ;
+		         57	       02  C2 0015C 	    SUBL2   #2, R7						      ;
+	   00	    CB   AB	       01  2C 0015F 	    MOVC5   #1, LID_REC+39, #0, R7, (R8)			      ;
+		         68	       57     00164									      ;
+		    0C   AE	       13  B0 00166 6$:     MOVW    #19, TMP_DSC					      ; 1210
+		    10   AE	  14   AE  9E 0016A 	    MOVAB   BUFFER, TMP_DSC+4					      ; 1211
+				       7E  7C 0016F 	    CLRQ    -(SP)						      ; 1213
+				  14   AE  9F 00171 	    PUSHAB  TMP_DSC						      ;
+				  0C   AE  D4 00174 	    CLRL    12(SP)						      ;
+				  0C   AE  9F 00177 	    PUSHAB  12(SP)						      ;
+				       01  DD 0017A 	    PUSHL   #1							      ;
+		         6A	       05  FB 0017C 	    CALLS   #5, ACPQIO						      ;
+		         05	       50  E8 0017F 	    BLBS    R0, 8$						      ;
+		         56	       1E  CE 00182 7$:     MNEGL   #30, DLE_STAT					      ; 1215
+				       03  11 00185 	    BRB     9$							      ;
+		         56	       01  D0 00187 8$:     MOVL    #1, DLE_STAT					      ; 1218
+		         01	       56  D1 0018A 9$:     CMPL    DLE_STAT, #1					      ; 1226
+				       03  13 0018D 	    BEQL    10$							      ;
+		         56	       02  C6 0018F 	    DIVL2   #2, DLE_STAT					      ;
+				       56  DD 00192 10$:    PUSHL   DLE_STAT						      ; 1228
+		  0000V  CF	       01  FB 00194 	    CALLS   #1, TELL_OPERATOR					      ;
+				       50  D4 00199 	    CLRL    R0							      ; 1057
+					   04 0019B 	    RET     							      ;
+
+; Routine Size:  412 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 7
+; Digital Equipment Corporation
+;
+;	1230	ROUTINE  GET_LINE : =
+;	1231	
+;	1232	!++
+;	1233	! FUNCTIONAL DESCRIPTION:
+;	1234	!
+;	1235	!	Translates SYS$ERROR to obtain the linename.
+;	1236	!
+;	1237	! FORMAL PARAMETERS:
+;	1238	!
+;	1239	!	NONE
+;	1240	!
+;	1241	! IMPLICIT INPUTS:
+;	1242	!
+;	1243	!	SYS$ERROR	- Symbol to be translated to obtain the 
+;	1244	!			  linename.
+;	1245	!
+;	1246	! IMPLICIT OUTPUTS:
+;	1247	!
+;	1248	!	LN_DSC		- The descriptor of linename in Configuration
+;	1249	!			  Data Base format.
+;	1250	!	LN_BUF		- Buffer holding the linename described by LN_DSC.
+;	1251	!	ASCLN_DSC	- The descriptor of the linename in system format
+;	1252	!	ASCLN_BUF	- Buffer holding the linename described by ASCLN_DSC.
+;	1253	!			  (e.g., XMA0).
+;	1254	!	LID_REC		- Buffer containing the Configuration Data Base
+;	1255	!			  record for the line.
+;	1256	!
+;	1257	! ROUTINE VALUE:
+;	1258	! COMPLETION CODES:
+;	1259	!
+;	1260	!	NIC$_SUCCESS	if the linename was converted properly.
+;	1261	!	NIC$_ILL_LN_ID	otherwise.
+;	1262	!
+;	1263	!	One of routine GET_REC's error codes may be returned.
+;	1264	!
+;	1265	! SIDE EFFECTS:
+;	1266	!
+;	1267	!	NONE
+;	1268	!
+;	1269	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 8
+; Digital Equipment Corporation
+;
+;	1270	BEGIN
+;	1271	LOCAL	P ;
+;	1272	LOCAL	SYSERR_DSC : DSC ;
+;	1273	BIND	LINE = ASCLN_BUF	: BLOCK [4,BYTE] ;
+;	1274	
+;	1275		! the following table is arranged so that the zero based
+;	1276		! index into the table is exactly one-half of the NICE code
+;	1277		! for the corresponding entry.
+;	1278	
+;	1279	LITERAL	MAXLNTYPE = 30 ;
+;	1280	BIND	LINE_TYPES = UPLIT WORD ('XP',	! DP	0
+;	1281					 'XU',	! DU	2
+;	1282					 'XL',	! DL	4
+;	1283					 'XQ',	! DQ	6
+;	1284					 'XA',	! DA	8
+;	1285					 'XW',	! DUP	10
+;	1286					 'XM',	! DMC	12
+;	1287					 'XN',	! DN	14
+;	1288					 'X@',	! DLV	16
+;	1289					 'X@',	! KL	18
+;	1290					 'X@',	! DTE	20
+;	1291					 'X@',	! DV	22
+;	1292					 'X@',	! DZ	24
+;	1293					 'X@',	! ??	26
+;	1294					 'X@',	! KDP	28
+;	1295					 'X@'	! KDZ	30
+;	1296					)
+;	1297				: VECTOR [MAXLNTYPE/2 + 1, WORD] ;
+;	1298	
+;	1299	!+
+;	1300	! The name of the line has been equated to SYS$ERROR by the NETACP.
+;	1301	! Translate this name to its ascii format (e.g., XMA0).
+;	1302	!-
+;	1303	SYSERR_DSC [PTR] = UPLIT BYTE ('SYS$ERROR') ;
+;	1304	SYSERR_DSC [LNG] = 9 ;
+;	1305	ASCLN_DSC [PTR] = ASCLN_BUF ;			! Prepare descriptors of
+;	1306	ASCLN_DSC [LNG] = ASCLN_BUF_LNG ;		! buffers to receive the
+;	1307	LN_DSC [PTR] = LN_BUF ;				! line names.
+;	1308	LN_DSC [LNG] = LN_BUF_LNG ;
+;	1309	
+;	1310	IF NOT $TRNLOG(LOGNAM=SYSERR_DSC,RSLBUF=ASCLN_DSC,RSLLEN=ASCLN_DSC[LNG])
+;	1311	THEN
+;	1312	    RETURN (NIC$_ILL_LN_ID) ;
+;	1313	
+;	1314	!+
+;	1315	! Translate this ascii line name to its standard NICE long format.
+;	1316	!-
+;	1317	
+;	1318	P = CH$PTR (LN_BUF) ;			! create destination pointer
+;	1319	
+;	1320	  !+
+;	1321	  ! The following loop scans the 'LINE_TYPES' table in search of
+;	1322	  ! the appropiate line type.  If it is found, the line name is 
+;	1323	  ! converted to a type 1 format NICE line name and the routine
+;	1324	  ! exits with the value 'false'.  If the loop terminates normally,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 8-1
+; Digital Equipment Corporation
+;
+;	1325	  ! with the value 'true', then the line type is assumed illegal.
+;	1326	  !-
+;	1327	
+;	1328	IF (INCR I FROM 0 TO MAXLNTYPE/2
+;	1329	    DO 
+;	1330	      IF .LINE_TYPES [.I] EQL .LINE [0,0,16,0]
+;	1331	      THEN
+;	1332		BEGIN
+;	1333		CH$WCHAR_A (.I*2, P) ;		  ! Insert line device type.
+;	1334		CH$WCHAR_A			  ! Convert controller code to
+;	1335		  ((.LINE [2,0,8,0] - 'A'), P) ;  !  binary and insert it
+;	1336	
+;	1337		CH$WCHAR_A			  ! Convert line number to
+;	1338		  ((.LINE [3,0,8,0] - '0'), P) ;  !  binary and insert it
+;	1339	
+;	1340		CH$WCHAR_A (0, P) ;		  ! Insert line's multidrop
+;	1341						  !  station address.
+;	1342		LN_DSC[PTR] = LN_BUF ;		  ! Setup a descriptor of this
+;	1343		LN_DSC[LNG] = 4 ;		  ! NICE line name.
+;	1344	
+;	1345		EXITLOOP FALSE ;		  ! INDICATE SUCCESS AND
+;	1346						  ! EXITLOOP
+;	1347		END 
+;	1348	   )
+;	1349	THEN
+;	1350	    RETURN (NIC$_ILL_LN_ID)
+;	1351	ELSE
+;	1352	    RETURN (GET_REC (LID$C_FILE, LID_REC, LID_REC[LID$B_CODE],
+;	1353			     .LN_DSC[LNG], .LN_DSC[PTR])) ;
+;	1354	END ;
+
+
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00008 P.AAB:  .ASCII  \XP\						      ;
+					      0000A 	    .ASCII  \XU\						      ;
+					      0000C 	    .ASCII  \XL\						      ;
+					      0000E 	    .ASCII  \XQ\						      ;
+					      00010 	    .ASCII  \XA\						      ;
+					      00012 	    .ASCII  \XW\						      ;
+					      00014 	    .ASCII  \XM\						      ;
+					      00016 	    .ASCII  \XN\						      ;
+					      00018 	    .ASCII  \X@\						      ;
+					      0001A 	    .ASCII  \X@\						      ;
+					      0001C 	    .ASCII  \X@\						      ;
+					      0001E 	    .ASCII  \X@\						      ;
+					      00020 	    .ASCII  \X@\						      ;
+					      00022 	    .ASCII  \X@\						      ;
+					      00024 	    .ASCII  \X@\						      ;
+					      00026 	    .ASCII  \X@\						      ;
+					      00028 P.AAC:  .ASCII  \SYS$ERROR\						      ;
+					      00031	    .BLKB   3
+
+						    LINE=		ASCLN_BUF
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 8-2
+; Digital Equipment Corporation
+;
+						    LINE_TYPES=		P.AAB
+							    .GLOBL  SYS$TRNLOG
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0804 0019C GET_LINE:
+							    .WORD   Save R2,R11						      ; 1230
+		         5B	0000'  CF  9E 0019E 	    MOVAB   ASCLN_DSC, R11					      ;
+		         5E	       08  C2 001A3 	    SUBL2   #8, SP						      ;
+		    04   AE	0000'  CF  9E 001A6 	    MOVAB   P.AAC, SYSERR_DSC+4					      ; 1303
+		         6E	       09  B0 001AC 	    MOVW    #9, SYSERR_DSC					      ; 1304
+		    04   AB	FEDC   CB  9E 001AF 	    MOVAB   ASCLN_BUF, ASCLN_DSC+4				      ; 1305
+		         6B	       08  B0 001B5 	    MOVW    #8, ASCLN_DSC					      ; 1306
+		    0C   AB	FEE4   CB  9E 001B8 	    MOVAB   LN_BUF, LN_DSC+4					      ; 1307
+		    08   AB	       04  B0 001BE 	    MOVW    #4, LN_DSC						      ; 1308
+				       7E  7C 001C2 	    CLRQ    -(SP)						      ; 1310
+				       7E  D4 001C4 	    CLRL    -(SP)						      ;
+				       5B  DD 001C6 	    PUSHL   R11							      ;
+				       5B  DD 001C8 	    PUSHL   R11							      ;
+				  14   AE  9F 001CA 	    PUSHAB  SYSERR_DSC						      ;
+	      00000000G  9F	       06  FB 001CD 	    CALLS   #6, @#SYS$TRNLOG					      ;
+		         36	       50  E9 001D4 	    BLBC    R0, 3$						      ;
+		         51	FEE4   CB  9E 001D7 	    MOVAB   LN_BUF, P						      ; 1318
+				       50  D4 001DC 	    CLRL    I							      ; 1328
+		  FEDC   CB	0000'CF40  B1 001DE 1$:     CMPW    LINE_TYPES[I], LINE					      ; 1330
+				       21  12 001E6 	    BNEQ    2$							      ;
+	   61	         50	       01  78 001E8 	    ASHL    #1, I, (P)						      ; 1333
+				       51  D6 001EC 	    INCL    P							      ;
+	   81	  FEDE   CB	  BF   8F  81 001EE 	    ADDB3   #-65, LINE+2, (P)+					      ; 1335
+	   81	  FEDF   CB	       30  83 001F5 	    SUBB3   #48, LINE+3, (P)+					      ; 1338
+				       81  94 001FB 	    CLRB    (P)+						      ; 1340
+		    0C   AB	FEE4   CB  9E 001FD 	    MOVAB   LN_BUF, LN_DSC+4					      ; 1342
+		    08   AB	       04  B0 00203 	    MOVW    #4, LN_DSC						      ; 1343
+				       08  11 00207 	    BRB     4$							      ; 1230
+	   D1	         50	       0F  F3 00209 2$:     AOBLEQ  #15, I, 1$						      ; 1328
+		         50	       10  CE 0020D 3$:     MNEGL   #16, R0						      ; 1350
+					   04 00210 	    RET     							      ;
+				  0C   AB  DD 00211 4$:     PUSHL   LN_DSC+4						      ; 1352
+		         7E	  08   AB  3C 00214 	    MOVZWL  LN_DSC, -(SP)					      ;
+				  CC   AB  9F 00218 	    PUSHAB  LID_REC+24						      ;
+				  B4   AB  9F 0021B 	    PUSHAB  LID_REC						      ;
+				       02  DD 0021E 	    PUSHL   #2							      ;
+		  0000V  CF	       05  FB 00220 	    CALLS   #5, GET_REC						      ;
+					   04 00225 	    RET     							      ; 1230
+
+; Routine Size:  138 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 9
+; Digital Equipment Corporation
+;
+;	1355	ROUTINE LINK (CHAN_AD, NODE_DSC_AD) : =
+;	1356	
+;	1357	!++
+;	1358	! FUNCTIONAL DESCRIPTION:
+;	1359	!
+;	1360	!	Create a logical link to the NICE process.
+;	1361	!
+;	1362	! FORMAL PARAMETERS:
+;	1363	!
+;	1364	!	CHAN_AD		- The address of the word to receive the channel
+;	1365	!			  number.
+;	1366	!	NODE_DSC_AD	- The address of the quadword descriptor of the
+;	1367	!			  counted string naming the node on which the
+;	1368	!			  NICE object resides.
+;	1369	!
+;	1370	! IMPLICIT INPUTS:
+;	1371	!
+;	1372	!	NONE
+;	1373	!
+;	1374	! IMPLICIT OUTPUTS:
+;	1375	!
+;	1376	!	NONE
+;	1377	!
+;	1378	! COMPLETION CODES:
+;	1379	!
+;	1380	!	The return code from the $ASSIGN which creates the link.
+;	1381	!
+;	1382	! SIDE EFFECTS:
+;	1383	!
+;	1384	!	NONE
+;	1385	!
+;	1386	!--
+;	1387	
+;	1388	BEGIN
+;	1389	BIND	NODE = .NODE_DSC_AD  : DSC ;
+;	1390	LOCAL	J,
+;	1391		DEV     : DSC,
+;	1392		LOC_BUF : VECTOR [32,BYTE] ;
+;	1393	
+;	1394	!+
+;	1395	! Append the task name to the node name, avoiding the count byte
+;	1396	! in the node name counted string.
+;	1397	!-
+;	1398	
+;	1399	J = CH$MOVE  ((.NODE [LNG] - 1), CH$PTR (.NODE [PTR],1), LOC_BUF ) ;
+;	1400	J = CH$MOVE (9, CH$PTR (UPLIT BYTE('::"NICE="')), .J) ;
+;	1401	
+;	1402	DEV [PTR] = LOC_BUF ;				! SETUP THE
+;	1403	DEV [LNG] = CH$DIFF (.J, CH$PTR(LOC_BUF)) ;	! DESCRIPTOR
+;	1404	
+;	1405	RETURN ($ASSIGN (DEVNAM = DEV, CHAN = .CHAN_AD)) ;
+;	1406	END ;
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 9-1
+; Digital Equipment Corporation
+;
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00034 P.AAD:  .ASCII  \::"NICE="\						      ;
+					      0003D	    .BLKB   3
+
+
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 007C 00226 LINK:   .WORD   Save R2,R3,R4,R5,R6					      ; 1355
+		         5E	       28  C2 00228 	    SUBL2   #40, SP						      ;
+		         50	  08   AC  D0 0022B 	    MOVL    NODE_DSC_AD, R0					      ; 1388
+		         51	       60  3C 0022F 	    MOVZWL  (R0), R1						      ; 1399
+				       51  D7 00232 	    DECL    R1							      ;
+		         50	  04   A0  D0 00234 	    MOVL    4(R0), R0						      ;
+	   6E	    01   A0	       51  28 00238 	    MOVC3   R1, 1(R0), LOC_BUF					      ;
+		         56	       53  D0 0023D 	    MOVL    R3, J						      ;
+	   66	  0000'  CF	       09  28 00240 	    MOVC3   #9, P.AAD, (J)					      ; 1400
+		         56	       53  D0 00246 	    MOVL    R3, J						      ;
+		    24   AE	       6E  9E 00249 	    MOVAB   LOC_BUF, DEV+4					      ; 1402
+		         50	       6E  9E 0024D 	    MOVAB   LOC_BUF, R0						      ; 1403
+      20   AE	         56	       50  A3 00250 	    SUBW3   R0, J, DEV						      ;
+				       7E  7C 00255 	    CLRQ    -(SP)						      ; 1405
+				  04   AC  DD 00257 	    PUSHL   CHAN_AD						      ;
+				  2C   AE  9F 0025A 	    PUSHAB  DEV							      ;
+	      00000000G  9F	       04  FB 0025D 	    CALLS   #4, @#SYS$ASSIGN					      ;
+					   04 00264 	    RET     							      ; 1355
+
+; Routine Size:  63 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 10
+; Digital Equipment Corporation
+;
+;	1407	ROUTINE XMT_RCV : =
+;	1408	
+;	1409	!++
+;	1410	! FUNCTIONAL DESCRIPTION:
+;	1411	!
+;	1412	!	This routine sends the command message to the NICE object
+;	1413	!	and receives the reply.
+;	1414	!
+;	1415	! FORMAL PARAMETERS:
+;	1416	!
+;	1417	!	NONE
+;	1418	!
+;	1419	! IMPLICIT INPUTS:
+;	1420	!
+;	1421	!	OMSG_DSC	- The quadword descriptor of the message
+;	1422	!			  to be sent.
+;	1423	!	NICE_CHAN	- Contains the channel number over which the
+;	1424	!			  "NICE" dialogue is to occur.
+;	1425	!	IMSG_BUF_LNG	- Literal defining the length in bytes of
+;	1426	!			  IMSG_BUF.
+;	1427	! IMPLICIT OUTPUTS:
+;	1428	!
+;	1429	!	IMSG_DSC	- The quadword descriptor of the received
+;	1430	!			  reply message.
+;	1431	!	IMSG_BUF	- The buffer in which the received message
+;	1432	!			  is returned.
+;	1433	! COMPLETION CODES:
+;	1434	!
+;	1435	!	NIC$_RESRCERR	if one of the QIO request fails.
+;	1436	!	NIC$_NETCOMERR	if a QIO completion status indicates an error.
+;	1437	!	NIC$_ILLMSGFMT	if the received message is illformed.
+;	1438	!
+;	1439	!	Otherwise the first (and only) byte of the received message is
+;	1440	!	returned.  If this byte is not 'NIC$_SUCCESS' then double the
+;	1441	!	value of the first byte is returned since all error status are 
+;	1442	!	used internally as twice their protocol to allow for true/false
+;	1443	!	testing of the low bit.
+;	1444	!
+;	1445	! SIDE EFFECTS:
+;	1446	!
+;	1447	!	NONE
+;	1448	!--
+;	1449	
+;	1450	BEGIN
+;	1451	OWN	XMT_IOSB : IO_SB,
+;	1452		RCV_IOSB : IO_SB ;
+;	1453	LOCAL	STATUS	 : SIGNED ;
+;	1454	LABEL	ALPHA ;
+;	1455	
+;	1456	ALPHA :	BEGIN
+;	1457		IF  NOT  $QIOW (FUNC = IO$_WRITEVBLK,	! xmit the message
+;     P 1458				CHAN = .NICE_CHAN,
+;     P 1459				IOSB = XMT_IOSB,
+;     P 1460				P1   = .OMSG_DSC [PTR],
+;     P 1461				P2   = .OMSG_DSC [LNG]
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 10-1
+; Digital Equipment Corporation
+;
+;     P 1462			       )
+;	1463		THEN
+;	1464		    LEAVE ALPHA WITH STATUS = NIC$_RESRCERR ;	! QIO okay ?
+;	1465	
+;	1466		IF NOT .XMT_IOSB [IO_STAT]			! Xmit okay ?
+;	1467		THEN
+;	1468		    LEAVE ALPHA WITH STATUS = NIC$_NETCOMERR ;
+;	1469	
+;	1470	
+;	1471		!+
+;	1472		! Error condition if the QIO fails, the receive fails, or if
+;	1473		! the received message was other than a one byte message
+;	1474		! with the value of "1".
+;	1475		!-
+;	1476	
+;	1477		IF $QIOW (FUNC = IO$_READVBLK,		! receive reply
+;     P 1478			  CHAN = .NICE_CHAN,
+;     P 1479			  IOSB = RCV_IOSB,
+;     P 1480			  P1   = IMSG_BUF,
+;     P 1481		 	  P2   = IMSG_BUF_LNG
+;     P 1482		         )
+;	1483		THEN 
+;	1484		    IF .RCV_IOSB [IO_STAT]
+;	1485		    THEN
+;	1486			IF .RCV_IOSB [IO_CNT] EQL 1
+;	1487			THEN 
+;	1488			    !+
+;	1489			    ! The NICE message retruns the status in its first byte.
+;	1490			    ! If the status is an error indication, then store it
+;	1491			    ! as twice its normal protocol value.  This is the
+;	1492			    ! convention used internally to allow for true/false
+;	1493			    ! testing on the low order bit.
+;	1494			    !-
+;	1495			    IF  .IMSG_BUF [0,0,8,1] EQL NIC$_SUCCESS
+;	1496			    THEN
+;	1497				STATUS = .IMSG_BUF [0,0,8,1]
+;	1498			    ELSE
+;	1499				STATUS = .IMSG_BUF[0,0,8,1] * 2
+;	1500			ELSE
+;	1501			    STATUS = NIC$_ILLMSGFMT
+;	1502		    ELSE
+;	1503			STATUS = NIC$_NETCOMERR
+;	1504		ELSE
+;	1505		    STATUS = NIC$_RESRCERR ;
+;	1506		END ;
+;	1507	
+;	1508	RETURN (.STATUS) ;
+;	1509	END ;
+
+
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00000 XMT_IOSB:
+							    .BLKB   8
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 10-2
+; Digital Equipment Corporation
+;
+					      00008 RCV_IOSB:
+							    .BLKB   8
+
+							    .GLOBL  SYS$QIOW
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0E04 00265 XMT_RCV:.WORD   Save R2,R9,R10,R11					      ; 1407
+		         59 00000000G  9F  9E 00267 	    MOVAB   @#SYS$QIOW, R9					      ;
+		         5A	0000'  CF  9E 0026E 	    MOVAB   RCV_IOSB, R10					      ;
+		         5B	0000'  CF  9E 00273 	    MOVAB   IMSG_BUF, R11					      ;
+				       7E  7C 00278 	    CLRQ    -(SP)						      ; 1462
+				       7E  7C 0027A 	    CLRQ    -(SP)						      ;
+		         7E	0120   CB  3C 0027C 	    MOVZWL  OMSG_DSC, -(SP)					      ;
+				0124   CB  DD 00281 	    PUSHL   OMSG_DSC+4						      ;
+				       7E  7C 00285 	    CLRQ    -(SP)						      ;
+				  F8   AA  9F 00287 	    PUSHAB  XMT_IOSB						      ;
+				       30  DD 0028A 	    PUSHL   #48							      ;
+		         7E	0150   CB  3C 0028C 	    MOVZWL  NICE_CHAN, -(SP)					      ;
+				       7E  D4 00291 	    CLRL    -(SP)						      ;
+		         69	       0C  FB 00293 	    CALLS   #12, SYS$QIOW					      ;
+		         44	       50  E9 00296 	    BLBC    R0, 4$						      ;
+		         3B	  F8   AA  E9 00299 	    BLBC    XMT_IOSB, 3$					      ; 1466
+				       7E  7C 0029D 	    CLRQ    -(SP)						      ; 1482
+				       7E  7C 0029F 	    CLRQ    -(SP)						      ;
+				       0A  DD 002A1 	    PUSHL   #10							      ;
+				       5B  DD 002A3 	    PUSHL   R11							      ;
+				       7E  7C 002A5 	    CLRQ    -(SP)						      ;
+				       5A  DD 002A7 	    PUSHL   R10							      ;
+				       31  DD 002A9 	    PUSHL   #49							      ;
+		         7E	0150   CB  3C 002AB 	    MOVZWL  NICE_CHAN, -(SP)					      ;
+				       7E  D4 002B0 	    CLRL    -(SP)						      ;
+		         69	       0C  FB 002B2 	    CALLS   #12, SYS$QIOW					      ;
+		         25	       50  E9 002B5 	    BLBC    R0, 4$						      ;
+		         1D	       6A  E9 002B8 	    BLBC    RCV_IOSB, 3$					      ; 1484
+		         01	  02   AA  B1 002BB 	    CMPW    RCV_IOSB+2, #1					      ; 1486
+				       12  12 002BF 	    BNEQ    2$							      ;
+		         01	       6B  91 002C1 	    CMPB    IMSG_BUF, #1					      ; 1495
+				       05  12 002C4 	    BNEQ    1$							      ;
+		         52	       6B  98 002C6 	    CVTBL   IMSG_BUF, STATUS					      ; 1497
+				       15  11 002C9 	    BRB     5$							      ; 1495
+		         52	       6B  98 002CB 1$:     CVTBL   IMSG_BUF, STATUS					      ; 1499
+		         52	       02  C4 002CE 	    MULL2   #2, STATUS						      ;
+				       0D  11 002D1 	    BRB     5$							      ; 1486
+		         52	       04  CE 002D3 2$:     MNEGL   #4, STATUS						      ; 1501
+				       08  11 002D6 	    BRB     5$							      ; 1484
+		         52	       26  CE 002D8 3$:     MNEGL   #38, STATUS						      ; 1503
+				       03  11 002DB 	    BRB     5$							      ; 1477
+		         52	       1E  CE 002DD 4$:     MNEGL   #30, STATUS						      ; 1505
+		         50	       52  D0 002E0 5$:     MOVL    STATUS, R0						      ; 1508
+					   04 002E3 	    RET     							      ; 1407
+
+; Routine Size:  127 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 10-3
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11
+; Digital Equipment Corporation
+;
+;	1510	ROUTINE  TELL_OPERATOR (CODE) : NOVALUE =
+;	1511	
+;	1512	!++
+;	1513	! FUNCTIONAL DESCRIPTION:
+;	1514	!
+;	1515	!	This routine is called to print a message on the operator's 
+;	1516	!	console after the attempt to downline load a node.  The message
+;	1517	!	either notifies the operator that the attempt was successful, or
+;	1518	!	or it specifies the error causing the failure.
+;	1519	!
+;	1520	! FORMAL PARAMETERS:
+;	1521	!
+;	1522	!	CODE		- One of the standard internal NICE status codes.
+;	1523	!			  All codes are defined by the NICE protocol.
+;	1524	!
+;	1525	! IMPLICIT INPUTS:
+;	1526	!
+;	1527	!	ASCLN_DSC	- Descriptor of name of line over which failure
+;	1528	!			  occured.
+;	1529	!
+;	1530	! IMPLICIT OUTPUTS:
+;	1531	!
+;	1532	!	NONE
+;	1533	!
+;	1534	! ROUTINE VALUE:
+;	1535	! COMPLETION CODES:
+;	1536	!
+;	1537	!	NONE
+;	1538	!
+;	1539	! SIDE EFFECTS:
+;	1540	!
+;	1541	!	NONE
+;	1542	!--
+;	1543	
+;	1544	BEGIN
+;	1545	LITERAL	BUF_LNG = 130 ;
+;	1546	LOCAL	P,
+;	1547		STATUS : SIGNED,
+;	1548		BUF_DSC : DSC,
+;	1549		BUF	: BLOCK [BUF_LNG,BYTE] ;
+;	1550	
+;	1551	LITERAL	NUMBER_ERRORS = 19 ;	! The number of messages in the table
+;	1552	LITERAL ILL_MSG_FMT = 1 ;	! Index of 'ill msg fmt' error msg
+;	1553	
+;	1554	MACRO	CSTRING(A) = UPLIT BYTE(%CHARCOUNT(%STRING(A)), %STRING(A)) % ;
+;	1555	OWN
+;	1556	    ERROR_TBL : BLOCKVECTOR [NUMBER_ERRORS,2]
+;	1557		INITIAL (
+;	1558			 -1, CSTRING(' -NICE- invalid function or option'),
+;	1559			 -2, CSTRING(' -NICE- invalid message format'),
+;	1560			 -3, CSTRING(' -NICE- insufficient status'),
+;	1561			 -4, CSTRING(' -NICE- dialogue message out of order'),
+;	1562			 -5, CSTRING(' -NICE- NICE process program error'),
+;	1563			 -8, CSTRING(' -NICE- invalid line identification'),
+;	1564			 -9, CSTRING(' -NICE- line in wrong state'),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11-1
+; Digital Equipment Corporation
+;
+;	1565			-10, CSTRING(' -NICE- line communications error'),
+;	1566			-11, CSTRING(' -NICE- invalid node identification'),
+;	1567			-12, CSTRING(' -NICE- invalid server identification'),
+;	1568			-13, CSTRING(' -NICE- invalid file'),
+;	1569			-14, CSTRING(' -NICE- configuration database error'),
+;	1570			-15, CSTRING(' -NICE- resource error'),
+;	1571			-16, CSTRING(' -NICE- invalid parameter value'),
+;	1572			-17, CSTRING(' -NICE- line protocol error'),
+;	1573			-18, CSTRING(' -NICE- file i/o error'),
+;	1574			-19, CSTRING(' -NICE- network communications error'),
+;	1575			-20, CSTRING(' -NICE- no room for new entry'),
+;	1576			-21, CSTRING(' -NICE- remote NICE process not available')
+;	1577			);
+;	1578	
+;	1579	BIND
+;	1580	    ERROR_MSG	= CSTRING(': unsuccessfully downline loaded'),
+;	1581	    SUCCESS_MSG	= CSTRING(': successfully downline loaded'),
+;	1582	    PREAMBLE	= CSTRING('DECnet line ') ;
+;	1583	
+;	1584	P = CH$PTR (BUF) ;
+;	1585	
+;	1586	!+
+;	1587	! Begin building the message.  Insert the control bytes specifying the 
+;	1588	! type of OPC request and the operator to receive the message, followed
+;	1589	! by the common message preamble.  Append to this the ascii linename.
+;	1590	!-
+;	1591	CH$WCHAR_A (OPC$_RQ_RQST, P) ;
+;	1592	CH$WCHAR_A (OPC$M_NM_CENTRL, P) ;
+;	1593	P = CH$MOVE (.(PREAMBLE)<0,8,0>, PREAMBLE+1, .P) ;
+;	1594	P = CH$MOVE (.ASCLN_DSC [LNG], .ASCLN_DSC [PTR], .P) ;
+;	1595	
+;	1596	IF  .CODE EQL NIC$_SUCCESS
+;	1597	THEN
+;	1598	    !+
+;	1599	    ! Append the success suffix to the message
+;	1600	    !-
+;	1601	    P = CH$MOVE (.(SUCCESS_MSG)<0,8,0>, SUCCESS_MSG+1, .P)
+;	1602	ELSE
+;	1603	    !+
+;	1604	    ! Append the 'unsuccessful' suffix to the message followed by the
+;	1605	    ! reason for the failure.
+;	1606	    !-
+;	1607	    BEGIN
+;	1608	    LOCAL	I ;
+;	1609	    I = 0 ;
+;	1610	    P = CH$MOVE (.(ERROR_MSG)<0,8,0>, ERROR_MSG+1, .P) ;
+;	1611	    UNTIL  .ERROR_TBL [.I,0,0,32,0] EQL .CODE
+;	1612	    DO 
+;	1613		IF  (I = .I+1) EQL NUMBER_ERRORS	! If error code is illegal
+;	1614		THEN					! then the NICE message
+;	1615		    EXITLOOP (I = ILL_MSG_FMT) ;	! was illegal.
+;	1616	
+;	1617	    P = CH$MOVE (.(.ERROR_TBL[.I,1,0,32,0])<0,8,0>,
+;	1618			   .ERROR_TBL[.I,1,0,32,0]+1, .P) ;
+;	1619	    END ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11-2
+; Digital Equipment Corporation
+;
+;	1620	
+;	1621	!+
+;	1622	! Complete the message descriptor and send the message to the operator's
+;	1623	! console.
+;	1624	!-
+;	1625	BUF_DSC [PTR] = BUF ;	BUF_DSC [LNG] = .P - BUF ;
+;	1626	
+;	1627	$SNDOPR (MSGBUF = BUF_DSC) ;
+;	1628	END ;
+
+
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00040 P.AAE:  .BYTE   34							      ;
+					      00041 	    .ASCII  \ -NICE- invalid function or option\		      ;
+					      00063	    .BLKB   1
+					      00064 P.AAF:  .BYTE   30							      ;
+					      00065 	    .ASCII  \ -NICE- invalid message format\			      ;
+					      00083	    .BLKB   1
+					      00084 P.AAG:  .BYTE   27							      ;
+					      00085 	    .ASCII  \ -NICE- insufficient status\			      ;
+					      000A0 P.AAH:  .BYTE   37							      ;
+					      000A1 	    .ASCII  \ -NICE- dialogue message out of order\		      ;
+					      000C6	    .BLKB   2
+					      000C8 P.AAI:  .BYTE   34							      ;
+					      000C9 	    .ASCII  \ -NICE- NICE process program error\		      ;
+					      000EB	    .BLKB   1
+					      000EC P.AAJ:  .BYTE   35							      ;
+					      000ED 	    .ASCII  \ -NICE- invalid line identification\		      ;
+					      00110 P.AAK:  .BYTE   27							      ;
+					      00111 	    .ASCII  \ -NICE- line in wrong state\			      ;
+					      0012C P.AAL:  .BYTE   33							      ;
+					      0012D 	    .ASCII  \ -NICE- line communications error\			      ;
+					      0014E	    .BLKB   2
+					      00150 P.AAM:  .BYTE   35							      ;
+					      00151 	    .ASCII  \ -NICE- invalid node identification\		      ;
+					      00174 P.AAN:  .BYTE   37							      ;
+					      00175 	    .ASCII  \ -NICE- invalid server identification\		      ;
+					      0019A	    .BLKB   2
+					      0019C P.AAO:  .BYTE   20							      ;
+					      0019D 	    .ASCII  \ -NICE- invalid file\				      ;
+					      001B1	    .BLKB   3
+					      001B4 P.AAP:  .BYTE   36							      ;
+					      001B5 	    .ASCII  \ -NICE- configuration database error\		      ;
+					      001D9	    .BLKB   3
+					      001DC P.AAQ:  .BYTE   22							      ;
+					      001DD 	    .ASCII  \ -NICE- resource error\				      ;
+					      001F3	    .BLKB   1
+					      001F4 P.AAR:  .BYTE   31							      ;
+					      001F5 	    .ASCII  \ -NICE- invalid parameter value\			      ;
+					      00214 P.AAS:  .BYTE   27							      ;
+					      00215 	    .ASCII  \ -NICE- line protocol error\			      ;
+					      00230 P.AAT:  .BYTE   22							      ;
+					      00231 	    .ASCII  \ -NICE- file i/o error\				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11-3
+; Digital Equipment Corporation
+;
+					      00247	    .BLKB   1
+					      00248 P.AAU:  .BYTE   36							      ;
+					      00249 	    .ASCII  \ -NICE- network communications error\		      ;
+					      0026D	    .BLKB   3
+					      00270 P.AAV:  .BYTE   29							      ;
+					      00271 	    .ASCII  \ -NICE- no room for new entry\			      ;
+					      0028E	    .BLKB   2
+					      00290 P.AAW:  .BYTE   41							      ;
+					      00291 	    .ASCII  \ -NICE- remote NICE process not available\		      ;
+					      002BA	    .BLKB   2
+					      002BC P.AAX:  .BYTE   32							      ;
+					      002BD 	    .ASCII  \: unsuccessfully downline loaded\			      ;
+					      002DD	    .BLKB   3
+					      002E0 P.AAY:  .BYTE   30							      ;
+					      002E1 	    .ASCII  \: successfully downline loaded\			      ;
+					      002FF	    .BLKB   1
+					      00300 P.AAZ:  .BYTE   12							      ;
+					      00301 	    .ASCII  \DECnet line \					      ;
+					      0030D	    .BLKB   3
+
+							    .PSECT  $OWN$,NOEXE,2
+
+					      00010 ERROR_TBL:
+							    .LONG   -1							      ;
+					      00014 	    .ADDRESS  P.AAE						      ;
+					      00018 	    .LONG   -2							      ;
+					      0001C 	    .ADDRESS  P.AAF						      ;
+					      00020 	    .LONG   -3							      ;
+					      00024 	    .ADDRESS  P.AAG						      ;
+					      00028 	    .LONG   -4							      ;
+					      0002C 	    .ADDRESS  P.AAH						      ;
+					      00030 	    .LONG   -5							      ;
+					      00034 	    .ADDRESS  P.AAI						      ;
+					      00038 	    .LONG   -8							      ;
+					      0003C 	    .ADDRESS  P.AAJ						      ;
+					      00040 	    .LONG   -9							      ;
+					      00044 	    .ADDRESS  P.AAK						      ;
+					      00048 	    .LONG   -10							      ;
+					      0004C 	    .ADDRESS  P.AAL						      ;
+					      00050 	    .LONG   -11							      ;
+					      00054 	    .ADDRESS  P.AAM						      ;
+					      00058 	    .LONG   -12							      ;
+					      0005C 	    .ADDRESS  P.AAN						      ;
+					      00060 	    .LONG   -13							      ;
+					      00064 	    .ADDRESS  P.AAO						      ;
+					      00068 	    .LONG   -14							      ;
+					      0006C 	    .ADDRESS  P.AAP						      ;
+					      00070 	    .LONG   -15							      ;
+					      00074 	    .ADDRESS  P.AAQ						      ;
+					      00078 	    .LONG   -16							      ;
+					      0007C 	    .ADDRESS  P.AAR						      ;
+					      00080 	    .LONG   -17							      ;
+					      00084 	    .ADDRESS  P.AAS						      ;
+					      00088 	    .LONG   -18							      ;
+					      0008C 	    .ADDRESS  P.AAT						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11-4
+; Digital Equipment Corporation
+;
+					      00090 	    .LONG   -19							      ;
+					      00094 	    .ADDRESS  P.AAU						      ;
+					      00098 	    .LONG   -20							      ;
+					      0009C 	    .ADDRESS  P.AAV						      ;
+					      000A0 	    .LONG   -21							      ;
+					      000A4 	    .ADDRESS  P.AAW						      ;
+
+						    ERROR_MSG=		P.AAX
+						    SUCCESS_MSG=	P.AAY
+						    PREAMBLE=		P.AAZ
+							    .GLOBL  SYS$SNDOPR
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 08FC 002E4 TELL_OPERATOR:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R11				      ; 1510
+		         5B	0000'  CF  9E 002E6 	    MOVAB   PREAMBLE, R11					      ;
+		         5E	FF74   CE  9E 002EB 	    MOVAB   -140(SP), SP					      ;
+		         56	       6E  9E 002F0 	    MOVAB   BUF, P						      ; 1584
+		         86	0103   8F  B0 002F3 	    MOVW    #259, (P)+						      ; 1591
+		         50	       6B  9A 002F8 	    MOVZBL  PREAMBLE, R0					      ; 1593
+	   66	    01   AB	       50  28 002FB 	    MOVC3   R0, PREAMBLE+1, (P)					      ;
+		         56	       53  D0 00300 	    MOVL    R3, P						      ;
+	   66	  0000'  DF	0000'  CF  28 00303 	    MOVC3   ASCLN_DSC, @ASCLN_DSC+4, (P)			      ; 1594
+		         56	       53  D0 0030B 	    MOVL    R3, P						      ;
+		         01	  04   AC  D1 0030E 	    CMPL    CODE, #1						      ; 1596
+				       0B  12 00312 	    BNEQ    1$							      ;
+		         50	  E0   AB  9A 00314 	    MOVZBL  SUCCESS_MSG, R0					      ; 1601
+	   66	    E1   AB	       50  28 00318 	    MOVC3   R0, SUCCESS_MSG+1, (P)				      ;
+				       37  11 0031D 	    BRB     4$							      ;
+				       57  D4 0031F 1$:     CLRL    I							      ; 1609
+		         50	  BC   AB  9A 00321 	    MOVZBL  ERROR_MSG, R0					      ; 1610
+	   66	    BD   AB	       50  28 00325 	    MOVC3   R0, ERROR_MSG+1, (P)				      ;
+		         56	       53  D0 0032A 	    MOVL    R3, P						      ;
+	   50	         57	       01  78 0032D 2$:     ASHL    #1, I, R0						      ; 1611
+		    04   AC	0000'CF40  D1 00331 	    CMPL    ERROR_TBL[R0], CODE					      ;
+				       0A  13 00338 	    BEQL    3$							      ;
+				       57  D6 0033A 	    INCL    I							      ; 1613
+		         13	       57  D1 0033C 	    CMPL    I, #19						      ;
+				       EC  12 0033F 	    BNEQ    2$							      ;
+		         57	       01  D0 00341 	    MOVL    #1, I						      ; 1615
+	   50	         57	       01  78 00344 3$:     ASHL    #1, I, R0						      ; 1617
+		         50	0000'CF40  D0 00348 	    MOVL    ERROR_TBL+4[R0], R0					      ;
+		         51	       60  9A 0034E 	    MOVZBL  (R0), R1						      ;
+	   66	    01   A0	       51  28 00351 	    MOVC3   R1, 1(R0), (P)					      ;
+		         56	       53  D0 00356 4$:     MOVL    R3, P						      ;
+		    FC   AD	       6E  9E 00359 	    MOVAB   BUF, BUF_DSC+4					      ; 1625
+		         50	       6E  9E 0035D 	    MOVAB   BUF, R0						      ;
+      F8   AD	         56	       50  A3 00360 	    SUBW3   R0, P, BUF_DSC					      ;
+				       7E  D4 00365 	    CLRL    -(SP)						      ; 1627
+				  F8   AD  9F 00367 	    PUSHAB  BUF_DSC						      ;
+	      00000000G  9F	       02  FB 0036A 	    CALLS   #2, @#SYS$SNDOPR					      ;
+					   04 00371 	    RET     							      ; 1510
+
+; Routine Size:  142 bytes
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 11-5
+; Digital Equipment Corporation
+;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 12
+; Digital Equipment Corporation
+;
+;	1629	ROUTINE  GET_HOST : =
+;	1630	
+;	1631	!++
+;	1632	! FUNCTIONAL DESCRIPTION:
+;	1633	!
+;	1634	!	Get the name of the target node from the LID data base, then
+;	1635	!	use its node entry to get the target's RND record.   The RND 
+;	1636	!	record can be used to obtain the name of the host node.  A null
+;	1637	!	host name in this record indicates that the local node is to 
+;	1638	!	be used.
+;	1639	!
+;	1640	! FORMAL PARAMETERS:
+;	1641	!
+;	1642	!	NONE
+;	1643	!
+;	1644	! IMPLICIT INPUTS:
+;	1645	!
+;	1646	!	LN_DSC		- The descriptor of the line over which the
+;	1647	!			  downline load is to occur.  This linename is
+;	1648	!			  assumed to be in the standard NICE type 1
+;	1649	!			  format.
+;	1650	!	LND_DSC		- The descriptor of the counted string which is
+;	1651	!			  the name of the local node.
+;	1652	!	LID_REC		- A block containinh the LID record for the 
+;	1653	!			  LN_DSC line.
+;	1654	!
+;	1655	! IMPLICIT OUTPUTS:
+;	1656	!
+;	1657	!	RND_REC		- A block containing the RND record for the
+;	1658	!			  target node.
+;	1659	!	HND_DSC		- The descriptor of the counted string which is
+;	1660	!			  the name of the host node for the target node
+;	1661	!			  found at the other end of the line named by
+;	1662	!			  LN_DSC.
+;	1663	!
+;	1664	!	Note :	If either the contents of RND_REC or LND_DSC (or its
+;	1665	!		string) are subsequently changed, then the validity of 
+;	1666	!		HND_DSC cannot be quarenteed.
+;	1667	!
+;	1668	! ROUTINE VALUE:
+;	1669	! COMPLETION CODES:
+;	1670	!
+;	1671	!	NIC$_SUCCESS	if the routine was successful.
+;	1672	!	NIC$_DATBASERR	otherwize.
+;	1673	!
+;	1674	! SIDE EFFECTS:
+;	1675	!
+;	1676	!	NONE
+;	1677	!
+;	1678	!--
+;	1679	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 13
+; Digital Equipment Corporation
+;
+;	1680	BEGIN
+;	1681	!+
+;	1682	! Find the record for the target node and close the  file.  This record
+;	1683	! can not be found by seaching for a match between the string described
+;	1684	! by LN_DSC and the remote node record's RND$L_LINE field because the
+;	1685	! line specified in the remote node record is only found on the local
+;	1686	! node if the server for that node is the local node.  In other words,
+;	1687	! there may be more than one RND record with the same value in its
+;	1688	! RND$L_LINE field.
+;	1689	!-
+;	1690	
+;	1691	IF  GET_REC (RND$C_FILE, RND_REC, RND_REC[RND$B_NAME],
+;	1692		     .LID_REC[LID$B_NODE]+1, LID_REC[LID$B_NODE])
+;	1693	THEN
+;	1694		!+
+;	1695		! If there is a host node specified for the target then set up
+;	1696		! a descriptor to it, else set up a descriptor to the name of
+;	1697		! the local node -- which is the default.
+;	1698		!-
+;	1699		IF  .RND_REC[RND$B_HOST] NEQ 0
+;	1700		THEN
+;	1701		    BEGIN
+;	1702		    HND_DSC[LNG] = .RND_REC[RND$B_HOST] + 1 ;
+;	1703		    HND_DSC[PTR] =  RND_REC[RND$B_HOST] ;
+;	1704		    END
+;	1705		ELSE
+;	1706		    BEGIN
+;	1707		    HND_DSC[LNG] = .LND_DSC[LNG] ;
+;	1708		    HND_DSC[PTR] = .LND_DSC[PTR] ;
+;	1709		    END
+;	1710	ELSE
+;	1711	    RETURN (NIC$_DATBASERR) ;
+;	1712	
+;	1713	RETURN (NIC$_SUCCESS) ;
+;	1714	END ;
+
+
+
+
+
+					 0800 00372 GET_HOST:
+							    .WORD   Save R11						      ; 1629
+		         5B	0000'  CF  9E 00374 	    MOVAB   RND_REC+187, R11					      ;
+				  27   AB  9F 00379 	    PUSHAB  LID_REC+30						      ; 1692
+		         7E	  27   AB  9A 0037C 	    MOVZBL  LID_REC+30, -(SP)					      ;
+				       6E  D6 00380 	    INCL    (SP)						      ;
+				FF46   CB  9F 00382 	    PUSHAB  RND_REC+1						      ; 1691
+				FF45   CB  9F 00386 	    PUSHAB  RND_REC						      ;
+				       01  DD 0038A 	    PUSHL   #1							      ;
+		  0000V  CF	       05  FB 0038C 	    CALLS   #5, GET_REC						      ;
+		         1D	       50  E9 00391 	    BLBC    R0, 2$						      ;
+				       6B  95 00394 	    TSTB    RND_REC+187						      ; 1699
+				       0D  13 00396 	    BEQL    1$							      ;
+		    6D   AB	       6B  9B 00398 	    MOVZBW  RND_REC+187, HND_DSC				      ; 1702
+				  6D   AB  B6 0039C 	    INCW    HND_DSC						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 13-1
+; Digital Equipment Corporation
+;
+		    71   AB	       6B  9E 0039F 	    MOVAB   RND_REC+187, HND_DSC+4				      ; 1703
+				       10  11 003A3 	    BRB     3$							      ; 1699
+		    6D   AB	  65   AB  B0 003A5 1$:     MOVW    LND_DSC, HND_DSC					      ; 1707
+		    71   AB	  69   AB  D0 003AA 	    MOVL    LND_DSC+4, HND_DSC+4				      ; 1708
+				       04  11 003AF 	    BRB     3$							      ; 1691
+		         50	       1C  CE 003B1 2$:     MNEGL   #28, R0						      ; 1711
+					   04 003B4 	    RET     							      ;
+		         50	       01  D0 003B5 3$:     MOVL    #1, R0						      ; 1713
+					   04 003B8 	    RET     							      ; 1629
+
+; Routine Size:  71 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 14
+; Digital Equipment Corporation
+;
+;	1715	ROUTINE  ACPQIO (FUNCTION,PARAM_AD,P2_DSC_AD,P3_AD,P4_DSC_AD) : =
+;	1716	
+;	1717	!++
+;	1718	! FUNCTIONAL DESCRIPTION:
+;	1719	!
+;	1720	!	This routine is the interface to the NETACP.  It sets up the
+;	1721	!	network function block, and all other parameters necessary 
+;	1722	!	before issuing the acp control QIO.
+;	1723	!
+;	1724	! FORMAL PARAMETERS:
+;	1725	!
+;	1726	!	FUNCTION      -	The code to be used in the 'function' field of
+;	1727	!			the network function block.  It identifies the
+;	1728	!			particular control QIO being requested.
+;	1729	!	PARAM_AD      -	The address of the longword which contains the
+;	1730	!			value to be entered into the 'parameter' field of
+;	1731	!			the network function block.  This address also
+;	1732	!			receives whatever value is returned in this field
+;	1733	!			upon QIO completion.
+;	1734	!	P2_DSC_AD     -	The address of the descriptor used as the P2
+;	1735	!			parameter in the QIO call.
+;	1736	!	P3_AD	      -	The address of the word used as the P3 parameter
+;	1737	!			in the QIO call.
+;	1738	!	P4_DSC_AD     -	The address of the descriptor to be used as the
+;	1739	!			P4 parameter in the QIO call.
+;	1740	!
+;	1741	!	NOTE :	Any of the parameters above may be zero if it is not
+;	1742	!		necessary to the FUNCTION being requested.
+;	1743	!
+;	1744	! IMPLICIT INPUTS:
+;	1745	!
+;	1746	!	NONE
+;	1747	!
+;	1748	! IMPLICIT OUTPUTS:
+;	1749	!
+;	1750	!	NONE
+;	1751	!
+;	1752	! ROUTINE VALUE:
+;	1753	! COMPLETION CODES:
+;	1754	!
+;	1755	!	If the low bit of the routine value is set then the QIO was
+;	1756	!	successful.
+;	1757	!
+;	1758	! SIDE EFFECTS:
+;	1759	!
+;	1760	!	NONE
+;	1761	!
+;	1762	!--
+;	1763	
+;	1764	BEGIN
+;	1765		!+
+;	1766		! Bind to avoid access violations
+;	1767	
+;	1768	BIND	PARAM = (IF  .PARAM_AD NEQ 0  THEN .PARAM_AD  ELSE PARAM_AD) ;
+;	1769	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 14-1
+; Digital Equipment Corporation
+;
+;	1770	LOCAL	ACP_IOSB : IO_SB,		! I/O status block
+;	1771		FBLK_DSC : DSC,			! Descriptor of the QIO function 
+;	1772						! block
+;	1773		FBLK_BF	 : FBLK ;		! The network function block.
+;	1774	
+;	1775	!+
+;	1776	! Setup the function block and its descriptor.
+;	1777	!-
+;	1778	FBLK_DSC[PTR] = FBLK_BF ;
+;	1779	FBLK_DSC[LNG] = 5 ;
+;	1780	FBLK_BF[FCT] = .FUNCTION ;
+;	1781	FBLK_BF[PARM] = .PARAM ;
+;	1782	
+;	1783	!+
+;	1784	! Do the qio and return the parameter passed in the function block
+;	1785	! if we are successful.
+;	1786	!-
+;	1787	IF  $QIOW (FUNC = IO$_ACPCONTROL,
+;     P 1788		   CHAN = .ACP_CHAN,
+;     P 1789		   IOSB = ACP_IOSB,
+;     P 1790		   P1   = FBLK_DSC,
+;     P 1791		   P2   = .P2_DSC_AD,
+;     P 1792		   P3	= .P3_AD,
+;     P 1793		   P4   = .P4_DSC_AD
+;     P 1794		  )
+;	1795	THEN
+;	1796	    BEGIN
+;	1797	    PARAM = .FBLK_BF[PARM] ;
+;	1798	    RETURN (.ACP_IOSB[IO_STAT]) ;	! Return the QIO status.
+;	1799	    END
+;	1800	ELSE
+;	1801	    RETURN (FALSE) ;			! Return error indication
+;	1802	END ;
+
+
+
+
+
+					 0004 003B9 ACPQIO: .WORD   Save R2						      ; 1715
+		         5E	       18  C2 003BB 	    SUBL2   #24, SP						      ;
+				  08   AC  D5 003BE 	    TSTL    PARAM_AD						      ; 1768
+				       06  13 003C1 	    BEQL    1$							      ;
+		         52	  08   AC  D0 003C3 	    MOVL    PARAM_AD, R2					      ;
+				       07  11 003C7 	    BRB     2$							      ;
+		         50	  08   AC  9E 003C9 1$:     MOVAB   PARAM_AD, R0					      ;
+		         52	       50  D0 003CD 	    MOVL    R0, R2						      ;
+		    0C   AE	       6E  9E 003D0 2$:     MOVAB   FBLK_BF, FBLK_DSC+4					      ; 1778
+		    08   AE	       05  B0 003D4 	    MOVW    #5, FBLK_DSC					      ; 1779
+		         6E	  04   AC  90 003D8 	    MOVB    FUNCTION, FBLK_BF					      ; 1780
+		    01   AE	       62  D0 003DC 	    MOVL    (R2), FBLK_BF+1					      ; 1781
+				       7E  7C 003E0 	    CLRQ    -(SP)						      ; 1794
+		         7E	  10   AC  7D 003E2 	    MOVQ    P3_AD, -(SP)					      ;
+				  0C   AC  DD 003E6 	    PUSHL   P2_DSC_AD						      ;
+				  1C   AE  9F 003E9 	    PUSHAB  FBLK_DSC						      ;
+				       7E  7C 003EC 	    CLRQ    -(SP)						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 14-2
+; Digital Equipment Corporation
+;
+				  30   AE  9F 003EE 	    PUSHAB  ACP_IOSB						      ;
+				       38  DD 003F1 	    PUSHL   #56							      ;
+		         7E	0000'  CF  3C 003F3 	    MOVZWL  ACP_CHAN, -(SP)					      ;
+				       7E  D4 003F8 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       0C  FB 003FA 	    CALLS   #12, @#SYS$QIOW					      ;
+		         09	       50  E9 00401 	    BLBC    R0, 3$						      ;
+		         62	  01   AE  D0 00404 	    MOVL    FBLK_BF+1, (R2)					      ; 1797
+		         50	  10   AE  3C 00408 	    MOVZWL  ACP_IOSB, R0					      ; 1798
+					   04 0040C 	    RET     							      ;
+				       50  D4 0040D 3$:     CLRL    R0							      ; 1715
+					   04 0040F 	    RET     							      ;
+
+; Routine Size:  87 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 15
+; Digital Equipment Corporation
+;
+;	1803	ROUTINE  GET_REC (INDEX, BUFFER_AD, ADDRESS, KEY_LNG, KEY_PTR) : =
+;	1804	BEGIN
+;	1805	LOCAL	BF_DSC : DSC ;
+;	1806	LOCAL	STATUS : SIGNED ;
+;	1807	
+;	1808	BF_DSC[LNG] = (SELECT .INDEX OF
+;	1809			SET
+;	1810			[LID$C_FILE] : LID$C_SIZE ;
+;	1811			[RND$C_FILE] : RND$C_SIZE ;
+;	1812			[OTHERWISE]  : 0 ;
+;	1813			TES ) ;
+;	1814	BF_DSC[PTR] = .BUFFER_AD ;
+;	1815	
+;	1816	STATUS = NIC$_SUCCESS ;
+;	1817	IF  OPEN_FILE (.INDEX)
+;	1818	THEN
+;	1819	    IF MATCHKEY (BF_DSC,.KEY_LNG,.KEY_PTR,.ADDRESS)
+;	1820	    THEN
+;	1821		()
+;	1822	    ELSE
+;	1823		STATUS = NIC$_DATBASERR
+;	1824	ELSE
+;	1825	    STATUS = NIC$_DATBASERR ;
+;	1826	CLOSE_FILE (.INDEX) ;
+;	1827	RETURN (.STATUS) ;
+;	1828	END ;
+
+
+
+
+
+					 000C 00410 GET_REC:.WORD   Save R2,R3						      ; 1803
+		         5E	       08  C2 00412 	    SUBL2   #8, SP						      ;
+		         52	  04   AC  D0 00415 	    MOVL    INDEX, R2						      ; 1808
+		         50	       01  D0 00419 	    MOVL    #1, R0						      ;
+		         02	       52  D1 0041C 	    CMPL    R2, #2						      ;
+				       05  12 0041F 	    BNEQ    1$							      ;
+				       50  D4 00421 	    CLRL    R0							      ;
+		         51	       2A  D0 00423 	    MOVL    #42, R1						      ;
+		         01	       52  D1 00426 1$:     CMPL    R2, #1						      ;
+				       06  12 00429 	    BNEQ    2$							      ;
+				       50  D4 0042B 	    CLRL    R0							      ;
+		         51	  C3   8F  9A 0042D 	    MOVZBL  #195, R1						      ;
+		         02	       50  E9 00431 2$:     BLBC    R0, 3$						      ;
+				       51  D4 00434 	    CLRL    R1							      ;
+		         6E	       51  B0 00436 3$:     MOVW    R1, BF_DSC						      ;
+		    04   AE	  08   AC  D0 00439 	    MOVL    BUFFER_AD, BF_DSC+4					      ; 1814
+		         53	       01  D0 0043E 	    MOVL    #1, STATUS						      ; 1816
+				       52  DD 00441 	    PUSHL   R2							      ; 1817
+		  0000G  CF	       01  FB 00443 	    CALLS   #1, OPEN_FILE					      ;
+		         12	       50  E9 00448 	    BLBC    R0, 4$						      ;
+				  0C   AC  DD 0044B 	    PUSHL   ADDRESS						      ; 1819
+		         7E	  10   AC  7D 0044E 	    MOVQ    KEY_LNG, -(SP)					      ;
+				  0C   AE  9F 00452 	    PUSHAB  BF_DSC						      ;
+		  0000G  CF	       04  FB 00455 	    CALLS   #4, MATCHKEY					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 15-1
+; Digital Equipment Corporation
+;
+		         03	       50  E8 0045A 	    BLBS    R0, 5$						      ;
+		         53	       1C  CE 0045D 4$:     MNEGL   #28, STATUS						      ; 1825
+				       52  DD 00460 5$:     PUSHL   R2							      ; 1826
+		  0000G  CF	       01  FB 00462 	    CALLS   #1, CLOSE_FILE					      ;
+		         50	       53  D0 00467 	    MOVL    STATUS, R0						      ; 1827
+					   04 0046A 	    RET     							      ; 1803
+
+; Routine Size:  91 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 02:53:40	DBB3:[NICE.SRC]DLE.B32;35					Page 16
+; Digital Equipment Corporation
+;
+;	1829	END				!End of module
+;	1830	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	   444    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $PLIT$         	   784  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	  1131  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $OWN$          	   168    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         9         0       115
+
+
+
+
+
+; Size:		1131 code + 1396 data bytes
+; Run Time:	00:34.8
+; Elapsed Time:	01:03.1
+; Memory Used:	246 pages
+; Compilation Complete

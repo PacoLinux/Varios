@@ -1,0 +1,4304 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGENC ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000023') =
+;	0003	BEGIN
+;	0004	
+;	0005	!++
+;	0006	! Copyright (C) 1977
+;	0007	! Digital Equipment Corporation,  Maynard, Massachusetts  01754
+;	0008	!
+;	0009	! This software is furnished under a license for use only on  a
+;	0010	! single computer system and may be copied only with the inclu-
+;	0011	! sion of the above copyright notice.  This  software,  or  any
+;	0012	! other  copies  thereof, may not be provided or otherwise made
+;	0013	! available to any other person except for use on  such  system
+;	0014	! and  to  one who agrees to these license terms.  Title to and
+;	0015	! ownership of the software shall at all times remain in DEC.
+;	0016	!
+;	0017	! The information in this software is subject to change without
+;	0018	! notice and should not be construed as a commitment by Digital
+;	0019	! Equipment Corporation.
+;	0020	!
+;	0021	! DEC assumes no responsibility for the use or  reliability  of
+;	0022	! its software on equipment which is not supplied by DEC.
+;	0023	!
+;	0024	!--
+;	0025	
+;	0026	!++
+;	0027	! FACILITY:
+;	0028	!	VAX INSTRUCTION ENCODER.
+;	0029	!
+;	0030	! Version:	23
+;	0031	!
+;	0032	! History:
+;	0033	!	Author:
+;	0034	!		Kevin Pammett, April 1977: Version 01
+;	0035	!
+;	0036	!	Modified by:
+;	0037	!		Dale Roedger, 13 July 1978:	23
+;	0038	!
+;	0039	! Revision history:
+;	0040	!	02	06-05-77	CP	Remove literal tokens and put
+;	0041	!					them in MARTOK. Change SPACE to
+;	0042	!					ASC_SPACE. Change length of
+;	0043	!					instruction buffer from 132 to
+;	0044	!					NO_OF_INP_CHARS.
+;	0045	!	03	18-may-77	KGP	-Took out the EXTERN for DBG$OUT_OPCODE
+;	0046	!					 cause we wern't calling it and because
+;	0047	!					 the routine doesn't exist any more. 
+;	0048	!	04	20-may-77	KGP	-Changed all the diagnostic stuff
+;	0049	!					 so that it is like the rest of DEBUG.
+;	0050	!					-Also made GET_NEXT_TOKEN have only 2 parameters
+;	0051	!					 instead of 3.  The first one now is the
+;	0052	!					 address of a CS pointer so that we can
+;	0053	!					 both pick up and update this pointer via
+;	0054	!					 a single parameter.  This makes things
+;	0055	!					 clearer and saves passing 3 parameters.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					 Unfortunately, this saved only 20 bytes.
+;	0057	!	05	23-may-77	KGP	-I took out IS_REGISTER and inserted
+;	0058	!					 in-line code in two places within 
+;	0059	!					 GET_NEXT_TOKEN.  This saved 12 bytes.
+;	0060	!					-Simarily, I took out IS_DISPLACEMENT
+;	0061	!					 but only saved 48 bytes.
+;	0062	!	06	30-JUN-77	KGP	-Changed comments in GET_NEXT_TOKEN,
+;	0063	!					 code in ENC_OPERAND, and added the 
+;	0064	!					 routine, ASSUME_AT_PC to allow
+;	0065	!					 specification of just <number> for
+;	0066	!					 non-branch operands.
+;	0067	!	07	26-07-77	CP	Modify this module to use
+;	0068	!					the new dbg$get_token routine
+;	0069	!					that has string descriptors.
+;	0070	!	08	05-10-77	CP	Change calls to error_reprt to
+;	0071	!					SIGNALs.
+;	0072	!	09	27-20-77	CP	Before encoding an instruction
+;	0073	!					check for read access.
+;	0074	!	10	1-nov-77	KGP	-Fixed the bug which was that we
+;	0075	!					 'lost the sign bit' in things like
+;	0076	!					 movl #80000014,r0.  This meant changing
+;	0077	!					 a GTR 63 to GTRU 63 to discover if
+;	0078	!					 a LITERAL operand was short or long.
+;	0079	!	11	07-11-77	CP	Change a_longword to 4 and a_byte
+;	0080	!					to 1.
+;	0081	!	12	28-12-77	CP	Redefine grammar tokens.
+;	0082	!	13	04-JAN-78	DAR	Changed require file MARTOK.BEG to
+;	0083	!					COMTER.BEG and changed token names to
+;	0084	!					correspond.  Also added special
+;	0085	!					instruction tokens to VAXOPS.BEG.
+;	0086	!	14	07-apr-78	KGP	-Beefed up the error code differentiation
+;	0087	!					 so we don't just get NODECODE all the time
+;	0088	!	15	25-apr-78	KGP	-Slightly more clever error reporting
+;	0089	!					 in DBG$INS_ENCODE and ENC_OPERAND.
+;	0090	!	16	27-APR-78	DAR	Modified require and library directives
+;	0091	!					for the native build.
+;	0092	!	17	10-MAY-78	DAR	Added routines INS_GET_TOKEN, GET_OPERAND
+;	0093	!					and ADD_TO_OPER_STG to translate operand
+;	0094	!					expressions for ENC_OPERAND on instruction
+;	0095	!					input.
+;	0096	!	18	15-MAY-78	DAR	Fixed two problems in GET_OPERAND related
+;	0097	!					to the negation operator.
+;	0098	!	19	17-MAY-78	DAR	branch_token and literal_token were changed
+;	0099	!					to brch_token and lit_token so as not
+;	0100	!					to conflict with the grammar's tokens
+;	0101	!	20	22-may-78	KGP	-Upgrade to use new calling sequence
+;	0102	!					 for build_path
+;	0103	!	21	23-may-78	KGP	-Some build_path calls (evaluate) changed
+;	0104	!					 to call the new routine dbg$path_to_val
+;	0105	!	22	22-JUN-78	DAR	Fix to routine GET_OPERAND, in "digit_str_token"
+;	0106	!					state the current value was picked from
+;	0107	!					the wrong place if the operator is "negation".
+;	0108	!					Also SYMBOL_DESC[DSC$W_MAXLEN] was not
+;	0109	!					initialized.
+;	0110	!	23	13-JUL-78	DAR	Removed unnecessary signal of INVPATH
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!					from routine GET_OPERAND.
+;	0112	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 2
+; Digital Equipment Corporation
+;
+;	0113	! Table of contents:
+;	0114	!
+;	0115	FORWARD ROUTINE
+;	0116		DBG$INS_ENCODE,		! ENCODE AN INSTRUCTION.
+;	0117		GET_NEXT_TOKEN,		! Pick up the next token from the input stream.
+;	0118	
+;	0119		GET_OPCODE,		! Extract the opcode from instruction string.
+;	0120		ENC_OPERAND,		! Encode AN OPERAND REFERENCE.
+;	0121		ASSUME_AT_PC,		! Temporary 'look ahead' routine
+;	0122					!  to implement <operand> ::= <number>
+;	0123		INST_OUTPUT,		! Output bytes of instruction.
+;	0124		OPCODE_MATCH,		! LOOK UP AN OPCODE IN THE OPINFO TABLE.
+;	0125		GET_OPERAND,		! Translate an arbitrary expression to a form
+;	0126					! ENC_OPERAND understands.
+;	0127		INS_GET_TOKEN,		! Returns the next token in the input string.
+;	0128		ADD_TO_OPER_STG;	! Adds an ascii string to an existing string.
+;	0129	
+;	0130	!
+;	0131	! Require files:
+;	0132	!
+;	0133	%IF %VARIANT		! True for TEN.
+;     L 0134	%THEN
+;     U 0135	LIBRARY	'NEW:LIB.L32';
+;     U 0136	    
+;     U 0137	REQUIRE	'DBGPCT.REQ';
+;     U 0138	REQUIRE 'SYSLIT.REQ';
+;     U 0139	REQUIRE 'VXSMAC.REQ';
+;     U 0140	REQUIRE 'DBGMSG.REQ';
+;     U 0141	REQUIRE 'DBGRST.REQ';
+;     U 0142	REQUIRE 'DBGGEN.REQ';
+;     U 0143	REQUIRE 'COMTER.REQ';
+;     U 0144	REQUIRE 'VAXOPS.REQ';		! LITERALS AND MACROS RELATED TO OPCODES
+;     U 0145	REQUIRE 'SYSSER.REQ';		! Macros for diagnostic output.
+;     U 0146	%ELSE
+;	0147	LIBRARY	'SYS$LIBRARY:LIB.L32';
+;	0148	    
+;	0149	REQUIRE	'SRC$:DBGPCT.REQ';
+;	0161	REQUIRE 'SRC$:SYSLIT.REQ';
+;	0184	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0224	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0503	REQUIRE 'SRC$:DBGRST.REQ';
+;	1650	REQUIRE 'SRC$:DBGGEN.REQ';
+;	1900	REQUIRE 'SRC$:COMTER.REQ';
+;	1992	REQUIRE 'SRC$:VAXOPS.REQ';	! LITERALS AND MACROS RELATED TO OPCODES
+;	2180	REQUIRE 'SRC$:SYSSER.REQ';	! Macros for diagnostic output.
+;      R2183	SWITCHES LIST (SOURCE);
+;      R2184	
+;      R2185	EXTERNAL ROUTINE
+;      R2186		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2187	
+;      R2188	SWITCHES LIST (NOSOURCE);
+;	2233	%FI
+;	2234	
+;	2235	!
+;	2236	! EQUATED SYMBOLS:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 2-1
+; Digital Equipment Corporation
+;
+;	2237	!
+;	2238	LITERAL
+;	2239		DBG_ENC		= 0,	! Whether to produce debugging output or not.
+;	2240		dbg_enc1	= 0,	! ditto
+;	2241		dbg_enc2	= 0,	! ditto
+;	2242		DBG_ENC3	= 0,	! output for handling of literals.
+;	2243		dbg_enc_exp	= 0;	! prints input to and output from GET_OPERAND (expression reducer)
+;	2244	
+;	2245	LITERAL
+;	2246		MAX_REG		= 15,		! maximum number of registers - 1
+;	2247		MAX_BUF_SIZ	= 512,
+;	2248		OPR_FOUND	= 1,		! success return from GET_OPERAND
+;	2249		NO_MORE_OPR	= 0;		! "eol_token" found by GET_OPERAND
+;	2250	
+;	2251	EXTERNAL ROUTINE
+;	2252		DBG$CONV_R_50 : NOVALUE,
+;	2253		DBG$MAR_GET_LEX,		! Pick up next macro token
+;	2254		DBG$BUILD_PATH,			! Routine to build a path name
+;	2255		dbg$path_to_val,		! Evaluate a pathname
+;	2256		DBG$FAO_PUT : NOVALUE,		! FORMATTED ASCII OUTPUT.
+;	2257		DBG$OUT_PUT : NOVALUE,		! ACTUALLY WRITE OUT LINES TO TTY.
+;	2258		dbg$read_access,		! does a PROBER instruction
+;	2259		DBG$REG_MATCH;			! See if a char string is a reference
+;	2260						!   to a register.
+;	2261	
+;	2262	EXTERNAL
+;	2263		DBG$CP_OUT_STR : REF VECTOR[,BYTE],	! POINTS INTO OUTPUT STRING.
+;	2264		DBG$GB_MOD_PTR : REF VECTOR[,BYTE],
+;	2265		DBG$GB_OPINFO : BLOCKVECTOR[ MAXOPCODE, OPTSIZE, BYTE ],
+;	2266		DBG$GL_BUF_SIZ;				! DATA VECTOR THAT DESCRIBES OPCODES.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3
+; Digital Equipment Corporation
+;
+;	2267	GLOBAL ROUTINE DBG$INS_ENCODE( INST_CS, OUT_BYTE_STREAM, OUT_PC ) =
+;	2268	
+;	2269	!++
+;	2270	! 
+;	2271	! FUNCTIONAL DESCRIPTION:
+;	2272	!	THIS ROUTINE EXAMINES AN ASCII STREAM WHICH IT IS PASSED
+;	2273	!	A POINTER TO, AND TRIES TO COME UP WITH WHAT INSTRUCTION
+;	2274	!	BYTE STREAM THIS WOULD CORRESPOND TO.
+;	2275	!
+;	2276	! INPUTS:
+;	2277	!	INST_CS		- A POINTER TO THE COUNTED STRING WHICH
+;	2278	!			THE USER INPUT AS THE SUPPOSED INSTRUCTION.
+;	2279	!
+;	2280	!	OUT_BYTE_STREAM	- THE ADDRESS OF WHERE WE ARE TO STUFF THE
+;	2281	!			  COUNTED INSTRUCTION STREAM WE GENERATE.
+;	2282	!	OUT_PC		- The PC (memory address) where the instruction
+;	2283	!			  will eventually reside.  This is used only for
+;	2284	!			  PC-relative address calculations.
+;	2285	!
+;	2286	! IMPLICIT INPUTS:
+;	2287	!	DBG$GB_OPINFO	- DATA VECTOR WHICH CONTAINS THE INSTRUCTION
+;	2288	!			  MNEMONICS AND RELATED INFORMATION.
+;	2289	!
+;	2290	! OUTPUTS:
+;	2291	!	THE COUNTED INSTRUCTION (BYTE) STREAM IS STUFFED INTO THE BYTE 
+;	2292	!	VECTOR WHICH WE ARE PASSED A POINTER TO.
+;	2293	!
+;	2294	! IMPLICIT OUTPUTS:
+;	2295	!	NONE.
+;	2296	!
+;	2297	! ROUTINE VALUE:
+;	2298	!	TRUE, if the encoding went ok,
+;	2299	!	FALSE, if it didn't and if we didn't already produce
+;	2300	!	       a message (and an UNWIND) to this effect.
+;	2301	!
+;	2302	! SIDE EFFECTS:
+;	2303	!	In most cases an error message is produced and an
+;	2304	!	UNWIND is done if the encoding can not be done.
+;	2305	!--
+;	2306	
+;	2307		BEGIN
+;	2308		MAP
+;	2309			OUT_BYTE_STREAM : REF VECTOR[,BYTE],
+;	2310			INST_CS : REF VECTOR[,BYTE];
+;	2311	
+;	2312		LOCAL
+;	2313			opcode_name : ref vector[,byte],
+;	2314						! We make our own copy of the instruction
+;	2315						! string so we don't have to worry about
+;	2316						! overwriting parts of it.
+;	2317			INSTR_STRING : VECTOR[NO_OF_INP_CHARS,BYTE],
+;	2318			inst_stg_desc : BLOCK [8, BYTE],	! instruction string descriptor
+;	2319						! Pointer into the OPINFO table
+;	2320			OPINFO_PTR : REF BLOCK[ OPTSIZE, BYTE],
+;	2321	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3-1
+; Digital Equipment Corporation
+;
+;	2322						! This pointer contains the address
+;	2323						!  of where each successive byte of 
+;	2324						!  instruction is to be placed.
+;	2325						!  stuff into the instruction stream.
+;	2326			OUT_BYTE_PTR : REF VECTOR[,BYTE],
+;	2327			BRANCH_SIZE,
+;	2328			OPRNDS,			! Number of operands to expect.
+;	2329			OPRND_STG_DESC : BLOCK [12,BYTE], ! String descriptor for next operand
+;	2330			OPRND_BUF : VECTOR [CHS_PER_LEXEME,BYTE]; ! Buffer to hold processed expression.
+;	2331	
+;	2332		!++
+;	2333		! See whether the address passed can be read. If it cannot,
+;	2334		! a SIGNAL will be propagated and an unwind performed
+;	2335		! within the routine READ_ACCESS.
+;	2336		!--
+;	2337		dbg$read_access (inst_cs [0], 4);
+;	2338		dbg$read_access (inst_cs [0], .inst_cs [0] + 1);
+;	2339	
+;	2340		! Copy the instruction string into our own local area
+;	2341		! so that we don't have to worry about overwriting it.
+;	2342		! Then put a terminator at the end of it as this
+;	2343		! will make recognizing the EOS easier for the scanner.
+;	2344		! Also initialize the pointer to where we
+;	2345		! will stuff the instruction.
+;	2346	
+;	2347		CH$MOVE( .INST_CS[0] +1, INST_CS[0], INSTR_STRING );
+;	2348	
+;	2349		instr_string [.instr_string [0] + 1] = 0;
+;	2350		instr_string [0] = .instr_string [0] + 1;
+;	2351		inst_stg_desc [dsc$w_length] = .instr_string [0];
+;	2352		inst_stg_desc [dsc$a_pointer] = instr_string [1];
+;	2353	
+;	2354		OUT_BYTE_PTR = OUT_BYTE_STREAM[1];
+;	2355	
+;	2356	%IF DBG_ENC
+;     L 2357	%THEN
+;     U 2358		$fao_tt_out ( 'input stream is !AS', inst_stg_desc );
+;     U 2359	%FI
+;	2360	
+;	2361		! Extract the opcode mnemonic from the instruction string
+;	2362		! and encode the corresponding opcode into the output byte
+;	2363		! stream.  We pass the address of our local, OPINFO_PTR,
+;	2364		! so that GET_OPCODE can initialize this for us.  This
+;	2365		! is done in this way because it is GET_OPCODE who
+;	2366		! looks up the opcode (and hence finds the OPINFO record
+;	2367		! we need), but it is here that we need the other OPINFO
+;	2368		! information.
+;	2369	
+;	2370		opcode_name = GET_OPCODE( inst_stg_desc, .OUT_BYTE_PTR, OPINFO_PTR);
+;	2371	
+;	2372		! GET_OPCODE does not return if the opcode is invalid.
+;	2373		! By now, then, it has stuffed the opcode into the instruction 
+;	2374		! stream - we only update the pointer so that further code will
+;	2375		! go into successive bytes.
+;	2376	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3-2
+; Digital Equipment Corporation
+;
+;	2377		OUT_BYTE_PTR = .OUT_BYTE_PTR + 1;
+;	2378		OUT_PC = .OUT_PC +1;
+;	2379	
+;	2380		! The instruction-stream counted-string pointer now
+;	2381		!  points to the beginning of the operand reference
+;	2382		!  string, if there is one.  This must be the 
+;	2383		!  case unless this opcode has no operands.
+;	2384	
+;	2385		OPRNDS = .OPINFO_PTR [ OP_NUMOPS ];
+;	2386	
+;	2387	%IF DBG_ENC
+;     L 2388	%THEN
+;     U 2389		$fao_tt_out( 'Expect !SL Operands.', .oprnds);
+;     U 2390	%FI
+;	2391	
+;	2392		INCR I FROM 1 TO .OPRNDS	! Loop extracting each operand reference
+;	2393			DO
+;	2394			BEGIN
+;	2395	%IF DBG_ENC OR DBG_ENC_EXP
+;     L 2396	%THEN
+;     U 2397			$fao_tt_out( 'Operand string before GET_OPERAND !AS', inst_stg_desc);
+;     U 2398	%FI
+;	2399			!+
+;	2400			! Decide what type of branching we will allow the
+;	2401			! following routine to use, if any.  We do this here
+;	2402			! because we have the OPINFO information and may as
+;	2403			! well sort it out here.  For the same reason
+;	2404			! we pass the PC-relative context information
+;	2405			! as well.  Start by assuming the usual case.
+;	2406			!-
+;	2407	
+;	2408			BRANCH_SIZE = NO_BR;
+;	2409			IF( .I EQL .OPRNDS )
+;	2410			THEN
+;	2411				!+
+;	2412				! Branching can only be considered for the last
+;	2413				! operand of an instruction which has less than
+;	2414				! the maximum number of operands.  This assumption
+;	2415				! was made in constructing the data structure (OPINFO)
+;	2416				! from which the instruction encoding and decoding works.
+;	2417				! The table is generated in DBGINS.B32.
+;	2418				!-
+;	2419	
+;	2420				IF( .I LSS MAXOPRNDS )
+;	2421				THEN
+;	2422					BRANCH_SIZE = .OPINFO_PTR[ OP_BR_TYPE ];
+;	2423	
+;	2424			!+
+;	2425			! This routine preprocesses each operand, evaluating the
+;	2426			! expressions and symbols, and returns in, OPRND_BUF, an operand
+;	2427			! that ENC_OPERAND can translate.
+;	2428			!-
+;	2429			OPRND_STG_DESC[DSC$W_LENGTH] = 0;		! Initial length is zero
+;	2430			OPRND_STG_DESC[DSC$A_POINTER] = OPRND_BUF;	! Address of buffer
+;	2431			OPRND_STG_DESC[DSC$W_MAXLEN] = CHS_PER_LEXEME;	! Length of buffer
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3-3
+; Digital Equipment Corporation
+;
+;	2432			IF (GET_OPERAND (INST_STG_DESC, OPRND_STG_DESC))
+;	2433			THEN						! Successful processing.
+;	2434			    BEGIN
+;	2435			    !+
+;	2436			    ! Extract and encode one operand reference.  Normally,
+;	2437			    ! if this fails, a message is produced in ENC_OPERAND,
+;	2438			    ! and an UNWIND is done.  In some cases, however,
+;	2439			    ! a return of FALSE is done and we produce the message.
+;	2440			    !-
+;	2441	%IF DBG_ENC OR DBG_ENC_EXP
+;     L 2442	%THEN
+;     U 2443			    $fao_tt_out ('Input to ENC_OPERAND !AS', OPRND_STG_DESC);
+;     U 2444	%FI
+;	2445			    IF ( NOT ENC_OPERAND ( OPRND_STG_DESC, OUT_BYTE_PTR,
+;	2446				    1 ^ .OPINFO_PTR [OP_CONTEXT(.I)],
+;	2447				    .BRANCH_SIZE, OUT_PC ) )
+;	2448			    THEN				! Encoding failed
+;	2449				SIGNAL (DBG$_NUMOPRNDS, 2, .opcode_name, .oprnds); ! No return
+;	2450	
+;	2451	%IF DBG_ENC
+;     L 2452	%THEN
+;     U 2453			    $fao_tt_out ('ENC_OPERAND returns !SW :!AS',
+;     U 2454					 .oprnd_stg_desc[dsc$w_length], oprnd_stg_desc);
+;     U 2455	%FI
+;	2456	
+;	2457			    IF (.OPRND_STG_DESC[DSC$W_LENGTH] NEQ 0)
+;	2458			    THEN
+;	2459				SIGNAL (DBG$_NODELIMTR);	! No return
+;	2460	
+;	2461			    END
+;	2462			ELSE
+;	2463			    BEGIN
+;	2464	%IF DBG_ENC
+;     L 2465	%THEN
+;     U 2466			    $fao_tt_out ('EOL found loop count is !SL', .I);
+;     U 2467	%FI
+;	2468			    !+
+;	2469			    ! End of line returned, insufficient operands.
+;	2470			    !-
+;	2471			    SIGNAL (DBG$_NUMOPRNDS, 2, .opcode_name, .oprnds); ! no return
+;	2472			    EXITLOOP;
+;	2473			    END;
+;	2474	
+;	2475			END;					! End of INCR loop
+;	2476	
+;	2477	%IF DBG_ENC
+;     L 2478	%THEN
+;     U 2479		$fao_tt_out ('DBG$INS_ENCODE returning !SW :!AS',
+;     U 2480				.inst_stg_desc[dsc$w_length], inst_stg_desc );
+;     U 2481	%FI
+;	2482		!+
+;	2483		! Calculate the number of bytes we stuffed into
+;	2484		! the 'instruction' stream and copy this value
+;	2485		! into the 0th byte of the output vector.  This
+;	2486		! makes it now a counted byte stream.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3-4
+; Digital Equipment Corporation
+;
+;	2487		!-
+;	2488		OUT_BYTE_STREAM[0] = .OUT_BYTE_PTR - OUT_BYTE_STREAM[1];
+;	2489	
+;	2490		RETURN(TRUE);
+;	2491	END;
+
+
+							    .TITLE  DBGENC
+							    .IDENT  \000023\
+
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$CONV_R_50, DBG$MAR_GET_LEX
+							    .GLOBL  DBG$BUILD_PATH, DBG$PATH_TO_VAL, DBG$FAO_PUT, DBG$OUT_PUT
+							    .GLOBL  DBG$READ_ACCESS, DBG$REG_MATCH, DBG$CP_OUT_STR
+							    .GLOBL  DBG$GB_MOD_PTR, DBG$GB_OPINFO, DBG$GL_BUF_SIZ
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0CFC 00000 	    .ENTRY  DBG$INS_ENCODE, Save R2,R3,R4,R5,R6,R7,R10,R11	      ; 2267
+		         5A 00000000G  EF  9E 00002 	    MOVAB   DBG$READ_ACCESS, R10				      ;
+		         5B 00000000G  00  9E 00009 	    MOVAB   LIB$SIGNAL, R11					      ;
+		         5E	FF48   CE  9E 00010 	    MOVAB   -184(SP), SP					      ;
+				       04  DD 00015 	    PUSHL   #4							      ; 2337
+		         52	  04   AC  D0 00017 	    MOVL    INST_CS, R2						      ;
+				       52  DD 0001B 	    PUSHL   R2							      ;
+		         6A	       02  FB 0001D 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         7E	       62  9A 00020 	    MOVZBL  (R2), -(SP)						      ; 2338
+				       6E  D6 00023 	    INCL    (SP)						      ;
+				       52  DD 00025 	    PUSHL   R2							      ;
+		         6A	       02  FB 00027 	    CALLS   #2, DBG$READ_ACCESS					      ;
+		         50	       62  9A 0002A 	    MOVZBL  (R2), R0						      ; 2347
+				       50  D6 0002D 	    INCL    R0							      ;
+      34   AE	         62	       50  28 0002F 	    MOVC3   R0, (R2), INSTR_STRING				      ;
+		         50	  34   AE  9E 00034 	    MOVAB   INSTR_STRING, R0					      ; 2349
+		         51	  34   AE  9A 00038 	    MOVZBL  INSTR_STRING, R1					      ;
+		         50	       51  C0 0003C 	    ADDL2   R1, R0						      ;
+				  01   A0  94 0003F 	    CLRB    1(R0)						      ;
+				  34   AE  96 00042 	    INCB    INSTR_STRING					      ; 2350
+		    2C   AE	  34   AE  9B 00045 	    MOVZBW  INSTR_STRING, INST_STG_DESC				      ; 2351
+		    30   AE	  35   AE  9E 0004A 	    MOVAB   INSTR_STRING+1, INST_STG_DESC+4			      ; 2352
+	   57	    08   AC	       01  C1 0004F 	    ADDL3   #1, OUT_BYTE_STREAM, R7				      ; 2354
+		         6E	       57  D0 00054 	    MOVL    R7, OUT_BYTE_PTR					      ;
+				  04   AE  9F 00057 	    PUSHAB  OPINFO_PTR						      ; 2370
+				  04   AE  DD 0005A 	    PUSHL   OUT_BYTE_PTR					      ;
+				  34   AE  9F 0005D 	    PUSHAB  INST_STG_DESC					      ;
+		  0000V  CF	       03  FB 00060 	    CALLS   #3, GET_OPCODE					      ;
+		         55	       50  D0 00065 	    MOVL    R0, OPCODE_NAME					      ;
+				       6E  D6 00068 	    INCL    OUT_BYTE_PTR					      ; 2377
+				  0C   AC  D6 0006A 	    INCL    OUT_PC						      ; 2378
+		         52	  04   AE  D0 0006D 	    MOVL    OPINFO_PTR, R2					      ; 2385
+      04   A2	         04	       00  EE 00071 	    EXTV    #0, #4, 4(R2), OPRNDS				      ;
+				       54     00076									      ;
+				       53  D4 00077 	    CLRL    I							      ; 2392
+				       6D  11 00079 	    BRB     4$							      ;
+				       56  D4 0007B 1$:     CLRL    BRANCH_SIZE						      ; 2408
+		         54	       53  D1 0007D 	    CMPL    I, OPRNDS						      ; 2409
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 3-5
+; Digital Equipment Corporation
+;
+				       0B  12 00080 	    BNEQ    2$							      ;
+		         06	       53  D1 00082 	    CMPL    I, #6						      ; 2420
+				       06  18 00085 	    BGEQ    2$							      ;
+      05   A2	         02	       06  EF 00087 	    EXTZV   #6, #2, 5(R2), BRANCH_SIZE				      ; 2422
+				       56     0008C									      ;
+				  20   AE  B4 0008D 2$:     CLRW    OPRND_STG_DESC					      ; 2429
+		    24   AE	  08   AE  9E 00090 	    MOVAB   OPRND_BUF, OPRND_STG_DESC+4				      ; 2430
+		    28   AE	       18  B0 00095 	    MOVW    #24, OPRND_STG_DESC+8				      ; 2431
+				  20   AE  9F 00099 	    PUSHAB  OPRND_STG_DESC					      ; 2432
+				  30   AE  9F 0009C 	    PUSHAB  INST_STG_DESC					      ;
+		  0000V  CF	       02  FB 0009F 	    CALLS   #2, GET_OPERAND					      ;
+		         43	       50  E9 000A4 	    BLBC    R0, 5$						      ;
+				  0C   AC  9F 000A7 	    PUSHAB  OUT_PC						      ; 2445
+				       56  DD 000AA 	    PUSHL   BRANCH_SIZE						      ;
+	   50	         53	       01  78 000AC 	    ASHL    #1, I, R0						      ; 2446
+		         50	       02  C0 000B0 	    ADDL2   #2, R0						      ;
+      04   A2	         02	       50  EF 000B3 	    EXTZV   R0, #2, 4(R2), R1					      ;
+				       51     000B8									      ;
+	   7E	         01	       51  78 000B9 	    ASHL    R1, #1, -(SP)					      ;
+				  0C   AE  9F 000BD 	    PUSHAB  OUT_BYTE_PTR					      ; 2445
+				  30   AE  9F 000C0 	    PUSHAB  OPRND_STG_DESC					      ;
+		  0000V  CF	       05  FB 000C3 	    CALLS   #5, ENC_OPERAND					      ;
+		         0F	       50  E8 000C8 	    BLBS    R0, 3$						      ;
+				       54  DD 000CB 	    PUSHL   OPRNDS						      ; 2449
+				       55  DD 000CD 	    PUSHL   OPCODE_NAME						      ;
+				       02  DD 000CF 	    PUSHL   #2							      ;
+			    000282A8   8F  DD 000D1 	    PUSHL   #164520						      ;
+		         6B	       04  FB 000D7 	    CALLS   #4, LIB$SIGNAL					      ;
+				  20   AE  B5 000DA 3$:     TSTW    OPRND_STG_DESC					      ; 2457
+				       1C  13 000DD 	    BEQL    6$							      ;
+			    000282A0   8F  DD 000DF 	    PUSHL   #164512						      ; 2459
+		         6B	       01  FB 000E5 	    CALLS   #1, LIB$SIGNAL					      ;
+				       11  11 000E8 4$:     BRB     6$							      ; 2432
+				       54  DD 000EA 5$:     PUSHL   OPRNDS						      ; 2471
+				       55  DD 000EC 	    PUSHL   OPCODE_NAME						      ;
+				       02  DD 000EE 	    PUSHL   #2							      ;
+			    000282A8   8F  DD 000F0 	    PUSHL   #164520						      ;
+		         6B	       04  FB 000F6 	    CALLS   #4, LIB$SIGNAL					      ;
+				       06  11 000F9 	    BRB     7$							      ; 2472
+	   53	         01	       54  F1 000FB 6$:     ACBL    OPRNDS, #1, I, 1$					      ; 2392
+				     FF7A     000FF									      ;
+      08   BC	         6E	       57  83 00101 7$:     SUBB3   R7, OUT_BYTE_PTR, @OUT_BYTE_STREAM			      ; 2488
+		         50	       01  D0 00106 	    MOVL    #1, R0						      ; 2490
+					   04 00109 	    RET     							      ; 2267
+
+; Routine Size:  266 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4
+; Digital Equipment Corporation
+;
+;	2492	ROUTINE GET_NEXT_TOKEN ( inst_stg_desc, LEX_BUFFER ) =
+;	2493	
+;	2494	!++
+;	2495	! Functional Description:
+;	2496	!	Scan the input stream and extract the next token
+;	2497	!	from it.  This routine is similar to the one that
+;	2498	!	the parser uses - it is just that this one does
+;	2499	!	a little more for us, and it a little more selective
+;	2500	!	about what it accepts.
+;	2501	!
+;	2502	! Formal Parameters:
+;	2503	!	INST_STG_DESC	-Contains the address of the current instruction
+;	2504	!			 string descriptor.  This string descriptor is
+;	2505	!			 updated by this routine.
+;	2506	!	LEX_BUFFER	-A pointer to where we can pass back a value
+;	2507	!			 which is associated with whatever token we
+;	2508	!			 discover.  If this value is 0, we don't
+;	2509	!			 try to pass back anything.
+;	2510	!
+;	2511	! Implicit Inputs:
+;	2512	!	DBG$GL_MOD_PTR	- is used by the radix convert routine
+;	2513	!			  to convert numeric input.
+;	2514	! Implicit Outputs:
+;	2515	!	Via LEX_BUFFER, we pass back:
+;	2516	!			-a counted byte stream in LEX_BUFFER if the token
+;	2517	!			 is LONG_VAL_TOKEN, WORD_VAL_TOKEN, LIT_TOKEN,
+;	2518	!			 or BYTE_VAL_TOKEN.  Even though only <count> bytes
+;	2519	!			 of this value are valid as far as operand size is
+;	2520	!			 concerned, the value is written out as a (sign-extended)
+;	2521	!			 longword so that we can do arithmetic on it and worry
+;	2522	!			 about the size only when we want to extract it again.
+;	2523	!			-a REGister number in a 1-byte field of LEX_BUFFER
+;	2524	!			 for REGISTER_TOKEN, INDEXING_TOKEN, or AT_REG_TOKEN.
+;	2525	!			-A 5-byte sequence for BRCH_TOKEN.  The first byte
+;	2526	!			 of this is 1 => PC-relative type, or 0 => absolute
+;	2527	!			 type.  The remaining 4 bytes are the
+;	2528	!			 longword representation of the branch operand.
+;	2529	!
+;	2530	! Return Value:
+;	2531	!	The literal that stands for the token type we have
+;	2532	!	extracted.  This is either one of those mentioned
+;	2533	!	above, or it is BAD_TOKEN.
+;	2534	!--
+;	2535		BEGIN
+;	2536		MAP
+;	2537			inst_stg_desc : REF BLOCK [, BYTE],
+;	2538			LEX_BUFFER : REF VECTOR[,BYTE];
+;	2539	
+;	2540		LOCAL
+;	2541			lex_stg_desc : BLOCK [12, BYTE],	! lexeme string descriptor
+;	2542			TOKEN_BUFFER : VECTOR[ CHS_PER_LEXEME+1, BYTE ],
+;	2543			GARBAGE : VECTOR[ CHS_PER_LEXEME, BYTE ],
+;	2544			INST_CS : REF VECTOR[,BYTE],
+;	2545			REG_NUM,
+;	2546			MODE,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-1
+; Digital Equipment Corporation
+;
+;	2547			RETURN_PTR,
+;	2548			TOKEN_TYPE : BYTE;		! The returned value.
+;	2549	
+;	2550		MACRO
+;	2551			PASS_BACK( BYTES, VALUE )	! Used to pass back the indicated
+;	2552							!   number of bytes, if requested.
+;	2553	
+;	2554				=
+;     M 2555				(.RETURN_PTR)<0,BYTES*BITS_PER_BYTE> = VALUE %;
+;	2556	
+;	2557		! If some value is extracted that corresponds to
+;	2558		! the token we extract, this value is returned via the
+;	2559		! pointer, LEX_BUFFER.  If, however, this value is 0,
+;	2560		! then the caller does not want such information.  To avoid
+;	2561		! having to check this several times, then, we use the
+;	2562		! local pointer, RETURN_PTR, to point either to where the
+;	2563		! user wants the value, or to some 'don't care' location.
+;	2564	
+;	2565		IF( (RETURN_PTR = .LEX_BUFFER) EQL 0 )
+;	2566		THEN
+;	2567			RETURN_PTR = GARBAGE;
+;	2568	
+;	2569		! Pick up the current instruction counted-string pointer.
+;	2570	
+;	2571		lex_stg_desc [dsc$w_length] = 0;
+;	2572		lex_stg_desc [dsc$a_pointer] = token_buffer;
+;	2573		lex_stg_desc [dsc$w_maxlen] = chs_per_lexeme + 1;
+;	2574	
+;	2575		! Extract the next token and take the appropriate action.
+;	2576		TOKEN_TYPE = INS_GET_TOKEN ( .inst_stg_desc, lex_stg_desc );
+;	2577	
+;	2578	%IF dbg_enc2
+;     L 2579	%THEN
+;     U 2580		$fao_tt_out ('token is !SB', .token_type);
+;     U 2581	%FI
+;	2582	
+;	2583		TOKEN_TYPE = ( SELECTONE .TOKEN_TYPE OF
+;	2584	
+;	2585			SET
+;	2586			[HASH_TOKEN]:	! '#'
+;	2587	
+;	2588				! Extract the literal and pass it back.
+;	2589	
+;	2590				IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc ) NEQ DIGIT_STR_TOKEN )
+;	2591				THEN
+;	2592					BEGIN
+;	2593	
+;	2594	%IF dbg_enc1
+;     L 2595	%THEN
+;     U 2596					$fao_tt_out ('after "#" expect number token');
+;     U 2597	%FI
+;	2598	
+;	2599					BAD_TOKEN
+;	2600					END
+;	2601				ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-2
+; Digital Equipment Corporation
+;
+;	2602					BEGIN
+;	2603	%IF DBG_ENC3
+;     L 2604	%THEN
+;     U 2605					$FAO_TT_OUT('literal !XL passed back',
+;     U 2606					 .(.lex_stg_desc[dsc$a_pointer]));
+;     U 2607	%FI
+;	2608					PASS_BACK ( LONG_LENGTH, .(.lex_stg_desc [dsc$a_pointer]) );
+;	2609					LIT_TOKEN
+;	2610					END;
+;	2611	
+;	2612			[AT_SIGN_TOKEN,	! '@', For @#const, @(reg), and @displ(reg)
+;	2613			 PLUS_TOKEN,	! '+', for (reg)+
+;	2614			 MINUS_TOKEN,	! '-', For -(sp) Etc.
+;	2615			 COMMA_TOKEN,	! ',', For arg1, arg2, Etc.
+;	2616			 EOL_TOKEN ]:	!  LF, Terminates the command line.
+;	2617	
+;	2618				! Just return the token type directly.
+;	2619	
+;	2620				.TOKEN_TYPE;
+;	2621	
+;	2622	
+;	2623			[DIGIT_STR_TOKEN,	! For branch operands where we interpret
+;	2624						! the operand as an absolute address.
+;	2625	
+;	2626			 PERIOD_TOKEN]:		! We also handle operands of the
+;	2627						! form '.' <sign> <number>, where
+;	2628						! <sign> must be '+' or '-'.
+;	2629	
+;	2630				BEGIN
+;	2631				LOCAL
+;	2632					BR_FLAG,NUMBER;
+;	2633	
+;	2634				! In this case we build a token string
+;	2635				! consisting of a flag byte followed by
+;	2636				! the branch operand in a longword.
+;	2637				! Assume PC-relative type branching.
+;	2638	
+;	2639				BR_FLAG = 1;
+;	2640	
+;	2641				! Handling the more-difficult
+;	2642				! syntax requires more work.
+;	2643	
+;	2644				IF( .TOKEN_TYPE EQL PERIOD_TOKEN )
+;	2645				THEN
+;	2646					BEGIN
+;	2647	
+;	2648					BR_FLAG = 0;
+;	2649	
+;	2650					TOKEN_TYPE = INS_GET_TOKEN (.inst_stg_desc, lex_stg_desc );
+;	2651					TOKEN_BUFFER[0] = 
+;	2652						(
+;	2653						IF (.TOKEN_TYPE EQL PLUS_TOKEN )
+;	2654						THEN
+;	2655							%C'+'
+;	2656						ELSE IF ( .TOKEN_TYPE EQL MINUS_TOKEN )
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-3
+; Digital Equipment Corporation
+;
+;	2657						     THEN
+;	2658							%C'-'
+;	2659						     ELSE
+;	2660							BEGIN
+;	2661	%IF dbg_enc1
+;     L 2662	%THEN
+;     U 2663							$fao_tt_out ('after "." need "+" or "-"');
+;     U 2664	%FI
+;	2665	
+;	2666							RETURN( BAD_TOKEN )
+;	2667							END
+;	2668						);
+;	2669	
+;	2670					! After the <sign> we expect <number>.
+;	2671	
+;	2672					lex_stg_desc [dsc$a_pointer] = token_buffer [1];
+;	2673					IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc ) NEQ DIGIT_STR_TOKEN )
+;	2674					THEN
+;	2675						BEGIN
+;	2676	
+;	2677	%IF dbg_enc1
+;     L 2678	%THEN
+;     U 2679						$fao_tt_out ('after ".+" or ".-" need number');
+;     U 2680	%FI
+;	2681	
+;	2682						RETURN( BAD_TOKEN );
+;	2683						END;
+;	2684					END;
+;	2685	
+;	2686				! Pass back the flag and operand.
+;	2687	
+;	2688				number = .(.lex_stg_desc [dsc$a_pointer]);
+;	2689				IF .token_buffer [0] EQL %C'-'
+;	2690				THEN number = - .number;
+;	2691	
+;	2692				PASS_BACK( BYTE_LENGTH, .BR_FLAG );
+;	2693				RETURN_PTR = .RETURN_PTR + BYTE_LENGTH;
+;	2694				PASS_BACK( LONG_LENGTH, .number );
+;	2695	
+;	2696				! PASS BACK THE TOKEN TYPE.
+;	2697	
+;	2698				BRCH_TOKEN
+;	2699				END;
+;	2700	
+;	2701			[ALPHA_STR_TOKEN]: ! For now, this must be a register reference,
+;	2702					! or a displacement indicator ("B", "W", or "L").
+;	2703	
+;	2704				BEGIN
+;	2705	
+;	2706				LOCAL
+;	2707					lexeme_ptr,
+;	2708					char : byte;
+;	2709	
+;	2710	%IF dbg_enc2
+;     L 2711	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-4
+; Digital Equipment Corporation
+;
+;     U 2712				$fao_tt_out ('name is !AS', lex_stg_desc);
+;     U 2713	%FI
+;	2714	
+;	2715				lexeme_ptr = ch$ptr (.lex_stg_desc [dsc$a_pointer]);
+;	2716				char = ch$rchar (.lexeme_ptr);
+;	2717	
+;	2718				IF( (REG_NUM = DBG$REG_MATCH( lex_stg_desc )) GEQ 0 )
+;	2719				THEN
+;	2720					BEGIN
+;	2721					! Pass back the number of this register.
+;	2722	
+;	2723	%IF dbg_enc2
+;     L 2724	%THEN
+;     U 2725					$fao_tt_out ('register number !SL', .reg_num);
+;     U 2726	%FI
+;	2727	
+;	2728					PASS_BACK( BYTE_LENGTH, .REG_NUM );
+;	2729	
+;	2730					IF( .REG_NUM LEQ MAX_REG )
+;	2731					THEN
+;	2732						REGISTER_TOKEN
+;	2733					ELSE
+;	2734						BEGIN
+;	2735	
+;	2736	%IF dbg_enc1
+;     L 2737	%THEN
+;     U 2738						$fao_tt_out ('bad register name');
+;     U 2739	%FI
+;	2740	
+;	2741						BAD_TOKEN
+;	2742						END
+;	2743					END
+;	2744				ELSE IF( .lex_stg_desc [dsc$w_length] NEQ 1 )
+;	2745				THEN
+;	2746					! The string must be only 1 character long.
+;	2747					BEGIN
+;	2748	
+;	2749	%IF dbg_enc1
+;     L 2750	%THEN
+;     U 2751					$fao_tt_out ('displacement size indicator too long');
+;     U 2752	%FI
+;	2753	
+;	2754					BAD_TOKEN
+;	2755					END
+;	2756				ELSE IF (.char NEQ %C'B') AND (.char NEQ %C'W') AND (.char NEQ %C'L')
+;	2757				THEN
+;	2758					! The string must be one of the valid displacement
+;	2759					! characters only.
+;	2760					BEGIN
+;	2761	
+;	2762	%IF dbg_enc1
+;     L 2763	%THEN
+;     U 2764					$fao_tt_out ('do not recognize symbol names yet');
+;     U 2765	%FI
+;	2766					BAD_TOKEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-5
+; Digital Equipment Corporation
+;
+;	2767					END
+;	2768	
+;	2769				! <Size> must be followed by '^' to produce <size indicator>.
+;	2770	
+;	2771				ELSE IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc ) NEQ UP_ARROW_TOKEN )
+;	2772				THEN
+;	2773					BEGIN
+;	2774	
+;	2775	%IF dbg_enc1
+;     L 2776	%THEN
+;     U 2777					$fao_tt_out ('after displacement indicator need up arrow');
+;     U 2778	%FI
+;	2779	
+;	2780					BAD_TOKEN
+;	2781					END
+;	2782				ELSE
+;	2783					! Extract the following number and pass it back.
+;	2784					! \This is where we would like to switch grammars
+;	2785					!  to take advantage of what DEBUG already
+;	2786					!  knows about expression evaluation\.
+;	2787	
+;	2788					BEGIN
+;	2789					IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc ) NEQ DIGIT_STR_TOKEN )
+;	2790					THEN
+;	2791						! The following token must be <number>.
+;	2792						BEGIN
+;	2793	
+;	2794	%IF dbg_enc1
+;     L 2795	%THEN
+;     U 2796						$fao_tt_out ('after "^" need number');
+;     U 2797	%FI
+;	2798	
+;	2799						BAD_TOKEN
+;	2800						END
+;	2801					ELSE
+;	2802						BEGIN
+;	2803	
+;	2804						! See what displacement mode was requested.
+;	2805	
+;	2806						MODE = 0;
+;	2807	
+;	2808						IF( .CHAR EQL %C'B' )
+;	2809						THEN
+;	2810							MODE = BYTE_LENGTH;
+;	2811	
+;	2812						IF( .CHAR EQL %C'W' )
+;	2813						THEN
+;	2814							MODE = WORD_LENGTH;
+;	2815	
+;	2816						IF( .CHAR EQL %C'L' )
+;	2817						THEN
+;	2818							MODE = LONG_LENGTH;
+;	2819	
+;	2820						IF( .MODE EQL 0 )
+;	2821						THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-6
+; Digital Equipment Corporation
+;
+;	2822							RETURN(BAD_TOKEN);
+;	2823	
+;	2824						! Pass back the number as a counted
+;	2825						! byte stream.  The <number> part of it
+;	2826						! is passed back as a sign-extended
+;	2827						! longword so that we can look at it 
+;	2828						! as a longword if we like.
+;	2829	
+;	2830						PASS_BACK( BYTE_LENGTH, .MODE );
+;	2831						RETURN_PTR = .RETURN_PTR + BYTE_LENGTH;
+;	2832						PASS_BACK( LONG_LENGTH, .(.lex_stg_desc [dsc$a_pointer]) );
+;	2833	
+;	2834						! Pass back the token type.
+;	2835	
+;	2836						VAL_TOKEN + .MODE
+;	2837						END
+;	2838					END
+;	2839				END;
+;	2840	
+;	2841			[OP_PAREN_TOKEN,	! ( reg ), ETC.
+;	2842			 LSQUARE_TOKEN]:	! [ reg ], for INDEXing mode.
+;	2843	
+;	2844				! This case looks for an 'at register' reference
+;	2845				! or an indexing mode indicator.  The reason
+;	2846				! why they are lumped together is simply due
+;	2847				! their similarity.  The two tokens are in no
+;	2848				! other way related.
+;	2849				! The REGister number is passed back in the 1st
+;	2850				! byte of LEX_BUFFER.
+;	2851	
+;	2852				IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc ) NEQ ALPHA_STR_TOKEN )
+;	2853				THEN
+;	2854					BEGIN
+;	2855	
+;	2856	%IF dbg_enc1
+;     L 2857	%THEN
+;     U 2858					$fao_tt_out ('parentheses or brackets must enclose register name');
+;     U 2859	%FI
+;	2860	
+;	2861					BAD_TOKEN
+;	2862					END
+;	2863				ELSE
+;	2864				IF( (REG_NUM = DBG$REG_MATCH( lex_stg_desc )) LSS 0 )
+;	2865				THEN
+;	2866					BEGIN
+;	2867	
+;	2868	%IF dbg_enc1
+;     L 2869	%THEN
+;     U 2870					$fao_tt_out ('invalid register name');
+;     U 2871	%FI
+;	2872	
+;	2873					BAD_TOKEN
+;	2874					END
+;	2875				ELSE
+;	2876					! Make sure that the register is not PSL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-7
+; Digital Equipment Corporation
+;
+;	2877	
+;	2878					IF( .REG_NUM GTR MAX_REG )
+;	2879					THEN
+;	2880						BEGIN
+;	2881	
+;	2882	%IF dbg_enc1
+;     L 2883	%THEN
+;     U 2884						$fao_tt_out ('cannot specify "PSL"');
+;     U 2885	%FI
+;	2886	
+;	2887						BAD_TOKEN
+;	2888						END
+;	2889					ELSE
+;	2890						BEGIN
+;	2891						! Now we must get the closing parenthesis
+;	2892						! or square bracket, and we give up unless
+;	2893						! we get it.
+;	2894		
+;	2895						IF( INS_GET_TOKEN( .inst_stg_desc, lex_stg_desc )
+;	2896						    NEQ ( IF( .TOKEN_TYPE EQL OP_PAREN_TOKEN )
+;	2897								THEN
+;	2898									CL_PAREN_TOKEN
+;	2899								ELSE
+;	2900									RSQUARE_TOKEN
+;	2901						        )
+;	2902						  )
+;	2903						THEN
+;	2904							BEGIN
+;	2905	
+;	2906	%IF dbg_enc1
+;     L 2907	%THEN
+;     U 2908							$fao_tt_out ('no closing parenthesis or bracket');
+;     U 2909	%FI
+;	2910	
+;	2911							BAD_TOKEN
+;	2912							END
+;	2913						ELSE
+;	2914							BEGIN
+;	2915		
+;	2916							! We got what we wanted!  Now all that	
+;	2917							!  remains is to pass back the register
+;	2918							!  number and token type.
+;	2919		
+;	2920							PASS_BACK( BYTE_LENGTH, .REG_NUM );
+;	2921		
+;	2922							IF( .TOKEN_TYPE EQL OP_PAREN_TOKEN )
+;	2923							THEN
+;	2924								AT_REG_TOKEN
+;	2925							ELSE
+;	2926								! You can't index off the PC
+;	2927		
+;	2928								IF( .REG_NUM EQL PC_REG )
+;	2929								THEN
+;	2930									BEGIN
+;	2931	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-8
+; Digital Equipment Corporation
+;
+;	2932	%IF dbg_enc1
+;     L 2933	%THEN
+;     U 2934									$fao_tt_out ('cannot index off PC');
+;     U 2935	%FI
+;	2936	
+;	2937									BAD_TOKEN
+;	2938									END
+;	2939								ELSE
+;	2940									INDEXING_TOKEN
+;	2941							END
+;	2942						END;
+;	2943		
+;	2944	
+;	2945			[OTHERWISE]:		! ERROR.
+;	2946	
+;	2947				! We don't recognize this token.
+;	2948				! Cause termination of the encoding.
+;	2949	
+;	2950				BEGIN
+;	2951	
+;	2952	%IF dbg_enc1
+;     L 2953	%THEN
+;     U 2954				$fao_tt_out ('unrecognized token');
+;     U 2955	%FI
+;	2956	
+;	2957				BAD_TOKEN
+;	2958				END;
+;	2959	
+;	2960			TES);
+;	2961	
+;	2962		! Update the counted string pointer which is being
+;	2963		! maintained elsewhere.
+;	2964	
+;	2965		! The returned value is whatever was arrived at
+;	2966		! in the above CASE statement.
+;	2967	
+;	2968		RETURN( .TOKEN_TYPE );
+;	2969		END;
+
+
+
+
+
+					 0CFC 0010A GET_NEXT_TOKEN:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R10,R11			      ; 2492
+		         5A 00000000G  EF  9E 0010C 	    MOVAB   DBG$REG_MATCH, R10					      ;
+		         5B	0000V  CF  9E 00113 	    MOVAB   INS_GET_TOKEN, R11					      ;
+		         5E	  C0   AE  9E 00118 	    MOVAB   -64(SP), SP						      ;
+		         55	  08   AC  D0 0011C 	    MOVL    LEX_BUFFER, RETURN_PTR				      ; 2565
+				       03  12 00120 	    BNEQ    1$							      ;
+		         55	       6E  9E 00122 	    MOVAB   GARBAGE, RETURN_PTR					      ; 2567
+				  34   AE  B4 00125 1$:     CLRW    LEX_STG_DESC					      ; 2571
+		    38   AE	  18   AE  9E 00128 	    MOVAB   TOKEN_BUFFER, LEX_STG_DESC+4			      ; 2572
+		    3C   AE	       19  B0 0012D 	    MOVW    #25, LEX_STG_DESC+8					      ; 2573
+				  34   AE  9F 00131 	    PUSHAB  LEX_STG_DESC					      ; 2576
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-9
+; Digital Equipment Corporation
+;
+		         56	  04   AC  D0 00134 	    MOVL    INST_STG_DESC, R6					      ;
+				       56  DD 00138 	    PUSHL   R6							      ;
+		         6B	       02  FB 0013A 	    CALLS   #2, INS_GET_TOKEN					      ;
+		         52	       50  90 0013D 	    MOVB    R0, TOKEN_TYPE					      ;
+		         57	       01  CE 00140 	    MNEGL   #1, R7						      ; 2583
+		    44   8F	       52  91 00143 	    CMPB    TOKEN_TYPE, #68					      ;
+				       1F  12 00147 	    BNEQ    3$							      ;
+				  34   AE  9F 00149 	    PUSHAB  LEX_STG_DESC					      ; 2590
+				       56  DD 0014C 	    PUSHL   R6							      ;
+		         6B	       02  FB 0014E 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      0000004B   8F	       50  D1 00151 	    CMPL    R0, #75						      ;
+				       03  13 00158 	    BEQL    2$							      ;
+				     018E  31 0015A 	    BRW     32$							      ;
+		         65	  38   BE  D0 0015D 2$:     MOVL    @LEX_STG_DESC+4, (RETURN_PTR)			      ; 2608
+		         50	  F8   8F  9A 00161 	    MOVZBL  #248, R0						      ; 2590
+				     018D  31 00165 	    BRW     34$							      ; 2583
+		         3D	       52  91 00168 3$:     CMPB    TOKEN_TYPE, #61					      ;
+				       18  13 0016B 	    BEQL    4$							      ;
+		    41   8F	       52  91 0016D 	    CMPB    TOKEN_TYPE, #65					      ;
+				       12  13 00171 	    BEQL    4$							      ;
+		    48   8F	       52  91 00173 	    CMPB    TOKEN_TYPE, #72					      ;
+				       0C  13 00177 	    BEQL    4$							      ;
+		    4F   8F	       52  91 00179 	    CMPB    TOKEN_TYPE, #79					      ;
+				       06  13 0017D 	    BEQL    4$							      ;
+		    63   8F	       52  91 0017F 	    CMPB    TOKEN_TYPE, #99					      ;
+				       05  12 00183 	    BNEQ    5$							      ;
+		         57	       52  9A 00185 4$:     MOVZBL  TOKEN_TYPE, R7					      ;
+				       6A  11 00188 	    BRB     12$							      ;
+		    4B   8F	       52  91 0018A 5$:     CMPB    TOKEN_TYPE, #75					      ;
+				       06  13 0018E 	    BEQL    6$							      ;
+		    4E   8F	       52  91 00190 	    CMPB    TOKEN_TYPE, #78					      ;
+				       61  12 00194 	    BNEQ    13$							      ;
+		         53	       01  D0 00196 6$:     MOVL    #1, BR_FLAG						      ; 2639
+		    4E   8F	       52  91 00199 	    CMPB    TOKEN_TYPE, #78					      ; 2644
+				       3E  12 0019D 	    BNEQ    10$							      ;
+				       53  D4 0019F 	    CLRL    BR_FLAG						      ; 2648
+				  34   AE  9F 001A1 	    PUSHAB  LEX_STG_DESC					      ; 2650
+				       56  DD 001A4 	    PUSHL   R6							      ;
+		         6B	       02  FB 001A6 	    CALLS   #2, INS_GET_TOKEN					      ;
+		         52	       50  90 001A9 	    MOVB    R0, TOKEN_TYPE					      ;
+		    4F   8F	       52  91 001AC 	    CMPB    TOKEN_TYPE, #79					      ; 2653
+				       05  12 001B0 	    BNEQ    7$							      ;
+		         50	       2B  D0 001B2 	    MOVL    #43, R0						      ; 2652
+				       09  11 001B5 	    BRB     8$							      ;
+		    48   8F	       52  91 001B7 7$:     CMPB    TOKEN_TYPE, #72					      ; 2656
+				       1B  12 001BB 	    BNEQ    9$							      ;
+		         50	       2D  D0 001BD 	    MOVL    #45, R0						      ;
+		    18   AE	       50  90 001C0 8$:     MOVB    R0, TOKEN_BUFFER					      ; 2651
+		    38   AE	  19   AE  9E 001C4 	    MOVAB   TOKEN_BUFFER+1, LEX_STG_DESC+4			      ; 2672
+				  34   AE  9F 001C9 	    PUSHAB  LEX_STG_DESC					      ; 2673
+				       56  DD 001CC 	    PUSHL   R6							      ;
+		         6B	       02  FB 001CE 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      0000004B   8F	       50  D1 001D1 	    CMPL    R0, #75						      ;
+				       03  13 001D8 9$:     BEQL    10$							      ;
+				     009E  31 001DA 	    BRW     22$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-10
+; Digital Equipment Corporation
+;
+		         50	  38   BE  D0 001DD 10$:    MOVL    @LEX_STG_DESC+4, NUMBER				      ; 2688
+		         2D	  18   AE  91 001E1 	    CMPB    TOKEN_BUFFER, #45					      ; 2689
+				       03  12 001E5 	    BNEQ    11$							      ;
+		         50	       50  CE 001E7 	    MNEGL   NUMBER, NUMBER					      ; 2690
+		         85	       53  90 001EA 11$:    MOVB    BR_FLAG, (RETURN_PTR)+				      ; 2692
+		         65	       50  D0 001ED 	    MOVL    NUMBER, (RETURN_PTR)				      ; 2694
+		         57	  F4   8F  9A 001F0 	    MOVZBL  #244, R7						      ; 2583
+				     0107  31 001F4 12$:    BRW     36$							      ;
+		    49   8F	       52  91 001F7 13$:    CMPB    TOKEN_TYPE, #73					      ;
+				       03  13 001FB 	    BEQL    14$							      ;
+				     008E  31 001FD 	    BRW     25$							      ;
+		         50	  38   AE  D0 00200 14$:    MOVL    LEX_STG_DESC+4, LEXEME_PTR				      ; 2715
+		         53	       60  90 00204 	    MOVB    (LEXEME_PTR), CHAR					      ; 2716
+				  34   AE  9F 00207 	    PUSHAB  LEX_STG_DESC					      ; 2718
+		         6A	       01  FB 0020A 	    CALLS   #1, DBG$REG_MATCH					      ;
+		         54	       50  D0 0020D 	    MOVL    R0, REG_NUM						      ;
+				       0E  19 00210 	    BLSS    15$							      ;
+		         65	       54  90 00212 	    MOVB    REG_NUM, (RETURN_PTR)				      ; 2728
+		         0F	       54  D1 00215 	    CMPL    REG_NUM, #15					      ; 2730
+				       3E  14 00218 	    BGTR    18$							      ;
+		         50	  F7   8F  9A 0021A 	    MOVZBL  #247, R0						      ;
+				       6C  11 0021E 	    BRB     24$							      ;
+		         01	  34   AE  B1 00220 15$:    CMPW    LEX_STG_DESC, #1					      ; 2744
+				       21  12 00224 	    BNEQ    17$							      ;
+		    42   8F	       53  91 00226 	    CMPB    CHAR, #66						      ; 2756
+				       0C  13 0022A 	    BEQL    16$							      ;
+		    57   8F	       53  91 0022C 	    CMPB    CHAR, #87						      ;
+				       06  13 00230 	    BEQL    16$							      ;
+		    4C   8F	       53  91 00232 	    CMPB    CHAR, #76						      ;
+				       71  12 00236 	    BNEQ    27$							      ;
+				  34   AE  9F 00238 16$:    PUSHAB  LEX_STG_DESC					      ; 2771
+				       56  DD 0023B 	    PUSHL   R6							      ;
+		         6B	       02  FB 0023D 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      00000057   8F	       50  D1 00240 	    CMPL    R0, #87						      ;
+				       60  12 00247 17$:    BNEQ    27$							      ;
+				  34   AE  9F 00249 	    PUSHAB  LEX_STG_DESC					      ; 2789
+				       56  DD 0024C 	    PUSHL   R6							      ;
+		         6B	       02  FB 0024E 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      0000004B   8F	       50  D1 00251 	    CMPL    R0, #75						      ;
+				       7B  12 00258 18$:    BNEQ    30$							      ;
+				       50  D4 0025A 	    CLRL    MODE						      ; 2806
+		    42   8F	       53  91 0025C 	    CMPB    CHAR, #66						      ; 2808
+				       03  12 00260 	    BNEQ    19$							      ;
+		         50	       01  D0 00262 	    MOVL    #1, MODE						      ; 2810
+		    57   8F	       53  91 00265 19$:    CMPB    CHAR, #87						      ; 2812
+				       03  12 00269 	    BNEQ    20$							      ;
+		         50	       02  D0 0026B 	    MOVL    #2, MODE						      ; 2814
+		    4C   8F	       53  91 0026E 20$:    CMPB    CHAR, #76						      ; 2816
+				       03  12 00272 	    BNEQ    21$							      ;
+		         50	       04  D0 00274 	    MOVL    #4, MODE						      ; 2818
+				       50  D5 00277 21$:    TSTL    MODE						      ; 2820
+				       05  12 00279 	    BNEQ    23$							      ;
+		         50	  F9   8F  9A 0027B 22$:    MOVZBL  #249, R0						      ; 2822
+					   04 0027F 	    RET     							      ;
+		         85	       50  90 00280 23$:    MOVB    MODE, (RETURN_PTR)+					      ; 2830
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 4-11
+; Digital Equipment Corporation
+;
+		         65	  38   BE  D0 00283 	    MOVL    @LEX_STG_DESC+4, (RETURN_PTR)			      ; 2832
+		         50	00F1   C0  9E 00287 	    MOVAB   241(R0), R0						      ; 2836
+				       67  11 0028C 24$:    BRB     34$							      ; 2583
+		    47   8F	       52  91 0028E 25$:    CMPB    TOKEN_TYPE, #71					      ;
+				       06  13 00292 	    BEQL    26$							      ;
+		    4C   8F	       52  91 00294 	    CMPB    TOKEN_TYPE, #76					      ;
+				       60  12 00298 	    BNEQ    35$							      ;
+				  34   AE  9F 0029A 26$:    PUSHAB  LEX_STG_DESC					      ; 2852
+				       56  DD 0029D 	    PUSHL   R6							      ;
+		         6B	       02  FB 0029F 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      00000049   8F	       50  D1 002A2 	    CMPL    R0, #73						      ;
+				       40  12 002A9 27$:    BNEQ    32$							      ;
+				  34   AE  9F 002AB 	    PUSHAB  LEX_STG_DESC					      ; 2864
+		         6A	       01  FB 002AE 	    CALLS   #1, DBG$REG_MATCH					      ;
+		         54	       50  D0 002B1 	    MOVL    R0, REG_NUM						      ;
+				       35  19 002B4 	    BLSS    32$							      ;
+		         0F	       54  D1 002B6 	    CMPL    REG_NUM, #15					      ; 2878
+				       30  14 002B9 	    BGTR    32$							      ;
+				  34   AE  9F 002BB 	    PUSHAB  LEX_STG_DESC					      ; 2895
+				       56  DD 002BE 	    PUSHL   R6							      ;
+		         6B	       02  FB 002C0 	    CALLS   #2, INS_GET_TOKEN					      ;
+		    4C   8F	       52  91 002C3 	    CMPB    TOKEN_TYPE, #76					      ; 2896
+				       05  12 002C7 	    BNEQ    28$							      ;
+		         51	       3F  D0 002C9 	    MOVL    #63, R1						      ;
+				       04  11 002CC 	    BRB     29$							      ;
+		         51	  53   8F  9A 002CE 28$:    MOVZBL  #83, R1						      ;
+		         51	       50  D1 002D2 29$:    CMPL    R0, R1						      ; 2895
+				       14  12 002D5 30$:    BNEQ    32$							      ;
+		         65	       54  90 002D7 	    MOVB    REG_NUM, (RETURN_PTR)				      ; 2920
+		    4C   8F	       52  91 002DA 	    CMPB    TOKEN_TYPE, #76					      ; 2922
+				       06  12 002DE 	    BNEQ    31$							      ;
+		         50	  F6   8F  9A 002E0 	    MOVZBL  #246, R0						      ;
+				       0F  11 002E4 	    BRB     34$							      ;
+		         0F	       54  D1 002E6 31$:    CMPL    REG_NUM, #15					      ; 2928
+				       06  12 002E9 	    BNEQ    33$							      ;
+		         50	  F9   8F  9A 002EB 32$:    MOVZBL  #249, R0						      ;
+				       04  11 002EF 	    BRB     34$							      ;
+		         50	  F0   8F  9A 002F1 33$:    MOVZBL  #240, R0						      ;
+		         57	       50  D0 002F5 34$:    MOVL    R0, R7						      ; 2583
+				       04  11 002F8 	    BRB     36$							      ;
+		         57	  F9   8F  9A 002FA 35$:    MOVZBL  #249, R7						      ;
+		         52	       57  90 002FE 36$:    MOVB    R7, TOKEN_TYPE					      ;
+		         50	       52  9A 00301 	    MOVZBL  TOKEN_TYPE, R0					      ; 2968
+					   04 00304 	    RET     							      ; 2492
+
+; Routine Size:  507 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 5
+; Digital Equipment Corporation
+;
+;	2970	ROUTINE GET_OPCODE ( inst_stg_desc, OUT_BYTE_PTR, OPINFO_PTR ) =
+;	2971	
+;	2972	!++
+;	2973	! Functional Description:
+;	2974	!	Scan the supposed instruction string to extract the
+;	2975	!	opcode from it.  If a valid opcode is found, its
+;	2976	!	numeric value is 'stuffed back', otherwise a signal is
+;	2977	!	generated and the reutine does not return.
+;	2978	!
+;	2979	! Formal parameters:
+;	2980	!	INST_STG_DESC	-The address of a string descriptor which points to
+;	2981	!			 the instruction string we are working on.
+;	2982	!	OUT_BYTE_PTR	-The address of where we should stuff the
+;	2983	!			 opcode if we find a valid one.
+;	2984	!	OPINFO_PTR	-A pointer to where we should stuff the address
+;	2985	!			 of the OPINFO record which we find as a match
+;	2986	!			 to the opcode we extract from the instruction string.
+;	2987	!
+;	2988	! Implicit Inputs:
+;	2989	!	The OPINFO data structure which is described in DBGINS.B32
+;	2990	!
+;	2991	! Outputs:
+;	2992	!	None other than via the parameters given above.
+;	2993	!
+;	2994	! Implicit Outputs:
+;	2995	!	None.
+;	2996	!
+;	2997	! Returned Value:
+;	2998	!	A pointer to a counted string (which we build)
+;	2999	!	which is the name of the opcode.
+;	3000	!
+;	3001	!	If the opcode is invalid, the routine does no return.
+;	3002	!--
+;	3003	BEGIN
+;	3004		MAP
+;	3005						! Pointer into the OPINFO table
+;	3006			OPINFO_PTR : REF VECTOR[,LONG],
+;	3007			OUT_BYTE_PTR : REF VECTOR[,BYTE],
+;	3008			inst_stg_desc : REF BLOCK [, BYTE];
+;	3009	
+;	3010		!  The following BIND works, but causes the compiler
+;	3011		! to croak from time to time.  Once this
+;	3012		! works ok, put back in the '!' lines,
+;	3013		! and remove the lines flagged '*** Temporary'.
+;	3014	
+;	3015	!	BIND
+;	3016	!		OPINFO_RECORD = (.OPINFO_PTR) : REF BLOCK[ OPTSIZE,BYTE ];
+;	3017		own
+;	3018			opcode_name : vector[8,byte];
+;	3019		LOCAL
+;	3020	
+;	3021			OPINFO_RECORD : REF BLOCK[ OPTSIZE,BYTE];	! *** Temporary
+;	3022	
+;	3023		LOCAL
+;	3024			TOKEN_TYPE,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 5-1
+; Digital Equipment Corporation
+;
+;	3025			OPCODE,			! Numeric Opcode.
+;	3026	
+;	3027			opco_stg_desc : BLOCK [12, BYTE],
+;	3028			USER_OPCODE : VECTOR[ CHS_PER_LEXEME, BYTE];
+;	3029	
+;	3030		! Make sure that the first token is a
+;	3031		! potential opcode.
+;	3032	
+;	3033		opco_stg_desc [dsc$w_length] = 0;
+;	3034		opco_stg_desc [dsc$a_pointer] = user_opcode;
+;	3035		opco_stg_desc [dsc$w_maxlen] = chs_per_lexeme;
+;	3036	
+;	3037		IF ((TOKEN_TYPE = INS_GET_TOKEN ( .inst_stg_desc, opco_stg_desc )) NEQ ALPHA_STR_TOKEN)
+;	3038		THEN
+;	3039			SIGNAL (DBG$_BADOPCODE, 2, .opco_stg_desc[dsc$w_length],
+;	3040					.opco_stg_desc[dsc$a_pointer]);
+;	3041			! no return
+;	3042	
+;	3043		! Look in the opcode table for a match to this string.
+;	3044	
+;	3045		IF( (OPCODE = OPCODE_MATCH( opco_stg_desc, .OPINFO_PTR)) LSS 0 )
+;	3046		THEN
+;	3047			signal(DBG$_BADOPCODE, 2, .opco_stg_desc[ dsc$W_LENGTH ],
+;	3048				.opco_stg_desc[dsc$A_POINTER]);
+;	3049			! no return
+;	3050	
+;	3051		! Found it.  Put the opcode byte into the instruction
+;	3052		! stream we are building, unless we do not have
+;	3053		! enough information to continue.  So far this only
+;	3054		! happens when the opcode is reserved, because we then
+;	3055		! do not know how many operands to expect.
+;	3056	
+;	3057		OPINFO_RECORD = ..OPINFO_PTR;		!  *** Temporary
+;	3058	
+;	3059		IF( .OPINFO_RECORD [ OP_NUMOPS ] EQL NOT_AN_OP )
+;	3060		THEN
+;	3061			signal(DBG$_RESOPCODE, 2, .opco_stg_desc[ dsc$W_LENGTH ],
+;	3062				.opco_stg_desc[dsc$A_POINTER]);
+;	3063			! no return
+;	3064	
+;	3065		! Pass back the opcode byte.
+;	3066	
+;	3067		OUT_BYTE_PTR[0] = .OPCODE;
+;	3068	
+;	3069		! Build a counted string which contains the name
+;	3070		! of the opcode for possible use later in error reporting.
+;	3071		! Return a pointer to this string as the result
+;	3072		! of this routine.
+;	3073	
+;	3074		ch$move (.opco_stg_desc[dsc$w_length],
+;	3075			 .opco_stg_desc[dsc$A_POINTER],
+;	3076			 opcode_name[1]);
+;	3077	
+;	3078		opcode_name[0] = .opco_stg_desc[ dsc$w_length ];
+;	3079	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 5-2
+; Digital Equipment Corporation
+;
+;	3080		return(opcode_name);
+;	3081	END;
+
+
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 OPCODE_NAME:
+							    .BLKB   8
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0C3C 00305 GET_OPCODE:
+							    .WORD   Save R2,R3,R4,R5,R10,R11				      ; 2970
+		         5A 00000000'  EF  9E 00307 	    MOVAB   OPCODE_NAME, R10					      ;
+		         5B 00000000G  00  9E 0030E 	    MOVAB   LIB$SIGNAL, R11					      ;
+		         5E	       24  C2 00315 	    SUBL2   #36, SP						      ;
+				  18   AE  B4 00318 	    CLRW    OPCO_STG_DESC					      ; 3033
+		    1C   AE	       6E  9E 0031B 	    MOVAB   USER_OPCODE, OPCO_STG_DESC+4			      ; 3034
+		    20   AE	       18  B0 0031F 	    MOVW    #24, OPCO_STG_DESC+8				      ; 3035
+				  18   AE  9F 00323 	    PUSHAB  OPCO_STG_DESC					      ; 3037
+				  04   AC  DD 00326 	    PUSHL   INST_STG_DESC					      ;
+		  0000V  CF	       02  FB 00329 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      00000049   8F	       50  D1 0032E 	    CMPL    TOKEN_TYPE, #73					      ;
+				       12  13 00335 	    BEQL    1$							      ;
+				  1C   AE  DD 00337 	    PUSHL   OPCO_STG_DESC+4					      ; 3039
+		         7E	  1C   AE  3C 0033A 	    MOVZWL  OPCO_STG_DESC, -(SP)				      ;
+				       02  DD 0033E 	    PUSHL   #2							      ;
+			    00028278   8F  DD 00340 	    PUSHL   #164472						      ;
+		         6B	       04  FB 00346 	    CALLS   #4, LIB$SIGNAL					      ;
+				  0C   AC  DD 00349 1$:     PUSHL   OPINFO_PTR						      ; 3045
+				  1C   AE  9F 0034C 	    PUSHAB  OPCO_STG_DESC					      ;
+		  0000V  CF	       02  FB 0034F 	    CALLS   #2, OPCODE_MATCH					      ;
+		         52	       50  D0 00354 	    MOVL    R0, OPCODE						      ;
+				       12  18 00357 	    BGEQ    2$							      ;
+				  1C   AE  DD 00359 	    PUSHL   OPCO_STG_DESC+4					      ; 3047
+		         7E	  1C   AE  3C 0035C 	    MOVZWL  OPCO_STG_DESC, -(SP)				      ;
+				       02  DD 00360 	    PUSHL   #2							      ;
+			    00028278   8F  DD 00362 	    PUSHL   #164472						      ;
+		         6B	       04  FB 00368 	    CALLS   #4, LIB$SIGNAL					      ;
+		         50	  0C   BC  D0 0036B 2$:     MOVL    @OPINFO_PTR, OPINFO_RECORD				      ; 3057
+      04   A0	         04	       00  EC 0036F 	    CMPV    #0, #4, 4(OPINFO_RECORD), #-1			      ; 3059
+			    FFFFFFFF   8F     00374									      ;
+				       12  12 00379 	    BNEQ    3$							      ;
+				  1C   AE  DD 0037B 	    PUSHL   OPCO_STG_DESC+4					      ; 3061
+		         7E	  1C   AE  3C 0037E 	    MOVZWL  OPCO_STG_DESC, -(SP)				      ;
+				       02  DD 00382 	    PUSHL   #2							      ;
+			    00028280   8F  DD 00384 	    PUSHL   #164480						      ;
+		         6B	       04  FB 0038A 	    CALLS   #4, LIB$SIGNAL					      ;
+		    08   BC	       52  90 0038D 3$:     MOVB    OPCODE, @OUT_BYTE_PTR				      ; 3067
+      01   AA	    1C   BE	  18   AE  28 00391 	    MOVC3   OPCO_STG_DESC, @OPCO_STG_DESC+4, OPCODE_NAME+1	      ; 3074
+		         6A	  18   AE  90 00398 	    MOVB    OPCO_STG_DESC, OPCODE_NAME				      ; 3078
+		         50	       6A  9E 0039C 	    MOVAB   OPCODE_NAME, R0					      ; 3080
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 5-3
+; Digital Equipment Corporation
+;
+					   04 0039F 	    RET     							      ; 2970
+
+; Routine Size:  155 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6
+; Digital Equipment Corporation
+;
+;	3082	ROUTINE ENC_OPERAND ( inst_stg_desc, OUT_BYTE_STREAM, PC_REL_CONTEXT, BRANCH_SIZE, OUT_PC_PTR ) =
+;	3083	
+;	3084	!++
+;	3085	! Functional Description:
+;	3086	!	Scan (parse, whatever) the string that supposedly
+;	3087	!	represents one operand reference, and come up
+;	3088	!	with the machine code representation for it. 
+;	3089	!
+;	3090	! Formal Parameters:
+;	3091	!
+;	3092	!	inst_stg_desc	-A string descriptor for the string that
+;	3093	!			 contains the operand reference.
+;	3094	!	OUT_BYTE_STREAM	-A pointer to the output byte stream pointer
+;	3095	!			 that is being maintained by the routine
+;	3096	!			 we are called by.
+;	3097	!	PC_REL_CONTEXT	-The number of bytes that we should encode
+;	3098	!			 into the output byte stream to correspond to
+;	3099	!			 a PC-relative (literal) operand.  
+;	3100	!	BRANCH_SIZE	-The number of  bytes that we should allow
+;	3101	!			 if the current operand tries to use branch
+;	3102	!			 type addressing.  0 => do not allow branch operands.
+;	3103	!	OUT_PC_PTR	-A pointer to the pointer that we maintain that
+;	3104	!			 indicates where the next byte of instruction we
+;	3105	!			 generate will go.  This is used to calculate
+;	3106	!			 PC-displacement values.
+;	3107	!
+;	3108	! Implicit Inputs:
+;	3109	!	None.
+;	3110	!
+;	3111	! Outputs:
+;	3112	!	The bytes that correspond to the operand reference are
+;	3113	!	stuffed into the vector pointed to by the pointer
+;	3114	!	contained in the location pointed to by OUT_BYTE_STREAM.
+;	3115	!	This pointer is also updated so that it points to the
+;	3116	!	next vacant byte position.
+;	3117	!
+;	3118	! Routine Value:
+;	3119	!	If a SIGNAL/UNWIND is not done, we return TRUE if
+;	3120	!	all goes well, FALSE, otherwise.
+;	3121	!
+;	3122	! Side Effects:
+;	3123	!	A SIGNAL causing an UNWIND is done in most error situations.
+;	3124	!--
+;	3125	
+;	3126		BEGIN
+;	3127		MAP
+;	3128			! The reason why the following 2 are REFs to LONGs
+;	3129			! instead of to BYTEs is because they are actually
+;	3130			! REF REF VECTOR[,BYTE], which we can only achieve
+;	3131			! (so far!?) via a REF LONG.  Even this only
+;	3132			! works because LONG happens to be the size
+;	3133			! of a REF BYTE (or of any REF, for that matter).
+;	3134	
+;	3135			OUT_PC_PTR : REF VECTOR[,LONG],
+;	3136			OUT_BYTE_STREAM : REF VECTOR[,LONG],
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-1
+; Digital Equipment Corporation
+;
+;	3137			inst_stg_desc : REF BLOCK [, BYTE];
+;	3138	
+;	3139		LOCAL
+;	3140			TOKEN_STRING : VECTOR[ CHS_PER_LEXEME, BYTE],
+;	3141			LEXEME_BUFFER : VECTOR[ CHS_PER_LEXEME, BYTE],
+;	3142			lexeme_stg_desc : BLOCK [12, BYTE],
+;	3143			OUT_BYTE_PTR : REF VECTOR[,BYTE],
+;	3144			TOKEN_TYPE : BYTE,
+;	3145			AT_FLAG,
+;	3146			MODE;
+;	3147	
+;	3148		BIND
+;	3149			TOKEN_LONG = TOKEN_STRING : VECTOR[,LONG];
+;	3150		MACRO
+;	3151			OUT_CODE ( ctrl_string ) =
+;     M 3152				!+
+;     M 3153				! This macro is used to call the routine to
+;     M 3154				!  check for indexing and actually output the
+;     M 3155				!  bytes of 'instruction' into the instruction
+;     M 3156				!  stream.  The reason why we use this macro
+;     M 3157				!  is because it inserts the first 2 parameters
+;     M 3158				!  for us, (we may later use GLOBALs for this),
+;     M 3159				!  and because we may later have to make the
+;     M 3160				!  control string parameter a counted string
+;     M 3161				!  if we find that 4 characters (a longword)
+;     M 3162				!  are not enough.
+;     M 3163				!-
+;     M 3164				BEGIN
+;     M 3165				IF (NOT INST_OUTPUT (	.OUT_BYTE_STREAM,
+;     M 3166							.OUT_PC_PTR,
+;     M 3167							.inst_stg_desc,
+;     M 3168							ctrl_string,
+;     M 3169							%REMAINING ) )
+;     M 3170				THEN
+;     M 3171					RETURN FALSE;
+;     M 3172				END%,
+;	3173	
+;	3174			MAKE_A_MODE ( dmode ) =
+;     M 3175				!+
+;     M 3176				! How we usually make up the dominant
+;     M 3177				! mode addressing byte.
+;     M 3178				!-
+;     M 3179				( (dmode ^ 4) OR .TOKEN_STRING[0])%,
+;	3180	
+;	3181			MAKE_PC_MODE ( dmode ) =
+;     M 3182	
+;     M 3183				!+
+;     M 3184				! Macro to make PC relative mode
+;     M 3185				!-
+;     M 3186				( (dmode ^4) OR PC_REG )%;
+;	3187	
+;	3188	%IF DBG_ENC
+;     L 3189	%THEN
+;     U 3190		$fao_tt_out( 'ENC_OP !AS', .inst_stg_desc );
+;     U 3191	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-2
+; Digital Equipment Corporation
+;
+;	3192	
+;	3193		! Fetch the first token from the instruction string,
+;	3194		!  and take action depending on it.  If we first 
+;	3195		!  get an 'at' sign, we simply set a flag for later
+;	3196		!  reference, extract the next token, and continue on.
+;	3197	
+;	3198		AT_FLAG = FALSE;
+;	3199		OUT_BYTE_PTR = .OUT_BYTE_STREAM[0];
+;	3200	
+;	3201		IF( (TOKEN_TYPE = GET_NEXT_TOKEN( .inst_stg_desc, TOKEN_STRING )) EQL AT_SIGN_TOKEN )
+;	3202		THEN
+;	3203			BEGIN
+;	3204			AT_FLAG = TRUE;
+;	3205			TOKEN_TYPE = GET_NEXT_TOKEN( .inst_stg_desc, TOKEN_STRING );
+;	3206			END;
+;	3207	
+;	3208		! Enforce branch-type syntax only when a branch operand
+;	3209		! is expected, and vice versa.
+;	3210	
+;	3211		IF( .TOKEN_TYPE NEQ BRCH_TOKEN )
+;	3212		THEN
+;	3213			IF( .BRANCH_SIZE NEQ 0 )
+;	3214			THEN
+;	3215				! "Branch Operand Expected" error.
+;	3216	
+;	3217				signal(dbg$_nobranch);
+;	3218				! no return
+;	3219	
+;	3220	%IF dbg_enc2
+;     L 3221	%THEN
+;     U 3222		$fao_tt_out ('first token of operand is !SB', .token_type);
+;     U 3223	%FI
+;	3224	
+;	3225		SELECTONE .TOKEN_TYPE OF
+;	3226			SET
+;	3227	
+;	3228			[EOL_TOKEN]:
+;	3229	
+;	3230				! INS_ENCODE can produce a more meaningful
+;	3231				! message at this point than we can.
+;	3232	
+;	3233				RETURN(FALSE);
+;	3234	
+;	3235			[REGISTER_TOKEN]:
+;	3236	
+;	3237				!  The operand is Rn, where 'n' was passed back 
+;	3238				!  in the TOKEN_STRING.  Output the proper 
+;	3239				!  addressing mode byte, and increment the 
+;	3240				!  instruction stream pointer.
+;	3241	
+;	3242				! Note that we don't allow indexing to follow REGISTER.
+;	3243				! We also disallow the old MACRO11 notion of '@Rx'.
+;	3244	
+;	3245				BEGIN
+;	3246	%IF dbg_enc2
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-3
+; Digital Equipment Corporation
+;
+;     L 3247	%THEN
+;     U 3248				$fao_tt_out ('outputting register !SB to output stream', .token_string [0]);
+;     U 3249	%FI
+;	3250				IF( .AT_FLAG )
+;	3251				THEN
+;	3252					! "@Rx not equivalent to (Rx)" error.
+;	3253	
+;	3254					signal(dbg$_opsyntax)
+;	3255					! no return
+;	3256				ELSE
+;	3257					OUT_CODE ( 'NB', (REGISTER_AMODE^4) OR .TOKEN_STRING[0] );
+;	3258				END;
+;	3259	
+;	3260			[LIT_TOKEN]:
+;	3261	
+;	3262				! This is either 'short literal', 'PC-Relative Literal',
+;	3263				! or Absolute addressing, depending on whether the string
+;	3264				! began with '@' or not, and on the number of
+;	3265				! bits needed to encode the number.
+;	3266	
+;	3267				IF( .AT_FLAG )
+;	3268				THEN
+;	3269					! Absolute addressing is actually a PC-relative
+;	3270					! mode with longword context.  Note that this
+;	3271					! one may be followed by [ Rx ], which means
+;	3272					! that we have indexing.
+;	3273	
+;	3274					OUT_CODE( 'YBD',
+;     P 3275						  MAKE_PC_MODE( AT_PC_REL_MODE ),
+;     P 3276						  4,
+;     P 3277						  TOKEN_STRING
+;     P 3278						)
+;	3279				ELSE
+;	3280					BEGIN
+;	3281	%IF DBG_ENC3
+;     L 3282	%THEN
+;     U 3283					$FAO_TT_OUT('literal !XL is ',.token_long[0]);
+;     U 3284	%FI
+;	3285	
+;	3286					! Here we have an immediate operand.
+;	3287					! If it will fit into 6 bits, we can
+;	3288					! generate 'short literal' addressing,
+;	3289					! otherwise we generate a PC-relative
+;	3290					! (immediate) mode.
+;	3291		
+;	3292					IF( .TOKEN_LONG[0] GTRU 63 )
+;	3293					THEN
+;	3294						BEGIN
+;	3295	%IF DBG_ENC3
+;     L 3296	%THEN
+;     U 3297						$FAO_TT_OUT('long');
+;     U 3298	%FI
+;	3299						! The literal is too big for a 6-bit
+;	3300						! field.  Therefore we must use a
+;	3301						! PC-relative mode and insert
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-4
+; Digital Equipment Corporation
+;
+;	3302						! the literal into the instruction
+;	3303						! stream.  Unfortunately, the number
+;	3304						! of bits we must use is NOT a
+;	3305						! function of how large the literal is,
+;	3306						! instead this is dictated by the
+;	3307						! so-called 'context' of this instruction.
+;	3308	
+;	3309						IF( .PC_REL_CONTEXT GTR 4 )
+;	3310						THEN
+;	3311							!+
+;	3312							! QUAD literals not supported.
+;	3313							! This is because GET_NEXT_TOKEN
+;	3314							! does not put 8 bytes into
+;	3315							! TOKEN_STRING.
+;	3316							!-
+;	3317							SIGNAL(dbg$_notdone, 1, uplit(%ascic 'quadword literals'));
+;	3318							! no return
+;	3319		
+;	3320						! See if truncation will occur by checking
+;	3321						! on whether the longword which we take
+;	3322						! the number from is different from the
+;	3323						! number we get when we take it out
+;	3324						! as the hardware will do - ie, with sign
+;	3325						! extension.
+;	3326	
+;	3327						IF( .TOKEN_LONG[0] NEQ
+;	3328						    .(TOKEN_STRING[0])<0,.PC_REL_CONTEXT*BITS_PER_BYTE, 1>
+;	3329						  )
+;	3330						THEN
+;	3331							! The following code should 
+;	3332							! disappear when we make
+;	3333							! RADX_CONVRT take the length into
+;	3334							! account.  For now we make a further
+;	3335							! check to see if the bits which we 
+;	3336							! will throw away simply weren't given.
+;	3337	
+;	3338							INCR I FROM .PC_REL_CONTEXT TO LONG_LENGTH -1
+;	3339								DO
+;	3340								IF( .TOKEN_STRING[.I] NEQ 0 )
+;	3341								THEN
+;	3342									BEGIN
+;	3343									! We only WARN, though.
+;	3344	
+;	3345									SIGNAL (dbg$_numtrunc);
+;	3346									EXITLOOP;
+;	3347									END;
+;	3348	
+;	3349						! SRM says that #constant[Rx] is
+;	3350						! supported, however, to be like MARS,
+;	3351						! we generate an error for it.
+;	3352	
+;	3353						OUT_CODE( 'NBD',
+;     P 3354							  MAKE_PC_MODE( PC_REL_MODE ),
+;     P 3355							  .PC_REL_CONTEXT,
+;     P 3356							  TOKEN_STRING
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-5
+; Digital Equipment Corporation
+;
+;     P 3357							)
+;	3358						END
+;	3359					ELSE
+;	3360						BEGIN
+;	3361	%IF DBG_ENC3
+;     L 3362	%THEN
+;     U 3363						$FAO_TT_OUT('short');
+;     U 3364	%FI
+;	3365						! Short literals have to fit in 6 bits.
+;	3366						! They also can not be indexed.
+;	3367	
+;	3368						OUT_CODE( 'NB', MAKE_A_MODE( SHORT_LIT_AMODE ) );
+;	3369						END;
+;	3370					END;
+;	3371	
+;	3372	
+;	3373			[BRCH_TOKEN]:		! For branch type operand addressing,
+;	3374						! and for assumed PC-displacement addressing.
+;	3375	
+;	3376				BEGIN
+;	3377					BIND
+;	3378						ACTUAL_OPRND = TOKEN_STRING[1] : VECTOR[,LONG];
+;	3379	
+;	3380				! Check the flag passed in byte 0 of the
+;	3381				! token string.  A zero here means that 
+;	3382				! the associated number is a branch operand
+;	3383				! and it is what we want to stuff directly
+;	3384				! into the instruction.  A 1 here
+;	3385				! means that the number must be made into
+;	3386				! a PC-relative offset - ie, it is absolute,
+;	3387				! and that it may or may not be a branch operand.
+;	3388	
+;	3389				IF( .TOKEN_STRING[0] )
+;	3390				THEN
+;	3391					BEGIN
+;	3392	
+;	3393					! To calculate the PC-relative value, we must
+;	3394					! start with a pointer to where we will stuff
+;	3395					! the actual operand, add in the length of
+;	3396					! the operand because that will give us what
+;	3397					! the VAX PC will be when it has been used to
+;	3398					! pick up the operand, and then subtract
+;	3399					! from that the absolute (virtual) destination.
+;	3400					! This gives the number of bytes which you would
+;	3401					! have to add to the PC to get the address of where
+;	3402					! you want to go - which is exactly what the
+;	3403					! operand is supposed to contain.
+;	3404	
+;	3405					ACTUAL_OPRND[0] = .ACTUAL_OPRND[0] - (.OUT_PC_PTR[0] + .BRANCH_SIZE);
+;	3406					IF( .BRANCH_SIZE EQL 0 )
+;	3407					THEN
+;	3408						! If BRANCH_SIZE is not the right size
+;	3409						! (of displacement) to add, assume
+;	3410						! and use LONGWORD displacement.  We
+;	3411						! must take into consideration the fact
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-6
+; Digital Equipment Corporation
+;
+;	3412						! that we will be writing out a 1-byte
+;	3413						! MODE field before the displacement,
+;	3414						! and perhaps also a 1-byte index field,
+;	3415						! as well as the displacement itself.
+;	3416	
+;	3417						ACTUAL_OPRND[0] = .ACTUAL_OPRND[0]
+;	3418								- (4 + 1 +
+;	3419									ASSUME_AT_PC( .inst_stg_desc ) );
+;	3420					END;
+;	3421	
+;	3422	
+;	3423				! Check for branch overflow - the user
+;	3424				! trying to branch further than the
+;	3425				! instruction can 'reach'.  First, we must
+;	3426				! be trying to branch.
+;	3427	
+;	3428				IF( .BRANCH_SIZE NEQ 0 )
+;	3429				THEN
+;	3430					BEGIN
+;	3431	
+;	3432					! Overflow happens when all bits in 
+;	3433					! the unused part of the LONG which
+;	3434					! we are using to contain the branch
+;	3435					! operand are not the same as the
+;	3436					! 'sign' bit of the branch operand.  We find
+;	3437					! this out by extracting the branch operand
+;	3438					! as the hardware would (ie, with sign extension),
+;	3439					! and then comparing to see if this is the same
+;	3440					! as what we have calculated.
+;	3441		
+;	3442					IF( .ACTUAL_OPRND[0] NEQ .(ACTUAL_OPRND)<0,.BRANCH_SIZE*BITS_PER_BYTE, 1> )
+;	3443					THEN
+;	3444						! "Branching Out-of-Range" error.
+;	3445	
+;	3446						signal(DBG$_BRTOOFAR, 1, .actual_oprnd[0]);
+;	3447						! no return
+;	3448		
+;	3449					! Branch operand is OK.  Output
+;	3450					! the code and don't allow indexing.
+;	3451	
+;	3452					OUT_CODE( 'ND', .BRANCH_SIZE, ACTUAL_OPRND[0] );
+;	3453					END
+;	3454				ELSE
+;	3455					BEGIN
+;	3456	
+;	3457					! PC-displacement operands are similar
+;	3458					! at this point except that we must
+;	3459					! allow indexing and we assume longword
+;	3460					! (deferred) displacement.
+;	3461					! This code is the same as that at the end
+;	3462					! of case [BYTE_VAL_TOKEN], etc, below;
+;	3463					! we are relying on the compiler to combine
+;	3464					! the code rather than putting it into a
+;	3465					! special-purpose routine.
+;	3466	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-7
+; Digital Equipment Corporation
+;
+;	3467					LEXEME_BUFFER[0] = PC_REG;
+;	3468					TOKEN_STRING[0] = 4;
+;	3469					MODE = DISP_LONG_AMODE;
+;	3470	
+;	3471					IF( .AT_FLAG )
+;	3472					THEN
+;	3473						MODE = .MODE +1;
+;	3474		
+;	3475					! Pass back the single mode byte followed
+;	3476					! by the counted byte stream we calculated. 
+;	3477					! Indexing is allowed in all cases.
+;	3478		
+;	3479					OUT_CODE( 'YBC',
+;     P 3480						  ((.MODE^4) OR .LEXEME_BUFFER[0]),
+;     P 3481						  TOKEN_STRING
+;     P 3482						);
+;	3483					END;
+;	3484				END;
+;	3485		
+;	3486			[MINUS_TOKEN]:
+;	3487	
+;	3488				BEGIN
+;	3489	
+;	3490				! This must be auto decrement, '-(Rn)', or
+;	3491				! auto decrement indexed, '-(Rn)[Rx]'.
+;	3492	
+;	3493				IF( GET_NEXT_TOKEN( .inst_stg_desc, TOKEN_STRING) NEQ AT_REG_TOKEN )
+;	3494				THEN
+;	3495					BEGIN
+;	3496	
+;	3497					! "Operand Syntax" error.
+;	3498	%IF dbg_enc1
+;     L 3499	%THEN
+;     U 3500					$fao_tt_out ('need "(Rn)" for auto decrement');
+;     U 3501	%FI
+;	3502					signal(DBG$_OPSYNTAX)
+;	3503					! no return
+;	3504	
+;	3505					END;
+;	3506	
+;	3507				! Check for indexing and output the instruction.
+;	3508	
+;	3509				IF( .AT_FLAG )
+;	3510				THEN
+;	3511					BEGIN
+;	3512	
+;	3513					! "Deferred Auto Decrement Not Allowed" error.
+;	3514	%IF dbg_enc1
+;     L 3515	%THEN
+;     U 3516					$fao_tt_out ('"-@(Rn)" invalid');
+;     U 3517	%FI
+;	3518					signal(DBG$_OPSYNTAX)
+;	3519					! no return
+;	3520	
+;	3521					END
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-8
+; Digital Equipment Corporation
+;
+;	3522				ELSE
+;	3523					OUT_CODE( 'YB', MAKE_A_MODE( AUTO_DEC_AMODE ) );
+;	3524				END;
+;	3525	
+;	3526			[AT_REG_TOKEN]:
+;	3527	
+;	3528				BEGIN
+;	3529	
+;	3530				LOCAL
+;	3531					input_ptr,
+;	3532					char;
+;	3533	
+;	3534				! This form is either register deferred, '(reg)',
+;	3535				! auto increment, '(reg)+', auto increment 
+;	3536				! deferred, '@(reg)+', or any one of these
+;	3537				! plus indexing.
+;	3538	
+;	3539				MODE = REG_DEF_AMODE;
+;	3540	
+;	3541				! A following '+' indicates one of the auto inc modes.
+;	3542	
+;	3543				input_ptr = .inst_stg_desc [dsc$a_pointer];
+;	3544				char = ch$rchar (.input_ptr);
+;	3545				IF .char EQL %C'+'
+;	3546				THEN
+;	3547					BEGIN
+;	3548					! Update the counted-string pointer,
+;	3549					! and decide which auto inc mode we have.
+;	3550	
+;	3551					MODE = AUTO_INC_AMODE;
+;	3552					IF( .AT_FLAG )
+;	3553					THEN
+;	3554						MODE = .MODE +1;
+;	3555						! MODE = AUTO_INC_DEF_AMODE;  ! Generates longer code.
+;	3556	
+;	3557					inst_stg_desc [dsc$a_pointer] = ch$plus (.input_ptr, 1);
+;	3558					inst_stg_desc [dsc$w_length] = .inst_stg_desc [dsc$w_length] - 1;
+;	3559					END
+;	3560				ELSE
+;	3561					IF( .AT_FLAG )
+;	3562					THEN
+;	3563						! "@(Rn) Not Supported" error.
+;	3564						BEGIN
+;	3565	
+;	3566						! Operand syntax error
+;	3567	%IF dbg_enc1
+;     L 3568	%THEN
+;     U 3569						$fao_tt_out ('"@(Rn)" invalid');
+;     U 3570	%FI
+;	3571						signal(DBG$_OPSYNTAX)
+;	3572						! no return
+;	3573	
+;	3574						END;
+;	3575	
+;	3576				! In all cases we allow indexing.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-9
+; Digital Equipment Corporation
+;
+;	3577	
+;	3578				OUT_CODE( 'YB', MAKE_A_MODE( .MODE ) );
+;	3579				END;
+;	3580	
+;	3581			[BYTE_VAL_TOKEN,
+;	3582			 WORD_VAL_TOKEN,
+;	3583			 LONG_VAL_TOKEN
+;	3584			]:
+;	3585		
+;	3586				BEGIN
+;	3587				BIND
+;	3588					ACTUAL_OPRND = TOKEN_STRING[1] : VECTOR[,LONG];
+;	3589				LOCAL
+;	3590					INDEXING;
+;	3591			
+;	3592				! Displacement or Deferred Displacement addressing.
+;	3593	
+;	3594				! Here we have to 'look ahead' to see if an
+;	3595				! actual register to displace off has 
+;	3596				! been given.  If not, we assume "(PC)" and 
+;	3597				! treat the displacement as a virtual address,
+;	3598				! calculating what real displacement we need
+;	3599				! to use given that the PC is the same as the 
+;	3600				! address of where we are depositing the instruction
+;	3601				! into.
+;	3602	
+;	3603				IF( (INDEXING = ASSUME_AT_PC( .inst_stg_desc )) GEQ 0 )
+;	3604				THEN
+;	3605					BEGIN
+;	3606	
+;	3607					! Ok to assume PC-displacement mode.
+;	3608					! This means that we must take the given
+;	3609					! displacement to be the virtual
+;	3610					! address we want to reach, so we must convert
+;	3611					! this field to a real displacement.  To do
+;	3612					! this we calculate what the PC will be after
+;	3613					! it has been used to pick up the displacement
+;	3614					! so that we can find out how much this
+;	3615					! displacement must be.   The INDEXING value
+;	3616					! returned above indicates how many bytes will
+;	3617					! be output due to indexed addressing.
+;	3618	
+;	3619					ACTUAL_OPRND[0] = .ACTUAL_OPRND[0]
+;	3620							- (.OUT_PC_PTR[0] + .TOKEN_STRING[0] + 1 + .INDEXING);
+;	3621	
+;	3622					! We also fake the user having said "(PC)"
+;	3623					! by filling in LEXEME_BUFFER with the
+;	3624					! right AT_REGister name.
+;	3625	
+;	3626					LEXEME_BUFFER[0] = PC_REG;
+;	3627	
+;	3628					! Check for trying to branch too far.  Here,
+;	3629					! the check must be ensuring that the unused
+;	3630					! bits in the LONG version of ACTUAL_OPRND
+;	3631					! are the same as the sign bit of the actual
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-10
+; Digital Equipment Corporation
+;
+;	3632					! displacement part of ACTUAL_OPRND.
+;	3633	
+;	3634					IF( .ACTUAL_OPRND[0] NEQ
+;	3635					    .(ACTUAL_OPRND)<0,.TOKEN_STRING[0]*BITS_PER_BYTE, 1>
+;	3636					  )
+;	3637					THEN
+;	3638						! "Branching Out-of-Range" error.
+;	3639	
+;	3640						signal(DBG$_BRTOOFAR, 1, .actual_oprnd[0])
+;	3641						! no return
+;	3642					END
+;	3643				ELSE
+;	3644					BEGIN
+;	3645	
+;	3646					! Check that the displacement is followed
+;	3647					! by a register reference in parenthesis.
+;	3648	
+;	3649					IF( GET_NEXT_TOKEN( .inst_stg_desc, LEXEME_BUFFER ) NEQ AT_REG_TOKEN )
+;	3650					THEN
+;	3651						BEGIN
+;	3652	
+;	3653						! "Must Displace off a Reg" error.
+;	3654	%IF dbg_enc1
+;     L 3655	%THEN
+;     U 3656						$fao_tt_out ('missing "(Rn)" after displacement');
+;     U 3657	%FI
+;	3658						signal(DBG$_OPSYNTAX)
+;	3659						! no return
+;	3660	
+;	3661						END;
+;	3662	
+;	3663					! Check for displacement truncation and produce
+;	3664					! a message if this will occur.  Here the check is
+;	3665					! based on the sign bit of the actual displacement,
+;	3666					! as we did to check this above.  Here, however, we
+;	3667					! we further check whether or not the upper bits
+;	3668					! of the given displacement are all 0, and 'forgive'
+;	3669					! if this is true.  This nonsense is necessary to avoid
+;	3670					! to avoid complaining when one says "B^95(reg)".
+;	3671					! Here the 95 is taken as a negative number rather
+;	3672					! than assuming a large positive one was intended.
+;	3673		
+;	3674					IF( .ACTUAL_OPRND[0] NEQ
+;	3675					    .(ACTUAL_OPRND)<0,.TOKEN_STRING[0]*BITS_PER_BYTE, 1 >
+;	3676					  )
+;	3677					THEN
+;	3678						! When RADX_CONVRT is fixed to take
+;	3679						! size into account (ie, to complain
+;	3680						! if the number is too big), we should
+;	3681						! just produce a message at this point.
+;	3682						! For now, however, we let them away
+;	3683						! with it if the unused bytes are
+;	3684						! all zero.
+;	3685		
+;	3686						BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-11
+; Digital Equipment Corporation
+;
+;	3687		
+;	3688						BIND
+;	3689							ACTUAL_BYTES = ACTUAL_OPRND[0] : VECTOR[,BYTE];
+;	3690		
+;	3691						INCR I FROM .TOKEN_STRING[0] TO LONG_LENGTH -1
+;	3692							DO
+;	3693							IF( .ACTUAL_BYTES[.I] NEQ 0 )
+;	3694							THEN
+;	3695								BEGIN
+;	3696	
+;	3697								! "Branching Out-of-Range" error.
+;	3698	
+;	3699								signal(DBG$_BRTOOFAR, 1, .actual_oprnd[0])
+;	3700								! no return
+;	3701	
+;	3702								END;
+;	3703						END;
+;	3704					END;
+;	3705	
+;	3706				! Ok.  Now calculate the right mode to use.
+;	3707				! The following code is extremely instruction-set
+;	3708				! dependent, and relies on the relative values
+;	3709				! of the various displacement modes.  Essentially
+;	3710				! we just start out with the lowest mode and keep
+;	3711				! adding on until we've got what we wanted.  This
+;	3712				! code is shorter but admittedly less intuitive
+;	3713				! than perhaps a SELECTONE or whatever.
+;	3714	
+;	3715				MODE = DISP_BYTE_AMODE;
+;	3716	
+;	3717				IF( .TOKEN_TYPE GTR BYTE_VAL_TOKEN )
+;	3718				THEN
+;	3719					MODE = .MODE +2;
+;	3720	
+;	3721				IF( .TOKEN_TYPE GTR WORD_VAL_TOKEN )
+;	3722				THEN
+;	3723					MODE = .MODE +2;
+;	3724	
+;	3725				IF( .AT_FLAG )
+;	3726				THEN
+;	3727					MODE = .MODE +1;
+;	3728	
+;	3729				! Pass back the single mode byte followed
+;	3730				! by the counted byte stream we were 
+;	3731				! passed.  Indexing is allowed in all cases.
+;	3732	
+;	3733				OUT_CODE( 'YBC',
+;     P 3734					  ((.MODE^4) OR .LEXEME_BUFFER[0]),
+;     P 3735					  TOKEN_STRING
+;     P 3736					);
+;	3737				END;
+;	3738	
+;	3739			[OTHERWISE]:	! Error.
+;	3740	
+;	3741				BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-12
+; Digital Equipment Corporation
+;
+;	3742	
+;	3743				! "Operand Syntax" error.
+;	3744	%IF dbg_enc1
+;     L 3745	%THEN
+;     U 3746				$fao_tt_out ('invalid operand');
+;     U 3747	%FI
+;	3748				signal(DBG$_OPSYNTAX)
+;	3749				! no return
+;	3750	
+;	3751				END;
+;	3752	
+;	3753			TES;
+;	3754	
+;	3755		! The updated string descriptor has already effectively
+;	3756		! been passed back because we used the one given directly.
+;	3757		! We return here to imply a successful ENC_OPERAND.
+;	3758		
+;	3759		RETURN (TRUE);
+;	3760	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .ASCII  <17>\quadword literals\<0><0>			      ;
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0EFC 003A0 ENC_OPERAND:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R9,R10,R11			      ; 3082
+		         59	0000V  CF  9E 003A2 	    MOVAB   INST_OUTPUT, R9					      ;
+		         5A	FD5F   CF  9E 003A7 	    MOVAB   GET_NEXT_TOKEN, R10					      ;
+		         5B 00000000G  00  9E 003AC 	    MOVAB   LIB$SIGNAL, R11					      ;
+		         5E	       3C  C2 003B3 	    SUBL2   #60, SP						      ;
+				       57  D4 003B6 	    CLRL    AT_FLAG						      ; 3198
+		         56	  08   AC  D0 003B8 	    MOVL    OUT_BYTE_STREAM, R6					      ; 3199
+		         50	       66  D0 003BC 	    MOVL    (R6), OUT_BYTE_PTR					      ;
+				  24   AE  9F 003BF 	    PUSHAB  TOKEN_STRING					      ; 3201
+		         53	  04   AC  D0 003C2 	    MOVL    INST_STG_DESC, R3					      ;
+				       53  DD 003C6 	    PUSHL   R3							      ;
+		         6A	       02  FB 003C8 	    CALLS   #2, GET_NEXT_TOKEN					      ;
+		         55	       50  90 003CB 	    MOVB    R0, TOKEN_TYPE					      ;
+		         3D	       50  D1 003CE 	    CMPL    R0, #61						      ;
+				       0E  12 003D1 	    BNEQ    1$							      ;
+		         57	       01  D0 003D3 	    MOVL    #1, AT_FLAG						      ; 3204
+				  24   AE  9F 003D6 	    PUSHAB  TOKEN_STRING					      ; 3205
+				       53  DD 003D9 	    PUSHL   R3							      ;
+		         6A	       02  FB 003DB 	    CALLS   #2, GET_NEXT_TOKEN					      ;
+		         55	       50  90 003DE 	    MOVB    R0, TOKEN_TYPE					      ;
+		    F4   8F	       55  91 003E1 1$:     CMPB    TOKEN_TYPE, #244					      ; 3211
+				       0E  13 003E5 	    BEQL    2$							      ;
+				  10   AC  D5 003E7 	    TSTL    BRANCH_SIZE						      ; 3213
+				       09  13 003EA 	    BEQL    2$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-13
+; Digital Equipment Corporation
+;
+			    00028298   8F  DD 003EC 	    PUSHL   #164504						      ; 3217
+		         6B	       01  FB 003F2 	    CALLS   #1, LIB$SIGNAL					      ;
+		    63   8F	       55  91 003F5 2$:     CMPB    TOKEN_TYPE, #99					      ; 3225
+				       03  12 003F9 	    BNEQ    3$							      ;
+				     029E  31 003FB 	    BRW     46$							      ;
+		    F7   8F	       55  91 003FE 3$:     CMPB    TOKEN_TYPE, #247					      ;
+				       24  12 00402 	    BNEQ    7$							      ;
+		         03	       57  E9 00404 	    BLBC    AT_FLAG, 4$						      ; 3250
+				     0285  31 00407 	    BRW     44$							      ;
+		         50	  24   AE  9A 0040A 4$:     MOVZBL  TOKEN_STRING, R0					      ; 3257
+	   7E	         50 00000050   8F  C9 0040E 	    BISL3   #80, R0, -(SP)					      ;
+		         7E	424E   8F  3C 00416 5$:     MOVZWL  #16974, -(SP)					      ;
+				       53  DD 0041B 6$:     PUSHL   R3							      ;
+				  14   AC  DD 0041D 	    PUSHL   OUT_PC_PTR						      ;
+				       56  DD 00420 	    PUSHL   R6							      ;
+		         69	       05  FB 00422 	    CALLS   #5, INST_OUTPUT					      ;
+				     0262  31 00425 	    BRW     43$							      ;
+		    F8   8F	       55  91 00428 7$:     CMPB    TOKEN_TYPE, #248					      ; 3225
+				       03  13 0042C 	    BEQL    8$							      ;
+				     0082  31 0042E 	    BRW     16$							      ;
+		         11	       57  E9 00431 8$:     BLBC    AT_FLAG, 9$						      ; 3267
+				  24   AE  9F 00434 	    PUSHAB  TOKEN_STRING					      ; 3278
+				       04  DD 00437 	    PUSHL   #4							      ;
+		         7E	  9F   8F  9A 00439 	    MOVZBL  #159, -(SP)						      ;
+			    00444259   8F  DD 0043D 	    PUSHL   #4473433						      ;
+				       5A  11 00443 	    BRB     14$							      ;
+		         3F	  24   AE  D1 00445 9$:     CMPL    TOKEN_LONG, #63					      ; 3292
+				       61  1B 00449 	    BLEQU   15$							      ;
+		         04	  0C   AC  D1 0044B 	    CMPL    PC_REL_CONTEXT, #4					      ; 3309
+				       11  15 0044F 	    BLEQ    10$							      ;
+			    00000000'  EF  9F 00451 	    PUSHAB  P.AAA						      ; 3317
+				       01  DD 00457 	    PUSHL   #1							      ;
+			    000282C0   8F  DD 00459 	    PUSHL   #164544						      ;
+		         6B	       03  FB 0045F 	    CALLS   #3, LIB$SIGNAL					      ;
+	   50	    0C   AC	       03  78 00462 10$:    ASHL    #3, PC_REL_CONTEXT, R0				      ; 3328
+      24   AE	         50	       00  EE 00467 	    EXTV    #0, R0, TOKEN_STRING, R1				      ;
+				       51     0046C									      ;
+		         51	  24   AE  D1 0046D 	    CMPL    TOKEN_LONG, R1					      ; 3327
+				       1C  13 00471 	    BEQL    13$							      ;
+	   52	    0C   AC	       01  C3 00473 	    SUBL3   #1, PC_REL_CONTEXT, I				      ; 3338
+				       11  11 00478 	    BRB     12$							      ;
+				  24 AE42  95 0047A 11$:    TSTB    TOKEN_STRING[I]					      ; 3340
+				       0B  13 0047E 	    BEQL    12$							      ;
+			    0002805B   8F  DD 00480 	    PUSHL   #163931						      ; 3345
+		         6B	       01  FB 00486 	    CALLS   #1, LIB$SIGNAL					      ;
+				       04  11 00489 	    BRB     13$							      ; 3346
+	   EB	         52	       03  F3 0048B 12$:    AOBLEQ  #3, I, 11$						      ; 3338
+				  24   AE  9F 0048F 13$:    PUSHAB  TOKEN_STRING					      ; 3357
+				  0C   AC  DD 00492 	    PUSHL   PC_REL_CONTEXT					      ;
+		         7E	  8F   8F  9A 00495 	    MOVZBL  #143, -(SP)						      ;
+			    0044424E   8F  DD 00499 	    PUSHL   #4473422						      ;
+				       53  DD 0049F 14$:    PUSHL   R3							      ;
+				  14   AC  DD 004A1 	    PUSHL   OUT_PC_PTR						      ;
+				       56  DD 004A4 	    PUSHL   R6							      ;
+		         69	       07  FB 004A6 	    CALLS   #7, INST_OUTPUT					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-14
+; Digital Equipment Corporation
+;
+				     01DE  31 004A9 	    BRW     43$							      ;
+		         7E	  24   AE  9A 004AC 15$:    MOVZBL  TOKEN_STRING, -(SP)					      ; 3368
+				     FF63  31 004B0 	    BRW     5$							      ;
+		    F4   8F	       55  91 004B3 16$:    CMPB    TOKEN_TYPE, #244					      ; 3225
+				       77  12 004B7 	    BNEQ    21$							      ;
+		         20	  24   AE  E9 004B9 	    BLBC    TOKEN_STRING, 17$					      ; 3389
+	   50	    14   BC	  10   AC  C1 004BD 	    ADDL3   BRANCH_SIZE, @OUT_PC_PTR, R0			      ; 3405
+		    25   AE	       50  C2 004C3 	    SUBL2   R0, ACTUAL_OPRND					      ;
+				  10   AC  D5 004C7 	    TSTL    BRANCH_SIZE						      ; 3406
+				       11  12 004CA 	    BNEQ    17$							      ;
+				       53  DD 004CC 	    PUSHL   R3							      ; 3419
+		  0000V  CF	       01  FB 004CE 	    CALLS   #1, ASSUME_AT_PC					      ;
+	   50	    25   AE	       50  C3 004D3 	    SUBL3   R0, ACTUAL_OPRND, R0				      ; 3418
+      25   AE	         50	       05  C3 004D8 	    SUBL3   #5, R0, ACTUAL_OPRND				      ;
+		         52	  10   AC  D0 004DD 17$:    MOVL    BRANCH_SIZE, R2					      ; 3428
+				       2B  13 004E1 	    BEQL    19$							      ;
+	   50	         52	       03  78 004E3 	    ASHL    #3, R2, R0						      ; 3442
+      25   AE	         50	       00  EE 004E7 	    EXTV    #0, R0, ACTUAL_OPRND, R1				      ;
+				       51     004EC									      ;
+		         51	  25   AE  D1 004ED 	    CMPL    ACTUAL_OPRND, R1					      ;
+				       0E  13 004F1 	    BEQL    18$							      ;
+				  25   AE  DD 004F3 	    PUSHL   ACTUAL_OPRND					      ; 3446
+				       01  DD 004F6 	    PUSHL   #1							      ;
+			    00028290   8F  DD 004F8 	    PUSHL   #164496						      ;
+		         6B	       03  FB 004FE 	    CALLS   #3, LIB$SIGNAL					      ;
+				  25   AE  9F 00501 18$:    PUSHAB  ACTUAL_OPRND					      ; 3452
+				       52  DD 00504 	    PUSHL   R2							      ;
+		         7E	444E   8F  3C 00506 	    MOVZWL  #17486, -(SP)					      ;
+				     0172  31 0050B 	    BRW     42$							      ;
+		    0C   AE	       0F  90 0050E 19$:    MOVB    #15, LEXEME_BUFFER					      ; 3467
+		    24   AE	       04  90 00512 	    MOVB    #4, TOKEN_STRING					      ; 3468
+		         54	       0E  D0 00516 	    MOVL    #14, MODE						      ; 3469
+		         02	       57  E9 00519 	    BLBC    AT_FLAG, 20$					      ; 3471
+				       54  D6 0051C 	    INCL    MODE						      ; 3473
+				  24   AE  9F 0051E 20$:    PUSHAB  TOKEN_STRING					      ; 3482
+	   50	         54	       04  78 00521 	    ASHL    #4, MODE, R0					      ;
+		         51	  10   AE  9A 00525 	    MOVZBL  LEXEME_BUFFER, R1					      ;
+	   7E	         50	       51  C9 00529 	    BISL3   R1, R0, -(SP)					      ;
+				     014A  31 0052D 	    BRW     41$							      ;
+		    48   8F	       55  91 00530 21$:    CMPB    TOKEN_TYPE, #72					      ; 3225
+				       2E  12 00534 	    BNEQ    25$							      ;
+				  24   AE  9F 00536 	    PUSHAB  TOKEN_STRING					      ; 3493
+				       53  DD 00539 	    PUSHL   R3							      ;
+		         6A	       02  FB 0053B 	    CALLS   #2, GET_NEXT_TOKEN					      ;
+	      000000F6   8F	       50  D1 0053E 	    CMPL    R0, #246						      ;
+				       09  13 00545 	    BEQL    22$							      ;
+			    00028288   8F  DD 00547 	    PUSHL   #164488						      ; 3502
+		         6B	       01  FB 0054D 	    CALLS   #1, LIB$SIGNAL					      ;
+		         03	       57  E9 00550 22$:    BLBC    AT_FLAG, 24$					      ; 3509
+				     0139  31 00553 23$:    BRW     44$							      ;
+		         50	  24   AE  9A 00556 24$:    MOVZBL  TOKEN_STRING, R0					      ; 3523
+	   7E	         50 00000070   8F  C9 0055A 	    BISL3   #112, R0, -(SP)					      ;
+				       3E  11 00562 	    BRB     29$							      ;
+		    F6   8F	       55  91 00564 25$:    CMPB    TOKEN_TYPE, #246					      ; 3225
+				       40  12 00568 	    BNEQ    30$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-15
+; Digital Equipment Corporation
+;
+		         54	       06  D0 0056A 	    MOVL    #6, MODE						      ; 3539
+		         51	  04   A3  D0 0056D 	    MOVL    4(R3), INPUT_PTR					      ; 3543
+		         50	       61  9A 00571 	    MOVZBL  (INPUT_PTR), CHAR					      ; 3544
+		         2B	       50  D1 00574 	    CMPL    CHAR, #43						      ; 3545
+				       11  12 00577 	    BNEQ    27$							      ;
+		         54	       08  D0 00579 	    MOVL    #8, MODE						      ; 3551
+		         02	       57  E9 0057C 	    BLBC    AT_FLAG, 26$					      ; 3552
+				       54  D6 0057F 	    INCL    MODE						      ; 3554
+      04   A3	         51	       01  C1 00581 26$:    ADDL3   #1, INPUT_PTR, 4(R3)				      ; 3557
+				       63  B7 00586 	    DECW    (R3)						      ; 3558
+				       0C  11 00588 	    BRB     28$							      ; 3545
+		         09	       57  E9 0058A 27$:    BLBC    AT_FLAG, 28$					      ; 3561
+			    00028288   8F  DD 0058D 	    PUSHL   #164488						      ; 3571
+		         6B	       01  FB 00593 	    CALLS   #1, LIB$SIGNAL					      ;
+	   50	         54	       04  78 00596 28$:    ASHL    #4, MODE, R0					      ; 3578
+		         51	  24   AE  9A 0059A 	    MOVZBL  TOKEN_STRING, R1					      ;
+	   7E	         50	       51  C9 0059E 	    BISL3   R1, R0, -(SP)					      ;
+		         7E	4259   8F  3C 005A2 29$:    MOVZWL  #16985, -(SP)					      ;
+				     FE71  31 005A7 	    BRW     6$							      ;
+		    F2   8F	       55  91 005AA 30$:    CMPB    TOKEN_TYPE, #242					      ; 3225
+				       06  1F 005AE 	    BLSSU   31$							      ;
+		    F3   8F	       55  91 005B0 	    CMPB    TOKEN_TYPE, #243					      ;
+				       06  1B 005B4 	    BLEQU   32$							      ;
+		    F5   8F	       55  91 005B6 31$:    CMPB    TOKEN_TYPE, #245					      ;
+				       97  12 005BA 	    BNEQ    23$							      ;
+				       53  DD 005BC 32$:    PUSHL   R3							      ; 3603
+		  0000V  CF	       01  FB 005BE 	    CALLS   #1, ASSUME_AT_PC					      ;
+		         51	       50  D0 005C3 	    MOVL    R0, INDEXING					      ;
+				       3C  19 005C6 	    BLSS    33$							      ;
+		         50	  24   AE  9A 005C8 	    MOVZBL  TOKEN_STRING, R0					      ; 3620
+		         50	  14   BC  C0 005CC 	    ADDL2   @OUT_PC_PTR, R0					      ;
+		         50	       51  C0 005D0 	    ADDL2   INDEXING, R0					      ;
+	   50	    25   AE	       50  C3 005D3 	    SUBL3   R0, ACTUAL_OPRND, R0				      ;
+      25   AE	         50	       01  C3 005D8 	    SUBL3   #1, R0, ACTUAL_OPRND				      ;
+		    0C   AE	       0F  90 005DD 	    MOVB    #15, LEXEME_BUFFER					      ; 3626
+		         50	  24   AE  9A 005E1 	    MOVZBL  TOKEN_STRING, R0					      ; 3635
+		         50	       08  C4 005E5 	    MULL2   #8, R0						      ;
+      25   AE	         50	       00  EE 005E8 	    EXTV    #0, R0, ACTUAL_OPRND, R1				      ;
+				       51     005ED									      ;
+		         51	  25   AE  D1 005EE 	    CMPL    ACTUAL_OPRND, R1					      ; 3634
+				       5D  13 005F2 	    BEQL    37$							      ;
+				  25   AE  DD 005F4 	    PUSHL   ACTUAL_OPRND					      ; 3640
+				       01  DD 005F7 	    PUSHL   #1							      ;
+			    00028290   8F  DD 005F9 	    PUSHL   #164496						      ;
+		         6B	       03  FB 005FF 	    CALLS   #3, LIB$SIGNAL					      ;
+				       4D  11 00602 	    BRB     37$							      ; 3603
+				  0C   AE  9F 00604 33$:    PUSHAB  LEXEME_BUFFER					      ; 3649
+				       53  DD 00607 	    PUSHL   R3							      ;
+		         6A	       02  FB 00609 	    CALLS   #2, GET_NEXT_TOKEN					      ;
+	      000000F6   8F	       50  D1 0060C 	    CMPL    R0, #246						      ;
+				       09  13 00613 	    BEQL    34$							      ;
+			    00028288   8F  DD 00615 	    PUSHL   #164488						      ; 3658
+		         6B	       01  FB 0061B 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50	  24   AE  9A 0061E 34$:    MOVZBL  TOKEN_STRING, R0					      ; 3675
+		         50	       08  C4 00622 	    MULL2   #8, R0						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 6-16
+; Digital Equipment Corporation
+;
+      25   AE	         50	       00  EE 00625 	    EXTV    #0, R0, ACTUAL_OPRND, R1				      ;
+				       51     0062A									      ;
+		         51	  25   AE  D1 0062B 	    CMPL    ACTUAL_OPRND, R1					      ; 3674
+				       20  13 0062F 	    BEQL    37$							      ;
+		         52	  24   AE  9A 00631 	    MOVZBL  TOKEN_STRING, I					      ; 3691
+				       52  D7 00635 	    DECL    I							      ;
+				       14  11 00637 	    BRB     36$							      ;
+				  25 AE42  95 00639 35$:    TSTB    ACTUAL_BYTES[I]					      ; 3693
+				       0E  13 0063D 	    BEQL    36$							      ;
+				  25   AE  DD 0063F 	    PUSHL   ACTUAL_OPRND					      ; 3699
+				       01  DD 00642 	    PUSHL   #1							      ;
+			    00028290   8F  DD 00644 	    PUSHL   #164496						      ;
+		         6B	       03  FB 0064A 	    CALLS   #3, LIB$SIGNAL					      ;
+	   E8	         52	       03  F3 0064D 36$:    AOBLEQ  #3, I, 35$						      ; 3691
+		         54	       0A  D0 00651 37$:    MOVL    #10, MODE						      ; 3715
+		    F2   8F	       55  91 00654 	    CMPB    TOKEN_TYPE, #242					      ; 3717
+				       03  1B 00658 	    BLEQU   38$							      ;
+		         54	       02  C0 0065A 	    ADDL2   #2, MODE						      ; 3719
+		    F3   8F	       55  91 0065D 38$:    CMPB    TOKEN_TYPE, #243					      ; 3721
+				       03  1B 00661 	    BLEQU   39$							      ;
+		         54	       02  C0 00663 	    ADDL2   #2, MODE						      ; 3723
+		         02	       57  E9 00666 39$:    BLBC    AT_FLAG, 40$					      ; 3725
+				       54  D6 00669 	    INCL    MODE						      ; 3727
+				  24   AE  9F 0066B 40$:    PUSHAB  TOKEN_STRING					      ; 3736
+	   54	         54	       04  78 0066E 	    ASHL    #4, MODE, R4					      ;
+		         50	  10   AE  9A 00672 	    MOVZBL  LEXEME_BUFFER, R0					      ;
+	   7E	         54	       50  C9 00676 	    BISL3   R0, R4, -(SP)					      ;
+			    00434259   8F  DD 0067A 41$:    PUSHL   #4407897						      ;
+				       53  DD 00680 42$:    PUSHL   R3							      ;
+				  14   AC  DD 00682 	    PUSHL   OUT_PC_PTR						      ;
+				       56  DD 00685 	    PUSHL   R6							      ;
+		         69	       06  FB 00687 	    CALLS   #6, INST_OUTPUT					      ;
+		         0B	       50  E8 0068A 43$:    BLBS    R0, 45$						      ;
+				       0D  11 0068D 	    BRB     46$							      ;
+			    00028288   8F  DD 0068F 44$:    PUSHL   #164488						      ; 3748
+		         6B	       01  FB 00695 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50	       01  D0 00698 45$:    MOVL    #1, R0						      ; 3759
+					   04 0069B 	    RET     							      ;
+				       50  D4 0069C 46$:    CLRL    R0							      ; 3082
+					   04 0069E 	    RET     							      ;
+
+; Routine Size:  767 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 7
+; Digital Equipment Corporation
+;
+;	3761	ROUTINE ASSUME_AT_PC( inst_stg_desc ) =
+;	3762	
+;	3763	!++
+;	3764	! Functional Description:
+;	3765	!	This routine is called from ENC_OPERAND to determine if
+;	3766	!	the addressing mode should be PC-relative.
+;	3767	!
+;	3768	! Formal Parameters:
+;	3769	!	inst_stg_desc	-String descriptor that points to the operand buffer.
+;	3770	!			 The pointer and length fields provide information
+;	3771	!			 on the remaining characters in the current operand.
+;	3772	!
+;	3773	! Implicit Inputs:
+;	3774	!	NONE
+;	3775	!
+;	3776	! Implicit Outputs:
+;	3777	!	NONE
+;	3778	!
+;	3779	! Routine Value:
+;	3780	!	 0 - PC-relative addressing mode (input buffer was empty).
+;	3781	!	 1 - PC-relative indexed addressing mode (first non-blank was "[").
+;	3782	!	-1 - NOT PC-relative.
+;	3783	!
+;	3784	! Side Effects:
+;	3785	!	NONE
+;	3786	!--
+;	3787		BEGIN
+;	3788		MAP
+;	3789			inst_stg_desc : REF BLOCK [, BYTE];
+;	3790	
+;	3791		LOCAL
+;	3792			CHAR : BYTE;
+;	3793	
+;	3794	%IF DBG_ENC
+;     L 3795	%THEN
+;     U 3796		$fao_tt_out( 'ASSUME_AT_PC !SW :!AS', .inst_stg_desc[dsc$w_length], .inst_stg_desc);
+;     U 3797	%FI
+;	3798	
+;	3799		IF ( .inst_stg_desc[dsc$w_length] NEQ 0 )
+;	3800		THEN
+;	3801		    BEGIN
+;	3802		    char = ch$rchar (.inst_stg_desc [dsc$a_pointer]);
+;	3803		    IF (.char EQL ASC_SQ_OPN_BRAK)		! If square bracket
+;	3804		    THEN					! then indexing mode is needed
+;	3805			RETURN (1)
+;	3806		    ELSE
+;	3807			RETURN (-1);
+;	3808		    END
+;	3809		ELSE
+;	3810		    RETURN (0);					! No indexing off PC
+;	3811	END;
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 7-1
+; Digital Equipment Corporation
+;
+
+					 0000 0069F ASSUME_AT_PC:
+							    .WORD   Save nothing					      ; 3761
+		         50	  04   AC  D0 006A1 	    MOVL    INST_STG_DESC, R0					      ; 3799
+				       60  B5 006A5 	    TSTW    (R0)						      ;
+				       12  13 006A7 	    BEQL    2$							      ;
+		         51	  04   B0  90 006A9 	    MOVB    @4(R0), CHAR					      ; 3802
+		    5B   8F	       51  91 006AD 	    CMPB    CHAR, #91						      ; 3803
+				       04  12 006B1 	    BNEQ    1$							      ;
+		         50	       01  D0 006B3 	    MOVL    #1, R0						      ; 3805
+					   04 006B6 	    RET     							      ;
+		         50	       01  CE 006B7 1$:     MNEGL   #1, R0						      ; 3807
+					   04 006BA 	    RET     							      ;
+				       50  D4 006BB 2$:     CLRL    R0							      ; 3761
+					   04 006BD 	    RET     							      ;
+
+; Routine Size:  31 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8
+; Digital Equipment Corporation
+;
+;	3812	ROUTINE INST_OUTPUT ( OUT_BYTE_STREAM,
+;	3813				OUT_PC_PTR,
+;	3814				inst_stg_desc,
+;	3815				CTRL_STRING,
+;	3816				ARG0,
+;	3817				ARG1,
+;	3818				ARG2 ) =
+;	3819	!++
+;	3820	! Functional Description:
+;	3821	!	This routine serves two purposes.
+;	3822	!	1) It checks whether an INDEXed operand reference
+;	3823	!	   has been made, and outputs the proper mode byte
+;	3824	!	   if it has.
+;	3825	!	2) It takes care of all other instruction byte
+;	3826	!	   output as well - not that this routine computes
+;	3827	!	   any of this - it just localizes such output.
+;	3828	!
+;	3829	! Formal Parameters:
+;	3830	!	OUT_BYTE_STREAM	-The address of a pointer to where
+;	3831	!			 we are in the output stream.  The address
+;	3832	!			 is passed here so that we can both
+;	3833	!			 use and update this pointer.
+;	3834	!	OUT_PC_PTR	-The address of a pointer to where we
+;	3835	!			 will eventually be stuffing the encoded
+;	3836	!			 instruction in memory.  We both read
+;	3837	!			 and write (update) this pointer.
+;	3838	!	INST_CS_PTR	-The address of a pointer to the counted
+;	3839	!			 string which describes where we are at
+;	3840	!			 in operand encoding.  Again, a pointer is
+;	3841	!			 passed here so that we may update the cs-pointer.
+;	3842	!	CTRL_STRING	-A 4-character 'string' (a longword) which effectively
+;	3843	!			 controls the action taken by this routine.  The first
+;	3844	!			 (0th) character should be 'Y' or 'N', and is taken to
+;	3845	!			 indicate whether we should allow indexing
+;	3846	!			 for the current operand reference or not.
+;	3847	!			 The next 2 or 3 characters must be 1 of 'B', 'C', or 'D',
+;	3848	!			 and are used to indicate how the remaining parameters
+;	3849	!			 should be interpreted.  See below.
+;	3850	!			 The last of these characters must be 0 (null) to
+;	3851	!			 indicate when the routine should stop.
+;	3852	!	ARG?		-These args are interpretted differently depending
+;	3853	!			 on the 'control string'.  See above and below.
+;	3854	!
+;	3855	! Implicit Inputs:
+;	3856	!	None.
+;	3857	!
+;	3858	! Outputs:
+;	3859	!	None.
+;	3860	!
+;	3861	! Implicit Outputs:
+;	3862	!	The instruction bytes are copied into the output vector.
+;	3863	!
+;	3864	! Routine Value:
+;	3865	!	TRUE - if all went OK,
+;	3866	!	FALSE otherwise.  The only thing that can go wrong
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8-1
+; Digital Equipment Corporation
+;
+;	3867	!	is that we are prepared to allow indexing, see that the
+;	3868	!	indexing reference is started, ('[' is encountered),
+;	3869	!	but then don't get a proper completion of this token.
+;	3870	!--
+;	3871		BEGIN
+;	3872		MAP
+;	3873			! The reason why the following 3 are REFs to LONGs
+;	3874			! instead of to BYTEs is because they are actually
+;	3875			! REF REF VECTOR[,BYTE], which we can only achieve
+;	3876			! (so far!?) via a REF LONG.
+;	3877	
+;	3878			OUT_PC_PTR  : REF VECTOR[,LONG],
+;	3879			inst_stg_desc : REF BLOCK [, BYTE],
+;	3880			OUT_BYTE_STREAM : REF VECTOR[,LONG];
+;	3881	
+;	3882		LOCAL
+;	3883			CTRL_PTR : REF VECTOR[,BYTE],		! Examine the control string.
+;	3884			OUT_BYTE_PTR : REF VECTOR[,BYTE],	! Pass back instruction bytes.
+;	3885			ARG_PTR : REF VECTOR[,LONG],		! Used to pick up ARGx.
+;	3886	
+;	3887			TOKEN_BUFFER : VECTOR[ CHS_PER_LEXEME, BYTE],
+;	3888			token_stg_desc : BLOCK [12, BYTE];
+;	3889	
+;	3890		! Set up the various pointers we will use.
+;	3891	
+;	3892		! The ARG_PTR is used to access each
+;	3893		! successive ARGx actual parameter.  Since
+;	3894		! we loop thru them, we can't use the formal
+;	3895		! parameter's name.
+;	3896	
+;	3897		ARG_PTR = ARG0;
+;	3898	
+;	3899		! CTRL_PTR points to the individual characters
+;	3900		! passed to us in the actual parameter, 'CTRL_STRING'.
+;	3901		! Note that this is actually a literal, because
+;	3902		! the characters are contained within the parameter.
+;	3903	
+;	3904		CTRL_PTR = CTRL_STRING;
+;	3905	
+;	3906		! OUT_BYTE_PTR points to where in the output
+;	3907		! byte instruction stream we currently are
+;	3908		! expected to stuff instruction bytes.  
+;	3909		! We fetch this value by loading the
+;	3910		! contents of the cell pointed to by
+;	3911		! OUT_BYTE_STREAM.  The reason why we must be
+;	3912		! passed the address of this pointer is because
+;	3913		! we must also be able to increment the pointer.
+;	3914	
+;	3915		OUT_BYTE_PTR = .OUT_BYTE_STREAM[0];
+;	3916	
+;	3917		! Likewise, we are passed the address of the
+;	3918		! current instruction-stream counted-string
+;	3919		! pointer, INST_CS.  We initialize ourselves
+;	3920		! a copy of it in a similar manner.  The reason
+;	3921		! for this, again, is because we must be able
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8-2
+; Digital Equipment Corporation
+;
+;	3922		! to update this pointer.
+;	3923	
+;	3924		token_stg_desc [dsc$w_length] = 0;
+;	3925		token_stg_desc [dsc$a_pointer] = token_buffer;
+;	3926		token_stg_desc [dsc$w_maxlen] = chs_per_lexeme;
+;	3927	
+;	3928		! Whether or not we should consider INDEXing
+;	3929		! mode is indicated by the first character in
+;	3930		! the control string.  We take 'Y' to mean
+;	3931		! yes, and assume that anything else means no.
+;	3932	
+;	3933		IF( .CTRL_PTR[0] EQL %C'Y' )
+;	3934		THEN
+;	3935			BEGIN
+;	3936	
+;	3937			! Check for indexing.
+;	3938			! The difficulty here is that we must 'look ahead'
+;	3939			! ourselves before calling GET_NEXT_TOKEN because
+;	3940			! it doesn't mind overwriting the instruction
+;	3941			! string and we can't allow that since we should
+;	3942			! really leave the string untouched unless
+;	3943			! indexing mode was actually specified.
+;	3944	
+;	3945			LOCAL
+;	3946				input_ptr,
+;	3947				char;
+;	3948	
+;	3949			input_ptr = .inst_stg_desc [dsc$a_pointer];
+;	3950			char = ch$rchar (.input_ptr);
+;	3951			IF .char EQL %C'['
+;	3952			THEN
+;	3953				BEGIN
+;	3954	
+;	3955				! Now we had better have an indexed reference
+;	3956				! or we must complain.
+;	3957	
+;	3958				IF( GET_NEXT_TOKEN( .inst_stg_desc, TOKEN_BUFFER ) NEQ INDEXING_TOKEN )
+;	3959				THEN
+;	3960					! Operand syntax error
+;	3961	
+;	3962					signal(DBG$_OPSYNTAX);
+;	3963					! no return
+;	3964	
+;	3965				! Output the indexing mode byte.
+;	3966	
+;	3967				OUT_BYTE_PTR[0] = (INDEXING_MODE ^ 4) OR .TOKEN_BUFFER[0];
+;	3968				OUT_BYTE_PTR = .OUT_BYTE_PTR + BYTE_LENGTH;
+;	3969				END;
+;	3970			END;
+;	3971	
+;	3972		! We continue on according to the control string,
+;	3973		! breaking out of the loop when the first 0 byte
+;	3974		! is encountered.
+;	3975	
+;	3976		CTRL_PTR = .CTRL_PTR +1;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8-3
+; Digital Equipment Corporation
+;
+;	3977	
+;	3978		DO
+;	3979			BEGIN
+;	3980			BIND
+;	3981				ARG_BYTE	= (.ARG_PTR) : REF VECTOR[,BYTE];
+;	3982		
+;	3983			SELECTONE .CTRL_PTR[0] OF
+;	3984				SET
+;	3985	
+;	3986				[%C'B']: ! Pass back 1 byte.
+;	3987	
+;	3988					BEGIN
+;	3989	
+;	3990					OUT_BYTE_PTR[0] = .ARG_PTR[0];
+;	3991					OUT_BYTE_PTR = .OUT_BYTE_PTR +BYTE_LENGTH;
+;	3992					ARG_PTR = .ARG_PTR +LONG_LENGTH;
+;	3993					END;
+;	3994	
+;	3995				[%C'C']: ! Counted byte string.
+;	3996	
+;	3997					BEGIN
+;	3998					CH$MOVE( .ARG_BYTE[0], ARG_BYTE[1], .OUT_BYTE_PTR );
+;	3999					OUT_BYTE_PTR = .OUT_BYTE_PTR + .ARG_BYTE[0];
+;	4000					ARG_PTR = .ARG_PTR + LONG_LENGTH;
+;	4001					END;
+;	4002	
+;	4003				[%C'D']: ! Count + byte address.
+;	4004	
+;	4005					BEGIN
+;	4006					CH$MOVE( .ARG_PTR[0], .ARG_PTR[1], .OUT_BYTE_PTR );
+;	4007					OUT_BYTE_PTR = .OUT_BYTE_PTR + .ARG_PTR[0];
+;	4008					ARG_PTR = .ARG_PTR + 2*LONG_LENGTH;
+;	4009					END;
+;	4010	
+;	4011				[OTHERWISE]:	! Error.
+;	4012					RETURN(0);
+;	4013	
+;	4014				TES;
+;	4015	
+;	4016			! Loop back to consider the next control character
+;	4017			! until a null character is encountered.
+;	4018	
+;	4019			CTRL_PTR = .CTRL_PTR + 1;
+;	4020	
+;	4021			END
+;	4022	
+;	4023		WHILE( .CTRL_PTR[0] NEQ 0 );
+;	4024	
+;	4025	
+;	4026		! Before we return we must update the
+;	4027		! instruction-stream pointer which is being
+;	4028		! maintained by the routine which called
+;	4029		! us.  We can do this since we were passed
+;	4030		! the address of this pointer.  We must also update
+;	4031		! the output PC pointer, and we can do this because
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8-4
+; Digital Equipment Corporation
+;
+;	4032		! we know how many bytes this call to this routine
+;	4033		! has added to the output byte stream.
+;	4034	
+;	4035		OUT_PC_PTR[0] = .OUT_PC_PTR[0] + (.OUT_BYTE_PTR - .OUT_BYTE_STREAM[0] );
+;	4036	
+;	4037		OUT_BYTE_STREAM[0] = .OUT_BYTE_PTR;
+;	4038	
+;	4039		! Likewise, we update the caller's instruction string pointer.
+;	4040	
+;	4041		RETURN(TRUE);
+;	4042		END;
+
+
+
+
+
+					 03FC 006BE INST_OUTPUT:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9			      ; 3812
+		         5E	       24  C2 006C0 	    SUBL2   #36, SP						      ;
+		         57	  14   AC  9E 006C3 	    MOVAB   ARG0, ARG_PTR					      ; 3897
+		         59	  10   AC  9E 006C7 	    MOVAB   CTRL_STRING, CTRL_PTR				      ; 3904
+		         58	  04   BC  D0 006CB 	    MOVL    @OUT_BYTE_STREAM, OUT_BYTE_PTR			      ; 3915
+				       6E  B4 006CF 	    CLRW    TOKEN_STG_DESC					      ; 3924
+		    04   AE	  0C   AE  9E 006D1 	    MOVAB   TOKEN_BUFFER, TOKEN_STG_DESC+4			      ; 3925
+		    08   AE	       18  B0 006D6 	    MOVW    #24, TOKEN_STG_DESC+8				      ; 3926
+		    59   8F	       69  91 006DA 	    CMPB    (CTRL_PTR), #89					      ; 3933
+				       3A  12 006DE 	    BNEQ    2$							      ;
+		         50	  0C   AC  D0 006E0 	    MOVL    INST_STG_DESC, R0					      ; 3949
+		         51	  04   A0  D0 006E4 	    MOVL    4(R0), INPUT_PTR					      ;
+		         51	       61  9A 006E8 	    MOVZBL  (INPUT_PTR), CHAR					      ; 3950
+	      0000005B   8F	       51  D1 006EB 	    CMPL    CHAR, #91						      ; 3951
+				       26  12 006F2 	    BNEQ    2$							      ;
+				  0C   AE  9F 006F4 	    PUSHAB  TOKEN_BUFFER					      ; 3958
+				       50  DD 006F7 	    PUSHL   R0							      ;
+		  FA0C   CF	       02  FB 006F9 	    CALLS   #2, GET_NEXT_TOKEN					      ;
+	      000000F0   8F	       50  D1 006FE 	    CMPL    R0, #240						      ;
+				       0D  13 00705 	    BEQL    1$							      ;
+			    00028288   8F  DD 00707 	    PUSHL   #164488						      ; 3962
+	      00000000G  00	       01  FB 0070D 	    CALLS   #1, LIB$SIGNAL					      ;
+	   88	    0C   AE	  40   8F  89 00714 1$:     BISB3   #64, TOKEN_BUFFER, (OUT_BYTE_PTR)+			      ; 3967
+				       59  D6 0071A 2$:     INCL    CTRL_PTR						      ; 3976
+		         50	       57  D0 0071C 3$:     MOVL    ARG_PTR, R0						      ; 3979
+		    42   8F	       69  91 0071F 	    CMPB    (CTRL_PTR), #66					      ; 3983
+				       05  12 00723 	    BNEQ    4$							      ;
+		         88	       67  90 00725 	    MOVB    (ARG_PTR), (OUT_BYTE_PTR)+				      ; 3990
+				       17  11 00728 	    BRB     5$							      ; 3992
+		    43   8F	       69  91 0072A 4$:     CMPB    (CTRL_PTR), #67					      ; 3983
+				       16  12 0072E 	    BNEQ    6$							      ;
+		         56	       60  D0 00730 	    MOVL    (R0), R6						      ; 3998
+		         50	       66  9A 00733 	    MOVZBL  (R6), R0						      ;
+	   68	    01   A6	       50  28 00736 	    MOVC3   R0, 1(R6), (OUT_BYTE_PTR)				      ;
+		         50	       66  9A 0073B 	    MOVZBL  (R6), R0						      ; 3999
+		         58	       50  C0 0073E 	    ADDL2   R0, OUT_BYTE_PTR					      ;
+		         57	       04  C0 00741 5$:     ADDL2   #4, ARG_PTR						      ; 4000
+				       11  11 00744 	    BRB     7$							      ; 3983
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 8-5
+; Digital Equipment Corporation
+;
+		    44   8F	       69  91 00746 6$:     CMPB    (CTRL_PTR), #68					      ;
+				       22  12 0074A 	    BNEQ    8$							      ;
+	   68	    04   B7	       67  28 0074C 	    MOVC3   (ARG_PTR), @4(ARG_PTR), (OUT_BYTE_PTR)		      ; 4006
+		         58	       87  C0 00751 	    ADDL2   (ARG_PTR)+, OUT_BYTE_PTR				      ; 4007
+		         57	       04  C0 00754 	    ADDL2   #4, ARG_PTR						      ; 4008
+				       59  D6 00757 7$:     INCL    CTRL_PTR						      ; 4019
+				       69  95 00759 	    TSTB    (CTRL_PTR)						      ; 4023
+				       BF  12 0075B 	    BNEQ    3$							      ;
+	   50	         58	  04   BC  C3 0075D 	    SUBL3   @OUT_BYTE_STREAM, OUT_BYTE_PTR, R0			      ; 4035
+		    08   BC	       50  C0 00762 	    ADDL2   R0, @OUT_PC_PTR					      ;
+		    04   BC	       58  D0 00766 	    MOVL    OUT_BYTE_PTR, @OUT_BYTE_STREAM			      ; 4037
+		         50	       01  D0 0076A 	    MOVL    #1, R0						      ; 4041
+					   04 0076D 	    RET     							      ;
+				       50  D4 0076E 8$:     CLRL    R0							      ; 3812
+					   04 00770 	    RET     							      ;
+
+; Routine Size:  179 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 9
+; Digital Equipment Corporation
+;
+;	4043	ROUTINE OPCODE_MATCH ( opco_stg_desc, OPINFO_PTR ) = 
+;	4044	
+;	4045	!++
+;	4046	! Functional Description:
+;	4047	!	Look up the given opcode mnemonic in the OPINFO
+;	4048	!	table to see if it is there.  If so, return the
+;	4049	!	opcode and a pointer to the OPINFO table entry which 
+;	4050	!	corresponds to this opcode.
+;	4051	!
+;	4052	! Formal Parameters:
+;	4053	!	opco_stg_desc	-String descriptor for the given opcode.
+;	4054	!	OPINFO_PTR	-The address of where we should copy the
+;	4055	!			 OPINFO record pointer when we find the
+;	4056	!			 one which corresponds to the given opcode.
+;	4057	! Implicit Inputs:
+;	4058	!	The OPINFO table.  See DBGINS.B32
+;	4059	!
+;	4060	! Implicit Outputs:
+;	4061	!	A pointer to the OPINFO table entry that
+;	4062	!	corresponds to the found opcode mnemonic
+;	4063	!	is returned via the formal pointer OPINFO_PTR.
+;	4064	!
+;	4065	! Returned Value:
+;	4066	!	-1	-if the lookup fails or if there is insufficient
+;	4067	!		 information in the table entry for the program
+;	4068	!		 to continue.
+;	4069	!	The found OPCODE, otherwise.  This is non-standard,
+;	4070	!	so we use a local macro to draw attention to it.
+;	4071	!--
+;	4072		BEGIN
+;	4073		MACRO
+;	4074			OPC_MATCH_ERROR = -1 %;		!  Error return for this routine.
+;	4075		MAP
+;	4076			opco_stg_desc : REF BLOCK [, BYTE],
+;	4077			OPINFO_PTR : REF VECTOR[,LONG];
+;	4078	
+;	4079		LOCAL
+;	4080			OP_SIZE,
+;	4081			OP_FROM_TABLE	:	VECTOR[ OP_CH_SIZE, BYTE ],
+;	4082			OP_FROM_USER	:	VECTOR[ OP_CH_SIZE, BYTE ];
+;	4083	
+;	4084		! First check that the supposed opcode is not too long
+;	4085		! or too short.  We can't return 0 and be like
+;	4086		! you'd expect because 0 is a valid opcode.
+;	4087	
+;	4088		OP_SIZE = .opco_stg_desc [dsc$w_length];
+;	4089		IF( .OP_SIZE GTR OP_CH_SIZE  OR  .OP_SIZE LEQ 0 )
+;	4090		THEN
+;	4091			BEGIN
+;	4092	
+;	4093	%IF dbg_enc1
+;     L 4094	%THEN
+;     U 4095			$fao_tt_out ('opcode length out of range');
+;     U 4096	%FI
+;	4097	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 9-1
+; Digital Equipment Corporation
+;
+;	4098			RETURN( OPC_MATCH_ERROR );
+;	4099			END;
+;	4100	
+;	4101	%IF DBG_ENC
+;     L 4102	%THEN
+;     U 4103		$fao_tt_out( 'Opcode_match called with: !SB:!AS' , .OP_SIZE,
+;     U 4104				.opco_stg_desc);
+;     U 4105	%FI
+;	4106		! Otherwise do the lookup linearly by first filling a local
+;	4107		! vector with spaces, copying in the given opcode mnemonic,
+;	4108		! and then looping thru the table comparing this one with
+;	4109		! the ones encoded (from RAD50) into ASCII.  This approach
+;	4110		! is easier and less wasteful of code space than writing a 
+;	4111		! routine to convert ASCII to RAD50.
+;	4112	
+;	4113		CH$FILL ( ASC_SPACE, OP_CH_SIZE, OP_FROM_USER );
+;	4114		CH$MOVE ( .OP_SIZE, ch$ptr (.opco_stg_desc [dsc$a_pointer]), OP_FROM_USER );
+;	4115	
+;	4116		INCR OPCODE FROM 0 TO MAXOPCODE DO
+;	4117			BEGIN
+;	4118	
+;	4119			! Extract the opcode from the OPINFO table, 
+;	4120			! converting it to ASCII, and compare
+;	4121			! this with what we are looking for.
+;	4122	
+;	4123			DBG$CONV_R_50( .DBG$GB_OPINFO[ .OPCODE, OP_NAME], OP_FROM_TABLE );
+;	4124			IF( CH$EQL( OP_CH_SIZE, OP_FROM_USER, OP_CH_SIZE, OP_FROM_TABLE ) )
+;	4125			THEN
+;	4126				BEGIN
+;	4127				!  Pass back both the opcode (the current
+;	4128				!  index into the table), and the pointer
+;	4129				!  to the current table entry.
+;	4130	
+;	4131				OPINFO_PTR[0] = DBG$GB_OPINFO[ .OPCODE, OP_NAME ];
+;	4132				RETURN(.OPCODE);
+;	4133				END;
+;	4134			END;
+;	4135	
+;	4136		! If we don't RETURN in the above loop,
+;	4137		! the lookup has failed.
+;	4138	
+;	4139		RETURN( OPC_MATCH_ERROR );
+;	4140		END;
+
+
+
+
+
+					 08FC 00771 OPCODE_MATCH:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R11				      ; 4043
+		         5B 00000000G  EF  9E 00773 	    MOVAB   DBG$GB_OPINFO, R11					      ;
+		         5E	       10  C2 0077A 	    SUBL2   #16, SP						      ;
+		         56	  04   AC  D0 0077D 	    MOVL    OPCO_STG_DESC, R6					      ; 4088
+		         57	       66  3C 00781 	    MOVZWL  (R6), OP_SIZE					      ;
+		         06	       57  D1 00784 	    CMPL    OP_SIZE, #6						      ; 4089
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 9-2
+; Digital Equipment Corporation
+;
+				       3C  14 00787 	    BGTR    3$							      ;
+				       57  D5 00789 	    TSTL    OP_SIZE						      ;
+				       38  15 0078B 	    BLEQ    3$							      ;
+	   20	         6E	       00  2C 0078D 	    MOVC5   #0, (SP), #32, #6, OP_FROM_USER			      ; 4113
+		         6E	       06     00791									      ;
+	   6E	    04   B6	       57  28 00793 	    MOVC3   OP_SIZE, @4(R6), OP_FROM_USER			      ; 4114
+				       55  D4 00798 	    CLRL    OPCODE						      ; 4116
+				  08   AE  9F 0079A 1$:     PUSHAB  OP_FROM_TABLE					      ; 4123
+	   54	         55	       06  C5 0079D 	    MULL3   #6, OPCODE, R4					      ;
+				     6B44  9F 007A1 	    PUSHAB  DBG$GB_OPINFO[R4]					      ;
+				       9E  DD 007A4 	    PUSHL   @(SP)+						      ;
+	      00000000G  EF	       02  FB 007A6 	    CALLS   #2, DBG$CONV_R_50					      ;
+      08   AE	         6E	       06  29 007AD 	    CMPC3   #6, OP_FROM_USER, OP_FROM_TABLE			      ; 4124
+				       09  12 007B2 	    BNEQ    2$							      ;
+      08   BC	         54	       5B  C1 007B4 	    ADDL3   R11, R4, @OPINFO_PTR				      ; 4131
+		         50	       55  D0 007B9 	    MOVL    OPCODE, R0						      ; 4132
+					   04 007BC 	    RET     							      ;
+	   D5	         55 000000FC   8F  F3 007BD 2$:     AOBLEQ  #252, OPCODE, 1$					      ; 4116
+		         50	       01  CE 007C5 3$:     MNEGL   #1, R0						      ; 4139
+					   04 007C8 	    RET     							      ; 4043
+
+; Routine Size:  88 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10
+; Digital Equipment Corporation
+;
+;	4141	ROUTINE GET_OPERAND ( INS_STG_DESC, OPRND_STG_DESC ) =
+;	4142	
+;	4143	!++
+;	4144	! Functional Description:
+;	4145	!
+;	4146	!	This routine scans the input stream and extracts the next operand from
+;	4147	!	it.  During this scan, all expressions and symbolic names are evaluated.
+;	4148	!	The resultant "operand" string is placed in the buffer pointed to by
+;	4149	!	OPRND_STG_DESC.  This string can then be encoded by ENC_OPERAND into
+;	4150	!	a binary operand for the instruction.
+;	4151	!
+;	4152	! Formal Parameters:
+;	4153	!	INS_STG_DESC	- Address of string descriptor for remaining operands of
+;	4154	!			  instruction being encoded.
+;	4155	!	OPRND_STG_DESC	- Address of string descriptor for buffer into which the
+;	4156	!			  "pre-processed" operand string will be placed
+;	4157	!
+;	4158	! Implicit Inputs:
+;	4159	!	DBG$GL_MOD_PTR	- is used by the radix convert routine
+;	4160	!			  to convert numeric input.
+;	4161	!
+;	4162	! Implicit Outputs:
+;	4163	!	OPRND_STG_DESC[DSC$W_LENGTH] will be set to the length of the operand.
+;	4164	!	The buffer pointed to by OPRND_STG_DESC[DSC$A_POINTER] will contain the
+;	4165	!	ASCII operand string.
+;	4166	!
+;	4167	! Return Value:
+;	4168	!	OPR_FOUND (1)	- if an operand is found.
+;	4169	!	NO_MORE_OPR (0)	- if there are no more operands.
+;	4170	!
+;	4171	! Side Effects:
+;	4172	!	All errors in expressions or undefined symbols are signaled, causing
+;	4173	!	an warning message to be printed, and a stack unwind to occur.
+;	4174	!--
+;	4175	
+;	4176	BEGIN
+;	4177	
+;	4178	MAP
+;	4179		INS_STG_DESC : REF BLOCK [,BYTE],			! String descriptor for remaining operands
+;	4180		OPRND_STG_DESC : REF BLOCK[,BYTE];			! String descriptor for returned operand
+;	4181	
+;	4182	LABEL
+;	4183		DIGIT_CODE,						! Digit string token code
+;	4184		OPERATOR_CODE,						! Operator handling code
+;	4185		RANGLE_CODE,						! Right angle bracket handling code
+;	4186		ALPHA_CODE,						! Alpha_str_token handling code
+;	4187		GET_PATHNAME;						! Code to get a pathname
+;	4188	
+;	4189	BIND
+;	4190		EXP_STG = UPLIT BYTE (%ASCIC '^X!XL');			! FAO control string to convert binary numbers to ASCII
+;	4191	
+;	4192	MACRO
+;	4193		EXP$L_VALUE = 0, 0, 32, 0%,				! EXP$L_VALUE (expression value stacked)
+;	4194		EXP$B_OPERATOR = 0, 32, 8, 1%;				! EXP$B_OPERATOR (token_type for stacked operator)
+;	4195	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-1
+; Digital Equipment Corporation
+;
+;	4196	LITERAL
+;	4197		EXP$C_SIZE = 5,						! Length of one expression stack entry
+;	4198		EXPR_STK_SIZ = EXP$C_SIZE * 20,				! Allow 20 entries on expression stack
+;	4199		NEGATION_TOKEN = %X'FF';				! Token value for unary '-'
+;	4200	
+;	4201	LOCAL
+;	4202		FLAG,							! Flag to exit operator select loop
+;	4203		CUR_VALUE,						! Current numeric value found
+;	4204		CUR_OPERATOR: BYTE,					! Current operator to process
+;	4205		NUMBER_FLAG,						! Flag set if operand contained a numeric value
+;	4206		PREV_TOKEN: BYTE,					! Previous token_type value
+;	4207		TOKEN_TYPE: BYTE,					! Encoded type of token found by DBG$MAR_GET_LEX
+;	4208		LEX_STG_DESC : BLOCK[12,BYTE],				! String descriptor for current lexeme
+;	4209		STACK_PTR : REF BLOCK[,BYTE],				! Pointer to next free position on expression stack
+;	4210		EXPR_STACK : BLOCK[EXPR_STK_SIZ,BYTE],			! Expression stack (grows from low address to high address)
+;	4211		LEX_BUF : VECTOR [CHS_PER_LEXEME,BYTE];			! Buffer to hold ascii lexeme string
+;	4212	
+;	4213	!++
+;	4214	! First check that there is more input in the remaing operand string.
+;	4215	!--
+;	4216	IF (.INS_STG_DESC[DSC$W_LENGTH] EQL 0)
+;	4217	THEN
+;	4218		RETURN(NO_MORE_OPR);
+;	4219	
+;	4220	!++
+;	4221	! Initialize local variables before starting lexical scan.
+;	4222	!--
+;	4223	CUR_VALUE = 0;
+;	4224	CUR_OPERATOR = 0;
+;	4225	NUMBER_FLAG = FALSE;
+;	4226	TOKEN_TYPE = 0;
+;	4227	STACK_PTR = CH$PTR(EXPR_STACK, 0);
+;	4228	
+;	4229	!++
+;	4230	! Zero the buffer which will hold the return operand.
+;	4231	!--
+;	4232	ZEROCOR (.OPRND_STG_DESC[DSC$A_POINTER], (.OPRND_STG_DESC[DSC$W_MAXLEN]/4));
+;	4233	
+;	4234	!++
+;	4235	! Now enter a loop to process the operand.  There are two ways out of this loop.
+;	4236	! The first is by signaling an error.  The second is by encountering a comma or
+;	4237	! end of line.  Some tokens may be passed directly into the operand string and
+;	4238	! others indicate expressions or symbols.  There is no check in this routine
+;	4239	! of the validity of the resultant operand string.
+;	4240	!--
+;	4241	REPEAT
+;	4242		BEGIN
+;	4243		!++
+;	4244		! Get the next token.  The process this token based on its
+;	4245		! encoded token_type.
+;	4246		!--
+;	4247		LEX_STG_DESC[DSC$W_LENGTH] = 0;
+;	4248		LEX_STG_DESC[DSC$A_POINTER] = LEX_BUF;
+;	4249		LEX_STG_DESC[DSC$W_MAXLEN] = CHS_PER_LEXEME;
+;	4250		PREV_TOKEN = .TOKEN_TYPE;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-2
+; Digital Equipment Corporation
+;
+;	4251		TOKEN_TYPE = INS_GET_TOKEN (.INS_STG_DESC, LEX_STG_DESC);
+;	4252		SELECTONE .TOKEN_TYPE OF
+;	4253	
+;	4254			SET
+;	4255	
+;	4256		[CL_PAREN_TOKEN,				! ')' as in (reg)
+;	4257		 RSQUARE_TOKEN,					! ']' as in [reg]
+;	4258		 HASH_TOKEN,					! '#' as in #literal
+;	4259		 UP_ARROW_TOKEN,				! '^' as in ^X,^O,^D
+;	4260		 PERIOD_TOKEN]:					! '.' as in .+offset, .-offset
+;	4261			BEGIN
+;	4262			!++
+;	4263			! All of these tokens are passed directly into the resultant
+;	4264			! operand string.
+;	4265			!--
+;	4266			ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4267			END;
+;	4268	
+;	4269	
+;	4270		[OP_PAREN_TOKEN,				! '(' as in (reg)
+;	4271		 LSQUARE_TOKEN]:				! '[' as in [reg]
+;	4272			BEGIN
+;	4273			!++
+;	4274			! These tokens signify the end of an expression, if there is
+;	4275			! one.  The expression and the token should be passed through.
+;	4276			!--
+;	4277			IF (.NUMBER_FLAG)
+;	4278			THEN
+;	4279				BEGIN
+;	4280				!++
+;	4281				! Output the literal to the operand string.  The case
+;	4282				! here is number(reg) or number[reg].
+;	4283				!--
+;	4284				IF (.STACK_PTR NEQU EXPR_STACK)
+;	4285				THEN
+;	4286					BEGIN
+;	4287					SIGNAL(DBG$_NOANGLE);		! Invalid expression - no closing ">"
+;	4288					RETURN (0);			! No return
+;	4289					END;
+;	4290				DBG$GL_BUF_SIZ = 0;
+;	4291				DBG$CP_OUT_STR = CH$PTR(.OPRND_STG_DESC[DSC$A_POINTER],
+;	4292							.OPRND_STG_DESC[DSC$W_LENGTH]);
+;	4293				DBG$FAO_PUT(EXP_STG, .CUR_VALUE);
+;	4294				OPRND_STG_DESC[DSC$W_LENGTH] = .OPRND_STG_DESC[DSC$W_LENGTH] + .DBG$GL_BUF_SIZ;
+;	4295				NUMBER_FLAG = FALSE;			! Reset literal flag
+;	4296				CUR_VALUE = 0;
+;	4297				END;
+;	4298	
+;	4299			!++
+;	4300			! Now pass through the '(' or the ')'.
+;	4301			!--
+;	4302			ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4303			END;
+;	4304	
+;	4305	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-3
+; Digital Equipment Corporation
+;
+;	4306		[AT_SIGN_TOKEN,					! '@' shift operator or @(reg)
+;	4307		 PLUS_TOKEN,					! '+' addition operator or (reg)+
+;	4308		 MINUS_TOKEN,					! '-' subtraction operator or -(reg)
+;	4309		 SLASH_TOKEN,					! '/' division operator
+;	4310		 ASTERISK_TOKEN]:				! '*' multiplication operator
+;	4311	    OPERATOR_CODE:
+;	4312			BEGIN
+;	4313			!++
+;	4314			! All operators are handled here.  Later additions should be the
+;	4315			! ampersand (&) for logical AND and exclamation point (!) for
+;	4316			! logical OR.  These are not currently passed through the
+;	4317			! lexical scanner.
+;	4318			!--
+;	4319			IF (.TOKEN_TYPE EQLU AT_SIGN_TOKEN) AND (.PREV_TOKEN EQL 0)
+;	4320			THEN
+;	4321				BEGIN
+;	4322				!++
+;	4323				! There is no previous token therefore this must the
+;	4324				! @(reg) case.  Just pass the operator through to the
+;	4325				! resultant operand string.
+;	4326				!--
+;	4327				ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4328				LEAVE OPERATOR_CODE;
+;	4329				END;
+;	4330	
+;	4331			IF ((.TOKEN_TYPE EQLU PLUS_TOKEN) OR (.TOKEN_TYPE EQLU MINUS_TOKEN)) AND
+;	4332			   (.PREV_TOKEN EQLU PERIOD_TOKEN)
+;	4333			THEN
+;	4334				BEGIN
+;	4335				!++
+;	4336				! This is the case of .+offset or .-offset; pass through
+;	4337				! the operator to the resultant string.
+;	4338				!--
+;	4339				ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4340				LEAVE OPERATOR_CODE;
+;	4341				END;
+;	4342	
+;	4343			IF (.TOKEN_TYPE EQLU PLUS_TOKEN) AND (.PREV_TOKEN EQLU CL_PAREN_TOKEN)
+;	4344			THEN
+;	4345				BEGIN
+;	4346				!++
+;	4347				! This is the case (reg)+.  Pass through the operator.
+;	4348				!--
+;	4349				ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4350				LEAVE OPERATOR_CODE;
+;	4351				END;
+;	4352	
+;	4353			IF (.TOKEN_TYPE EQLU MINUS_TOKEN)
+;	4354			THEN
+;	4355				BEGIN
+;	4356				!++
+;	4357				! Check for the case -(reg).
+;	4358				!--
+;	4359				LOCAL
+;	4360					NEXT_CHAR : BYTE;		! Next character from operand stream
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-4
+; Digital Equipment Corporation
+;
+;	4361	
+;	4362				!++
+;	4363				! Is the next character a '('?
+;	4364				!--
+;	4365				NEXT_CHAR = CH$RCHAR(.INS_STG_DESC[DSC$A_POINTER]);
+;	4366				IF (.NEXT_CHAR EQL %C'(')
+;	4367				THEN
+;	4368					BEGIN
+;	4369					!++
+;	4370					! This was a case of -(reg).  Pass through the '-'.
+;	4371					!--
+;	4372					ADD_TO_OPER_STG (LEX_STG_DESC, .OPRND_STG_DESC);
+;	4373					LEAVE OPERATOR_CODE;
+;	4374					END;
+;	4375				END;
+;	4376	
+;	4377			!++
+;	4378			! There should never be two successive operators unless the
+;	4379			! second is the unary negation operator.  If the second is the
+;	4380			! negation operator, then stack it and the current value.
+;	4381			! Then set the current operator to be negation_token.
+;	4382			!--
+;	4383			IF (.CUR_OPERATOR NEQ 0)
+;	4384			THEN
+;	4385				IF (.TOKEN_TYPE NEQU MINUS_TOKEN)
+;	4386				THEN
+;	4387					BEGIN
+;	4388					SIGNAL(DBG$_MULTOPR);		! Two sequential operators found
+;	4389					RETURN (0);			! No return
+;	4390					END
+;	4391				ELSE
+;	4392					BEGIN
+;	4393					IF ((.STACK_PTR + EXP$C_SIZE) GTRU (EXPR_STACK + EXPR_STK_SIZ))
+;	4394					THEN
+;	4395						BEGIN
+;	4396						SIGNAL(DBG$_EXPSTKOVR);	! Stack overflow
+;	4397						RETURN (0);		! No return
+;	4398						END;
+;	4399	
+;	4400					!++
+;	4401					! Stack the current operator and value.
+;	4402					!--
+;	4403					STACK_PTR[EXP$L_VALUE] = .CUR_VALUE;
+;	4404					STACK_PTR[EXP$B_OPERATOR] = .CUR_OPERATOR;
+;	4405					STACK_PTR = CH$PTR(.STACK_PTR, EXP$C_SIZE);
+;	4406					CUR_VALUE = 0;
+;	4407					CUR_OPERATOR = NEGATION_TOKEN;
+;	4408					LEAVE OPERATOR_CODE;
+;	4409					END;
+;	4410	
+;	4411			!++
+;	4412			! Set the new current operator and go get the next token.
+;	4413			!--
+;	4414			CUR_OPERATOR = .TOKEN_TYPE;
+;	4415			END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-5
+; Digital Equipment Corporation
+;
+;	4416	
+;	4417	
+;	4418		[LANGLE_TOKEN]:					! '<' encloses expression
+;	4419			BEGIN
+;	4420			!++
+;	4421			! Check for expression stack overflow.
+;	4422			!--
+;	4423			IF ((.STACK_PTR + EXP$C_SIZE) GTRU (EXPR_STACK + EXPR_STK_SIZ))
+;	4424			THEN
+;	4425				BEGIN
+;	4426				SIGNAL(DBG$_EXPSTKOVR);		! Stack overflow
+;	4427				RETURN (0);			! No return
+;	4428				END;
+;	4429	
+;	4430			!++
+;	4431			! Put new entry on expression stack.  Then reset the pointer
+;	4432			! to the next unused entry.  Push the current operator if there
+;	4433			! is one, otherwise push a '<' as the operator.
+;	4434			!--
+;	4435			STACK_PTR[EXP$L_VALUE] = .CUR_VALUE;
+;	4436			STACK_PTR[EXP$B_OPERATOR] = (IF (.CUR_OPERATOR NEQ 0)
+;	4437						     THEN
+;	4438							    .CUR_OPERATOR
+;	4439						     ELSE
+;	4440							    .TOKEN_TYPE);
+;	4441			STACK_PTR = CH$PTR(.STACK_PTR, EXP$C_SIZE);
+;	4442			CUR_VALUE = 0;
+;	4443			CUR_OPERATOR = 0;
+;	4444			END;
+;	4445	
+;	4446	
+;	4447		[RANGLE_TOKEN]:					! '>' encloses expression
+;	4448			BEGIN
+;	4449			!++
+;	4450			! The right angle bracket causes one entry to be taken off the
+;	4451			! expression stack.  This entry always immediately precedes the
+;	4452			! next free entry pointed to by STACK_PTR.  When an entry is
+;	4453			! removed, the current value and the stacked value must be
+;	4454			! combined using the stacked operator.  If the operator is a
+;	4455			! left angle bracket, then there were two consecutive left
+;	4456			! angle brackets in the expression and there is no stacked value
+;	4457			! to be combined.
+;	4458			!--
+;	4459			IF (.STACK_PTR LEQU EXPR_STACK)			! Check for stack underflow
+;	4460			THEN
+;	4461				BEGIN
+;	4462				SIGNAL(DBG$_NOANGLE);		! Stack underflow
+;	4463				RETURN (0);			! No return
+;	4464				END;
+;	4465			IF (.CUR_OPERATOR NEQU 0) OR (.PREV_TOKEN EQLU LANGLE_TOKEN) ! Check for missing operand
+;	4466			THEN
+;	4467				BEGIN
+;	4468				SIGNAL(DBG$_NOOPRND);		! Missing operand (got operator>)
+;	4469				RETURN (0);			! No return
+;	4470				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-6
+; Digital Equipment Corporation
+;
+;	4471			STACK_PTR = CH$PTR(.STACK_PTR, -EXP$C_SIZE); ! Point to last entry
+;	4472			DO
+;	4473			BEGIN
+;	4474			FLAG = TRUE;
+;	4475			SELECTONE .STACK_PTR[EXP$B_OPERATOR] OF
+;	4476				SET
+;	4477			[PLUS_TOKEN]:		CUR_VALUE = .STACK_PTR[EXP$L_VALUE] + .CUR_VALUE;
+;	4478			[MINUS_TOKEN]:		CUR_VALUE = .STACK_PTR[EXP$L_VALUE] - .CUR_VALUE;
+;	4479			[ASTERISK_TOKEN]:	CUR_VALUE = .STACK_PTR[EXP$L_VALUE] * .CUR_VALUE;
+;	4480			[SLASH_TOKEN]:		CUR_VALUE = .STACK_PTR[EXP$L_VALUE] / .CUR_VALUE;
+;	4481	 		[AT_SIGN_TOKEN]:	CUR_VALUE = .STACK_PTR[EXP$L_VALUE] ^ .CUR_VALUE;
+;	4482			[LANGLE_TOKEN]:		0;			! No operation to perform
+;	4483			[NEGATION_TOKEN]:	BEGIN
+;	4484						FLAG = FALSE;
+;	4485						CUR_VALUE = -.CUR_VALUE;
+;	4486						IF (.STACK_PTR GTRU EXPR_STACK) ! Check for stack underflow
+;	4487						THEN
+;	4488							STACK_PTR = CH$PTR(.STACK_PTR, -EXP$C_SIZE); ! Point to last entry
+;	4489						END;
+;	4490			[OTHERWISE]:		BEGIN
+;	4491						SIGNAL(DBG$_INVOPR);	! Unrecognized operand
+;	4492						RETURN (0);		! No return
+;	4493						END;
+;	4494				TES;
+;	4495			END
+;	4496			UNTIL (.FLAG);
+;	4497	
+;	4498			CUR_OPERATOR = 0;
+;	4499			NUMBER_FLAG = TRUE;
+;	4500			END;
+;	4501	
+;	4502	
+;	4503		[DIGIT_STR_TOKEN]:				! numeric string
+;	4504			BEGIN
+;	4505			IF (.CUR_OPERATOR EQL 0)
+;	4506			THEN
+;	4507				CUR_VALUE = .(.LEX_STG_DESC[DSC$A_POINTER])
+;	4508			ELSE
+;	4509				DO
+;	4510				BEGIN
+;	4511				FLAG = TRUE;
+;	4512				IF (.CUR_OPERATOR EQL NEGATION_TOKEN)
+;	4513				THEN
+;	4514					CUR_VALUE = .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4515				SELECTONE .CUR_OPERATOR OF
+;	4516					SET
+;	4517				[PLUS_TOKEN]:	CUR_VALUE = .CUR_VALUE + .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4518				[MINUS_TOKEN]:	CUR_VALUE = .CUR_VALUE - .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4519				[ASTERISK_TOKEN]: CUR_VALUE = .CUR_VALUE * .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4520				[SLASH_TOKEN]:	CUR_VALUE = .CUR_VALUE / .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4521				[AT_SIGN_TOKEN]: CUR_VALUE = .CUR_VALUE ^ .(.LEX_STG_DESC[DSC$A_POINTER]);
+;	4522				[LANGLE_TOKEN]:	0;		! No operation to perform
+;	4523				[NEGATION_TOKEN]:
+;	4524						BEGIN
+;	4525						FLAG = FALSE;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-7
+; Digital Equipment Corporation
+;
+;	4526						CUR_VALUE = -.CUR_VALUE;
+;	4527						IF (.STACK_PTR GTRU EXPR_STACK) ! Check for stack underflow
+;	4528						THEN
+;	4529							BEGIN
+;	4530							STACK_PTR = CH$PTR(.STACK_PTR, -EXP$C_SIZE); ! Point to last entry
+;	4531							CUR_OPERATOR = .STACK_PTR[EXP$B_OPERATOR];
+;	4532							.LEX_STG_DESC[DSC$A_POINTER] = .CUR_VALUE;
+;	4533							CUR_VALUE = .STACK_PTR[EXP$L_VALUE];
+;	4534							END;
+;	4535						END;
+;	4536				[OTHERWISE]:	BEGIN
+;	4537						SIGNAL(DBG$_INVOPR);	! Unrecognized operand
+;	4538						RETURN (0);		! No return
+;	4539						END;
+;	4540					TES;
+;	4541				END
+;	4542				UNTIL (.FLAG);
+;	4543			CUR_OPERATOR = 0;
+;	4544			NUMBER_FLAG = TRUE;
+;	4545			END;
+;	4546	
+;	4547	
+;	4548		[EOL_TOKEN,
+;	4549		 COMMA_TOKEN]:					! End of operand string
+;	4550			BEGIN
+;	4551			!++
+;	4552			! Either of these tokens signals the end of the operand string.
+;	4553			! Check if there is a numeric value to be written to the
+;	4554			! resultant string.  Check for expressions left on the stack.
+;	4555			!--
+;	4556			IF (.NUMBER_FLAG)
+;	4557			THEN
+;	4558				BEGIN
+;	4559				!++
+;	4560				! Output the current value as an ASCII string.
+;	4561				!--
+;	4562				DBG$GL_BUF_SIZ = 0;
+;	4563				DBG$CP_OUT_STR = CH$PTR(.OPRND_STG_DESC[DSC$A_POINTER],
+;	4564							.OPRND_STG_DESC[DSC$W_LENGTH]);
+;	4565				DBG$FAO_PUT(EXP_STG, .CUR_VALUE);
+;	4566				OPRND_STG_DESC[DSC$W_LENGTH] = .OPRND_STG_DESC[DSC$W_LENGTH] + .DBG$GL_BUF_SIZ;
+;	4567				END;
+;	4568	
+;	4569			!++
+;	4570			! Check that there is not a missing operand, i.e., there exists
+;	4571			! a current operator.
+;	4572			!--
+;	4573			IF (.CUR_OPERATOR NEQ 0)
+;	4574			THEN
+;	4575				BEGIN
+;	4576				SIGNAL(DBG$_NOOPRND);		! Missing operand (got operator>)
+;	4577				RETURN (0);			! No return
+;	4578				END;
+;	4579	
+;	4580			!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-8
+; Digital Equipment Corporation
+;
+;	4581			! Check that there was nothing left on the expression stack.
+;	4582			!--
+;	4583			IF (.STACK_PTR NEQU EXPR_STACK)
+;	4584			THEN
+;	4585				BEGIN
+;	4586				SIGNAL(DBG$_NOANGLE);		! Expression stack not empty
+;	4587				RETURN (0);			! No return
+;	4588				END;
+;	4589			IF (.OPRND_STG_DESC[DSC$W_LENGTH] EQL 0)
+;	4590			THEN
+;	4591				RETURN(NO_MORE_OPR)				! Got , or EOL_TOKEN and no operand
+;	4592			ELSE
+;	4593				RETURN(OPR_FOUND);
+;	4594			END;
+;	4595	
+;	4596	
+;	4597		[ALPHA_STR_TOKEN]:				! Register, L^,B^,... or symbolic name
+;	4598	    ALPHA_CODE:
+;	4599			BEGIN
+;	4600			!++
+;	4601			! First check if the string is a register.  If so then pass
+;	4602			! it through.
+;	4603			!--
+;	4604			LOCAL
+;	4605				SYMBOL_BUF : VECTOR[MAX_BUF_SIZ,BYTE],	! Buffer to hold all of pathname
+;	4606				SYMBOL_DESC : BLOCK[12,BYTE],		! String descriptor for pathname
+;	4607				REG_NUM,				! Number of register found
+;	4608				LEXEME_PTR,				! Pointer to ASCII lexeme
+;	4609									! Interface to path_to_val uses
+;	4610				temp_valu_desc : VALU_DESCRIPTOR,	!  a so-called value descriptor
+;	4611	
+;	4612				NEXT_CHAR : BYTE,			! Next ASCII character in input stream
+;	4613				CHAR : BYTE;				! First ASCII character in lexeme
+;	4614	
+;	4615			IF ((REG_NUM = DBG$REG_MATCH(LEX_STG_DESC)) GEQ 0) AND
+;	4616			    (.REG_NUM LEQ MAX_REG)
+;	4617			THEN
+;	4618				BEGIN
+;	4619				!++
+;	4620				! Found a register.  Pass it through.
+;	4621				!--
+;	4622				ADD_TO_OPER_STG ( LEX_STG_DESC, .OPRND_STG_DESC);
+;	4623				LEAVE ALPHA_CODE;
+;	4624				END;
+;	4625	
+;	4626			!++
+;	4627			! It was not a register.  Check if it is one of the following
+;	4628			! directives:  L^, W^, B^, I^, or S^.  If so, pass the token
+;	4629			! through.
+;	4630			!--
+;	4631			LEXEME_PTR = CH$PTR(.LEX_STG_DESC[DSC$A_POINTER], 0);
+;	4632			CHAR = CH$RCHAR(.LEXEME_PTR);
+;	4633			IF (.LEX_STG_DESC[DSC$W_LENGTH] EQL 1)
+;	4634			THEN
+;	4635				IF (.CHAR EQL %C'B') OR
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-9
+; Digital Equipment Corporation
+;
+;	4636				   (.CHAR EQL %C'W') OR
+;	4637				   (.CHAR EQL %C'L') OR
+;	4638				   (.CHAR EQL %C'I') OR
+;	4639				   (.CHAR EQL %C'S')
+;	4640				THEN
+;	4641					BEGIN
+;	4642					NEXT_CHAR = CH$RCHAR(.INS_STG_DESC[DSC$A_POINTER]);
+;	4643					IF (.NEXT_CHAR EQL %C'^')
+;	4644					THEN
+;	4645						BEGIN
+;	4646						LEX_BUF[1] = %C'^';	! add up-arrow too
+;	4647						LEX_STG_DESC[DSC$W_LENGTH] = .LEX_STG_DESC[DSC$W_LENGTH] + 1;
+;	4648						INS_STG_DESC[DSC$W_LENGTH] = .INS_STG_DESC[DSC$W_LENGTH] - 1;
+;	4649						INS_STG_DESC[DSC$A_POINTER] = .INS_STG_DESC[DSC$A_POINTER] + 1;
+;	4650						ADD_TO_OPER_STG (LEX_STG_DESC, .OPRND_STG_DESC);
+;	4651						LEAVE ALPHA_CODE;
+;	4652						END;
+;	4653					END;
+;	4654	
+;	4655			!++
+;	4656			! The alpha string must be a symbolic name.
+;	4657			! Add the current token to the path name by calling DBG$BUILD_PATH.
+;	4658			! Also build an ascii string of the pathname using ADD_TO_OPER_STG 
+;	4659			! in case the symbol turns out to be undefined.  This will be
+;	4660			! used for forward branching in patch area.
+;	4661			!--
+;	4662			SYMBOL_DESC[DSC$W_LENGTH] = 0;
+;	4663			SYMBOL_DESC[DSC$A_POINTER] = SYMBOL_BUF;
+;	4664			SYMBOL_DESC[DSC$W_MAXLEN] = MAX_BUF_SIZ;
+;	4665			ADD_TO_OPER_STG (LEX_STG_DESC, SYMBOL_DESC);
+;	4666	
+;	4667			! If build_path returns, then it must have worked.
+;	4668	
+;	4669			DBG$BUILD_PATH(LEX_STG_DESC);
+;	4670	
+;	4671	    GET_PATHNAME:
+;	4672				BEGIN
+;	4673				!++
+;	4674				! Now loop to get the rest of the pathname (if any).
+;	4675				!--
+;	4676				REPEAT
+;	4677				BEGIN
+;	4678				NEXT_CHAR = CH$RCHAR(.INS_STG_DESC[DSC$A_POINTER]);
+;	4679				IF (.NEXT_CHAR NEQ %C'\')
+;	4680				THEN
+;	4681					LEAVE GET_PATHNAME
+;	4682				ELSE
+;	4683					BEGIN
+;	4684					!+
+;	4685					! Found a backslash.  There must be another
+;	4686					! piece of the pathname.
+;	4687					!-
+;	4688					!+
+;	4689					! At this point the only valid tokens are:
+;	4690					! BACK_SLASH_TOKEN and ALPHA_STR_TOKEN.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-10
+; Digital Equipment Corporation
+;
+;	4691					!-
+;	4692					LEX_STG_DESC[DSC$W_LENGTH] = 0;
+;	4693					LEX_STG_DESC[DSC$A_POINTER] = LEX_BUF;
+;	4694					LEX_STG_DESC[DSC$W_MAXLEN] = CHS_PER_LEXEME;
+;	4695					INS_GET_TOKEN (.INS_STG_DESC, LEX_STG_DESC);
+;	4696					ADD_TO_OPER_STG (LEX_STG_DESC, SYMBOL_DESC); ! Add backslash to symbol
+;	4697	
+;	4698					LEX_STG_DESC[DSC$W_LENGTH] = 0;
+;	4699					LEX_STG_DESC[DSC$A_POINTER] = LEX_BUF;
+;	4700					LEX_STG_DESC[DSC$W_MAXLEN] = CHS_PER_LEXEME;
+;	4701					IF (INS_GET_TOKEN (.INS_STG_DESC, LEX_STG_DESC)) NEQ ALPHA_STR_TOKEN
+;	4702					THEN
+;	4703						BEGIN
+;	4704						SIGNAL(DBG$_INVPATH, 1, SYMBOL_DESC); ! Invalid pathname
+;	4705						RETURN (0);		! No return
+;	4706						END;
+;	4707	
+;	4708					! Build_path either works or SIGNALs its way out.
+;	4709					
+;	4710					DBG$BUILD_PATH(LEX_STG_DESC);
+;	4711					ADD_TO_OPER_STG (LEX_STG_DESC, SYMBOL_DESC);
+;	4712					END;
+;	4713				END;
+;	4714				END;
+;	4715	
+;	4716			!++
+;	4717			! Now the complete pathname has been acquired.  Try to
+;	4718			! convert it into a numerical value.  If the symbol is not
+;	4719			! defined then DBG$PATH_TO_VAL signals an error and does
+;	4720			! not return.
+;	4721			!--
+;	4722			DBG$PATH_TO_VAL(temp_valu_desc);
+;	4723	
+;	4724			!++
+;	4725			! Now that a value has been found, process it as if a
+;	4726			! DIGIT_STR_TOKEN had been found.
+;	4727			!--
+;	4728			IF (.CUR_OPERATOR EQL 0)
+;	4729			THEN
+;	4730				CUR_VALUE = .temp_valu_desc[VALU_VALUE]
+;	4731			ELSE
+;	4732				DO
+;	4733				BEGIN
+;	4734				FLAG = TRUE;
+;	4735				IF (.CUR_OPERATOR EQL NEGATION_TOKEN)
+;	4736				THEN
+;	4737					CUR_VALUE = .TEMP_VALU_desc[VALU_VALUE];
+;	4738				SELECTONE .CUR_OPERATOR OF
+;	4739					SET
+;	4740				[PLUS_TOKEN]:	CUR_VALUE = .CUR_VALUE + .temp_valu_desc[VALU_VALUE];
+;	4741				[MINUS_TOKEN]:	CUR_VALUE = .CUR_VALUE - .temp_valu_desc[VALU_VALUE];
+;	4742				[ASTERISK_TOKEN]: CUR_VALUE = .CUR_VALUE * .temp_valu_desc[VALU_VALUE];
+;	4743				[SLASH_TOKEN]:	CUR_VALUE = .CUR_VALUE / .temp_valu_desc[VALU_VALUE];
+;	4744				[AT_SIGN_TOKEN]: CUR_VALUE = .CUR_VALUE ^ .temp_valu_desc[VALU_VALUE];
+;	4745				[LANGLE_TOKEN]:	0;		! No operation to perform
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-11
+; Digital Equipment Corporation
+;
+;	4746				[NEGATION_TOKEN]:
+;	4747						BEGIN
+;	4748						FLAG = FALSE;
+;	4749						CUR_VALUE = -.CUR_VALUE;
+;	4750						IF (.STACK_PTR GTRU EXPR_STACK) ! Check for stack underflow
+;	4751						THEN
+;	4752							BEGIN
+;	4753							STACK_PTR = CH$PTR(.STACK_PTR, -EXP$C_SIZE); ! Point to last entry
+;	4754							CUR_OPERATOR = .STACK_PTR[EXP$B_OPERATOR];
+;	4755							temp_valu_desc[VALU_VALUE] = .CUR_VALUE;
+;	4756							CUR_VALUE = .STACK_PTR[EXP$L_VALUE];
+;	4757							END;
+;	4758						END;
+;	4759				[OTHERWISE]:	BEGIN
+;	4760						SIGNAL(DBG$_INVOPR);	! Unrecognized operand
+;	4761						RETURN (0);		! No return
+;	4762						END;
+;	4763					TES;
+;	4764				END
+;	4765				UNTIL (.FLAG);
+;	4766			CUR_OPERATOR = 0;
+;	4767			NUMBER_FLAG = TRUE;
+;	4768			END;
+;	4769	
+;	4770	
+;	4771		[OTHERWISE]:					! Illegal token type
+;	4772			BEGIN
+;	4773			SIGNAL(DBG$_INVOPR);			! Unrecognized operand
+;	4774			RETURN (0);				! No return
+;	4775			END;
+;	4776	
+;	4777			TES;
+;	4778		END;						! End of REPEAT loop
+;	4779	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00014 P.AAB:  .ASCII  <5>\^X!XL\						      ;
+					      0001A	    .BLKB   2
+
+						    EXP_STG=		P.AAB
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 007C9 GET_OPERAND:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 4141
+		         5E	FD60   CE  9E 007CB 	    MOVAB   -672(SP), SP					      ;
+		         56	  04   AC  D0 007D0 	    MOVL    INS_STG_DESC, R6					      ; 4216
+				       66  B5 007D4 	    TSTW    (R6)						      ;
+				       03  12 007D6 	    BNEQ    1$							      ;
+				     0499  31 007D8 	    BRW     78$							      ;
+				       58  D4 007DB 1$:     CLRL    CUR_VALUE						      ; 4223
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-12
+; Digital Equipment Corporation
+;
+				       59  94 007DD 	    CLRB    CUR_OPERATOR					      ; 4224
+				       6E  D4 007DF 	    CLRL    NUMBER_FLAG						      ; 4225
+				       5A  94 007E1 	    CLRB    TOKEN_TYPE						      ; 4226
+		         5B	  90   AD  9E 007E3 	    MOVAB   EXPR_STACK, STACK_PTR				      ; 4227
+		         57	  08   AC  D0 007E7 	    MOVL    OPRND_STG_DESC, R7					      ; 4232
+		         50	  08   A7  3C 007EB 	    MOVZWL  8(R7), R0						      ;
+		         50	       04  C6 007EF 	    DIVL2   #4, R0						      ;
+		         50	       04  C4 007F2 	    MULL2   #4, R0						      ;
+	   00	         6E	       00  2C 007F5 	    MOVC5   #0, (SP), #0, R0, @4(R7)				      ;
+		    04   B7	       50     007F9									      ;
+				  F4   AD  B4 007FC 2$:     CLRW    LEX_STG_DESC					      ; 4247
+		    F8   AD	FF78   CD  9E 007FF 	    MOVAB   LEX_BUF, LEX_STG_DESC+4				      ; 4248
+		    FC   AD	       18  B0 00805 	    MOVW    #24, LEX_STG_DESC+8					      ; 4249
+		         54	       5A  90 00809 	    MOVB    TOKEN_TYPE, PREV_TOKEN				      ; 4250
+				  F4   AD  9F 0080C 	    PUSHAB  LEX_STG_DESC					      ; 4251
+				       56  DD 0080F 	    PUSHL   R6							      ;
+		  0000V  CF	       02  FB 00811 	    CALLS   #2, INS_GET_TOKEN					      ;
+		         5A	       50  90 00816 	    MOVB    R0, TOKEN_TYPE					      ;
+		         3F	       5A  91 00819 	    CMPB    TOKEN_TYPE, #63					      ; 4252
+				       65  13 0081C 	    BEQL    6$							      ;
+		    44   8F	       5A  91 0081E 	    CMPB    TOKEN_TYPE, #68					      ;
+				       5F  13 00822 	    BEQL    6$							      ;
+		    4E   8F	       5A  91 00824 	    CMPB    TOKEN_TYPE, #78					      ;
+				       59  13 00828 	    BEQL    6$							      ;
+		    53   8F	       5A  91 0082A 	    CMPB    TOKEN_TYPE, #83					      ;
+				       53  13 0082E 	    BEQL    6$							      ;
+		    57   8F	       5A  91 00830 	    CMPB    TOKEN_TYPE, #87					      ;
+				       4D  13 00834 	    BEQL    6$							      ;
+		    47   8F	       5A  91 00836 	    CMPB    TOKEN_TYPE, #71					      ;
+				       06  13 0083A 	    BEQL    3$							      ;
+		    4C   8F	       5A  91 0083C 	    CMPB    TOKEN_TYPE, #76					      ;
+				       44  12 00840 	    BNEQ    7$							      ;
+		         3E	       6E  E9 00842 3$:     BLBC    NUMBER_FLAG, 6$					      ; 4277
+		         50	  90   AD  9E 00845 	    MOVAB   EXPR_STACK, R0					      ; 4284
+		         50	       5B  D1 00849 	    CMPL    STACK_PTR, R0					      ;
+				       09  13 0084C 	    BEQL    5$							      ;
+			    000280E0   8F  DD 0084E 4$:     PUSHL   #164064						      ; 4287
+				     0416  31 00854 	    BRW     77$							      ;
+			    00000000G  EF  D4 00857 5$:     CLRL    DBG$GL_BUF_SIZ					      ; 4290
+		         50	       67  3C 0085D 	    MOVZWL  (R7), R0						      ; 4292
+00000000G  EF	    04   A7	       50  C1 00860 	    ADDL3   R0, 4(R7), DBG$CP_OUT_STR				      ;
+				       58  DD 00869 	    PUSHL   CUR_VALUE						      ; 4293
+			    00000000'  EF  9F 0086B 	    PUSHAB  EXP_STG						      ; 4141
+	      00000000G  EF	       02  FB 00871 	    CALLS   #2, DBG$FAO_PUT					      ; 4293
+		         67 00000000G  EF  A0 00878 	    ADDW2   DBG$GL_BUF_SIZ, (R7)				      ; 4294
+				       6E  D4 0087F 	    CLRL    NUMBER_FLAG						      ; 4295
+				       58  D4 00881 	    CLRL    CUR_VALUE						      ; 4296
+				     02A6  31 00883 6$:     BRW     62$							      ; 4302
+		         3C	       5A  91 00886 7$:     CMPB    TOKEN_TYPE, #60					      ; 4252
+				       05  1F 00889 	    BLSSU   8$							      ;
+		         3D	       5A  91 0088B 	    CMPB    TOKEN_TYPE, #61					      ;
+				       12  1B 0088E 	    BLEQU   9$							      ;
+		    48   8F	       5A  91 00890 8$:     CMPB    TOKEN_TYPE, #72					      ;
+				       0C  13 00894 	    BEQL    9$							      ;
+		    4F   8F	       5A  91 00896 	    CMPB    TOKEN_TYPE, #79					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-13
+; Digital Equipment Corporation
+;
+				       06  13 0089A 	    BEQL    9$							      ;
+		    56   8F	       5A  91 0089C 	    CMPB    TOKEN_TYPE, #86					      ;
+				       6E  12 008A0 	    BNEQ    17$							      ;
+		         3D	       5A  91 008A2 9$:     CMPB    TOKEN_TYPE, #61					      ; 4319
+				       04  12 008A5 	    BNEQ    10$							      ;
+				       54  95 008A7 	    TSTB    PREV_TOKEN						      ;
+				       D8  13 008A9 	    BEQL    6$							      ;
+		    4F   8F	       5A  91 008AB 10$:    CMPB    TOKEN_TYPE, #79					      ; 4331
+				       06  13 008AF 	    BEQL    11$							      ;
+		    48   8F	       5A  91 008B1 	    CMPB    TOKEN_TYPE, #72					      ;
+				       06  12 008B5 	    BNEQ    12$							      ;
+		    4E   8F	       54  91 008B7 11$:    CMPB    PREV_TOKEN, #78					      ; 4332
+				       C6  13 008BB 	    BEQL    6$							      ;
+		    4F   8F	       5A  91 008BD 12$:    CMPB    TOKEN_TYPE, #79					      ; 4343
+				       05  12 008C1 	    BNEQ    13$							      ;
+		         3F	       54  91 008C3 	    CMPB    PREV_TOKEN, #63					      ;
+				       BB  13 008C6 	    BEQL    6$							      ;
+		    48   8F	       5A  91 008C8 13$:    CMPB    TOKEN_TYPE, #72					      ; 4353
+				       09  12 008CC 	    BNEQ    14$							      ;
+		         50	  04   B6  90 008CE 	    MOVB    @4(R6), NEXT_CHAR					      ; 4365
+		         28	       50  91 008D2 	    CMPB    NEXT_CHAR, #40					      ; 4366
+				       AC  13 008D5 	    BEQL    6$							      ;
+				       59  95 008D7 14$:    TSTB    CUR_OPERATOR					      ; 4383
+				       30  13 008D9 	    BEQL    16$							      ;
+		    48   8F	       5A  91 008DB 	    CMPB    TOKEN_TYPE, #72					      ; 4385
+				       08  13 008DF 	    BEQL    15$							      ;
+			    000280D0   8F  DD 008E1 	    PUSHL   #164048						      ; 4388
+				       40  11 008E7 	    BRB     19$							      ;
+	   51	         5B	       05  C1 008E9 15$:    ADDL3   #5, STACK_PTR, R1					      ; 4393
+		         50	  F4   AD  9E 008ED 	    MOVAB   EXPR_STACK+100, R0					      ;
+		         50	       51  D1 008F1 	    CMPL    R1, R0						      ;
+				       2D  1A 008F4 	    BGTRU   18$							      ;
+		         6B	       58  D0 008F6 	    MOVL    CUR_VALUE, (STACK_PTR)				      ; 4403
+		         50	       59  9A 008F9 	    MOVZBL  CUR_OPERATOR, R0					      ; 4404
+	   08	         20	       50  F0 008FC 	    INSV    R0, #32, #8, (STACK_PTR)+				      ;
+				       8B     00900									      ;
+		         5B	       04  C0 00901 	    ADDL2   #4, STACK_PTR					      ; 4405
+				       58  D4 00904 	    CLRL    CUR_VALUE						      ; 4406
+		         59	       01  8E 00906 	    MNEGB   #1, CUR_OPERATOR					      ; 4407
+				       3E  11 00909 	    BRB     23$							      ; 4408
+		         59	       5A  90 0090B 16$:    MOVB    TOKEN_TYPE, CUR_OPERATOR				      ; 4414
+				       39  11 0090E 	    BRB     23$							      ; 4252
+		    46   8F	       5A  91 00910 17$:    CMPB    TOKEN_TYPE, #70					      ;
+				       36  12 00914 	    BNEQ    24$							      ;
+	   51	         5B	       05  C1 00916 	    ADDL3   #5, STACK_PTR, R1					      ; 4423
+		         50	  F4   AD  9E 0091A 	    MOVAB   EXPR_STACK+100, R0					      ;
+		         50	       51  D1 0091E 	    CMPL    R1, R0						      ;
+				       08  1B 00921 	    BLEQU   20$							      ;
+			    000280D8   8F  DD 00923 18$:    PUSHL   #164056						      ; 4426
+				       46  11 00929 19$:    BRB     28$							      ;
+		         6B	       58  D0 0092B 20$:    MOVL    CUR_VALUE, (STACK_PTR)				      ; 4435
+				       59  95 0092E 	    TSTB    CUR_OPERATOR					      ; 4436
+				       05  13 00930 	    BEQL    21$							      ;
+		         50	       59  9A 00932 	    MOVZBL  CUR_OPERATOR, R0					      ;
+				       03  11 00935 	    BRB     22$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-14
+; Digital Equipment Corporation
+;
+		         50	       5A  9A 00937 21$:    MOVZBL  TOKEN_TYPE, R0					      ;
+		         51	       50  D0 0093A 22$:    MOVL    R0, R1						      ;
+	   08	         20	       51  F0 0093D 	    INSV    R1, #32, #8, (STACK_PTR)+				      ;
+				       8B     00941									      ;
+		         5B	       04  C0 00942 	    ADDL2   #4, STACK_PTR					      ; 4441
+				       58  D4 00945 	    CLRL    CUR_VALUE						      ; 4442
+				       59  94 00947 	    CLRB    CUR_OPERATOR					      ; 4443
+				     FEB0  31 00949 23$:    BRW     2$							      ; 4252
+		    52   8F	       5A  91 0094C 24$:    CMPB    TOKEN_TYPE, #82					      ;
+				       03  13 00950 	    BEQL    25$							      ;
+				     0093  31 00952 	    BRW     37$							      ;
+		         50	  90   AD  9E 00955 25$:    MOVAB   EXPR_STACK, R0					      ; 4459
+		         50	       5B  D1 00959 	    CMPL    STACK_PTR, R0					      ;
+				       03  1A 0095C 	    BGTRU   26$							      ;
+				     FEED  31 0095E 	    BRW     4$							      ;
+				       59  95 00961 26$:    TSTB    CUR_OPERATOR					      ; 4465
+				       06  12 00963 	    BNEQ    27$							      ;
+		    46   8F	       54  91 00965 	    CMPB    PREV_TOKEN, #70					      ;
+				       09  12 00969 	    BNEQ    29$							      ;
+			    000280E8   8F  DD 0096B 27$:    PUSHL   #164072						      ; 4468
+				     02F9  31 00971 28$:    BRW     77$							      ;
+		         5B	       05  C2 00974 29$:    SUBL2   #5, STACK_PTR					      ; 4471
+		         53	       01  D0 00977 30$:    MOVL    #1, FLAG						      ; 4474
+	   6B	         08	       20  EE 0097A 	    EXTV    #32, #8, (STACK_PTR), R0				      ; 4475
+				       50     0097E									      ;
+	      0000004F   8F	       50  D1 0097F 	    CMPL    R0, #79						      ;
+				       05  12 00986 	    BNEQ    31$							      ;
+		         58	       6B  C0 00988 	    ADDL2   (STACK_PTR), CUR_VALUE				      ; 4477
+				       56  11 0098B 	    BRB     36$							      ; 4475
+	      00000048   8F	       50  D1 0098D 31$:    CMPL    R0, #72						      ;
+				       06  12 00994 	    BNEQ    32$							      ;
+	   58	         6B	       58  C3 00996 	    SUBL3   CUR_VALUE, (STACK_PTR), CUR_VALUE			      ; 4478
+				       47  11 0099A 	    BRB     36$							      ; 4475
+		         3C	       50  D1 0099C 32$:    CMPL    R0, #60						      ;
+				       05  12 0099F 	    BNEQ    33$							      ;
+		         58	       6B  C4 009A1 	    MULL2   (STACK_PTR), CUR_VALUE				      ; 4479
+				       3D  11 009A4 	    BRB     36$							      ; 4475
+	      00000056   8F	       50  D1 009A6 33$:    CMPL    R0, #86						      ;
+				       06  12 009AD 	    BNEQ    34$							      ;
+	   58	         6B	       58  C7 009AF 	    DIVL3   CUR_VALUE, (STACK_PTR), CUR_VALUE			      ; 4480
+				       2E  11 009B3 	    BRB     36$							      ; 4475
+		         3D	       50  D1 009B5 34$:    CMPL    R0, #61						      ;
+				       06  12 009B8 	    BNEQ    35$							      ;
+	   58	         6B	       58  78 009BA 	    ASHL    CUR_VALUE, (STACK_PTR), CUR_VALUE			      ; 4481
+				       23  11 009BE 	    BRB     36$							      ; 4475
+	      00000046   8F	       50  D1 009C0 35$:    CMPL    R0, #70						      ;
+				       1A  13 009C7 	    BEQL    36$							      ;
+	      000000FF   8F	       50  D1 009C9 	    CMPL    R0, #255						      ;
+				       7B  12 009D0 	    BNEQ    47$							      ;
+				       53  D4 009D2 	    CLRL    FLAG						      ; 4484
+		         58	       58  CE 009D4 	    MNEGL   CUR_VALUE, CUR_VALUE				      ; 4485
+		         51	  90   AD  9E 009D7 	    MOVAB   EXPR_STACK, R1					      ; 4486
+		         51	       5B  D1 009DB 	    CMPL    STACK_PTR, R1					      ;
+				       03  1B 009DE 	    BLEQU   36$							      ;
+		         5B	       05  C2 009E0 	    SUBL2   #5, STACK_PTR					      ; 4488
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-15
+; Digital Equipment Corporation
+;
+		         91	       53  E9 009E3 36$:    BLBC    FLAG, 30$						      ; 4496
+				       11  11 009E6 	    BRB     39$							      ; 4498
+		    4B   8F	       5A  91 009E8 37$:    CMPB    TOKEN_TYPE, #75					      ; 4252
+				       03  13 009EC 	    BEQL    38$							      ;
+				     0087  31 009EE 	    BRW     51$							      ;
+				       59  95 009F1 38$:    TSTB    CUR_OPERATOR					      ; 4505
+				       06  12 009F3 	    BNEQ    40$							      ;
+		         58	  F8   BD  D0 009F5 	    MOVL    @LEX_STG_DESC+4, CUR_VALUE				      ; 4507
+				       7A  11 009F9 39$:    BRB     50$							      ; 4505
+		         53	       01  D0 009FB 40$:    MOVL    #1, FLAG						      ; 4511
+		    FF   8F	       59  91 009FE 	    CMPB    CUR_OPERATOR, #255					      ; 4512
+				       04  12 00A02 	    BNEQ    41$							      ;
+		         58	  F8   BD  D0 00A04 	    MOVL    @LEX_STG_DESC+4, CUR_VALUE				      ; 4514
+		    4F   8F	       59  91 00A08 41$:    CMPB    CUR_OPERATOR, #79					      ; 4515
+				       06  12 00A0C 	    BNEQ    42$							      ;
+		         58	  F8   BD  C0 00A0E 	    ADDL2   @LEX_STG_DESC+4, CUR_VALUE				      ; 4517
+				       5E  11 00A12 	    BRB     49$							      ; 4515
+		    48   8F	       59  91 00A14 42$:    CMPB    CUR_OPERATOR, #72					      ;
+				       06  12 00A18 	    BNEQ    43$							      ;
+		         58	  F8   BD  C2 00A1A 	    SUBL2   @LEX_STG_DESC+4, CUR_VALUE				      ; 4518
+				       52  11 00A1E 	    BRB     49$							      ; 4515
+		         3C	       59  91 00A20 43$:    CMPB    CUR_OPERATOR, #60					      ;
+				       06  12 00A23 	    BNEQ    44$							      ;
+		         58	  F8   BD  C4 00A25 	    MULL2   @LEX_STG_DESC+4, CUR_VALUE				      ; 4519
+				       47  11 00A29 	    BRB     49$							      ; 4515
+		    56   8F	       59  91 00A2B 44$:    CMPB    CUR_OPERATOR, #86					      ;
+				       06  12 00A2F 	    BNEQ    45$							      ;
+		         58	  F8   BD  C6 00A31 	    DIVL2   @LEX_STG_DESC+4, CUR_VALUE				      ; 4520
+				       3B  11 00A35 	    BRB     49$							      ; 4515
+		         3D	       59  91 00A37 45$:    CMPB    CUR_OPERATOR, #61					      ;
+				       07  12 00A3A 	    BNEQ    46$							      ;
+	   58	         58	  F8   BD  78 00A3C 	    ASHL    @LEX_STG_DESC+4, CUR_VALUE, CUR_VALUE		      ; 4521
+				       2F  11 00A41 	    BRB     49$							      ; 4515
+		    46   8F	       59  91 00A43 46$:    CMPB    CUR_OPERATOR, #70					      ;
+				       29  13 00A47 	    BEQL    49$							      ;
+		    FF   8F	       59  91 00A49 	    CMPB    CUR_OPERATOR, #255					      ;
+				       03  13 00A4D 47$:    BEQL    48$							      ;
+				     0081  31 00A4F 	    BRW     58$							      ;
+				       53  D4 00A52 48$:    CLRL    FLAG						      ; 4525
+		         58	       58  CE 00A54 	    MNEGL   CUR_VALUE, CUR_VALUE				      ; 4526
+		         50	  90   AD  9E 00A57 	    MOVAB   EXPR_STACK, R0					      ; 4527
+		         50	       5B  D1 00A5B 	    CMPL    STACK_PTR, R0					      ;
+				       12  1B 00A5E 	    BLEQU   49$							      ;
+		         5B	       04  C2 00A60 	    SUBL2   #4, STACK_PTR					      ; 4530
+	   7B	         08	       20  EE 00A63 	    EXTV    #32, #8, -(STACK_PTR), R0				      ; 4531
+				       50     00A67									      ;
+		         59	       50  90 00A68 	    MOVB    R0, CUR_OPERATOR					      ;
+		    F8   BD	       58  D0 00A6B 	    MOVL    CUR_VALUE, @LEX_STG_DESC+4				      ; 4532
+		         58	       6B  D0 00A6F 	    MOVL    (STACK_PTR), CUR_VALUE				      ; 4533
+		         86	       53  E9 00A72 49$:    BLBC    FLAG, 40$						      ; 4542
+				     01E7  31 00A75 50$:    BRW     75$							      ; 4543
+		    41   8F	       5A  91 00A78 51$:    CMPB    TOKEN_TYPE, #65					      ; 4252
+				       06  13 00A7C 	    BEQL    52$							      ;
+		    63   8F	       5A  91 00A7E 	    CMPB    TOKEN_TYPE, #99					      ;
+				       49  12 00A82 	    BNEQ    57$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-16
+; Digital Equipment Corporation
+;
+		         28	       6E  E9 00A84 52$:    BLBC    NUMBER_FLAG, 53$					      ; 4556
+			    00000000G  EF  D4 00A87 	    CLRL    DBG$GL_BUF_SIZ					      ; 4562
+		         50	       67  3C 00A8D 	    MOVZWL  (R7), R0						      ; 4564
+00000000G  EF	    04   A7	       50  C1 00A90 	    ADDL3   R0, 4(R7), DBG$CP_OUT_STR				      ;
+				       58  DD 00A99 	    PUSHL   CUR_VALUE						      ; 4565
+			    00000000'  EF  9F 00A9B 	    PUSHAB  EXP_STG						      ; 4141
+	      00000000G  EF	       02  FB 00AA1 	    CALLS   #2, DBG$FAO_PUT					      ; 4565
+		         67 00000000G  EF  A0 00AA8 	    ADDW2   DBG$GL_BUF_SIZ, (R7)				      ; 4566
+				       59  95 00AAF 53$:    TSTB    CUR_OPERATOR					      ; 4573
+				       03  13 00AB1 	    BEQL    54$							      ;
+				     FEB5  31 00AB3 	    BRW     27$							      ;
+		         50	  90   AD  9E 00AB6 54$:    MOVAB   EXPR_STACK, R0					      ; 4583
+		         50	       5B  D1 00ABA 	    CMPL    STACK_PTR, R0					      ;
+				       03  13 00ABD 	    BEQL    55$							      ;
+				     FD8C  31 00ABF 	    BRW     4$							      ;
+				       67  B5 00AC2 55$:    TSTW    (R7)						      ; 4589
+				       03  12 00AC4 	    BNEQ    56$							      ;
+				     01AB  31 00AC6 	    BRW     78$							      ;
+		         50	       01  D0 00AC9 56$:    MOVL    #1, R0						      ; 4593
+					   04 00ACC 	    RET     							      ;
+		    49   8F	       5A  91 00ACD 57$:    CMPB    TOKEN_TYPE, #73					      ; 4252
+				       03  13 00AD1 	    BEQL    59$							      ;
+				     0191  31 00AD3 58$:    BRW     76$							      ;
+				  F4   AD  9F 00AD6 59$:    PUSHAB  LEX_STG_DESC					      ; 4615
+	      00000000G  EF	       01  FB 00AD9 	    CALLS   #1, DBG$REG_MATCH					      ;
+				       50  D5 00AE0 	    TSTL    REG_NUM						      ;
+				       05  19 00AE2 	    BLSS    60$							      ;
+		         0F	       50  D1 00AE4 	    CMPL    REG_NUM, #15					      ; 4616
+				       43  15 00AE7 	    BLEQ    62$							      ;
+		         51	  F8   AD  D0 00AE9 60$:    MOVL    LEX_STG_DESC+4, LEXEME_PTR				      ; 4631
+		         50	       61  90 00AED 	    MOVB    (LEXEME_PTR), CHAR					      ; 4632
+		         01	  F4   AD  B1 00AF0 	    CMPW    LEX_STG_DESC, #1					      ; 4633
+				       43  12 00AF4 	    BNEQ    63$							      ;
+		    42   8F	       50  91 00AF6 	    CMPB    CHAR, #66						      ; 4635
+				       18  13 00AFA 	    BEQL    61$							      ;
+		    57   8F	       50  91 00AFC 	    CMPB    CHAR, #87						      ; 4636
+				       12  13 00B00 	    BEQL    61$							      ;
+		    4C   8F	       50  91 00B02 	    CMPB    CHAR, #76						      ; 4637
+				       0C  13 00B06 	    BEQL    61$							      ;
+		    49   8F	       50  91 00B08 	    CMPB    CHAR, #73						      ; 4638
+				       06  13 00B0C 	    BEQL    61$							      ;
+		    53   8F	       50  91 00B0E 	    CMPB    CHAR, #83						      ; 4639
+				       25  12 00B12 	    BNEQ    63$							      ;
+		         52	  04   B6  90 00B14 61$:    MOVB    @4(R6), NEXT_CHAR					      ; 4642
+		    5E   8F	       52  91 00B18 	    CMPB    NEXT_CHAR, #94					      ; 4643
+				       1B  12 00B1C 	    BNEQ    63$							      ;
+		  FF79   CD	  5E   8F  90 00B1E 	    MOVB    #94, LEX_BUF+1					      ; 4646
+				  F4   AD  B6 00B24 	    INCW    LEX_STG_DESC					      ; 4647
+				       66  B7 00B27 	    DECW    (R6)						      ; 4648
+				  04   A6  D6 00B29 	    INCL    4(R6)						      ; 4649
+				       57  DD 00B2C 62$:    PUSHL   R7							      ; 4650
+				  F4   AD  9F 00B2E 	    PUSHAB  LEX_STG_DESC					      ;
+		  0000V  CF	       02  FB 00B31 	    CALLS   #2, ADD_TO_OPER_STG					      ;
+				     FCC3  31 00B36 	    BRW     2$							      ; 4651
+				  0C   AE  B4 00B39 63$:    CLRW    SYMBOL_DESC						      ; 4662
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-17
+; Digital Equipment Corporation
+;
+		    10   AE	  18   AE  9E 00B3C 	    MOVAB   SYMBOL_BUF, SYMBOL_DESC+4				      ; 4663
+		    14   AE	0200   8F  B0 00B41 	    MOVW    #512, SYMBOL_DESC+8					      ; 4664
+				  0C   AE  9F 00B47 	    PUSHAB  SYMBOL_DESC						      ; 4665
+				  F4   AD  9F 00B4A 	    PUSHAB  LEX_STG_DESC					      ;
+		  0000V  CF	       02  FB 00B4D 	    CALLS   #2, ADD_TO_OPER_STG					      ;
+				  F4   AD  9F 00B52 	    PUSHAB  LEX_STG_DESC					      ; 4669
+	      00000000G  EF	       01  FB 00B55 	    CALLS   #1, DBG$BUILD_PATH					      ;
+		         52	  04   B6  90 00B5C 64$:    MOVB    @4(R6), NEXT_CHAR					      ; 4678
+		    5C   8F	       52  91 00B60 	    CMPB    NEXT_CHAR, #92					      ; 4679
+				       6E  12 00B64 	    BNEQ    66$							      ;
+				  F4   AD  B4 00B66 	    CLRW    LEX_STG_DESC					      ; 4692
+		    F8   AD	FF78   CD  9E 00B69 	    MOVAB   LEX_BUF, LEX_STG_DESC+4				      ; 4693
+		    FC   AD	       18  B0 00B6F 	    MOVW    #24, LEX_STG_DESC+8					      ; 4694
+				  F4   AD  9F 00B73 	    PUSHAB  LEX_STG_DESC					      ; 4695
+				       56  DD 00B76 	    PUSHL   R6							      ;
+		  0000V  CF	       02  FB 00B78 	    CALLS   #2, INS_GET_TOKEN					      ;
+				  0C   AE  9F 00B7D 	    PUSHAB  SYMBOL_DESC						      ; 4696
+				  F4   AD  9F 00B80 	    PUSHAB  LEX_STG_DESC					      ;
+		  0000V  CF	       02  FB 00B83 	    CALLS   #2, ADD_TO_OPER_STG					      ;
+				  F4   AD  B4 00B88 	    CLRW    LEX_STG_DESC					      ; 4698
+		    F8   AD	FF78   CD  9E 00B8B 	    MOVAB   LEX_BUF, LEX_STG_DESC+4				      ; 4699
+		    FC   AD	       18  B0 00B91 	    MOVW    #24, LEX_STG_DESC+8					      ; 4700
+				  F4   AD  9F 00B95 	    PUSHAB  LEX_STG_DESC					      ; 4701
+				       56  DD 00B98 	    PUSHL   R6							      ;
+		  0000V  CF	       02  FB 00B9A 	    CALLS   #2, INS_GET_TOKEN					      ;
+	      00000049   8F	       50  D1 00B9F 	    CMPL    R0, #73						      ;
+				       15  13 00BA6 	    BEQL    65$							      ;
+				  0C   AE  9F 00BA8 	    PUSHAB  SYMBOL_DESC						      ; 4704
+				       01  DD 00BAB 	    PUSHL   #1							      ;
+			    000280F8   8F  DD 00BAD 	    PUSHL   #164088						      ;
+	      00000000G  00	       03  FB 00BB3 	    CALLS   #3, LIB$SIGNAL					      ;
+				     00B7  31 00BBA 	    BRW     78$							      ; 4705
+				  F4   AD  9F 00BBD 65$:    PUSHAB  LEX_STG_DESC					      ; 4710
+	      00000000G  EF	       01  FB 00BC0 	    CALLS   #1, DBG$BUILD_PATH					      ;
+				  0C   AE  9F 00BC7 	    PUSHAB  SYMBOL_DESC						      ; 4711
+				  F4   AD  9F 00BCA 	    PUSHAB  LEX_STG_DESC					      ;
+		  0000V  CF	       02  FB 00BCD 	    CALLS   #2, ADD_TO_OPER_STG					      ;
+				       88  11 00BD2 	    BRB     64$							      ; 4672
+				  04   AE  9F 00BD4 66$:    PUSHAB  TEMP_VALU_DESC					      ; 4722
+	      00000000G  EF	       01  FB 00BD7 	    CALLS   #1, DBG$PATH_TO_VAL					      ;
+				       59  95 00BDE 	    TSTB    CUR_OPERATOR					      ; 4728
+				       06  12 00BE0 	    BNEQ    67$							      ;
+		         58	  06   AE  D0 00BE2 	    MOVL    TEMP_VALU_DESC+2, CUR_VALUE				      ; 4730
+				       77  11 00BE6 	    BRB     75$							      ; 4728
+		         53	       01  D0 00BE8 67$:    MOVL    #1, FLAG						      ; 4734
+		    FF   8F	       59  91 00BEB 	    CMPB    CUR_OPERATOR, #255					      ; 4735
+				       04  12 00BEF 	    BNEQ    68$							      ;
+		         58	  06   AE  D0 00BF1 	    MOVL    TEMP_VALU_DESC+2, CUR_VALUE				      ; 4737
+		    4F   8F	       59  91 00BF5 68$:    CMPB    CUR_OPERATOR, #79					      ; 4738
+				       06  12 00BF9 	    BNEQ    69$							      ;
+		         58	  06   AE  C0 00BFB 	    ADDL2   TEMP_VALU_DESC+2, CUR_VALUE				      ; 4740
+				       5B  11 00BFF 	    BRB     74$							      ; 4738
+		    48   8F	       59  91 00C01 69$:    CMPB    CUR_OPERATOR, #72					      ;
+				       06  12 00C05 	    BNEQ    70$							      ;
+		         58	  06   AE  C2 00C07 	    SUBL2   TEMP_VALU_DESC+2, CUR_VALUE				      ; 4741
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 10-18
+; Digital Equipment Corporation
+;
+				       4F  11 00C0B 	    BRB     74$							      ; 4738
+		         3C	       59  91 00C0D 70$:    CMPB    CUR_OPERATOR, #60					      ;
+				       06  12 00C10 	    BNEQ    71$							      ;
+		         58	  06   AE  C4 00C12 	    MULL2   TEMP_VALU_DESC+2, CUR_VALUE				      ; 4742
+				       44  11 00C16 	    BRB     74$							      ; 4738
+		    56   8F	       59  91 00C18 71$:    CMPB    CUR_OPERATOR, #86					      ;
+				       06  12 00C1C 	    BNEQ    72$							      ;
+		         58	  06   AE  C6 00C1E 	    DIVL2   TEMP_VALU_DESC+2, CUR_VALUE				      ; 4743
+				       38  11 00C22 	    BRB     74$							      ; 4738
+		         3D	       59  91 00C24 72$:    CMPB    CUR_OPERATOR, #61					      ;
+				       07  12 00C27 	    BNEQ    73$							      ;
+	   58	         58	  06   AE  78 00C29 	    ASHL    TEMP_VALU_DESC+2, CUR_VALUE, CUR_VALUE		      ; 4744
+				       2C  11 00C2E 	    BRB     74$							      ; 4738
+		    46   8F	       59  91 00C30 73$:    CMPB    CUR_OPERATOR, #70					      ;
+				       26  13 00C34 	    BEQL    74$							      ;
+		    FF   8F	       59  91 00C36 	    CMPB    CUR_OPERATOR, #255					      ;
+				       2B  12 00C3A 	    BNEQ    76$							      ;
+				       53  D4 00C3C 	    CLRL    FLAG						      ; 4748
+		         58	       58  CE 00C3E 	    MNEGL   CUR_VALUE, CUR_VALUE				      ; 4749
+		         50	  90   AD  9E 00C41 	    MOVAB   EXPR_STACK, R0					      ; 4750
+		         50	       5B  D1 00C45 	    CMPL    STACK_PTR, R0					      ;
+				       12  1B 00C48 	    BLEQU   74$							      ;
+		         5B	       04  C2 00C4A 	    SUBL2   #4, STACK_PTR					      ; 4753
+	   7B	         08	       20  EE 00C4D 	    EXTV    #32, #8, -(STACK_PTR), R0				      ; 4754
+				       50     00C51									      ;
+		         59	       50  90 00C52 	    MOVB    R0, CUR_OPERATOR					      ;
+		    06   AE	       58  D0 00C55 	    MOVL    CUR_VALUE, TEMP_VALU_DESC+2				      ; 4755
+		         58	       6B  D0 00C59 	    MOVL    (STACK_PTR), CUR_VALUE				      ; 4756
+		         89	       53  E9 00C5C 74$:    BLBC    FLAG, 67$						      ; 4765
+				       59  94 00C5F 75$:    CLRB    CUR_OPERATOR					      ; 4766
+		         6E	       01  D0 00C61 	    MOVL    #1, NUMBER_FLAG					      ; 4767
+				     FB95  31 00C64 	    BRW     2$							      ; 4252
+			    000280F0   8F  DD 00C67 76$:    PUSHL   #164080						      ; 4773
+	      00000000G  00	       01  FB 00C6D 77$:    CALLS   #1, LIB$SIGNAL					      ;
+				       50  D4 00C74 78$:    CLRL    R0							      ; 4141
+					   04 00C76 	    RET     							      ;
+
+; Routine Size:  1198 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 11
+; Digital Equipment Corporation
+;
+;	4780	ROUTINE INS_GET_TOKEN (INPUT_STG_DESC, LEXEME_STG_DESC) = 
+;	4781	
+;	4782	!++
+;	4783	! Functional Description:
+;	4784	!	Extracts a lexeme from the input stream by calling the routine
+;	4785	!	DBG$MAR_GET_LEX . This routine first zeroes a buffer to hold the lexeme.
+;	4786	!	The value of the routine is the token in the character string
+;	4787	!	pointed to by LEXEME_STG_DESC, the string descriptor for the lexeme.
+;	4788	!	Also the input buffer string descriptor is updated.
+;	4789	!
+;	4790	! Formal parameters:
+;	4791	!	INPUT_STG_DESC - String descriptor for input line
+;	4792	!	LEXEME_STG_DESC - String descriptor for lexeme found
+;	4793	!
+;	4794	! Implicit Inputs:
+;	4795	!	None.
+;	4796	!
+;	4797	! Implicit Outputs:
+;	4798	!	The string descriptors are updated.
+;	4799	!
+;	4800	! Returned Value:
+;	4801	!	An encoded representation of the token found.
+;	4802	!--
+;	4803	
+;	4804	    BEGIN
+;	4805	
+;	4806	    MAP
+;	4807		INPUT_STG_DESC : REF BLOCK [, BYTE],
+;	4808		LEXEME_STG_DESC : REF BLOCK[,BYTE];
+;	4809	
+;	4810	    !++
+;	4811	    ! First zero out the buffer which will hold the lexeme found.
+;	4812	    !--
+;	4813	
+;	4814	    ZEROCOR (.LEXEME_STG_DESC[DSC$A_POINTER], (.LEXEME_STG_DESC[DSC$W_MAXLEN]/4));
+;	4815	    RETURN (DBG$MAR_GET_LEX(.INPUT_STG_DESC, .LEXEME_STG_DESC));
+;	4816	
+;	4817	    END;
+
+
+
+
+
+					 007C 00C77 INS_GET_TOKEN:
+							    .WORD   Save R2,R3,R4,R5,R6					      ; 4780
+		         56	  08   AC  D0 00C79 	    MOVL    LEXEME_STG_DESC, R6					      ; 4814
+		         50	  08   A6  3C 00C7D 	    MOVZWL  8(R6), R0						      ;
+		         50	       04  C6 00C81 	    DIVL2   #4, R0						      ;
+		         50	       04  C4 00C84 	    MULL2   #4, R0						      ;
+	   00	         6E	       00  2C 00C87 	    MOVC5   #0, (SP), #0, R0, @4(R6)				      ;
+		    04   B6	       50     00C8B									      ;
+				       56  DD 00C8E 	    PUSHL   R6							      ; 4815
+				  04   AC  DD 00C90 	    PUSHL   INPUT_STG_DESC					      ;
+	      00000000G  EF	       02  FB 00C93 	    CALLS   #2, DBG$MAR_GET_LEX					      ;
+					   04 00C9A 	    RET     							      ; 4780
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 11-1
+; Digital Equipment Corporation
+;
+
+; Routine Size:  36 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 12
+; Digital Equipment Corporation
+;
+;	4818	ROUTINE ADD_TO_OPER_STG (LEX_STG_DESC, OPRND_STG_DESC, MAX_BUF_SIZ) = 
+;	4819	
+;	4820	!++
+;	4821	! Functional Description:
+;	4822	!	This routine takes an ASCII lexeme and adds it to an operand buffer.
+;	4823	!	It may be used to take any ASCII string described by a string
+;	4824	!	descriptor and add it to a buffer described by another string
+;	4825	!	descriptor.  The string descriptor for the latter is updated to
+;	4826	!	include the new ASCII string.  The third input parameter gives the
+;	4827	!	maximum size of the operand buffer.
+;	4828	!
+;	4829	! Formal Parameters:
+;	4830	!	LEX_STG_DESC - String descriptor for input lexeme
+;	4831	!	OPRND_STG_DESC - String descriptor for resultant operand string
+;	4832	!	MAX_BUF_SIZ - Size of the buffer pointed to by OPRND_STG_DESC
+;	4833	!
+;	4834	! Implicit Inputs:
+;	4835	!	None.
+;	4836	!
+;	4837	! Implicit Outputs:
+;	4838	!	The lexeme string is written into the next free bytes of the operand
+;	4839	!	buffer.  The string descriptor for the resultant string, OPRND_STG_DESC,
+;	4840	!	is updated.
+;	4841	!
+;	4842	! Returned Value:
+;	4843	!	TRUE, if successful.
+;	4844	!	FALSE, if the buffer overflowed.
+;	4845	!--
+;	4846	
+;	4847	BEGIN
+;	4848	
+;	4849	MAP
+;	4850		LEX_STG_DESC : REF BLOCK [, BYTE],
+;	4851		OPRND_STG_DESC : REF BLOCK[,BYTE];
+;	4852	
+;	4853	!++
+;	4854	! First check that there is room in the operand buffer for the lexeme string.
+;	4855	!--
+;	4856	IF ((.LEX_STG_DESC[DSC$W_LENGTH] + .OPRND_STG_DESC[DSC$W_LENGTH]) GTR .OPRND_STG_DESC[DSC$W_MAXLEN])
+;	4857	THEN
+;	4858		RETURN(FALSE);
+;	4859	
+;	4860	!++
+;	4861	! Plenty of room in buffer.  Move the lexeme string into the buffer, starting
+;	4862	! at the next unused byte in the buffer.
+;	4863	!--
+;	4864	CH$MOVE(.LEX_STG_DESC[DSC$W_LENGTH], .LEX_STG_DESC[DSC$A_POINTER],
+;	4865		CH$PTR(.OPRND_STG_DESC[DSC$A_POINTER], .OPRND_STG_DESC[DSC$W_LENGTH]));
+;	4866	
+;	4867	!++
+;	4868	! Now update the operand string descriptor to include the appended lexeme.
+;	4869	!--
+;	4870	OPRND_STG_DESC[DSC$W_LENGTH] = .OPRND_STG_DESC[DSC$W_LENGTH] + .LEX_STG_DESC[DSC$W_LENGTH];
+;	4871	RETURN(TRUE);
+;	4872	END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 12-1
+; Digital Equipment Corporation
+;
+
+
+
+
+
+					 00FC 00C9B ADD_TO_OPER_STG:
+							    .WORD   Save R2,R3,R4,R5,R6,R7				      ; 4818
+		         57	  04   AC  D0 00C9D 	    MOVL    LEX_STG_DESC, R7					      ; 4856
+		         56	  08   AC  D0 00CA1 	    MOVL    OPRND_STG_DESC, R6					      ;
+		         50	       67  3C 00CA5 	    MOVZWL  (R7), R0						      ;
+		         51	       66  3C 00CA8 	    MOVZWL  (R6), R1						      ;
+		         50	       51  C0 00CAB 	    ADDL2   R1, R0						      ;
+      08   A6	         10	       00  ED 00CAE 	    CMPZV   #0, #16, 8(R6), R0					      ;
+				       50     00CB3									      ;
+				       13  19 00CB4 	    BLSS    1$							      ;
+		         50	       66  3C 00CB6 	    MOVZWL  (R6), R0						      ; 4865
+		         50	  04   A6  C0 00CB9 	    ADDL2   4(R6), R0						      ;
+	   60	    04   B7	       67  28 00CBD 	    MOVC3   (R7), @4(R7), (R0)					      ; 4864
+		         66	       67  A0 00CC2 	    ADDW2   (R7), (R6)						      ; 4870
+		         50	       01  D0 00CC5 	    MOVL    #1, R0						      ; 4871
+					   04 00CC8 	    RET     							      ;
+				       50  D4 00CC9 1$:     CLRL    R0							      ; 4818
+					   04 00CCB 	    RET     							      ;
+
+; Routine Size:  49 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:11:20	DBB3:[DEBUG.SRC]DBGENC.B32;6					Page 13
+; Digital Equipment Corporation
+;
+;	4873	END
+;	4874	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	  3276  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$OWN        	     8    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$PLIT       	    28  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         6         0       223
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	     1782	00:52.7		01:37.2
+;	FLOWAN	      162	00:10.5		00:20.1
+;	DELAY	       79	00:05.1		00:09.0
+;	TNBIND	      119	00:09.0		00:15.4
+;	CODE	      168	00:21.4		00:34.4
+;	FINAL	      334	00:27.0		00:46.7
+;	Total	     2644	02:05.7		03:42.8
+
+; Size:		3276 code + 36 data bytes
+; Run Time:	02:06.4
+; Elapsed Time:	03:44.1
+; Memory Used:	597 pages
+; Compilation Complete

@@ -1,0 +1,813 @@
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (2)      61  RSX$EXCEPTION -- IMAGE EXCEPTION HANDLER
+   (3)     167  COMPATIBILITY MODE TRAP HANDLER
+   (4)     240  EMT PROCESSOR
+   (5)     380  RESERVED INSTRUCTIONS
+   (6)     406  ILLEGAL AND TRAP INSTRUCTIONS
+   (7)     501  RSX$RESTORE -- RESTORE IMAGE CONTEXT AND ENTER 
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   1
+V06.0                                                                                                                            (1)
+
+                                     0000     1 	.TITLE	RSXEXCEPTION - RSX-11M AME EXCEPTION HANDLER
+                                     0000     2 	.IDENT	/V06.0/		;
+                                     0000     3 
+                                     0000     4 ;
+                                     0000     5 ; COPYRIGHT (C) 1977
+                                     0000     6 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     7 ;
+                                     0000     8 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000     9 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000    10 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    11 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    12 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    13 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    14 ; REMAIN IN DEC.
+                                     0000    15 ;
+                                     0000    16 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    17 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    18 ; CORPORATION.
+                                     0000    19 ;
+                                     0000    20 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    21 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    22 
+                                     0000    23 ;++
+                                     0000    24 ; FACILITY:
+                                     0000    25 ;
+                                     0000    26 ;	VAX/VMS RSX-11M AME
+                                     0000    27 ;
+                                     0000    28 ; ABSTRACT:
+                                     0000    29 ;
+                                     0000    30 ;	EXCEPTION HANDLER FOR ALL EXCEPTIONS DURING RSX/CM IMAGE EXECUTION.
+                                     0000    31 ;
+                                     0000    32 ; AUTHOR R.HEINEN 29-SEPT-76 
+                                     0000    33 ;--
+                                     0000    34 ;
+                                     0000    35 ; EXTERNAL SYMBOLS
+                                     0000    36 ;
+                                     0000    37 	$RSXDEF			; DEFINE RSX SYMBOLS
+                                     0000    38 	DRERR$			; DEFINE DIRECTIVE ERROR CODES
+                                     0000    39 ;
+                                     0000    40 ; LOCAL MACRO
+                                     0000    41 ;
+                                     0000    42 	.MACRO DIC ROUT,SIZE
+                                     0000    43 	.PSECT	RSXCODE,NOWRT,SHR,PIC
+                                     0000    44 	.IF NB ROUT
+                                     0000    45 	.WORD	RSX$'ROUT-DICBASE
+                                     0000    46 	.IFF
+                                     0000    47 	.WORD	DICEND-DICBASE
+                                     0000    48 	.ENDC
+                                     0000    49 	.PSECT	RSXPURE,NOWRT,EXE,LONG,SHR,PIC
+                                     0000    50 	.BYTE	SIZE
+                                     0000    51 	.ENDM
+                                     0000    52 	.MACRO SST ROUT,SIZE
+                                     0000    53 	.PSECT	RSXCODE,NOWRT,SHR,PIC
+                                     0000    54 	.WORD	'ROUT-SSTBASE
+                                     0000    55 	.PSECT	RSXPURE,NOWRT,EXE,LONG,PIC,SHR
+                                     0000    56 	.BYTE	SIZE
+                                     0000    57 	.ENDM
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   2
+V06.0                                                                                                                            (1)
+
+                                     0000    58  
+                                 00000000    59 	.PSECT	RSXCODE,NOWRT,PIC,SHR
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   3
+V06.0           RSX$EXCEPTION -- IMAGE EXCEPTION HANDLER                                                                         (2)
+
+                                     0000    61 	.SBTTL	RSX$EXCEPTION -- IMAGE EXCEPTION HANDLER
+                                     0000    62 ;++
+                                     0000    63 ; RSX$EXCEPTION - EXCEPTION HANDLER FOR RSX
+                                     0000    64 ;
+                                     0000    65 ; FUNCTIONAL DESCRIPTION:
+                                     0000    66 ;
+                                     0000    67 ; THIS EXCEPTION HANDLER RECEIVES CONTROL ON EXCEPTIONS THAT ARE NOT
+                                     0000    68 ; CAUSED BY CM INSTRUCTION TRAPS OR EXCEPTIONS.
+                                     0000    69 ;
+                                     0000    70 ; IF THE EXCEPTION OCCURED IN CM THEN IT WILL RESULT IN A MEMORY PROTECTION
+                                     0000    71 ; VIOLATION DELIVERED VIA HIS SST VECTOR AS IF IT WERE A CM TRAP TYPE.
+                                     0000    72 ;
+                                     0000    73 ; IF THE EXCEPTION OCCURED IN NATIVE MODE AND IT IS AN ACCESS VIOLATION
+                                     0000    74 ; AND THE VIRTUAL ADDRESS REFERENCED IS LESS THAN 65K, THEN THE EXCEPTION
+                                     0000    75 ; OCCURED DURRING DIRECTIVE PROCESSING AND THE DSW/PSL ARE SET TO REFLECT
+                                     0000    76 ; THIS (IE.ADP) OTHERWISE THE RSX IS ABORTED.
+                                     0000    77 ;
+                                     0000    78 ; INPUTS:
+                                     0000    79 ;
+                                     0000    80 ;	AP = ADDRESS OF EXCEPTION ARGUMENTS
+                                     0000    81 ;
+                                     0000    82 ; OUTPUTS:
+                                     0000    83 ;	NONE
+                                     0000    84 ;--
+                               0000' 0000    85 	.ENTRY	RSX$EXCEPTION,0		; SAVE NO REGISTERS
+            50         04 AC     D0  0002    86 	MOVL	4(AP),R0		; ADDRESS PC/PSL ARG LIST
+            51            60     D0  0006    87 	MOVL	(R0),R1			; GET THE NUMBER OF ARGUMENTS
+            51            6041   DE  0009    88 	MOVAL	(R0)[R1],R1		; GET THE EXCEPTION PSL
+                                     000D    89 ;
+                                     000D    90 ; SPECIAL CASE POSSIBLE FLOATING EMULATION EXCEPTION
+                                     000D    91 ;
+                     0000'CF     9F  000D    92 	PUSHAB	W^RSX$FLOAT		; ADDRESS START OF RANGE
+         FC A1            8E     D1  0011    93 	CMPL	(SP)+,-4(R1)		; IN RANGE?
+                          0D     1A  0015    94 	BGTRU	5$			; IF RANGE GEQU THEN NO
+                     0000'CF     9F  0017    95 	PUSHAB	W^RSX$FLOAT_END		; ADDRESS UPPER LIMIT
+         FC A1            8E     D1  001B    96 	CMPL	(SP)+,-4(R1)		; IN RANGE?
+                          03     1B  001F    97 	BLEQU	5$			; IF LEQU THEN NO
+                          FFDC'  31  0021    98 	BRW	RSX$FLOAT_EXC		; ENTER FLOATING EXCEPTION CODE
+                                     0024    99 ;
+                                     0024   100 ; CHECK FOR SPECIAL "DEB" COMMAND EXCEPTION
+                                     0024   101 ;
+         04 A0       0000'8F     B1  0024   102 5$:	CMPW	#SS$_DEBUG,AP_NAME(R0)	; DEBUG COMMAND?
+                          24     13  002A   103 	BEQL	20$			; IF EQL THEN YES
+                                     002C   104 ;
+                                     002C   105 ; RSX FAULT IF IN NATIVE MODE
+                                     002C   106 ;
+            61            1F     E5  002C   107 	BBCC	#PSL_CM,(R1),10$	; IF NOT FROM CM THEN BRANCH
+                          06         002F       
+            50         95'AF     9E  0030   108 	MOVAB	B^70$,R0		; SET CONTINUE ADDRESS
+                          11     11  0034   109 	BRB	12$			; CONTINUE
+                                     0036   110 ;
+                                     0036   111 ; NATIVE MODE EXCEPTION
+                                     0036   112 ;
+                                     0036   113 ; IF THE EXCEPTION IS ACCESS VIOLATION AND THE REFERENCED ADDRESS
+                                     0036   114 ; WAS UNDER 65K THEN THIS VIOLATION IS DUE TO A DIRECTIVE PROCEEDURE.
+                                     0036   115 ;
+                                     0036   116 ; THE DSW IS SET UP AND THE RETURN PC IS JAMMED TO REENTER THE IMAGE
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   4
+V06.0           RSX$EXCEPTION -- IMAGE EXCEPTION HANDLER                                                                         (2)
+
+                                     0036   117 ;
+       0000'8F         04 A0     B1  0036   118 10$:	CMPW	AP_NAME(R0),#SS$_ACCVIO	; ACCESS VIOLATION?
+                          35     12  003C   119 	BNEQ	50$			; IF NEQ THEN ABORT THE RSX
+                       0E A0     B5  003E   120 	TSTW	14(R0)			; WITHIN 65K?
+                          30     12  0041   121 	BNEQ	50$			; IF NEQ THEN ABORT RSX
+            50         80'AF     9E  0043   122 	MOVAB	B^60$,R0		; SET ADDRESS TO CONTINUE
+                                     0047   123 ;
+                                     0047   124 ; THIS EXCEPTION IS FOR A CONDITION NOT ASSOCIATED WITH CM BUT OCCURING
+                                     0047   125 ; WHEN THE PROCESSOR WAS IN CM.
+                                     0047   126 ;
+            61            1B     E5  0047   127 12$:	BBCC	#PSL_FPD,(R1),15$	; CLEAR FIRST PART DONE
+                          00         004A       
+            71            50     D0  004B   128 15$:	MOVL	R0,-(R1)		; CHANGE CONTINUE ADDRESS
+                          1D     11  004E   129 	BRB	27$			; CONTINUE
+                                     0050   130 ;
+                                     0050   131 ; DEBUG EXCEPTION
+                                     0050   132 ;
+            61            1F     E0  0050   133 20$:	BBS	#PSL_CM,(R1),25$	; BR IF IN CM
+                          16         0053       
+       0170 CA            06     E1  0054   134 	BBC	#SV_WAIT,I_STATE(R10),23$; BR IF NOT IN WAIT STATE
+                          07         0059       
+       0178 CA       0080 8F     3C  005A   135 	MOVZWL	#128,I_WAIT(R10)	; SET ILLEGAL WAIT MASK TO FLUSH WAIT
+                                     0061   136 ;
+                                     0061   137 ; NOTE THAT THE WAIT IN PROGRESS IS COMPLETE. THE CONTEXT PRIOR TO THE
+                                     0061   138 ; WAIT HAS BEEN LOST.
+                                     0061   139 ;
+   00000024'GF            10     88  0061   140 23$:	BISB	#1@PSL_TBIT,G^CTL$AL_CMCNTX+I_PS; SET TBIT ON RETURN
+                          03     11  0068   141 	BRB	27$			; 
+            61            10     88  006A   142 25$:	BISB	#1@PSL_TBIT,(R1)	; SET TBIT IN RETURN PSL
+            50       0000'8F     3C  006D   143 27$:	MOVZWL	#SS$_CONTINUE,R0	; CONTINUE
+                                 04  0072   144 	RET				;
+                                     0073   145 ;
+                                     0073   146 ; ABORT THE RSX - FATAL ERROR
+                                     0073   147 ;
+            50       0000'8F     3C  0073   148 50$:	MOVZWL	#SS$_RESIGNAL,R0	; SET UP TO FIND WAY BACK TO ENTRY
+       0004'CF       0000'CF     9E  0078   149 	MOVAB	W^RSX$RETEXIT,W^RSX$A_EXITBLOCK+4; RESET FOR NO EXIT HANDLER
+                                 04  007F   150 	RET	
+                                     0080   151 ;
+                                     0080   152 ; CONTINUE OF DIRECTIVE ACCESS VIOLATION
+                                     0080   153 ;
+            5A   00000000'GF     9E  0080   154 60$:	MOVAB	G^CTL$AL_CMCNTX,R10	; ADDRESS CONTROL REGION
+                          5B     D4  0087   155 	CLRL	R11
+         26 AB         9E 8F     99  0089   156 	CVTBW	#IE.ADP,H.DSW(R11)	; SET ERROR CODE
+         24 AA            01     88  008E   157 	BISB	#1@PSL_CC,I_PS(R10)	; SET C BIT
+                          0245   31  0092   158 	BRW	RSX$RESTORE		; CONTINUE
+                                     0095   159 ;
+                                     0095   160 ; COMPATIBILITY MODE ACCESS VIOLATION
+                                     0095   161 ;
+            50            08     D0  0095   162 70$:	MOVL	#8,R0			; SET VIOLATION TYPE
+                          5B     D4  0098   163 	CLRL	R11			;
+            5A   00000000'GF     9E  009A   164 	MOVAB	G^CTL$AL_CMCNTX,R10	; ADDRESS CONTROL REGION
+                          019D   31  00A1   165 	BRW	RSX$TRAP		; CONTINUE
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   5
+V06.0           COMPATIBILITY MODE TRAP HANDLER                                                                                  (3)
+
+                                     00A4   167 	.SBTTL	COMPATIBILITY MODE TRAP HANDLER
+                                     00A4   168  
+                                     00A4   169 	.ENABL	LSB
+                                     00A4   170 ;++
+                                     00A4   171 ; RSX$CMTRAP - COMPATIBILITY MODE TRAP HANDLER
+                                     00A4   172 ;
+                                     00A4   173 ; FUNCTIONAL DESCRIPTION:
+                                     00A4   174 ;
+                                     00A4   175 ; THIS ROUTINE IS ENTERED WHEN A CM FAULT OCCURS. THE ENTRY WAS SPECIFIED
+                                     00A4   176 ; DURING THE RSX INITIALIZATION BY THE $DCLCMH SYSTEM SERVICE.
+                                     00A4   177 ; ENTRY HERE IS A VERY SPECIAL CASE OF EXCEPTION HANDLING. 
+                                     00A4   178 ;
+                                     00A4   179 ; REGISTERS R0-R6 ARE SAVED IN THE CONTROL REGION AT CTL$GL_CMCNTX.
+                                     00A4   180 ;
+                                     00A4   181 ; THE TYPE OF CM EXCEPTION IS IN CLT$GL_CMCNTX+28.
+                                     00A4   182 ;
+                                     00A4   183 ; THE PC/PSL ARE SAVED AT CTL$GL_CMCNTX+32.
+                                     00A4   184 ;
+                                     00A4   185 ; THE ACTION IS TO INTERPRET THE CONDITION AND TO RESPOND IN AN RSX11M
+                                     00A4   186 ; COMPATIBLE FORM.
+                                     00A4   187 ;
+                                     00A4   188 ; ENTRY HERE (SST) IS ALSO FROM RSX$EXCEPTION WHEN AN EXCEPTION
+                                     00A4   189 ; OCCURS IN CM THAT IS NOT CM DEPENDENT. THE CONTROL AREA IS HOWEVER,
+                                     00A4   190 ; THE SAME.
+                                     00A4   191 ;
+                                     00A4   192 ; INPUTS:
+                                     00A4   193 ;
+                                     00A4   194 ;	R0 = ADDRESS IN THE CONTROL REGION OF THE PC/PSL PAIR
+                                     00A4   195 ;
+                                     00A4   196 ;	 STACK IS EMPTY.
+                                     00A4   197 ;
+                                     00A4   198 ; OUTPUTS:
+                                     00A4   199 ;
+                                     00A4   200 ;	AN REI IS DONE TO THE IMAGE.
+                                     00A4   201 ;	OR THE EXECUTION OF THE IMAGE IS TERMINATED.
+                                     00A4   202 ;--
+                                     00A4   203 RSX$CMTRAP::				;
+            5A   00000000'GF     9E  00A4   204 	MOVAB	G^CTL$AL_CMCNTX,R10	; ADDRESS IMAGE IMPURE AREA
+            58         00 B0     3C  00AB   205 	MOVZWL	@(R0),R8		; GET INSTRUCTION 
+            50         FC A0     9A  00AF   206 	MOVZBL	-4(R0),R0		; RESERVED INSTRUCTION?
+                          07     12  00B3   207 	BNEQ	15$			; IF NEQ THEN NO
+            58       F000 8F     B1  00B5   208 	CMPW	#^O0170000,R8		; IN FLOATING INSTRUCTION RANGE?
+                          20     1B  00BA   209 	BLEQU	50$			; IF LEQU THEN FLOATING INSTRUCTION
+                                     00BC   210 ;
+                                     00BC   211 ; CONTINUE NORMAL EXCEPTION PATH
+                                     00BC   212 ;
+                          5B     D4  00BC   213 15$:	CLRL	R11			; POINT TO IMAGE
+         20 AA            02     C0  00BE   214 	ADDL	#2,I_PC(R10)		; ADJUST PC
+                                     00C2   215 ;
+                                     00C2   216 ; ENTER THE ROUTINE BASED ON THE TRAP TYPE
+                                     00C2   217 ;
+            00            50     8F  00C2   218 20$:	CASEB	R0,#0,#<<SSTEND-SSTBASE>/2>-1 ; ENTER PROPER ROUTINE
+                       08'8F         00C5       
+                                     00C7   219 SSTBASE:
+                                 00000000   220 	.PSECT	RSXPURE,EXE,NOWRT,PIC,SHR,LONG
+                                     0000   221 RSX$B_SST:
+                                     0000   222 	SST	RSX$RESERVED,4		; RESERVED INSTRUCTION
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   6
+V06.0           COMPATIBILITY MODE TRAP HANDLER                                                                                  (3)
+
+                                     0001   223 	SST	RSX$TRAP,2		; BPT
+                                     0002   224 	SST	RSX$TRAP,3		; IOT
+                                     0003   225 	SST	EMT,5			; EMT
+                                     0004   226 	SST	RSX$TRAP,6		; TRAP
+                                     0005   227 	SST	ILLEGAL,4		; ILLEGAL INSTRUCTION
+                                     0006   228 	SST	ILLEGAL,0		; ODD ADDRESS
+                                     0007   229 	SST	ILLEGAL,2		; TBIT
+                                     0008   230 	SST	ILLEGAL,1		; MEMORY VIOLATION
+                                     0009   231  
+                                 000000D9   232 	.PSECT	RSXCODE,NOWRT,SHR,PIC
+                                     00D9   233  
+                                     00D9   234 SSTEND:					;
+                          01FE   31  00D9   235 	BRW	RSX$RESTORE		; IGNORE IF ILLEGAL
+                          FF21'  31  00DC   236 50$:	BRW	RSX$FLOAT		; ENTER FLOATING EMULATION
+                                     00DF   237  
+                                     00DF   238 	.DSABL	LSB
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   7
+V06.0           EMT PROCESSOR                                                                                                    (4)
+
+                                     00DF   240 	.SBTTL	EMT PROCESSOR
+                                     00DF   241 ;++
+                                     00DF   242 ; EMT - PROCESS POSSIBLE EMT 377
+                                     00DF   243 ;
+                                     00DF   244 ; FUNCTIONAL DESCRIPTION:
+                                     00DF   245 ;
+                                     00DF   246 ; THIS ROUTINE IS ENTERED WHEN THE CM EXCEPTION INDICATES AN EMT INSTRUCTION
+                                     00DF   247 ; WAS DONE. IF THE EMT IS EMT377 THEN THE REQUEST IS FOR AN RSX11M SYSTEM SERVICE.
+                                     00DF   248 ; OTHERWISE THE EMT IS TREATED AS ANY OTHER TRAPPING INSTRUCTION.
+                                     00DF   249 ;
+                                     00DF   250 ; INPUTS:
+                                     00DF   251 ;
+                                     00DF   252 ;	R0 = CM TRAP TYPE
+                                     00DF   253 ;	R10 = ADDRESS OF THE IMAGE IMPURE DATA AREA
+                                     00DF   254 ;	R11 = ADDRESS OF THE IMAGE
+                                     00DF   255 ;
+                                     00DF   256 ; OUTPUTS:
+                                     00DF   257 ;
+                                     00DF   258 ;	 CONTROL IS PASSED IMMEDIATELY IF NOT EMT 377 TO "TRAP"
+                                     00DF   259 ;
+                                     00DF   260 ;	THE EMT PROCESSING ROUTINE IS ENTERED.
+                                     00DF   261 ;--
+                                     00DF   262 	.ENABL	LSB
+                                     00DF   263 ;
+                                     00DF   264 ; IESDP - DIC OR DPB SIZE BAD
+                                     00DF   265 ;
+         26 AB         9D 8F     99  00DF   266 IESDP:	CVTBW	#IE.SDP,H.DSW(R11)	; SET DSW TO ERROR STATUS
+         24 AA            01     A8  00E4   267 	BISW	#1@PSL_CC,I_PS(R10)	; SET THE C-BIT
+                          01EF   31  00E8   268 	BRW	RSX$RESTORE		; REENTER IMAGE
+                          0153   31  00EB   269 10$:	BRW	RSX$TRAP		; VECTOR FOR NOT EMT377
+                                     00EE   270 ;
+                                     00EE   271 ; EMT -- CHECK FOR 11M DIRECTIVE
+                                     00EE   272 ;
+                                     00EE   273 EMT:
+         FF 8F            58     91  00EE   274 	CMPB	R8,#^O0377		; EMT 377?
+                          F7     12  00F2   275 	BNEQ	10$			; IF NEQ THEN NOT DIRECTIVE
+                                     00F4   276 ;
+                                     00F4   277 ; DIRECTIVE DISPATCHER FOR RSX11M DIRECTIVES
+                                     00F4   278 ;
+            57            02     9A  00F4   279 	MOVZBL	#2,R7			; ASSUME INITIAL STACK ADJUSTMENT
+            55            66     3C  00F7   280 	MOVZWL	(R6),R5			; GET DPB ADDRESS FLAG
+            08            55     E9  00FA   281 	BLBC	R5,25$			; IF LOW CLEAR THEN STACK POINTS TO DPB
+            55            56     D0  00FD   282 	MOVL	R6,R5			; IF LOW SET THEN DPB ON STACK
+         01 A5            02     85  0100   283 	MULB3	#2,1(R5),R7		; SET NUMBER TO REMOVE FROM STACK
+                          57         0104       
+            56            57     C0  0105   284 25$:	ADDL	R7,R6			; CLEAN STACK
+            07            01     EF  0108   285 	EXTZV	#1,#7,(R5)+,R4		; GET DIC CODE/2
+            54            85         010B       
+       0009'CF44          85     91  010D   286 	CMPB	(R5)+,W^RSX$B_DIC[R4]	; CHECK FOR BAD DIC AND SIZE
+                          CA     12  0113   287 	BNEQU	IESDP			; IF NEQU THEN ERROR
+         26 AB            01     B0  0115   288 	MOVW	#1,H.DSW(R11)		; ASSUME SUCCESS
+         24 AA       FFEF 8F     AA  0119   289 	BICW	#^C<1@PSL_TBIT>,I_PS(R10); RESET CONDITION CODES
+                     02DA'CF     9F  011F   290 	PUSHAB	W^RSX$RESTORE		; REENTER IMAGE AFTER DIRECTIVE
+                                     0123   291 ;
+                                     0123   292 ; DISPATCH ON DIRECTIVE NUMBER
+                                     0123   293 ;
+            00            54     8F  0123   294 	CASEB	R4,#0,#<<DICEND-DICBASE>/2>-1	; ENTER DIRECTIVE PROCESSING
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   8
+V06.0           EMT PROCESSOR                                                                                                    (4)
+
+                       7F'8F         0126       
+                                     0128   295 DICBASE:
+                                 00000009   296 	.PSECT	RSXPURE,EXE,NOWRT,PIC,SHR,LONG
+                                     0009   297 RSX$B_DIC:
+                                     0009   298 	DIC	QIO,12			; QIO
+                                     000A   299 	DIC	QIOW,12			; QIO AND WAIT
+                                     000B   300 	DIC	GLUN,3			; GET LUN INFORMATION
+                                     000C   301 	DIC	ALUN,4			; ASSIGN LUN
+                                     000D   302 	DIC	ALTP,4			; ALTER TASK PRIORITY
+                                     000E   303 	DIC	RQST,7			; REQUEST TASK PRIORITY
+                                     000F   304 	DIC	
+                                     0010   305 	DIC	
+                                     0011   306 	DIC	RUN,11			; RUNTASK
+                                     0012   307 	DIC	
+                                     0013   308 	DIC	
+                                     0014   309 	DIC	MRKT,5			; MARK TIME
+                                     0015   310 	DIC	CSRQ,3			; CANCEL SCHEDULE REQUESTS
+                                     0016   311 	DIC	CMKT,1			; CANCEL MARK TIME
+                                     0017   312 	DIC	EXST,2			; EXIT WITH STATUS
+                                     0018   313 	DIC	CLEF,2			; CLEAR EVENT FLAG
+                                     0019   314 	DIC	SETF,2			; SET EVENT FLAG
+                                     001A   315 	DIC	DECL,1			; DECLARE SIGNIFICANT EVENT
+                                     001B   316 	DIC	
+                                     001C   317 	DIC	RDAF,2			; READ ALL EVENT FALGS
+                                     001D   318 	DIC	WTSE,2			; WAIT FOR SINGLE EVENT FLAGS
+                                     001E   319 	DIC	WTLO,3			; WAIT FOR LOGICAL OR OF FLAGS
+                                     001F   320 	DIC	SPND,1			; SUSPEND TASK
+                                     0020   321 	DIC	RSUM,3			; RESUME TASK
+                                     0021   322 	DIC	WSIG,1			; WAIT FOR SIGNIFICANT EVENT
+                                     0022   323 	DIC	EXIT,1			; TASK EXIT
+                                     0023   324 	DIC	EXIF,2			; EXIT IF
+                                     0024   325 	DIC			
+                                     0025   326 	DIC			
+                                     0026   327 	DIC			
+                                     0027   328 	DIC	GTIM,2			; GET TIME
+                                     0028   329 	DIC	GTSK,2			; GET TASK PARAMETERS
+                                     0029   330 	DIC	GPRT,4			; GET PARTITION PARAMETERS
+                                     002A   331 	DIC	
+                                     002B   332 	DIC			
+                                     002C   333 	DIC	SDAT,5			; SEND DATA
+                                     002D   334 	DIC	
+                                     002E   335 	DIC	RCVD,4			; RECEIVE DATA
+                                     002F   336 	DIC	RCVX,4			; RECEIVE DATA OR EXIT
+                                     0030   337 	DIC	
+                                     0031   338 	DIC			
+                                     0032   339 	DIC	ABRT,3			; ABORT TASK
+                                     0033   340 	DIC	
+                                     0034   341 	DIC	
+                                     0035   342 	DIC	EXTK,3			; EXTEND TASK
+                                     0036   343 	DIC	
+                                     0037   344 	DIC	
+                                     0038   345 	DIC	DSCP,1			; DISABLE CHECK POINTING
+                                     0039   346 	DIC	ENCP,1			; ENABLE CHECK POINTING
+                                     003A   347 	DIC	DSAR,1			; DISABLE AST'S
+                                     003B   348 	DIC	ENAR,1			; ENABLE AST'S
+                                     003C   349 	DIC	SVDB,3			; SPECIFY DEBUG VECTOR
+                                     003D   350 	DIC	SVTK,3			; SPECIFY TASK VECTOR
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page   9
+V06.0           EMT PROCESSOR                                                                                                    (4)
+
+                                     003E   351 	DIC	SRDA,2			; SPECIFY RECEIVE AST'S
+                                     003F   352 	DIC	SPRA,2			; SPECIFY POWER FAIL AST
+                                     0040   353 	DIC	SFPA,2			; SPECIFY FLOATING AST
+                                     0041   354 	DIC
+                                     0042   355 	DIC	ASTX,1			; AST SERVICE EXIT
+                                     0043   356 	DIC			
+                                     0044   357 	DIC			
+                                     0045   358 	DIC			
+                                     0046   359 	DIC			
+                                     0047   360 	DIC				; GET SENSE SWITCHES
+                                     0048   361 	DIC	GMCR,41			; GET MCR LINE
+                                     0049   362 	DIC			
+                                     004A   363 	DIC			
+                                     004B   364 	DIC			
+                                     004C   365 	DIC			
+                                     004D   366 	DIC			
+                                     004E   367 	DIC			
+                                     004F   368 	DIC			
+                                     0050   369 	DIC			
+                                     0051   370 	DIC	PARS,8				; PARSE
+                                 000001BA   371 	.PSECT	RSXCODE,NOWRT,SHR,PIC
+                                     01BA   372 	.REPT	128-<<.-DICBASE>/2>
+                                     01BA   373 	DIC
+                                     01BA   374 	.ENDR
+                                 00000228   375 	.PSECT	RSXCODE,NOWRT,SHR,PIC
+                                     0228   376 DICEND:$DSW	#IE.SDP
+                                     0232   377  
+                                     0232   378 	.DSABL	LSB
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  10
+V06.0           RESERVED INSTRUCTIONS                                                                                            (5)
+
+                                     0232   380 	.SBTTL	RESERVED INSTRUCTIONS
+                                     0232   381 ;++
+                                     0232   382 ; RSX$RESERVED - PROCESS COMPATIBILITY MODE RESERVED INSTRUCTIONS
+                                     0232   383 ;
+                                     0232   384 ; FUNCTIONAL DESCRIPTION:
+                                     0232   385 ;
+                                     0232   386 ; THIS ROUTINE IS ENTERED FROM THE FLOATING POINT EMULATION ROUTINE
+                                     0232   387 ; WHEN A NON-FLOATING INSTRUCTION CAUSED THE TRAP.
+                                     0232   388 ;
+                                     0232   389 ; INPUTS:
+                                     0232   390 ;
+                                     0232   391 ;	NONE
+                                     0232   392 ;
+                                     0232   393 ; OUTPUTS:
+                                     0232   394 ;
+                                     0232   395 ;	CONTROL IS PASSED TO THE COMMON TRAP ROUTINES
+                                     0232   396 ;
+                                     0232   397 ;	R4 = 0
+                                     0232   398 ;	R10 = ADDRESS OF THE INAGE IMPURE DATA AREA
+                                     0232   399 ;	R11 = ADDRESS OF THE IMAGE
+                                     0232   400 ;--
+                                     0232   401 RSX$RESERVED::
+            5A   00000000'GF     9E  0232   402 	MOVAB	G^CTL$AL_CMCNTX,R10	; LOAD IMPURE POINTER
+                          5B     D4  0239   403 	CLRL	R11			; ADDRESS IMAGE
+                          50     D4  023B   404 	CLRL	R0			; SET TRAP TYPE
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  11
+V06.0           ILLEGAL AND TRAP INSTRUCTIONS                                                                                    (6)
+
+                                     023D   406 	.SBTTL	ILLEGAL AND TRAP INSTRUCTIONS
+                                     023D   407 ;++
+                                     023D   408 ; ILLEGAL/RSX$TRAP - ILLEGAL AND TRAP INSTRUCTION HANDLER
+                                     023D   409 ;
+                                     023D   410 ; FUNCTIONAL DESCRIPTION:
+                                     023D   411 ;
+                                     023D   412 ; THIS ROUTINE PROCESSES NON EMT-377 TRAPS. IF THE IMAGE HAS ENABLED
+                                     023D   413 ; THE APPROPRIATE SST VECTOR SERVICE THEN THE TRAP IS REFLECTED TO HIM.
+                                     023D   414 ; OTHERWISE THE IMAGE EXECUTION IS ABORTED WITH A PRINT OUT.
+                                     023D   415 ;
+                                     023D   416 ; INPUTS:
+                                     023D   417 ;
+                                     023D   418 ;	R0 = TRAP TYPE
+                                     023D   419 ;	R10 = ADDRESS OF THE IMAGE IMPURE DATA AREA
+                                     023D   420 ;	R11 = ADDRESS OF THE IMAGE
+                                     023D   421 ;
+                                     023D   422 ; OUTPUTS:
+                                     023D   423 ;
+                                     023D   424 ;	THE IMAGE IS ABORTED VIA RSX$ABORT
+                                     023D   425 ;	
+                                     023D   426 ;	R0 = ABORT REASON
+                                     023D   427 ;
+                                     023D   428 ;	THE IMAGE IS ENTERED IN A SST
+                                     023D   429 ;
+                                     023D   430 ;	THE NEW PC/PSL AREA SET UP IN I_PC/I_PS AND THE IMAGE STACK
+                                     023D   431 ;	IS CHENGED TO REFLECT THE CONDITION.
+                                     023D   432 ;--
+                                     023D   433 ILLEGAL:				; ENTRY FOR ILLEGAL INSTRUCTIONS
+         20 AA            02     C2  023D   434 	SUBL	#2,I_PC(R10)		; ADJUST PC FOR REI
+                                     0241   435 RSX$TRAP::				; ENTRY FOR TRAPPING INSTRUCTIONS
+                                     0241   436 ;
+                                     0241   437 ; GET OFFSET INTO SST VECTOR BASED ON EXCEPTION TYPE CODE
+                                     0241   438 ;
+            51       0000'CF40   9A  0241   439 	MOVZBL	W^RSX$B_SST[R0],R1	; GET OFFSET INTO SST VECTOR
+                                     0247   440 ;
+                                     0247   441 ; FIND SST VECTOR
+                                     0247   442 ;
+            53       0192 CA     3C  0247   443 	MOVZWL	I_DEBVECL(R10),R3	; GET SIZE OF VECTOR
+                          12     13  024C   444 	BEQL	30$			; IF EQL THEN NONE
+            52       0190 CA     3C  024E   445 	MOVZWL	I_DEBVEC(R10),R2	; GET VECTOR ADDRESS
+                          0B     13  0253   446 	BEQL	30$			; IF EQL THEN TRY TASK
+            53            51     91  0255   447 	CMPB	R1,R3			; VECTOR LONG ENOUGH?
+                          06     1A  0258   448 	BGTRU	30$			; IF GTR THEN NO
+            52            6241   3C  025A   449 	MOVZWL	(R2)[R1],R2		; GET ADDRESS OF HIS ROUTINE
+                          2A     12  025E   450 	BNEQ	50$			; IF NEQ THEN TRY IT
+            53       0196 CA     3C  0260   451 30$:	MOVZWL	I_SSTVECL(R10),R3	; GET SIZE OF SECONDARY VECTOR
+                          12     13  0265   452 	BEQL	40$			; IF EQL THEN NONE
+            52       0194 CA     3C  0267   453 	MOVZWL	I_SSTVEC(R10),R2	; TRY TASK VECTOR
+                          0B     13  026C   454 	BEQL	40$			; IF EQL THEN NONE - ABORT
+            53            51     91  026E   455 	CMPB	R1,R3			; VECTOR LONG ENOUGH?
+                          06     1A  0271   456 	BGTRU	40$			; IF GTR THEN NO
+            52            6241   3C  0273   457 	MOVZWL	(R2)[R1],R2		; GET ADDRESS OF HIS ROUTINE
+                          11     12  0277   458 	BNEQ	50$			; IF NEQ THEN TRY IT
+                                     0279   459 ;
+                                     0279   460 ; ABORT IMAGE BECAUSE OF UNFIELDED SST
+                                     0279   461 ;
+            50            03     78  0279   462 40$:	ASHL	#3,R0,R0		; BUILD RSX STYLE ERROR CODE
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  12
+V06.0           ILLEGAL AND TRAP INSTRUCTIONS                                                                                    (6)
+
+                          50         027C       
+            50       8004 8F     A8  027D   463 	BISW	#^X08004,R0		; INSERT AND MERGE BITS
+            10            06     F0  0282   464 	INSV	#RSX$C_SUBSYSTEM,#16,#16,R0;
+            50            10         0285       
+                          FD76'  31  0287   465 	BRW	RSX$ABORT		; ABORT EXECUTION
+                                     028A   466 ;
+                                     028A   467 ; PUT IMAGE IN SST ROUTINE
+                                     028A   468 ;
+                                     028A   469 ;
+                                     028A   470 ; PUSH SST PARAMETERS ON HIS STACK
+                                     028A   471 ;
+                                     028A   472 50$:	IFNOWRT	#8,-8(R6),40$		; IF NO WRITE THEN NO SST
+            08            50     91  0291   473 	CMPB	R0,#<<RSX$_ACCVIO&^X0F8>@-3>; MEMORY PROBLEM?
+                          11     12  0294   474 	BNEQ	60$			; IF NEQ THEN NO
+                                     0296   475 ;
+                                     0296   476 ; MEMORY PROTECT PROBLEM
+                                     0296   477 ;
+         24 AA       FFE0 8F     AB  0296   478 	BICW3	#^X0FFE0,I_PS(R10),-(R6); PUT PSW ON STACK
+                          76         029C       
+            76         20 AA     B0  029D   479 	MOVW	I_PC(R10),-(R6)		; PUT PC ON STACK AND ZERO WORD
+                          76     D4  02A1   480 	CLRL	-(R6)			; ZERO TWO MORE WORDS
+                          76     B4  02A3   481 	CLRW	-(R6)			; AND A THIRD
+                          2C     11  02A5   482 	BRB	80$			; CONTINUE IN COMMON
+                                     02A7   483 ;
+                                     02A7   484 ; NON MEMORY VIOLATION SST
+                                     02A7   485 ;
+            03            50     91  02A7   486 60$:	CMPB	R0,#<<RSX$_NONRSXEMT&^X0F8>@-3>; EMT?
+                          05     13  02AA   487 	BEQL	70$			; IF EQL THEN YES
+            04            50     91  02AC   488 	CMPB	R0,#<<RSX$_TRAP&^X0F8>@-3>; TRAP?
+                          17     12  02AF   489 	BNEQ	75$			; IF NEQ THEN NO
+         24 AA       FFE0 8F     AB  02B1   490 70$:	BICW3	#^X0FFE0,I_PS(R10),-(R6); INSERT PSW
+                          76         02B7       
+            57         20 AA     D0  02B8   491 	MOVL	I_PC(R10),R7		; GET THE PC
+            76            57     B0  02BC   492 	MOVW	R7,-(R6)		; INSERT IT ON STACK
+            76         FE A7     9B  02BF   493 	MOVZBW	-2(R7),-(R6)		; PUT LOW BYTE OF TRAP ON STACK
+            66            02     A4  02C3   494 	MULW	#2,(R6)			; LOW ORDER TIMES TWO
+                          0B     11  02C6   495 	BRB	80$			; CONTINUE IN COMMON
+         24 AA       FFE0 8F     AB  02C8   496 75$:	BICW3	#^X0FFE0,I_PS(R10),-(R6); INSERT PSW
+                          76         02CE       
+            76         20 AA     B0  02CF   497 	MOVW	I_PC(R10),-(R6)		; INSERT PC
+         20 AA            52     D0  02D3   498 80$:	MOVL	R2,I_PC(R10)		; SET SECOND RETURN ADDRESS
+                       24 AA     B4  02D7   499 	CLRW	I_PS(R10)		; SET CONDITIONS AND T-BIT FOR SST
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  13
+V06.0           RSX$RESTORE -- RESTORE IMAGE CONTEXT AND ENTER                                                                   (7)
+
+                                     02DA   501 	.SBTTL	RSX$RESTORE -- RESTORE IMAGE CONTEXT AND ENTER IMAGE
+                                     02DA   502 ;++
+                                     02DA   503 ; RSX$RESTORE - RESTORE IMAGE REGISTERS AND ENTER IMAGE
+                                     02DA   504 ;
+                                     02DA   505 ; FUNCTIONAL DESCRIPTION:
+                                     02DA   506 ;
+                                     02DA   507 ; THIS ROUTINE IS ENTERED AFTER A TRAP OR DIRECTIVE. ANY PENDING AST'S
+                                     02DA   508 ; ARE DETECTED AND THE IMAGE EXECUTION IS DIVERTED TO THE AST IF POSSIBLE.
+                                     02DA   509 ; THIS ROUTINE CAN BE INTERRUPTED BY AN AST. IT IS NECESSARY TO SET AN 
+                                     02DA   510 ; INTERLOCK TO SIGNAL THE AST LOGIC TO ALWAYS RETURN AT RSX$RESTORE IF
+                                     02DA   511 ; AN AST OCCURED DURING THE RESTORE.
+                                     02DA   512 ;
+                                     02DA   513 ; INPUTS:
+                                     02DA   514 ;
+                                     02DA   515 ;	R6 = ADDRESS OF THE IMAGE STACK
+                                     02DA   516 ;	R10 = ADDRESS OF THE IMAGE DATA BASE
+                                     02DA   517 ;	R11 = ADDRESS OF THE IMAGE HEADER
+                                     02DA   518 ;
+                                     02DA   519 ; OUTPUTS:
+                                     02DA   520 ;
+                                     02DA   521 ;	NONE
+                                     02DA   522 ;--
+                                     02DA   523 RSX$RESTORE::				; RESTORE REGISTERS
+            5E            08     C2  02DA   524 	SUBL	#8,SP			; ALLOCATE DATA SPACE ON STACK
+                                     02DD   525 RSX$RESTORE_CON::			; CONTINUE RESTORE
+            5A   00000000'GF     9E  02DD   526 	MOVAB	G^CTL$AL_CMCNTX,R10	; ADDRESS CONTEXT
+       0170 CA            01     A8  02E4   527 	BISW	#1@SV_RESTORE,I_STATE(R10); SET INTERLOCK
+            6E         20 AA     7D  02E9   528 	MOVQ	I_PC(R10),(SP)		; SET PC/PSL FOR REI
+                                     02ED   529 ;
+                                     02ED   530 ; CHECK TO SEE IF AN AST WAS QUEUED WHILE THE PROCESSOR WAS IN NATIVE MODE
+                                     02ED   531 ;
+       0170 CA            05     E5  02ED   532 	BBCC	#SV_PENDWAIT,I_STATE(R10),15$; BR IF AST NOT POSTED WHILE IN NATIVE
+                          09         02F2       
+            57            6E     7D  02F3   533 	MOVQ	(SP),R7			; SET UP FOR SUBROUTINE CALL
+                          FD07'  30  02F6   534 	BSBW	RSX$RETURNAST		; GET AST CONTEXT IF ANY
+            6E            57     7D  02F9   535 	MOVQ	R7,(SP)			; RESTORE PC/PSL
+                                     02FC   536 ;
+                                     02FC   537 ; RESTORE REGISTERS
+                                     02FC   538 ;
+            50            8A     7D  02FC   539 15$:	MOVQ	(R10)+,R0		; RESTORE R0,R1
+            52            8A     7D  02FF   540 	MOVQ	(R10)+,R2		; RESTORE R2,R3
+            54            6A     7D  0302   541 	MOVQ	(R10),R4		; RESTORE R4,R5
+         04 AE            04     E1  0305   542 	BBC	#PSL_TBIT,4(SP),20$	; IF TBIT SET THEN SET TPENDING
+                          05         0309       
+         07 AE         40 8F     88  030A   543 	BISB	#<1@30>@-24,7(SP)	; SET TPENDING
+                                     030F   544 ;
+                                     030F   545 ; CLEAR RESTORE IN PROGRESS FLAG
+                                     030F   546 ;
+                                     030F   547 ; NOTE THAT A WINDOW EXISTS BETWEEN THIS INSTRUCTION AND THE REI SO
+                                     030F   548 ; THE AST LOGIC THAT CHECKS FOR RESTORE IN PROGRESS, CHECKS BOTH THE
+                                     030F   549 ; SV_RESTORE BIT AND PC = RSX$REI.
+                                     030F   550 ;
+       0160 CA            01     AA  030F   551 20$:	BICW	#1@SV_RESTORE,I_STATE-I_R4(R10); CLEAR INTERLOCK
+                                     0314   552 RSX$REI::				; PC OF REI INSTRUCTION
+                                 02  0314   553 	REI				;
+                                     0315   554 ;
+                                     0315   555 	.END
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  14
+SYMBOL TABLE                                                                                                                     (7)
+
+$$MSG          = 00000000            H.IPC            0000000E            IE.FIX         = FFFFFFF7            
+...GBL         = 00000000            H.IPS            0000000C            IE.FLN         = FFFFFFAF            
+ACBC_CTLRCAST  = 00000002            H.ISP            00000010            IE.FOP         = FFFFFFCB            
+ACBC_FLOATAST  = 00000003            H.LUN            0000003E            IE.HFU         = FFFFFFE4            
+ACBC_PWRAST    = 00000000            H.NLUN           0000003C            IE.HWR         = FFFFFFFA            
+ACBC_RCVAST    = 00000001            H.NML            00000031            IE.IBS         = FFFFFFA7            
+ACBV_INPROG    = 00000001            H.ODVA           00000012            IE.IDU         = FFFFFFA4            
+ACBV_PERM      = 00000000            H.ODVL           00000014            IE.IEF         = FFFFFF9F            
+ACBV_TYPE      = 00000008            H.OVLY           0000002C            IE.IES         = FFFFFFAE            
+ACB_FLAGS        0000000C            H.PFVA           0000001A            IE.IFC         = FFFFFFFE            
+ACB_LINK         00000000            H.RCVA           0000001E            IE.IFU         = FFFFFFE7            
+ACB_UPC          0000000A            H.RRVA           00000032            IE.ILL         = FFFFFFD6            
+ACB_UPRM         00000008            H.SPRI           00000030            IE.ILU         = FFFFFFA0            
+ADR_HIGHLIM      00000004            H.TKVA           00000016            IE.ILV         = FFFFFFED            
+ADR_LOWLIM       00000000            H.TKVL           00000018            IE.INS         = FFFFFFFE            
+ADR_SIZE         00000008            H.VEXT           0000002E            IE.IOP         = FFFFFFAD            
+AP_NAME          00000004            H.WND            00000024            IE.IPR         = FFFFFFA1            
+AST_PARAM        00000004            IE.2DV         = FFFFFFD0            IE.ISQ         = FFFFFFC3            
+AST_PC           00000010            IE.ABO         = FFFFFFF1            IE.ITI         = FFFFFFA3            
+AST_PSL          00000014            IE.ACT         = FFFFFFF9            IE.ITP         = FFFFFFA8            
+AST_R0           00000008            IE.ADP         = FFFFFF9E            IE.ITS         = FFFFFFF8            
+AST_R1           0000000C            IE.ALC         = FFFFFFAC            IE.IUI         = FFFFFFA5            
+BIT...         = 0006809C            IE.ALG         = FFFFFFAC            IE.LCK         = FFFFFFE5            
+CTL$AL_CMCNTX    ********   X   05   IE.ALN         = FFFFFFDE            IE.LNL         = FFFFFFA6            
+C_CANONPS      = 83C00000            IE.AST         = FFFFFFB0            IE.MAP         = FFFFFFAF            
+C_RCVDSTR      = 44564352            IE.BAD         = FFFFFFFF            IE.MOD         = FFFFFFEB            
+DICBASE          00000128 R     05   IE.BBE         = FFFFFFC8            IE.NBF         = FFFFFFD9            
+DICEND           00000228 R     05   IE.BCC         = FFFFFFBE            IE.NBK         = FFFFFFD7            
+EMT              000000EE R     05   IE.BDI         = FFFFFFCC            IE.NDR         = FFFFFFB8            
+FCB_ATTRIBS      0000007C            IE.BDR         = FFFFFFCE            IE.NFI         = FFFFFFC4            
+FCB_FIB          0000004C            IE.BDV         = FFFFFFC9            IE.NFW         = FFFFFFBB            
+FCB_FID          00000000            IE.BHD         = FFFFFFC0            IE.NLK         = FFFFFFB1            
+FCB_FNAME        00000014            IE.BLB         = FFFFFFBA            IE.NLN         = FFFFFFDB            
+FCB_FNAMEDESC    0000000C            IE.BLK         = FFFFFFEC            IE.NNC         = FFFFFFB3            
+FCB_FNB          00000002            IE.BNM         = FFFFFFCA            IE.NNL         = FFFFFFB2            
+FCB_PC           00000078            IE.BTF         = FFFFFFB4            IE.NNN         = FFFFFFBC            
+FCB_RESULT       00000030            IE.BTP         = FFFFFFD5            IE.NOD         = FFFFFFE9            
+FCB_RESULTDESC   00000004            IE.BVR         = FFFFFFC1            IE.NSF         = FFFFFFE6            
+FCB_SIZE         000000B4            IE.BYT         = FFFFFFED            IE.NST         = FFFFFFB0            
+FP_AP            00000008            IE.CKP         = FFFFFFF6            IE.NSW         = FFFFFFEE            
+FP_FP            0000000C            IE.CKS         = FFFFFFE2            IE.NVR         = FFFFFFAA            
+FP_PC            00000010            IE.CLO         = FFFFFFDA            IE.NVW         = FFFFFFA9            
+FP_PSL           00000004            IE.CNR         = FFFFFFB7            IE.OFL         = FFFFFFBF            
+FP_REGISTERS     00000014            IE.CON         = FFFFFFEA            IE.ONP         = FFFFFFFB            
+GBL...         = 00000000            IE.DAA         = FFFFFFF8            IE.OVR         = FFFFFFEE            
+H.CSP            00000000            IE.DAO         = FFFFFFF3            IE.PES         = FFFFFFAD            
+H.CUIC           00000008            IE.DFU         = FFFFFFE8            IE.PNS         = FFFFFFA2            
+H.DSW            00000026            IE.DNA         = FFFFFFF9            IE.PRI         = FFFFFFF0            
+H.DUIC           0000000A            IE.DNR         = FFFFFFFD            IE.PTS         = FFFFFFFD            
+H.EFLM           00000004            IE.DUN         = FFFFFFF7            IE.RAC         = FFFFFFD4            
+H.EFSV           00000020            IE.DUP         = FFFFFFC7            IE.RAT         = FFFFFFD3            
+H.FCS            00000028            IE.EOF         = FFFFFFF6            IE.RBG         = FFFFFFD8            
+H.FORT           0000002A            IE.EOT         = FFFFFFC2            IE.RBS         = FFFFFFF1            
+H.FPSA           00000022            IE.EOV         = FFFFFFF5            IE.RCN         = FFFFFFD2            
+H.FPVA           0000001C            IE.EXP         = FFFFFFB5            IE.RER         = FFFFFFE0            
+H.GARD           0000003A            IE.FEX         = FFFFFFCF            IE.RNM         = FFFFFFCD            
+H.HDLN           00000002            IE.FHE         = FFFFFFC5            IE.RSU         = FFFFFFEF            
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  15
+SYMBOL TABLE                                                                                                                     (7)
+
+IE.SDP         = FFFFFF9D            I_FLOATERR       000001AC            PSL_CM         = 0000001F            
+IE.SNC         = FFFFFFDD            I_FLOATTMP       000001B8            PSL_FPD        = 0000001B            
+IE.SPC         = FFFFFFFA            I_GARD           000000EC            PSL_FU         = 00000006            
+IE.SQC         = FFFFFFDC            I_HIGHEFN        0000016C            PSL_TBIT       = 00000004            
+IE.SRE         = FFFFFFF2            I_HIGHSIZE       000000F4            QIOV_FILES     = 00000000            
+IE.STK         = FFFFFFC6            I_IMAGEVBN       000000F8            QIO_FLAGS        0000001A            
+IE.TCH         = FFFFFFF5            I_INISIZE        000000F0            QIO_IOSB         0000000E            
+IE.TMM         = FFFFFFB9            I_LENGTH         000001F0            QIO_LUT          00000016            
+IE.TMO         = FFFFFFB6            I_LOGNAME        000000E0            QIO_SECONDBLK    0000001C            
+IE.ULK         = FFFFFFAB            I_LUT            00000168            QIO_SIZE         00000020            
+IE.ULN         = FFFFFFFB            I_NLUN           00000164            RSX$ABORT        ********   X   05   
+IE.UNS         = FFFFFFFC            I_PC             00000020            RSX$ABRT         ********   X   05   
+IE.UPN         = FFFFFFFF            I_PPFINDEX       00000162            RSX$ALTP         ********   X   05   
+IE.VER         = FFFFFFFC            I_PROCNAME       0000014C            RSX$ALUN         ********   X   05   
+IE.WAC         = FFFFFFE3            I_PS             00000024            RSX$ASTX         ********   X   05   
+IE.WAT         = FFFFFFE1            I_PWRAST         000001A0            RSX$A_EXITBLOCK  ********   X   05   
+IE.WCK         = FFFFFFAA            I_R0             00000000            RSX$B_DIC        00000009 R     06   
+IE.WER         = FFFFFFDF            I_R1             00000004            RSX$B_SST        00000000 R     06   
+IE.WLK         = FFFFFFF4            I_R2             00000008            RSX$CLEF         ********   X   05   
+IE.WOV         = FFFFFFAB            I_R3             0000000C            RSX$CMKT         ********   X   05   
+IESDP            000000DF R     05   I_R4             00000010            RSX$CMTRAP       000000A4 RG    05   
+ILLEGAL          0000023D R     05   I_R5             00000014            RSX$CSRQ         ********   X   05   
+IS.BV          = 00000005            I_R6             00000018            RSX$C_SUBSYSTEM= 00000006            
+IS.CC          = 00000301            I_RAD50NAME      00000148            RSX$DECL         ********   X   05   
+IS.CLR         = 00000000            I_RCVAST         0000019C            RSX$DSAR         ********   X   05   
+IS.CR          = 00000D01            I_RCVMAIL        00000160            RSX$DSCP         ********   X   05   
+IS.EOT         = 00000401            I_RUNFLAGS       0000018C            RSX$ENAR         ********   X   05   
+IS.ESC         = 00001B01            I_SCRATCH        00000028            RSX$ENCP         ********   X   05   
+IS.ESQ         = 00009B01            I_SSTVEC         00000194            RSX$EXCEPTION    00000000 RG    05   
+IS.PES         = 00008001            I_SSTVECL        00000196            RSX$EXIF         ********   X   05   
+IS.PND         = 00000000            I_STATE          00000170            RSX$EXIT         ********   X   05   
+IS.RDD         = 00000002            I_TYPE           0000001C            RSX$EXST         ********   X   05   
+IS.SET         = 00000002            I_UIC            0000013C            RSX$EXTK         ********   X   05   
+IS.SPD         = 00000002            I_WAIT           00000178            RSX$FLOAT        ********   X   05   
+IS.SUC         = 00000001            I_WAITSAVE       00000180            RSX$FLOAT_END    ********   X   05   
+IS.TAB         = 00000901            LUTC_CR        = 00000005            RSX$FLOAT_EXC    ********   X   05   
+IS.TMO         = 00000002            LUTC_DISK      = 00000002            RSX$GLUN         ********   X   05   
+I_ADR0           000000FC            LUTC_LP        = 00000004            RSX$GMCR         ********   X   05   
+I_ASCIINAME      00000140            LUTC_RMS       = 00000000            RSX$GPRT         ********   X   05   
+I_ASTPOOL        000000D0            LUTC_TAPE      = 00000003            RSX$GTIM         ********   X   05   
+I_ASTQUEUE       000000C8            LUTC_TRM       = 00000001            RSX$GTSK         ********   X   05   
+I_BAILOUTFP      00000188            LUTV_CTRLC     = 00000002            RSX$MRKT         ********   X   05   
+I_CMDROUT        000000E8            LUTV_CTRLO     = 00000000            RSX$PARS         ********   X   05   
+I_CURAST         00000198            LUTV_PRM       = 00000003            RSX$QIO          ********   X   05   
+I_DEBVEC         00000190            LUT_CHAN         0000000C            RSX$QIOW         ********   X   05   
+I_DEBVECL        00000192            LUT_CHAR         00000012            RSX$RCVD         ********   X   05   
+I_FCBPOOL        000000D8            LUT_CTRLC        00000032            RSX$RCVX         ********   X   05   
+I_FCC            000001B4            LUT_FLAGS        0000000A            RSX$RDAF         ********   X   05   
+I_FLOATA0        000001C0            LUT_INFONAME     0000002E            RSX$REI          00000314 RG    05   
+I_FLOATA1        000001C8            LUT_INFOUNIT     00000030            RSX$RESERVED     00000232 RG    05   
+I_FLOATA2        000001D0            LUT_LINK         00000000            RSX$RESTORE      000002DA RG    05   
+I_FLOATA3        000001D8            LUT_REALNAME     0000001E            RSX$RESTORE_CON  000002DD RG    05   
+I_FLOATA4        000001E0            LUT_REF          00000008            RSX$RETEXIT      ********   X   05   
+I_FLOATA5        000001E8            LUT_RSXNAME      00000010            RSX$RETURNAST    ********   X   05   
+I_FLOATADR       000001B0            LUT_SIZE         00000036            RSX$RQST         ********   X   05   
+I_FLOATAST       000001A4            LUT_TYPE         00000016            RSX$RSUM         ********   X   05   
+I_FLOATCSR       000001A8            PSL_CC         = 00000000            RSX$RUN          ********   X   05   
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  16
+SYMBOL TABLE                                                                                                                     (7)
+
+RSX$SDAT         ********   X   05   W.BLPD           0000000E            
+RSX$SETF         ********   X   05   W.BLVR           00000002            
+RSX$SFPA         ********   X   05   W.BNPD           0000000D            
+RSX$SPND         ********   X   05   W.BOFF           0000000A            
+RSX$SPRA         ********   X   05   W.BPCB           00000000            
+RSX$SRDA         ********   X   05   W.BSIZ           00000008            
+RSX$SVDB         ********   X   05   
+RSX$SVTK         ********   X   05   
+RSX$TRAP         00000241 RG    05   
+RSX$WSIG         ********   X   05   
+RSX$WTLO         ********   X   05   
+RSX$WTSE         ********   X   05   
+RSX$_ACCVIO    = 00068044            
+RSX$_BADLIBREF = 0006806C            
+RSX$_BADSTACK  = 0006804C            
+RSX$_BREAK     = 0006800C            
+RSX$_EXITSTATUS= 00068640            
+RSX$_EXTERNABRT= 0006805C            
+RSX$_ILLINST   = 0006802C            
+RSX$_IMAGETERM = 00068084            
+RSX$_INSFDYNMEM= 00068054            
+RSX$_IOT       = 00068014            
+RSX$_LIBNOTFND = 00068074            
+RSX$_LOADERROR = 0006807C            
+RSX$_NOCOMM    = 00068094            
+RSX$_NONRSXEMT = 0006801C            
+RSX$_NOPMD     = 00068332            
+RSX$_NOSUCHDEV = 00068322            
+RSX$_NOTSKIMG  = 00068064            
+RSX$_ODDADDR   = 00068034            
+RSX$_PMD       = 0006832A            
+RSX$_RCVMBXSIZ = 0000012C            
+RSX$_REGMSG    = 0006808C            
+RSX$_RESERVED  = 00068004            
+RSX$_TBIT      = 0006803C            
+RSX$_TRAP      = 00068024            
+RSX$_VERIFYCMD = 00068648            
+SS$_ACCVIO       ********   X   05   
+SS$_CONTINUE     ********   X   05   
+SS$_DEBUG        ********   X   05   
+SS$_RESIGNAL     ********   X   05   
+SSTBASE          000000C7 R     05   
+SSTEND           000000D9 R     05   
+SV_ASTLVL        00000004            
+SV_DCL           00000002            
+SV_FLOATAST      00000009            
+SV_NOAST         00000003            
+SV_PENDWAIT      00000005            
+SV_PWRAST        00000008            
+SV_RCVAST        00000007            
+SV_RESTORE       00000000            
+SV_TRANSLATE     00000001            
+SV_WAIT          00000006            
+W.BATT           00000006            
+W.BFPD           0000000C            
+W.BHVR           00000004            
+W.BLGH           00000010            
+RSXEXCEPTION    - RSX-11M AME EXCEPTION HANDLER                  22-AUG-1978 05:07:12   VAX-11 MACRO X0.3-11               Page  17
+PROGRAM SECTION SYNOPSIS                                                                                                         (7)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+..ABS.           00000042      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            00000000      03     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+RSXDEF           000001F4      04     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+RSXCODE          00000315      05       PIC   USR   CON   REL   LCL   SHR   EXE   RD  NOWRT BYTE  
+RSXPURE          00000089      06       PIC   USR   CON   REL   LCL   SHR   EXE   RD  NOWRT LONG  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+16106. BYTES LEFT IN FREE MEMORY POOL.
+28. BYTES OF RECLAIMED MEMORY.
+OBJ$:RSXEXCEPT,LIS$:RSXEXCEPT/-SP=EXECML$/ML,LIB$:R/ML,SRC$:RSXEXCEPT
+18 MLB DIR RDS - 469 GETS TO DEFINE 17 MACROS. 26 INTER. FILE WRITES. 

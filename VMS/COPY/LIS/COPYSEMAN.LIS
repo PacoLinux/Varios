@@ -1,0 +1,597 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE copyseman (	! Semantics of input/output spec combinations for COPY command
+;	0002	                    LANGUAGE (BLISS32),
+;	0003	                    IDENT = 'X00001'
+;	0004	                    ) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1978
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	! FACILITY:	COPY Command
+;	0028	!
+;	0029	! ABSTRACT:
+;	0030	!
+;	0031	!	This module contains a decision table that lists combinations of valid
+;	0032	!	and invalid specifications to the COPY command, and associated semantic
+;	0033	!	actions. Also contained is a routine that sets bits in the COPY status
+;	0034	!	words and and values in RMS data blocks that cause these semantic actions to occur.
+;	0035	!
+;	0036	! ENVIRONMENT:
+;	0037	!
+;	0038	!	VAX/VMS operating system, unprivileged user mode utility,
+;	0039	!	operates at non-AST level.
+;	0040	!
+;	0041	!--
+;	0042	!++
+;	0043	!
+;	0044	! AUTHOR:	Carol Peters,	CREATION DATE:	19 April 1978 19:31
+;	0045	!
+;	0046	! REVISION HISTORY:
+;	0047	!
+;	0048	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 2
+; Digital Equipment Corporation
+;
+;	0049	!
+;	0050	! Table of Contents
+;	0051	!
+;	0052	FORWARD ROUTINE
+;	0053	    copy$semantics;					! Determines the semantics of a COPY command
+;	0054	
+;	0055	!
+;	0056	! Include files
+;	0057	!
+;	0058	
+;	0059	LIBRARY 'SYS$LIBRARY:STARLET.L32';			! Common VAX/VMS definitions
+;	0060	
+;	0061	REQUIRE 'SRC$:COPY.REQ';				! Local definitions for COPY utility
+;	0276	
+;	0277	REQUIRE 'SRC$:COPYMSG.REQ';				! Definition of macros to SIGNAL a message
+;	0325	
+;	0326	!
+;	0327	! Global variables
+;	0328	!
+;	0329	
+;	0330	!
+;	0331	! Own variables
+;	0332	!
+;	0333	
+;	0334	!
+;	0335	! Macros
+;	0336	!
+;	0337	MACRO
+;	0338	    or_op (x) [] =					! OR operator to be used in iterative macro.
+;     M 0339	        OR %,
+;	0340	
+;	0341	    stored_mask (x) [] =				! Makes a mask of named bit numbers.
+;     M 0342	        1 ^ (x) or_op (%REMAINING) stored_mask (%REMAINING) %;
+;	0343	
+;	0344	!
+;	0345	! Equated symbols
+;	0346	!
+;	0347	LITERAL
+;	0348	    mask_value		= 0,				! Mask value in decision table entry.
+;	0349	    action_value	= 1,				! Action label in decision table entry
+;	0350	    next_entry		= 2,				! Next entry in decision table
+;	0351	
+;	0352	    mul_quiet_slip	= 0,				! Create multiple files, match versions, slip quietly
+;	0353	    multiple_slip	= 1,				! Create multiple files, match versions, report slips
+;	0354	    multiple_max	= 2,				! Create multiple files, maximize version numbers
+;	0355	    max_or_new		= 3,				! Maximize or use new version number
+;	0356	    concat_slip		= 4,				! Concatenate input files, slip version numbers
+;	0357	    error_spec		= 5,				! Error in combination of input and output specs
+;	0358	    no_action		= 6;				! No action to take
+;	0359	
+;	0360	!
+;	0361	! External variables
+;	0362	!
+;	0363	EXTERNAL ROUTINE
+;	0364	    copy$inopn_err;					! Reports an error resulting from an OPEN of an input file.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 2-1
+; Digital Equipment Corporation
+;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 3
+; Digital Equipment Corporation
+;
+;	0365	!
+;	0366	! The decision table below, DECISION_TABLE, is made up of two WORD entries, of
+;	0367	! which the first word is a mask of bit settings, and the second is a case label
+;	0368	! associated with the mask.
+;	0369	!
+;	0370	!  Bit  0              16             31
+;	0371	!	-------------------------------
+;	0372	!	|              |              |
+;	0373	!	|     mask     |    action    |
+;	0374	!	|              |              |
+;	0375	!	-------------------------------
+;	0376	!
+;	0377	
+;	0378	BIND
+;	0379	    decision_table	= UPLIT WORD
+;	0380	        (
+;	0381	
+;	0382	!
+;	0383	! Rule 1:
+;	0384	!	Explicit wildcard output fields specified with the /CONCATENATE qualifier is an error.
+;	0385	!
+;	0386	          stored_mask (wild_input_bit, wild_output_bit, concat_qual_bit), error_spec
+;	0387	
+;	0388	!
+;	0389	! Rule 2:
+;	0390	!	Specification of the /CONCATENATE qualifier with an output specification that contains no
+;	0391	!	explicit name, type, and version number fields is an error.
+;	0392	!
+;	0393	        , stored_mask (concat_qual_bit, no_out_spec_bit), error_spec
+;	0394	
+;	0395	!
+;	0396	! Rule 3:
+;	0397	!	A wildcard input version number specified with an output specification that contains no
+;	0398	!	explicit name, type, and version number fields causes output files to be created whose
+;	0399	!	version numbers may be lower than those of existing files.
+;	0400	!
+;	0401	        , stored_mask (wild_in_ver_bit, no_out_spec_bit), mul_quiet_slip
+;	0402	
+;	0403	!
+;	0404	! Rule 4:
+;	0405	!	Specification of both input wildcard version number and output wildcard version number
+;	0406	!	quietly allows output files to be created whose version numbers are lower than those of
+;	0407	!	existing files. Input version numbers are matched if possible. Overwrites usually fail.
+;	0408	!
+;	0409	        , stored_mask (wild_in_ver_bit, wil_out_ver_bit), mul_quiet_slip
+;	0410	
+;	0411	!
+;	0412	! Rule 5:
+;	0413	!	A wildcard output version number produces matching version numbers and warnings
+;	0414	!	if an attempt is made to create an output file whose version number is lower
+;	0415	!	than that of an existing file.
+;	0416	!
+;	0417	        , stored_mask (wil_out_ver_bit), multiple_slip
+;	0418	
+;	0419	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 3-1
+; Digital Equipment Corporation
+;
+;	0420	! Rule 6:
+;	0421	!	A wildcard input version number specified with wildcard output fields (but not wildcard
+;	0422	!	output version number field) causes a warning to be reported if an attempt is made to
+;	0423	!	create an output file with a version number lower than that of an existing file.
+;	0424	!
+;	0425	        , stored_mask (wild_in_ver_bit, wild_output_bit), multiple_slip
+;	0426	
+;	0427	!
+;	0428	! Rule 7:
+;	0429	!	Wildcard output fields and explicit wildcard version number field causes multiple
+;	0430	!	files to be created, and a warning to be reported if an attempt is made to create
+;	0431	!	an output file with a version number lower than that of an existing file.
+;	0432	!
+;	0433		, stored_mask (wild_output_bit, exp_out_ver_bit), multiple_slip
+;	0434	
+;	0435	!
+;	0436	! Rule 8:
+;	0437	!	Wildcard output fields (but not wildcard output version number field) causes a warning
+;	0438	!	to be reported if an attempt is made to create an output file with a version number
+;	0439	!	lower than that of an existing file. Output version numbers are maximized.
+;	0440	!
+;	0441	        , stored_mask (wild_output_bit), multiple_max
+;	0442	
+;	0443	!
+;	0444	! Rule 9:
+;	0445	!	Absence of output file name, type, and version number specification always cause
+;	0446	!	no concatenation and maximized version numbers.
+;	0447	!
+;	0448	        , stored_mask (no_out_spec_bit), multiple_max
+;	0449	
+;	0450	!
+;	0451	! Rule 10:
+;	0452	!	An explicit output version number creates a concatenated output file whose version number
+;	0453	!	may be lower than that of an existing file.
+;	0454	!
+;	0455	        , stored_mask (exp_out_ver_bit), concat_slip
+;	0456	
+;	0457	!
+;	0458	! Rule 11:
+;	0459	!	An explicit input version number specified with no explicit output version number (wildcard
+;	0460	!	or otherwise) creates a concatenated output file with a maximized or new version number.
+;	0461	!
+;	0462	        , stored_mask (exp_in_ver_bit), max_or_new
+;	0463	        , 0, no_action
+;	0464	        );
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4
+; Digital Equipment Corporation
+;
+;	0465	GLOBAL ROUTINE copy$semantics (status, input_fab, output_fab) =
+;	0466								! Chooses semantics for COPY command
+;	0467	
+;	0468	!++
+;	0469	! Functional description:
+;	0470	!
+;	0471	!	This routine consults a decision table (DECISION_TABLE) to decide
+;	0472	!	the appropriate semantics for a given input/output specification pair.
+;	0473	!
+;	0474	!	The status passed as an input parameter is compared with various mask
+;	0475	!	settings in the decision table. If an item in the decision table matches
+;	0476	!	the status, then an associated action is taken.
+;	0477	!
+;	0478	!	Actions set or turn off status bits, and/or write values to fields in
+;	0479	!	the output FAB, NAM, and XAB blocks.
+;	0480	!
+;	0481	! Calling sequence:
+;	0482	!
+;	0483	!	copy$semantics (status.ra, input_fab.ra, output_fab.ra)
+;	0484	!
+;	0485	! Input parameters
+;	0486	!
+;	0487	!	status		- address of a status word
+;	0488	!	input_fab	- address of the FAB associated with the current input file
+;	0489	!	output_fab	- address of the FAB associated with the current output file
+;	0490	!
+;	0491	! Implicit inputs
+;	0492	!
+;	0493	!	The NAM and XAB blocks associated with the input and output FABs.
+;	0494	!
+;	0495	! Output parameters
+;	0496	!
+;	0497	!	none
+;	0498	!
+;	0499	! Implicit outputs
+;	0500	!
+;	0501	!	Bits that may be written in the status word include the following:
+;	0502	!
+;	0503	!	Fields in the NAM blocks that may be written include the following:
+;	0504	!
+;	0505	!	Fields in the XAB blocks that may be written include the following:
+;	0506	!
+;	0507	! Routine value
+;	0508	!
+;	0509	!	OK		- success
+;	0510	!	ERROR		- error in combination of input and output specifications
+;	0511	!
+;	0512	! Side effects
+;	0513	!
+;	0514	!	none
+;	0515	!
+;	0516	!--
+;	0517	
+;	0518	    BEGIN
+;	0519	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4-1
+; Digital Equipment Corporation
+;
+;	0520	    MAP
+;	0521	        status		: REF VECTOR [, WORD],		! Pointer to the status word
+;	0522	        input_fab	: REF BLOCK [, BYTE],		! Input FAB block
+;	0523	        output_fab	: REF BLOCK [, BYTE];		! Output FAB block
+;	0524	
+;	0525	    LOCAL
+;	0526	        decis_tbl_ptr	: REF VECTOR [, WORD];		! Pointer to current entry in DECISION_TABLE.
+;	0527	
+;	0528	!
+;	0529	! Set up a pointer to the first entry in the decision table.
+;	0530	!
+;	0531	
+;	0532	    decis_tbl_ptr = decision_table;			! The address of the table addresses the first entry.
+;	0533	
+;	0534	!
+;	0535	! Iteratively move through the decision table. For each entry, see if all the bits set
+;	0536	! in the mask are also set in the status word. If they are, exit from the
+;	0537	! loop with the decision table pointer pointing to that entry.
+;	0538	!
+;	0539	! If no masks match the status word, return from this routine with an error status code.
+;	0540	!
+;	0541	
+;	0542	    WHILE 1 DO						! Loop once for each entry in the decision table.
+;	0543	        BEGIN
+;	0544	        IF (.status [0] AND .decis_tbl_ptr [mask_value])!    If the bits in the mask are also set in
+;	0545	                EQL .decis_tbl_ptr [mask_value]		!        the status word,
+;	0546	        THEN
+;	0547	            EXITLOOP					!        then exit from this comparing loop.
+;	0548	        ELSE
+;	0549	            decis_tbl_ptr = decis_tbl_ptr [next_entry];	!    Otherwise, move to the next table entry.
+;	0550	        IF .decis_tbl_ptr [mask_value] EQL 0		!    If this entry is null,
+;	0551	        THEN
+;	0552	            EXITLOOP;					!        then perform associated null action.
+;	0553	        END;						!    Else go through the loop again.
+;	0554	
+;	0555	!
+;	0556	! Now take the action associated with the matched mask value.
+;	0557	!
+;	0558	
+;	0559	    CASE .decis_tbl_ptr [action_value]			! This case statement performs the appropriate
+;	0560	            FROM mul_quiet_slip TO no_action OF		!    action routine.
+;	0561	
+;	0562	        SET
+;	0563	
+;	0564	        [mul_quiet_slip]:				! Multiple output files, slip version numbers silently
+;	0565	            BEGIN
+;	0566	            multiple_output = TRUE;			!    Set the flag indicating multiple output
+;	0567	            quiet_slip = TRUE;				!    and slip versions without reporting them.
+;	0568	            END;					!    files are to be created.
+;	0569	
+;	0570	
+;	0571	        [multiple_slip]:				! Multiple output files, slip version numbers and report
+;	0572	            BEGIN
+;	0573	            multiple_output = TRUE;			!    Set the flag indicating multiple output.
+;	0574	            END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4-2
+; Digital Equipment Corporation
+;
+;	0575	
+;	0576	
+;	0577	        [multiple_max]:					! Multiple output files, maximize version numbers.
+;	0578	            BEGIN
+;	0579	            multiple_output = TRUE;			!    Set the flag indicating that multiple output
+;	0580								!    files are to be created.
+;	0581	            output_fab [fab$v_mxv] = TRUE;		!    Set a bit in the output FAB that causes version
+;	0582								!    numbers to be maximized.
+;	0583	            END;
+;	0584	
+;	0585	
+;	0586	        [max_or_new]:					! Concatenate and maximize
+;	0587	            BEGIN
+;	0588	            concat_follows = TRUE;			!    Set flag saying that concatenating files.
+;	0589	            END;
+;	0590	
+;	0591	
+;	0592	        [concat_slip]:					! Concatenate and slip version numbers.
+;	0593	            BEGIN
+;	0594	            concat_follows = TRUE;			!    Set flag saying that concatenating files.
+;	0595	            END;
+;	0596	
+;	0597	
+;	0598	        [error_spec]:					! Error in spec combination.
+;	0599	            BEGIN
+;	0600	            put_message (msg$_wildconcat, 99);		! Report fatal error.
+;	0601	            RETURN error;				!    Return an error code.
+;	0602	            END;
+;	0603	
+;	0604	
+;	0605	        [no_action]:					! No action to take.
+;	0606	            BEGIN
+;	0607	            concat_follows = TRUE;			!    Set flag saying that concatenating files.
+;	0608	            END;
+;	0609	
+;	0610	        TES;
+;	0611	
+;	0612	!
+;	0613	! Some special case to handle the /NOCONCATENATE qualifer when it is explicitly specified.
+;	0614	!
+;	0615	
+;	0616	    IF .noconcat_qual					! If the /NOCONCATENATE qualifier was explicitly
+;	0617	    THEN						! specified,
+;	0618	        BEGIN
+;	0619	        multiple_output = TRUE;				!    then note that multiple files are to be produced
+;	0620	        concat_follows = FALSE;				!    and turn off concatenation.
+;	0621	        END;
+;	0622	
+;	0623	!
+;	0624	! Test for more error conditions. Files with relative, indexed, and hashed organizations
+;	0625	! cannot be concatenated with other files.
+;	0626	!
+;	0627	
+;	0628	    IF NOT .multiple_output				! If multiple output files are not being created,
+;	0629	    THEN						!    then concatenation or single file COPY is occurring.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4-3
+; Digital Equipment Corporation
+;
+;	0630	        BEGIN
+;	0631	        IF .outfile_open OR				!    If an output file is open, we must be appending to it;
+;	0632	            .multiple_input OR				!    if more than one input file is specified, COPY
+;	0633								!        tries to append.
+;	0634	            .wild_input OR				!    again, multiple input files;
+;	0635	            .append_command				!    the APPEND command always concatenates.
+;	0636	        THEN						! This sort of COPY is only allowed if file
+;	0637	            BEGIN					!    organization is a simple one.
+;	0638	            IF .input_fab [fab$b_org] EQL fab$c_rel	! If the file has relative organization,
+;	0639	            THEN
+;	0640	                BEGIN
+;	0641	                input_fab [fab$l_sts] =			!    Report an error by loading a special
+;	0642	                    copy$msg_number (			!    error code into the RMS status field of
+;	0643	                                        msg$_relconcat);! the input FAB.
+;	0644	                input_fab [fab$l_stv] = 0;		! Clear the secondard RMS status value.
+;	0645	                copy$inopn_err (			! Call the open error action routine
+;	0646	                                .input_fab);		!    with the address of the input FAB block.
+;	0647	                wildcard_active = FALSE;		! Turn off the WILDCARD_ACTIVE flag.
+;	0648	                RETURN no_file;				! Return an error message to the caller.
+;	0649	                END;
+;	0650	
+;	0651	            IF .input_fab [fab$b_org] EQL fab$c_idx	! If this is an indexed file organization,
+;	0652	            THEN
+;	0653	                BEGIN					!    construct a similar error.
+;	0654	                input_fab [fab$l_sts] =
+;	0655	                    copy$msg_number (
+;	0656	                                        msg$_idxconcat);
+;	0657	                input_fab [fab$l_stv] = 0;
+;	0658	                copy$inopn_err (
+;	0659	                                .input_fab);
+;	0660	                wildcard_active = FALSE;
+;	0661	                RETURN no_file;
+;	0662	                END;
+;	0663	
+;	0664	            IF .input_fab [fab$b_org] EQL fab$c_hsh	! If this is a hashed file organization,
+;	0665	            THEN
+;	0666	                BEGIN					!    construct a similar error.
+;	0667	                input_fab [fab$l_sts] =
+;	0668	                    copy$msg_number (
+;	0669	                                        msg$_hashconcat);
+;	0670	                input_fab [fab$l_stv] = 0;
+;	0671	                copy$inopn_err (
+;	0672	                                .input_fab);
+;	0673	                wildcard_active = FALSE;
+;	0674	                RETURN no_file;
+;	0675	                END;
+;	0676	
+;	0677	            END;
+;	0678	
+;	0679	        END;
+;	0680	
+;	0681	!
+;	0682	! Return with success status code.
+;	0683	!
+;	0684	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4-4
+; Digital Equipment Corporation
+;
+;	0685	    RETURN ok;						! Return successfully.
+;	0686	
+;	0687	    END;
+
+
+							    .TITLE  COPYSEMAN
+							    .IDENT  \X00001\
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .WORD   161, 5, 17, 5, 80, 0, 320, 0, 256, 1, 192, 1, 132, 1, -   ;
+								    128, 2, 16, 2, 4, 4, 2, 3, 0, 6			      ;
+
+						    DECISION_TABLE=	P.AAA
+							    .GLOBL  COPY$CLI_RESULT, COPY$CLI_STATUS, COPY$SEM_STATUS
+							    .GLOBL  COPY$MSG_NUMBER, COPY$INOPN_ERR
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0804 00000 	    .ENTRY  COPY$SEMANTICS, Save R2,R11				      ; 0465
+		         5B	0000G  CF  9E 00002 	    MOVAB   COPY$SEM_STATUS, R11				      ;
+		         50	0000'  CF  9E 00007 	    MOVAB   DECISION_TABLE, DECIS_TBL_PTR			      ;
+		         51	  04   BC  3C 0000C 1$:     MOVZWL  @STATUS, R1						      ; 0544
+		         52	       60  3C 00010 	    MOVZWL  (DECIS_TBL_PTR), R2					      ;
+		         52	       52  D2 00013 	    MCOML   R2, R2						      ;
+		         51	       52  CA 00016 	    BICL2   R2, R1						      ;
+	   60	         10	       00  ED 00019 	    CMPZV   #0, #16, (DECIS_TBL_PTR), R1			      ; 0545
+				       51     0001D									      ;
+				       07  13 0001E 	    BEQL    2$							      ;
+		         50	       04  C0 00020 	    ADDL2   #4, DECIS_TBL_PTR					      ; 0549
+				       60  B5 00023 	    TSTW    (DECIS_TBL_PTR)					      ; 0550
+				       E5  12 00025 	    BNEQ    1$							      ;
+	   06	         00	  02   A0  AF 00027 2$:     CASEW   2(DECIS_TBL_PTR), #0, #6				      ; 0559
+	 001A	       0014	     000E     0002C 3$:     .WORD   4$-3$,-						      ;
+	 0028	       0043	     0043     00032		    5$-3$,-						      ;
+				     0043     00038		    6$-3$,-						      ;
+								    8$-3$,-						      ;
+								    8$-3$,-						      ;
+								    7$-3$,-						      ;
+								    8$-3$						      ;
+		    01   AB	       22  88 0003A 4$:     BISB2   #34, COPY$SEM_STATUS+1				      ; 0567
+				       34  11 0003E 	    BRB     9$							      ; 0559
+		    01   AB	       02  88 00040 5$:     BISB2   #2, COPY$SEM_STATUS+1				      ; 0573
+				       2E  11 00044 	    BRB     9$							      ; 0559
+		    01   AB	       02  88 00046 6$:     BISB2   #2, COPY$SEM_STATUS+1				      ; 0579
+		         50	  0C   AC  D0 0004A 	    MOVL    OUTPUT_FAB, R0					      ; 0581
+		    04   A0	       02  88 0004E 	    BISB2   #2, 4(R0)						      ;
+				       20  11 00052 	    BRB     9$							      ; 0559
+		         7E	  63   8F  9A 00054 7$:     MOVZBL  #99, -(SP)						      ; 0600
+		         7E	10C2   8F  3C 00058 	    MOVZWL  #4290, -(SP)					      ;
+		  0000G  CF	       01  FB 0005D 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00062 	    PUSHL   R0							      ;
+	      00000000G  00	       02  FB 00064 	    CALLS   #2, LIB$SIGNAL					      ;
+		         50	       02  D0 0006B 	    MOVL    #2, R0						      ; 0601
+					   04 0006E 	    RET     							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 4-5
+; Digital Equipment Corporation
+;
+		  0000G  CF	       20  88 0006F 8$:     BISB2   #32, COPY$CLI_STATUS+2				      ; 0607
+	   09	         6B	       03  E1 00074 9$:     BBC     #3, COPY$SEM_STATUS, 10$				      ; 0616
+		    01   AB	       02  88 00078 	    BISB2   #2, COPY$SEM_STATUS+1				      ; 0619
+		  0000G  CF	       20  8A 0007C 	    BICB2   #32, COPY$CLI_STATUS+2				      ; 0620
+	   57	    01   AB	       01  E0 00081 10$:    BBS     #1, COPY$SEM_STATUS+1, 15$				      ; 0628
+	   0E	    01   AB	       03  E0 00086 	    BBS     #3, COPY$SEM_STATUS+1, 11$				      ; 0631
+	   09	    01   AB	       02  E0 0008B 	    BBS     #2, COPY$SEM_STATUS+1, 11$				      ; 0632
+	   05	         6B	       05  E0 00090 	    BBS     #5, COPY$SEM_STATUS, 11$				      ; 0634
+	   44	    01   AB	       04  E1 00094 	    BBC     #4, COPY$SEM_STATUS+1, 15$				      ; 0635
+		         52	  08   AC  D0 00099 11$:    MOVL    INPUT_FAB, R2					      ; 0638
+		         10	  1D   A2  91 0009D 	    CMPB    29(R2), #16						      ;
+				       07  12 000A1 	    BNEQ    12$							      ;
+		         7E	1142   8F  3C 000A3 	    MOVZWL  #4418, -(SP)					      ; 0642
+				       18  11 000A8 	    BRB     14$							      ;
+		         20	  1D   A2  91 000AA 12$:    CMPB    29(R2), #32						      ; 0651
+				       07  12 000AE 	    BNEQ    13$							      ;
+		         7E	113A   8F  3C 000B0 	    MOVZWL  #4410, -(SP)					      ; 0655
+				       0B  11 000B5 	    BRB     14$							      ;
+		         30	  1D   A2  91 000B7 13$:    CMPB    29(R2), #48						      ; 0664
+				       20  12 000BB 	    BNEQ    15$							      ;
+		         7E	11DA   8F  3C 000BD 	    MOVZWL  #4570, -(SP)					      ; 0668
+		  0000G  CF	       01  FB 000C2 14$:    CALLS   #1, COPY$MSG_NUMBER					      ;
+		    08   A2	       50  D0 000C7 	    MOVL    R0, 8(R2)						      ;
+				  0C   A2  D4 000CB 	    CLRL    12(R2)						      ; 0670
+				       52  DD 000CE 	    PUSHL   R2							      ; 0671
+		  0000G  CF	       01  FB 000D0 	    CALLS   #1, COPY$INOPN_ERR					      ;
+		  0000G  CF	  40   8F  8A 000D5 	    BICB2   #64, COPY$CLI_STATUS+2				      ; 0673
+				       04  11 000DB 	    BRB     16$							      ; 0674
+		         50	       01  D0 000DD 15$:    MOVL    #1, R0						      ; 0685
+					   04 000E0 	    RET     							      ;
+				       50  D4 000E1 16$:    CLRL    R0							      ; 0465
+					   04 000E3 	    RET     							      ;
+
+; Routine Size:  228 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:48:00	DBB3:[COPY.SRC]COPYSEMAN.B32;8					Page 5
+; Digital Equipment Corporation
+;
+;	0688	END
+;	0689	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $PLIT$         	    48  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   228  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        46         1       125
+;  DBB3:[COPY.SRC]VMSMAC.L32;1		         6         3        50         4
+
+
+
+
+
+; Size:		228 code + 48 data bytes
+; Run Time:	00:13.2
+; Elapsed Time:	00:24.4
+; Memory Used:	203 pages
+; Compilation Complete

@@ -1,0 +1,1397 @@
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE NXTVOL (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0007A'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! COPYRIGHT (C) 1977
+;	0009	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0010	!
+;	0011	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0012	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0013	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0014	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0015	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0016	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0017	! REMAIN IN DEC.
+;	0018	!
+;	0019	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0020	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0021	! CORPORATION.
+;	0022	!
+;	0023	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0024	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MTAACP
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!	THIS MODULE GETS THE NEXT VOLUME FOR READ AND WRITE
+;	0032	!
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET OPERATING SYSTEM, INCLUDING PRIVILEGED SYSTEM SERVICES
+;	0037	!	AND INTERNAL EXEC ROUTINES.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  D. H. GILLESPIE,	 CREATION DATE:  20-AUG-1977  
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   D. H. Gillespie, 10-Jan-1978  11:43
+;	0047	!   X0002 - IMPROVE ERROR CONDITIONS
+;	0048	!
+;	0049	!   D. H. Gillespie, 12-May-78  14:36
+;	0050	!   A0001 - change CURRENT_VCB to a register
+;	0051	!
+;	0052	!   D. H. Gillespie, 18-May-78  15:27
+;	0053	!   A0002 - clear VALID bit in SET_NOT_MOUNTED
+;	0054	!
+;	0055	!   D. H. Gillespie, 23-May-78  9:37
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   A0003 - L$GTNEXT_VOL_RE
+;	0057	!
+;	0058	!
+;	0059	!   D. H. Gillespie, 25-May-78  11:25
+;	0060	!
+;	0061	!   D. H. Gillespie, 8-Jun-78  8:17
+;	0062	!   A0005 - change SCH$AL_PCB to @SCH$GL_PCBVEC
+;	0063	!
+;	0064	!   D. H. Gillespie, 28-Jun-78  10:46
+;	0065	!   A0006 - change interface to MOUVOL
+;	0066	!
+;	0067	!   D. H. Gillespie, 26-Jul-78  17:42
+;	0068	!   A0007 - correct /initialize bug
+;	0069	!   A0004 - change interface to MOUNT_VOL
+;	0070	!**
+;	0071	
+;	0072	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0073	REQUIRE 'LIBD$:[VMSLIB.OBJ]MOUNTMSG.B32';
+;	0173	REQUIRE 'LIBD$:[VMSLIB.OBJ]INITMSG.B32';
+;	0233	REQUIRE 'SRC$:MTADEF.B32';
+;	0529	
+;	0530	LINKAGE
+;	0531		CHECK_PROT = JSB(REGISTER = 1,REGISTER = 2,REGISTER = 4) : NOTUSED(3,5,6,7,8,9,10,11),
+;	0532		L$CHECK_HDR = JSB : GLOBAL(SCRATCH = 9,CURRENT_VCB = 11) NOTUSED(7,8,10),
+;	0533		L$TAPE_OWN_PRO = JSB : GLOBAL(SCRATCH = 9) NOTUSED(7,8,10,11);
+;	0534	
+;	0535	FORWARD ROUTINE
+;	0536		CHECK_HDR		: L$CHECK_HDR,			!CHECK THAT HDR CAN BE OVERWRITTEN
+;	0537		FORMAT_VOLOWNER		: NOVALUE,			!FORMAT THE OWNER FIELD IN VOL1
+;	0538		GTNEXT_VOL_READ		: NOVALUE L$GTNEXT_VOL_RE,	!GET NEXT VOLUME FOR READ
+;	0539		GTNEXT_VOL_WRIT		: NOVALUE L$GTNEXT_VOL_WR,	!GET NEXT VOLUME FOR WRITE
+;	0540		INC_VOL_SECTION		: COMMON_CALL NOVALUE,		!INCREMENT REL VOL AND SECTION NUMBERS
+;	0541		RESET_UNIT		: COMMON_CALL NOVALUE,
+;	0542		UPDATE_MVL_LBL		: COMMON_CALL NOVALUE;		!UPDATE LABEL IN MVL ENTRY
+;	0543	
+;	0544	EXTERNAL
+;	0545		CURRENT_UCB		: REF BBLOCK,			!ADDRESS OF CURRENT UNIT CONTROL BLOCK
+;	0546		HDR1			: REF BBLOCK,			!ADDRESS OF HDR1(EOF1) LABEL
+;	0547		IO_PACKET		: REF BBLOCK,			!ADDRESS OF CURRENT I/O REQUEST PACKET
+;	0548		SCH$GL_PCBVEC		: REF VECTOR ADDRESSING_MODE(ABSOLUTE),
+;	0549		WORK_AREA;
+;	0550	
+;	0551	EXTERNAL ROUTINE
+;	0552		EXE$CHKWRTACCES		: ADDRESSING_MODE(ABSOLUTE) CHECK_PROT,
+;	0553		EXPIRED,						!DETERMINE IF FILE HAS EXPIRED
+;	0554		ISSUE_IO		: L$ISSUE_IO,			!ISSUE I/O
+;	0555		LIB$CVT_OTB		: ADDRESSING_MODE(ABSOLUTE),
+;	0556		MOUNT_VOL		: COMMON_CALL,			!MOUNT RELATIVE VOL
+;	0557		PRINT_NOT_LABEL		: L$PRINT_NOT_LAB,		!PRINT NOT RIGHT LABEL
+;	0558		PRINT_OPR_MSG		: L$PRINT_OPR_MSG,		!PRINT A SYSTEM MESSAGE FOR OPERATOR
+;	0559		READ_HDR		: COMMON_CALL,			!READ HEADERS
+;	0560		REWIND_AND_WAIT;
+;	0561	
+;	0562	OWN
+;	0563		TAPE_OWNER,	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 1-2
+; Digital Equipment Corporation
+;
+;	0564		TAPE_PROT		: BITVECTOR [16];
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 2
+; Digital Equipment Corporation
+;
+;	0565	GLOBAL ROUTINE GTNEXT_VOL_READ : NOVALUE L$GTNEXT_VOL_RE  =
+;	0566	
+;	0567	!++
+;	0568	!
+;	0569	! FUNCTIONAL DESCRIPTION:
+;	0570	!	THIS ROUTINE GETS THE NEXT VOLUME FOR READ AND CHECKS THAT THE FILE
+;	0571	!	SEQUENCE NUMBER, FILE SECTION NUMBER AND VOLUME SET IDENTIFIER
+;	0572	! 	ARE THOSE SOUGHT
+;	0573	!
+;	0574	! CALLING SEQUENCE:
+;	0575	!	GTNEXT_VOL_READ()
+;	0576	!
+;	0577	! INPUT PARAMETERS:
+;	0578	!	NONE
+;	0579	!
+;	0580	! IMPLICIT INPUTS:
+;	0581	!	CURRENT_VCB - ADDRESS OF CURRENT VOLUME CONTROL BLOCK
+;	0582	!
+;	0583	! OUTPUT PARAMETERS:
+;	0584	!	NONE
+;	0585	!
+;	0586	! IMPLICIT OUTPUTS:
+;	0587	!	NEXT RELATIVE VOLUME MOUNTED
+;	0588	!
+;	0589	! ROUTINE VALUE:
+;	0590	!	NONE
+;	0591	!
+;	0592	! SIDE EFFECTS:
+;	0593	!	NONE
+;	0594	!
+;	0595	!--
+;	0596	
+;	0597	BEGIN
+;	0598	
+;	0599	EXTERNAL REGISTER
+;	0600		COMMON_REG;
+;	0601	
+;	0602	
+;	0603	LOCAL
+;	0604		VOLLBL	:	BBLOCK [6],	!CURRENT TAPE VOLUME LABEL
+;	0605		FLAGS,
+;	0606		FID,				!FILE IDENTIFIER
+;	0607		MVL_ENTRY,			!ADDRESS OF CURRENT REL VOL ENTRY IN MVL
+;	0608		RVN;				!CURRENT RELATIVE VOLUME NUMBER
+;	0609	
+;	0610	FLAGS = $FIELDMASK(MOU$V_REWIND);
+;	0611	KERNEL_CALL(INC_VOL_SECTION);		!INCREMENT SEQUENCE # AND RELATIVE VOL #
+;	0612	FID = .CURRENT_VCB[VCB$L_CUR_FID];	!PICKUP CURRENT FILE ID
+;	0613	RVN = .CURRENT_VCB[VCB$B_CUR_RVN];	!PICKUP CUR RELATIVE VOLUME #
+;	0614	
+;	0615	WHILE 1 DO
+;	0616	    BEGIN
+;	0617	    LOCAL SCRATCH : REF BBLOCK;
+;	0618	    MVL_ENTRY = MOUNT_VOL(.RVN,.FLAGS);	!MOUNT VOL, REWIND IT, DON'T CHECK LABEL
+;	0619	    SCRATCH = .HDR1 + 160;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 2-1
+; Digital Equipment Corporation
+;
+;	0620	    CH$MOVE(VL1$S_VOLLBL,SCRATCH[VL1$T_VOLLBL],VOLLBL);
+;	0621	    IF NOT READ_HDR() THEN
+;	0622		BEGIN
+;	0623		ERR_EXIT(SS$_TAPEPOSLOST);
+;	0624		END;
+;	0625	
+;	0626	! ON READ THE NEXT VOLUME HAS THE SAME VOLUME SET ID
+;	0627	! AND THE FID OF THE NEXT SECTION FOR THE CURRENT FILE
+;	0628	    IF .FID NEQ .CURRENT_VCB[VCB$L_CUR_FID] THEN
+;	0629		BEGIN
+;	0630		PRINT_OPR_MSG(MOUN$_NOTRELVOL,0,.CURRENT_VCB[VCB$B_CUR_RVN],BBLOCK
+;	0631			[.CURRENT_UCB[UCB$L_DDB],DDB$T_NAME],.CURRENT_UCB[UCB$W_UNIT]);
+;	0632		END
+;	0633	    ELSE IF CH$NEQ(VCB$S_VOLNAME,CURRENT_VCB[VCB$T_VOLNAME],
+;	0634		HD1$S_FILESETID,HDR1[HD1$T_FILESETID],' ')
+;	0635		AND NOT .CURRENT_VCB[VCB$V_OVRSETID]	!OVERRIDE SET IDENTIFIER
+;	0636		THEN
+;	0637		    BEGIN
+;	0638		    PRINT_OPR_MSG(MOUN$_NOTVOLSET,0,BBLOCK[.CURRENT_UCB[UCB$L_DDB],DDB$T_NAME],
+;	0639			.CURRENT_UCB[UCB$W_UNIT],6,CURRENT_VCB[VCB$T_VOLNAME]);
+;	0640		    END
+;	0641		ELSE EXITLOOP;
+;	0642	    FLAGS = $FIELDMASK(MOU$V_REWIND) + $FIELDMASK(MOU$V_MOUNTERR);
+;	0643	    KERNEL_CALL(RESET_UNIT);
+;	0644	    END;					!END OF WHILE LOOP
+;	0645	KERNEL_CALL(UPDATE_MVL_LBL,.MVL_ENTRY,VOLLBL);
+;	0646	END;						!END OF ROUTINE
+
+
+							    .TITLE  NXTVOL
+							    .IDENT  \A0007A\
+
+							    .PSECT  $LOCKEDD1$,NOEXE,2
+
+					      00000 TAPE_OWNER:
+							    .BLKB   4
+					      00004 TAPE_PROT:
+							    .BLKB   2
+
+							    .GLOBL  CURRENT_UCB, HDR1, IO_PACKET, SCH$GL_PCBVEC, WORK_AREA
+							    .GLOBL  EXE$CHKWRTACCES, EXPIRED, ISSUE_IO, LIB$CVT_OTB
+							    .GLOBL  MOUNT_VOL, PRINT_NOT_LABEL, PRINT_OPR_MSG, READ_HDR
+							    .GLOBL  REWIND_AND_WAIT, SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+				03FC   8F  BB 00000 GTNEXT_VOL_READ::
+							    PUSHR   #^M<R2,R3,R4,R5,R6,R7,R8,R9>			      ; 0565
+		         5E	       08  C2 00004 	    SUBL2   #8, SP						      ;
+		         56	       01  D0 00007 	    MOVL    #1, FLAGS						      ; 0610
+				       7E  D4 0000A 	    CLRL    -(SP)						      ; 0611
+				       5E  DD 0000C 	    PUSHL   SP							      ;
+				0000V  CF  9F 0000E 	    PUSHAB  INC_VOL_SECTION					      ;
+	      00000000G  9F	       03  FB 00012 	    CALLS   #3, @#SYS$CMKRNL					      ;
+		         57	  24   AB  D0 00019 	    MOVL    36(CURRENT_VCB), FID				      ; 0612
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 2-2
+; Digital Equipment Corporation
+;
+		         59	  2F   AB  9A 0001D 	    MOVZBL  47(CURRENT_VCB), RVN				      ; 0613
+				       56  DD 00021 1$:     PUSHL   FLAGS						      ; 0618
+				       59  DD 00023 	    PUSHL   RVN							      ;
+		  0000G  CF	       02  FB 00025 	    CALLS   #2, MOUNT_VOL					      ;
+		         58	       50  D0 0002A 	    MOVL    R0, MVL_ENTRY					      ;
+	   50	  0000G  CF 000000A0   8F  C1 0002D 	    ADDL3   #160, HDR1, SCRATCH					      ; 0619
+	   6E	    04   A0	       06  28 00037 	    MOVC3   #6, 4(SCRATCH), VOLLBL				      ; 0620
+		  0000G  CF	       00  FB 0003C 	    CALLS   #0, READ_HDR					      ; 0621
+		         04	       50  E8 00041 	    BLBS    R0, 2$						      ;
+				0224   8F  BF 00044 	    CHMU    #548						      ; 0623
+		    24   AB	       57  D1 00048 2$:     CMPL    FID, 36(CURRENT_VCB)				      ; 0628
+				       22  13 0004C 	    BEQL    3$							      ;
+		         50	0000G  CF  D0 0004E 	    MOVL    CURRENT_UCB, R0					      ; 0631
+		         7E	  48   A0  3C 00053 	    MOVZWL  72(R0), -(SP)					      ; 0630
+	   7E	    24   A0	       14  C1 00057 	    ADDL3   #20, 36(R0), -(SP)					      ; 0631
+		         7E	  2F   AB  9A 0005C 	    MOVZBL  47(CURRENT_VCB), -(SP)				      ; 0630
+				       7E  D4 00060 	    CLRL    -(SP)						      ;
+			    00728114   8F  DD 00062 	    PUSHL   #7504148						      ;
+				     0000  30 00068 	    BSBW    PRINT_OPR_MSG					      ;
+		         5E	       14  C0 0006B 	    ADDL2   #20, SP						      ;
+				       35  11 0006E 	    BRB     4$							      ; 0628
+		         50	0000G  CF  D0 00070 3$:     MOVL    HDR1, R0						      ; 0634
+	   20	    14   AB	       0C  2D 00075 	    CMPC5   #12, 20(CURRENT_VCB), #32, #6, 21(R0)		      ; 0633
+		    15   A0	       06     0007A									      ;
+				       3B  13 0007D 	    BEQL    5$							      ;
+	   36	    2C   AB	       03  E0 0007F 	    BBS     #3, 44(CURRENT_VCB), 5$				      ; 0635
+				  14   AB  9F 00084 	    PUSHAB  20(CURRENT_VCB)					      ; 0639
+				       06  DD 00087 	    PUSHL   #6							      ; 0638
+		         50	0000G  CF  D0 00089 	    MOVL    CURRENT_UCB, R0					      ; 0639
+		         7E	  48   A0  3C 0008E 	    MOVZWL  72(R0), -(SP)					      ; 0638
+	   7E	    24   A0	       14  C1 00092 	    ADDL3   #20, 36(R0), -(SP)					      ;
+				       7E  D4 00097 	    CLRL    -(SP)						      ;
+			    0072810C   8F  DD 00099 	    PUSHL   #7504140						      ;
+				     0000  30 0009F 	    BSBW    PRINT_OPR_MSG					      ;
+		         5E	       18  C0 000A2 	    ADDL2   #24, SP						      ;
+		         56	       09  D0 000A5 4$:     MOVL    #9, FLAGS						      ; 0642
+				       7E  D4 000A8 	    CLRL    -(SP)						      ; 0643
+				       5E  DD 000AA 	    PUSHL   SP							      ;
+				0000V  CF  9F 000AC 	    PUSHAB  RESET_UNIT						      ;
+	      00000000G  9F	       03  FB 000B0 	    CALLS   #3, @#SYS$CMKRNL					      ;
+				     FF67  31 000B7 	    BRW     1$							      ; 0615
+				4100   8F  BB 000BA 5$:     PUSHR   #^M<R8,SP>						      ; 0645
+				       02  DD 000BE 	    PUSHL   #2							      ;
+				       5E  DD 000C0 	    PUSHL   SP							      ;
+				0000V  CF  9F 000C2 	    PUSHAB  UPDATE_MVL_LBL					      ;
+	      00000000G  9F	       05  FB 000C6 	    CALLS   #5, @#SYS$CMKRNL					      ;
+		         5E	       08  C0 000CD 	    ADDL2   #8, SP						      ; 0565
+				03FC   8F  BA 000D0 	    POPR    #^M<R2,R3,R4,R5,R6,R7,R8,R9>			      ;
+					   05 000D4 	    RSB     							      ;
+
+; Routine Size:  213 bytes
+
+
+;	0647	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3
+; Digital Equipment Corporation
+;
+;	0648	GLOBAL ROUTINE GTNEXT_VOL_WRIT	: NOVALUE L$GTNEXT_VOL_WR  =
+;	0649	
+;	0650	!++
+;	0651	!
+;	0652	! FUNCTIONAL DESCRIPTION:
+;	0653	!	THIS ROUTINE GETS THE NEXT VOLUME FOR WRITE.  THE VOLUME
+;	0654	! 	IS MOUNTED, REWOUND AND THE LABEL IS VERIFIED. THE VOL1
+;	0655	!	LABEL IS REWRITTEN TO INSURE SAME DENSITY THROUGHOUT VOLUME SET.
+;	0656	!	THE TAPE IN INITIALIZED AT THE OPERATOR'S REQUEST.
+;	0657	!
+;	0658	! CALLING SEQUENCE:
+;	0659	!	GTNEXT_VOL_WRIT()
+;	0660	!
+;	0661	! INPUT PARAMETERS:
+;	0662	!	NONE
+;	0663	!
+;	0664	! IMPLICIT INPUTS:
+;	0665	!	CURRENT_UCB - ADDRESS OF CURRENT UNIT CONTROL BLOCK
+;	0666	!	CURRENT_VCB - ADDRESS OF CURRENT VOLUME CONTROL BLOCK
+;	0667	!	OPERATOR INPUT
+;	0668	!
+;	0669	! OUTPUT PARAMETERS:
+;	0670	!	NONE
+;	0671	!
+;	0672	! IMPLICIT OUTPUTS:
+;	0673	!	RELATIVE VOLUME NUMBER INCREMENTED
+;	0674	!	SECTION NUMBER INCREMENT
+;	0675	!
+;	0676	! ROUTINE VALUE:
+;	0677	!	NONE
+;	0678	!
+;	0679	! SIDE EFFECTS:
+;	0680	!	NONE
+;	0681	!
+;	0682	!--
+;	0683	
+;	0684	BEGIN
+;	0685	LITERAL
+;	0686		BLANK 	= 0,
+;	0687		INIT	= 1;
+;	0688	OWN
+;	0689		QUAL_TABLE	: VECTOR [6]
+;	0690				  INITIAL(5,UPLIT('BLANK'),BLANK,
+;	0691					10,UPLIT('INITIALIZE'),INIT);
+;	0692	
+;	0693	LOCAL
+;	0694		ERROR_NO,
+;	0695		FLAGS,
+;	0696		MVL_ENTRY	: REF BBLOCK,
+;	0697		SAVE_DEVCHAR	: VECTOR [2],
+;	0698		OPR_FLAG	: BITVECTOR[32],
+;	0699		STATUS;
+;	0700	
+;	0701	GLOBAL REGISTER
+;	0702		SCRATCH		= 9 : REF BBLOCK;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-1
+; Digital Equipment Corporation
+;
+;	0703	
+;	0704	BIND
+;	0705		MAIL	= WORK_AREA	: BBLOCK[MSGSIZE],
+;	0706		MAILSZ	= MAIL + MSGSIZE;
+;	0707	
+;	0708	EXTERNAL REGISTER
+;	0709		COMMON_REG;
+;	0710	
+;	0711	KERNEL_CALL(INC_VOL_SECTION);
+;	0712	SAVE_DEVCHAR[0] = .(CURRENT_UCB[UCB$B_DEVCLASS])<0,32>;
+;	0713	SAVE_DEVCHAR[1] = .CURRENT_UCB[UCB$L_DEVDEPEND];
+;	0714	SCRATCH = .HDR1 + 160;
+;	0715	FLAGS = $FIELDMASK(MOU$V_REWIND) + $FIELDMASK(MOU$V_NORDVOL1);
+;	0716	WHILE 1 DO
+;	0717	    BEGIN
+;	0718	    WHILE 1 DO
+;	0719		BEGIN
+;	0720		ERROR_NO = 1;
+;	0721		MAILSZ = 0;
+;	0722		MVL_ENTRY = MOUNT_VOL(.CURRENT_VCB[VCB$B_CUR_RVN],.FLAGS);
+;	0723		(LOCAL LABEL_ADDR	: REF VECTOR[,BYTE],
+;	0724			SIZE;
+;	0725		LABEL_ADDR = MAIL[OPC$L_MS_TEXT];
+;	0726		OPR_FLAG = 0;
+;	0727		SIZE = 0;
+;	0728		IF .MAILSZ NEQ 0 THEN
+;	0729		    BEGIN
+;	0730		    INCR I FROM 0 TO .MAILSZ-1 DO
+;	0731			BEGIN
+;	0732			IF .LABEL_ADDR[.I] EQL '/' THEN EXITLOOP;
+;	0733			SIZE = .SIZE + 1;
+;	0734			END;
+;	0735		    IF .SIZE NEQ .MAILSZ THEN	! If slash found, check qualifier
+;	0736		        BEGIN
+;	0737			LOCAL	CMP_TO,
+;	0738				QUAL	: REF VECTOR[,BYTE];
+;	0739		 	SIZE = .SIZE + 1;
+;	0740			LABEL_ADDR = .LABEL_ADDR + .SIZE;
+;	0741		 	IF .MAILSZ-.SIZE GEQ 1 THEN
+;	0742			    BEGIN
+;	0743			    CMP_TO = .MAILSZ - .SIZE;
+;	0744			    INCR I FROM 0 TO 3 BY 3 DO
+;	0745				BEGIN
+;	0746				IF .CMP_TO LEQU .QUAL_TABLE[.I]
+;	0747				THEN
+;	0748				    BEGIN
+;	0749				    QUAL = .QUAL_TABLE[.I+1];
+;	0750				    INCR J FROM 0 TO .CMP_TO - 1 DO
+;	0751					BEGIN
+;	0752					IF .LABEL_ADDR[.J] NEQ .QUAL[.J] THEN EXITLOOP;
+;	0753					IF .J EQL .CMP_TO -1
+;	0754					THEN OPR_FLAG[.QUAL_TABLE[.I+2]] = 1;
+;	0755					END;
+;	0756				    END;
+;	0757				END;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-2
+; Digital Equipment Corporation
+;
+;	0758			    END;
+;	0759			IF .OPR_FLAG EQL 0 THEN ERROR_NO = MOUN$_ILLQUAL;
+;	0760			END;
+;	0761		    END);
+;	0762		IF .ERROR_NO THEN
+;	0763		    BEGIN
+;	0764		    IF .OPR_FLAG[BLANK] THEN EXITLOOP;		! do it
+;	0765		    IF NOT .OPR_FLAG[INIT] THEN
+;	0766			BEGIN
+;	0767			ERROR_NO = MOUN$_NOTANSI;
+;	0768			STATUS = ISSUE_IO(IO$_READLBLK,.SCRATCH,80);
+;	0769			IF NOT .STATUS THEN
+;	0770			    IF .STATUS NEQ SS$_ENDOFFILE
+;	0771			    AND .STATUS NEQ SS$_OPINCOMPL
+;	0772			    THEN ERROR_NO = MOUN$_IOERROR;
+;	0773			IF .STATUS AND .(.SCRATCH) EQL 'VOL1' THEN
+;	0774			IF ERROR_NO = CHECK_HDR(.MVL_ENTRY) THEN EXITLOOP;
+;	0775		    END;
+;	0776		    IF .OPR_FLAG[INIT] THEN
+;	0777			BEGIN
+;	0778			STATUS = ISSUE_IO(IO$_READLBLK,.SCRATCH,80);
+;	0779			IF NOT .STATUS
+;	0780			OR .(.SCRATCH) NEQ 'VOL1' THEN EXITLOOP;
+;	0781	
+;	0782			ERROR_NO = CHECK_HDR(.MVL_ENTRY);
+;	0783			IF .ERROR_NO
+;	0784			OR .ERROR_NO EQL MOUN$_NOTANSI
+;	0785			OR .ERROR_NO EQL MOUN$_NOTLABEL
+;	0786			THEN EXITLOOP;
+;	0787			END;
+;	0788		    END;
+;	0789		IF .ERROR_NO NEQ MOUN$_NOTLABEL
+;	0790		THEN PRINT_OPR_MSG(.ERROR_NO,0,BBLOCK[.CURRENT_UCB[UCB$L_DDB],DDB$T_NAME],
+;	0791					.CURRENT_UCB[UCB$W_UNIT])
+;	0792		ELSE PRINT_NOT_LABEL(.MVL_ENTRY);
+;	0793		FLAGS = $FIELDMASK(MOU$V_REWIND) + $FIELDMASK(MOU$V_NORDVOL1)+ $FIELDMASK(MOU$V_MOUNTERR);
+;	0794		KERNEL_CALL(RESET_UNIT);
+;	0795		END;
+;	0796	! try to initialize
+;	0797	    IF REWIND_AND_WAIT() THEN
+;	0798		BEGIN
+;	0799		CH$FILL(' ',80,.SCRATCH);
+;	0800		.SCRATCH = 'VOL1';
+;	0801		(SCRATCH[VL1$T_VOLOWNER])<0,32> = 'D%C ';
+;	0802		SCRATCH[VL1$B_DECSTDVER] = '1';
+;	0803		SCRATCH[VL1$B_LBLSTDVER] = '3';
+;	0804		CH$COPY(MVL$S_VOLLBL,MVL_ENTRY[MVL$T_VOLLBL],' ',VL1$S_VOLLBL,
+;	0805			SCRATCH[VL1$T_VOLLBL]);
+;	0806		FORMAT_VOLOWNER(.SCRATCH,.CURRENT_UCB[UCB$L_OWNUIC],.CURRENT_UCB[UCB$W_VPROT]);
+;	0807		IF ISSUE_IO(IO$_SETMODE,SAVE_DEVCHAR,0)
+;	0808		THEN STATUS = ISSUE_IO(IO$_WRITELBLK,.SCRATCH,80);
+;	0809		IF .STATUS THEN EXITLOOP;
+;	0810		ERROR_NO = MOUN$_IOERROR;
+;	0811		IF .STATUS<0,16> EQL SS$_WRITLCK
+;	0812		THEN ERROR_NO = MOUN$_WRITLCK;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-3
+; Digital Equipment Corporation
+;
+;	0813		END;
+;	0814	    PRINT_OPR_MSG(.ERROR_NO,0,BBLOCK[.CURRENT_UCB[UCB$L_DDB],DDB$T_NAME],
+;	0815				.CURRENT_UCB[UCB$W_UNIT]);
+;	0816	    FLAGS = $FIELDMASK(MOU$V_REWIND) + $FIELDMASK(MOU$V_NORDVOL1)+ $FIELDMASK(MOU$V_MOUNTERR);
+;	0817	    KERNEL_CALL(RESET_UNIT);
+;	0818	    END;
+;	0819	END;				!END OF ROUTINE
+
+
+
+					      000D5	    .BLKB   3
+					      000D8 P.AAA:  .ASCII  \BLANK\<0><0><0>					      ;
+					      000E0 P.AAB:  .ASCII  \INITIALIZE\<0><0>					      ;
+
+							    .PSECT  $LOCKEDD1$,NOEXE,2
+
+					      00006	    .BLKB   2
+					      00008 QUAL_TABLE:
+							    .LONG   5							      ;
+					      0000C 	    .ADDRESS  P.AAA						      ;
+					      00010 	    .LONG   0, 10						      ;
+					      00018 	    .ADDRESS  P.AAB						      ;
+					      0001C 	    .LONG   1							      ;
+
+
+
+							    .PSECT  $CODE$,NOWRT,2
+
+		         5E	       0C  C2 000EC GTNEXT_VOL_WRIT::
+							    SUBL2   #12, SP						      ; 0648
+				       7E  D4 000EF 	    CLRL    -(SP)						      ; 0711
+				       5E  DD 000F1 	    PUSHL   SP							      ;
+				0000V  CF  9F 000F3 	    PUSHAB  INC_VOL_SECTION					      ;
+	      00000000G  9F	       03  FB 000F7 	    CALLS   #3, @#SYS$CMKRNL					      ;
+		         50	0000G  CF  D0 000FE 	    MOVL    CURRENT_UCB, R0					      ; 0712
+		    04   AE	  38   A0  7D 00103 	    MOVQ    56(R0), SAVE_DEVCHAR				      ;
+	   59	  0000G  CF 000000A0   8F  C1 00108 	    ADDL3   #160, HDR1, SCRATCH					      ; 0714
+		         6E	       05  D0 00112 	    MOVL    #5, FLAGS						      ; 0715
+		         56	       01  D0 00115 1$:     MOVL    #1, ERROR_NO					      ; 0720
+				0000G  CF  D4 00118 	    CLRL    MAILSZ						      ; 0721
+				       6E  DD 0011C 	    PUSHL   FLAGS						      ; 0722
+		         7E	  2F   AB  9A 0011E 	    MOVZBL  47(CURRENT_VCB), -(SP)				      ;
+		  0000G  CF	       02  FB 00122 	    CALLS   #2, MOUNT_VOL					      ;
+		         5A	       50  D0 00127 	    MOVL    R0, MVL_ENTRY					      ;
+		         51	0000G  CF  9E 0012A 	    MOVAB   MAIL+8, LABEL_ADDR					      ; 0725
+				       58  D4 0012F 	    CLRL    OPR_FLAG						      ; 0726
+				       50  D4 00131 	    CLRL    SIZE						      ; 0727
+		         53	0000G  CF  D0 00133 	    MOVL    MAILSZ, R3						      ; 0728
+				       68  13 00138 	    BEQL    10$							      ;
+		         52	       01  CE 0013A 	    MNEGL   #1, I						      ; 0730
+				       08  11 0013D 	    BRB     3$							      ;
+		         2F	     6241  91 0013F 2$:     CMPB    (I)[LABEL_ADDR], #47				      ; 0732
+				       06  13 00143 	    BEQL    4$							      ;
+				       50  D6 00145 	    INCL    SIZE						      ; 0733
+	   F4	         52	       53  F2 00147 3$:     AOBLSS  R3, I, 2$						      ; 0730
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-4
+; Digital Equipment Corporation
+;
+		         53	       50  D1 0014B 4$:     CMPL    SIZE, R3						      ; 0735
+				       52  13 0014E 	    BEQL    10$							      ;
+				       50  D6 00150 	    INCL    SIZE						      ; 0739
+		         51	       50  C0 00152 	    ADDL2   SIZE, LABEL_ADDR					      ; 0740
+	   50	         53	       50  C3 00155 	    SUBL3   SIZE, R3, R0					      ; 0741
+		         01	       50  D1 00159 	    CMPL    R0, #1						      ;
+				       39  19 0015C 	    BLSS    9$							      ;
+		         54	       50  D0 0015E 	    MOVL    R0, CMP_TO						      ; 0743
+				       50  D4 00161 	    CLRL    I							      ; 0744
+		  0000'CF40	       54  D1 00163 5$:     CMPL    CMP_TO, QUAL_TABLE[I]				      ; 0746
+				       26  1A 00169 	    BGTRU   8$							      ;
+		         53	0000'CF40  D0 0016B 	    MOVL    QUAL_TABLE+4[I], QUAL				      ; 0749
+		         52	       01  CE 00171 	    MNEGL   #1, J						      ; 0750
+				       17  11 00174 	    BRB     7$							      ;
+		       6243	     6241  91 00176 6$:     CMPB    (J)[LABEL_ADDR], (J)[QUAL]				      ; 0752
+				       14  12 0017B 	    BNEQ    8$							      ;
+	   55	         54	       01  C3 0017D 	    SUBL3   #1, CMP_TO, R5					      ; 0753
+		         55	       52  D1 00181 	    CMPL    J, R5						      ;
+				       07  12 00184 	    BNEQ    7$							      ;
+	   00	         58	0000'CF40  E2 00186 	    BBSS    QUAL_TABLE+8[I], OPR_FLAG, 7$			      ; 0754
+	   E5	         52	       54  F2 0018D 7$:     AOBLSS  CMP_TO, J, 6$					      ; 0750
+	   50	         03	       03  F1 00191 8$:     ACBL    #3, #3, I, 5$					      ; 0744
+				     FFCC     00195									      ;
+				       58  D5 00197 9$:     TSTL    OPR_FLAG						      ; 0759
+				       07  12 00199 	    BNEQ    10$							      ;
+		         56 0072812C   8F  D0 0019B 	    MOVL    #7504172, ERROR_NO					      ;
+		         03	       56  E8 001A2 10$:    BLBS    ERROR_NO, 11$					      ; 0762
+				     0099  31 001A5 	    BRW     17$							      ;
+		         03	       58  E9 001A8 11$:    BLBC    OPR_FLAG, 12$					      ; 0764
+				     00A7  31 001AB 	    BRW     18$							      ;
+	   52	         58	       01  E0 001AE 12$:    BBS     #1, OPR_FLAG, 16$					      ; 0765
+		         56 007280FC   8F  D0 001B2 	    MOVL    #7504124, ERROR_NO					      ; 0767
+		         7E	  50   8F  9A 001B9 	    MOVZBL  #80, -(SP)						      ; 0768
+				       59  DD 001BD 	    PUSHL   SCRATCH						      ;
+				       21  DD 001BF 	    PUSHL   #33							      ;
+				     0000  30 001C1 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 001C4 	    ADDL2   #12, SP						      ;
+		         57	       50  D0 001C7 	    MOVL    R0, STATUS						      ;
+		         1C	       57  E8 001CA 	    BLBS    STATUS, 14$						      ; 0769
+	      00000870   8F	       57  D1 001CD 	    CMPL    STATUS, #2160					      ; 0770
+				       10  13 001D4 	    BEQL    13$							      ;
+	      000002D4   8F	       57  D1 001D6 	    CMPL    STATUS, #724					      ; 0771
+				       07  13 001DD 	    BEQL    13$							      ;
+		         56 00728124   8F  D0 001DF 	    MOVL    #7504164, ERROR_NO					      ; 0772
+		         17	       57  E9 001E6 13$:    BLBC    STATUS, 15$						      ; 0773
+	      314C4F56   8F	       69  D1 001E9 14$:    CMPL    (SCRATCH), #827084630				      ;
+				       0E  12 001F0 	    BNEQ    15$							      ;
+				       5A  DD 001F2 	    PUSHL   MVL_ENTRY						      ; 0774
+				     0000  30 001F4 	    BSBW    CHECK_HDR						      ;
+		         5E	       04  C0 001F7 	    ADDL2   #4, SP						      ;
+		         56	       50  D0 001FA 	    MOVL    R0, ERROR_NO					      ;
+		         55	       56  E8 001FD 	    BLBS    ERROR_NO, 18$					      ;
+	   3D	         58	       01  E1 00200 15$:    BBC     #1, OPR_FLAG, 17$					      ; 0776
+		         7E	  50   8F  9A 00204 16$:    MOVZBL  #80, -(SP)						      ; 0778
+				       59  DD 00208 	    PUSHL   SCRATCH						      ;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-5
+; Digital Equipment Corporation
+;
+				       21  DD 0020A 	    PUSHL   #33							      ;
+				     0000  30 0020C 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 0020F 	    ADDL2   #12, SP						      ;
+		         57	       50  D0 00212 	    MOVL    R0, STATUS						      ;
+		         3D	       57  E9 00215 	    BLBC    STATUS, 18$						      ; 0779
+	      314C4F56   8F	       69  D1 00218 	    CMPL    (SCRATCH), #827084630				      ; 0780
+				       34  12 0021F 	    BNEQ    18$							      ;
+				       5A  DD 00221 	    PUSHL   MVL_ENTRY						      ; 0782
+				     0000  30 00223 	    BSBW    CHECK_HDR						      ;
+		         5E	       04  C0 00226 	    ADDL2   #4, SP						      ;
+		         56	       50  D0 00229 	    MOVL    R0, ERROR_NO					      ;
+		         26	       56  E8 0022C 	    BLBS    ERROR_NO, 18$					      ; 0783
+	      007280FC   8F	       56  D1 0022F 	    CMPL    ERROR_NO, #7504124					      ; 0784
+				       1D  13 00236 	    BEQL    18$							      ;
+	      00728104   8F	       56  D1 00238 	    CMPL    ERROR_NO, #7504132					      ; 0785
+				       14  13 0023F 	    BEQL    18$							      ;
+	      00728104   8F	       56  D1 00241 17$:    CMPL    ERROR_NO, #7504132					      ; 0789
+				       7A  12 00248 	    BNEQ    20$							      ;
+				       5A  DD 0024A 	    PUSHL   MVL_ENTRY						      ; 0792
+				     0000  30 0024C 	    BSBW    PRINT_NOT_LABEL					      ;
+		         5E	       04  C0 0024F 	    ADDL2   #4, SP						      ;
+				     0090  31 00252 	    BRW     22$							      ; 0793
+		  0000G  CF	       00  FB 00255 18$:    CALLS   #0, REWIND_AND_WAIT					      ; 0797
+		         70	       50  E9 0025A 	    BLBC    R0, 21$						      ;
+	   20	         6E	       00  2C 0025D 	    MOVC5   #0, (SP), #32, #80, (SCRATCH)			      ; 0799
+		         69	0050   8F     00261									      ;
+		         69 314C4F56   8F  D0 00265 	    MOVL    #827084630, (SCRATCH)				      ; 0800
+		    25   A9 20432544   8F  D0 0026C 	    MOVL    #541271364, 37(SCRATCH)				      ; 0801
+		    32   A9	       31  90 00274 	    MOVB    #49, 50(SCRATCH)					      ; 0802
+		    4F   A9	       33  90 00278 	    MOVB    #51, 79(SCRATCH)					      ; 0803
+      04   A9	         6A	       06  28 0027C 	    MOVC3   #6, (MVL_ENTRY), 4(SCRATCH)				      ; 0804
+		         50	0000G  CF  D0 00281 	    MOVL    CURRENT_UCB, R0					      ; 0806
+		         7E	  1A   A0  3C 00286 	    MOVZWL  26(R0), -(SP)					      ;
+				  1C   A0  DD 0028A 	    PUSHL   28(R0)						      ;
+				       59  DD 0028D 	    PUSHL   SCRATCH						      ;
+		  0000V  CF	       03  FB 0028F 	    CALLS   #3, FORMAT_VOLOWNER					      ;
+				       7E  D4 00294 	    CLRL    -(SP)						      ; 0807
+				  08   AE  9F 00296 	    PUSHAB  SAVE_DEVCHAR					      ;
+				       23  DD 00299 	    PUSHL   #35							      ;
+				     0000  30 0029B 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 0029E 	    ADDL2   #12, SP						      ;
+		         11	       50  E9 002A1 	    BLBC    R0, 19$						      ;
+		         7E	  50   8F  9A 002A4 	    MOVZBL  #80, -(SP)						      ; 0808
+				       59  DD 002A8 	    PUSHL   SCRATCH						      ;
+				       20  DD 002AA 	    PUSHL   #32							      ;
+				     0000  30 002AC 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 002AF 	    ADDL2   #12, SP						      ;
+		         57	       50  D0 002B2 	    MOVL    R0, STATUS						      ;
+		         42	       57  E8 002B5 19$:    BLBS    STATUS, 23$						      ; 0809
+		         56 00728124   8F  D0 002B8 	    MOVL    #7504164, ERROR_NO					      ; 0810
+		  025C   8F	       57  B1 002BF 	    CMPW    STATUS, #604					      ; 0811
+				       07  12 002C4 20$:    BNEQ    21$							      ;
+		         56 00728134   8F  D0 002C6 	    MOVL    #7504180, ERROR_NO					      ; 0812
+		         50	0000G  CF  D0 002CD 21$:    MOVL    CURRENT_UCB, R0					      ; 0815
+		         7E	  48   A0  3C 002D2 	    MOVZWL  72(R0), -(SP)					      ; 0814
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 3-6
+; Digital Equipment Corporation
+;
+	   7E	    24   A0	       14  C1 002D6 	    ADDL3   #20, 36(R0), -(SP)					      ;
+				       7E  D4 002DB 	    CLRL    -(SP)						      ;
+				       56  DD 002DD 	    PUSHL   ERROR_NO						      ;
+				     0000  30 002DF 	    BSBW    PRINT_OPR_MSG					      ;
+		         5E	       10  C0 002E2 	    ADDL2   #16, SP						      ;
+		         6E	       0D  D0 002E5 22$:    MOVL    #13, FLAGS						      ; 0816
+				       7E  D4 002E8 	    CLRL    -(SP)						      ; 0817
+				       5E  DD 002EA 	    PUSHL   SP							      ;
+				0000V  CF  9F 002EC 	    PUSHAB  RESET_UNIT						      ;
+	      00000000G  9F	       03  FB 002F0 	    CALLS   #3, @#SYS$CMKRNL					      ;
+				     FE1B  31 002F7 	    BRW     1$							      ; 0716
+		         5E	       0C  C0 002FA 23$:    ADDL2   #12, SP						      ; 0648
+					   05 002FD 	    RSB     							      ;
+
+; Routine Size:  530 bytes
+
+
+;	0820	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 4
+; Digital Equipment Corporation
+;
+;	0821	ROUTINE INC_VOL_SECTION : COMMON_CALL NOVALUE  =
+;	0822	
+;	0823	!++
+;	0824	!
+;	0825	! FUNCTIONAL DESCRIPTION:
+;	0826	!	THIS ROUTINE INCREMENTS THE RELATIVE VOLUME NUMBER
+;	0827	! 	AND THE FILE SECTION NUMBER
+;	0828	!
+;	0829	! CALLING SEQUENCE:
+;	0830	!	INC_VOL_SECTION(), CALLED IN KERNEL MODE
+;	0831	!
+;	0832	! INPUT PARAMETERS:
+;	0833	!	NONE
+;	0834	!
+;	0835	! IMPLICIT INPUTS:
+;	0836	!	CURRENT_VCB - ADDRESS OF VOLUME CONTROL BLOCK
+;	0837	!
+;	0838	! OUTPUT PARAMETERS:
+;	0839	!	NONE
+;	0840	!
+;	0841	! IMPLICIT OUTPUTS:
+;	0842	!	CURRENT_VCB[VCB$B_CUR_RVN] INCREMENTED
+;	0843	!	CURRENT_VCB[VCB$W_CUR_SEQ] INCREMENTED
+;	0844	!
+;	0845	! ROUTINE VALUE:
+;	0846	!	NONE
+;	0847	!
+;	0848	! SIDE EFFECTS:
+;	0849	!	NONE
+;	0850	!
+;	0851	!--
+;	0852	
+;	0853	BEGIN
+;	0854	
+;	0855	EXTERNAL REGISTER
+;	0856		COMMON_REG;
+;	0857	
+;	0858	CURRENT_VCB[VCB$B_CUR_RVN] = .CURRENT_VCB[VCB$B_CUR_RVN] + 1;
+;	0859	CURRENT_VCB[VCB$W_CUR_SEQ] = .CURRENT_VCB[VCB$W_CUR_SEQ] + 1;
+;	0860	CURRENT_VCB[VCB$B_TM] = 0;
+;	0861	CURRENT_VCB[VCB$L_ST_RECORD] = 0;
+;	0862	END;				!END OF ROUTINE
+
+
+
+
+
+					 0000 002FE INC_VOL_SECTION:
+							    .WORD   Save nothing					      ; 0821
+				  2F   AB  96 00300 	    INCB    47(CURRENT_VCB)					      ; 0858
+				  26   AB  B6 00303 	    INCW    38(CURRENT_VCB)					      ; 0859
+				  2E   AB  94 00306 	    CLRB    46(CURRENT_VCB)					      ; 0860
+				  30   AB  D4 00309 	    CLRL    48(CURRENT_VCB)					      ; 0861
+					   04 0030C 	    RET     							      ; 0821
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 4-1
+; Digital Equipment Corporation
+;
+; Routine Size:  15 bytes
+
+
+;	0863	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 5
+; Digital Equipment Corporation
+;
+;	0864	ROUTINE UPDATE_MVL_LBL(MVL_ENTRY,ADDR) : COMMON_CALL NOVALUE  =
+;	0865	
+;	0866	!++
+;	0867	!
+;	0868	! FUNCTIONAL DESCRIPTION:
+;	0869	!	THIS ROUTINE UPDATES THE RELATIVE VOLUME LABEL FROM THE VOL1 LABEL
+;	0870	!
+;	0871	! CALLING SEQUENCE:
+;	0872	!	UPDATE_MVL_LBL(ARG1,ARG2)
+;	0873	!
+;	0874	! INPUT PARAMETERS:
+;	0875	!	ARG1 - ADDRESS OF MVL ENTRY FOR CURRENT VOLUME
+;	0876	!	ARG2 - ADDRESS OF VOLUME LABEL ON THIS TAPE VOLUME
+;	0877	!
+;	0878	! IMPLICIT INPUTS:
+;	0879	!	NONE
+;	0880	!
+;	0881	! OUTPUT PARAMETERS:
+;	0882	!	NONE
+;	0883	!
+;	0884	! IMPLICIT OUTPUTS:
+;	0885	!	NONE
+;	0886	!
+;	0887	! ROUTINE VALUE:
+;	0888	!	NONE
+;	0889	!
+;	0890	! SIDE EFFECTS:
+;	0891	!	NONE
+;	0892	!
+;	0893	! USER ERRORS:
+;	0894	!	NONE
+;	0895	!
+;	0896	!--
+;	0897	
+;	0898	BEGIN
+;	0899	
+;	0900	EXTERNAL REGISTER
+;	0901		COMMON_REG;
+;	0902	
+;	0903	MAP
+;	0904		MVL_ENTRY	: REF BBLOCK;
+;	0905	
+;	0906	CH$MOVE(VL1$S_VOLLBL,.ADDR,MVL_ENTRY[MVL$T_VOLLBL]);
+;	0907	END;
+
+
+
+
+
+					 003C 0030D UPDATE_MVL_LBL:
+							    .WORD   Save R2,R3,R4,R5					      ; 0864
+      04   BC	    08   BC	       06  28 0030F 	    MOVC3   #6, @ADDR, @MVL_ENTRY				      ; 0906
+					   04 00315 	    RET     							      ; 0864
+
+; Routine Size:  9 bytes
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 5-1
+; Digital Equipment Corporation
+;
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 6
+; Digital Equipment Corporation
+;
+;	0908	ROUTINE TAPE_OWN_PRO : L$TAPE_OWN_PRO =
+;	0909	
+;	0910	!++
+;	0911	!
+;	0912	! FUNCTIONAL DESCRIPTION:
+;	0913	!	THIS ROUTINE DETERMINES THE TAPE_OWNER AND PROTECTION OF THE VOLUME
+;	0914	!
+;	0915	! CALLING SEQUENCE:
+;	0916	!	TAPE_OWN_PRO()
+;	0917	!
+;	0918	! INPUT PARAMETERS:
+;	0919	!	NONE
+;	0920	!
+;	0921	! IMPLICIT INPUTS:
+;	0922	!	VOL1 -	LOCATION 38-40 D%C
+;	0923	!		LOCATION 41-45 	GROUP UIC
+;	0924	!		LOCATION 46-50	MEMEMBER UIC
+;	0925	!
+;	0926	! OUTPUT PARAMETERS:
+;	0927	!	NONE
+;	0928	!
+;	0929	! IMPLICIT OUTPUTS:
+;	0930	!	TAPE_OWNER - OWNING UIC OF TAPE
+;	0931	!	TAPE_PROT -  TAPE PROTECTION 
+;	0932	!
+;	0933	! ROUTINE VALUE:
+;	0934	!	1 SUCCESS
+;	0935	!	0 ERROR CODE
+;	0936	!
+;	0937	! SIDE EFFECTS:
+;	0938	!	NONE
+;	0939	!
+;	0940	! USER ERRORS:
+;	0941	!	NONE
+;	0942	!
+;	0943	!--
+;	0944	
+;	0945	BEGIN
+;	0946	
+;	0947	EXTERNAL REGISTER
+;	0948		SCRATCH	= 9 : REF BBLOCK;
+;	0949	
+;	0950	LOCAL
+;	0951		CONV_BUF	: VECTOR [6,BYTE],	!BUFFER TO HOLD PART OF UIC WHILE CONVERTING
+;	0952		P;					!POINTER INTO VOL1 TAPE_OWNERSHIP FIELD
+;	0953	
+;	0954	
+;	0955	! BIT NUMBERS FOR DIFFERENT PROTECTIONS
+;	0956	LITERAL
+;	0957		WORLD_WRITE = 13,
+;	0958		WORLD_READ = 12,
+;	0959		GROUP_WRITE = 9,
+;	0960		GROUP_READ = 8;
+;	0961	
+;	0962	TAPE_PROT = 0;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 6-1
+; Digital Equipment Corporation
+;
+;	0963	TAPE_OWNER = .CURRENT_UCB[UCB$L_OWNUIC];
+;	0964	
+;	0965	! IF ANSI TAPE PRODUCED BY VAX SYSTEM, DECODE TAPE_OWNER FIELD
+;	0966	IF .(SCRATCH[VL1$T_VOLOWNER])<0,24> EQL 'D%C' THEN
+;	0967	    BEGIN
+;	0968	    P = SCRATCH[VL1$T_VOLOWNER] + 3;
+;	0969	    IF .(.P)<0,8> NEQ ' ' THEN
+;	0970		BEGIN
+;	0971		CH$MOVE(5,.P,CONV_BUF);
+;	0972		IF .(.P) <0,8> GEQ 'A' THEN
+;	0973		CONV_BUF<0,8> = .(.P)<0,8> - ('A' - '0');
+;	0974		(LOCAL VALUE;
+;	0975		IF NOT LIB$CVT_OTB(5,CONV_BUF,VALUE) THEN RETURN INIT$_BADVOL1;
+;	0976		TAPE_OWNER<16,16> = .VALUE<0,16>);
+;	0977		END;
+;	0978	    P = .P + 5;
+;	0979	    IF .(.P)<0,8> NEQ ' ' THEN
+;	0980		BEGIN
+;	0981		CH$MOVE(5,.P,CONV_BUF);
+;	0982		IF .(.P) <0,8> GEQ 'A' THEN
+;	0983		CONV_BUF<0,8> = .(.P)<0,8> - ('A' - '0');
+;	0984		(LOCAL VALUE;
+;	0985		IF NOT LIB$CVT_OTB(5,CONV_BUF,VALUE) THEN RETURN INIT$_BADVOL1;
+;	0986		TAPE_OWNER<0,16> = .VALUE<0,16>);
+;	0987		END;
+;	0988	
+;	0989	! NOW TAPE_PROT MUST BE DECODED
+;	0990	! IF BOTH GROUP AND MEMBER ARE BLANK THEN ALL PRIVILEGES GRANTED
+;	0991		
+;	0992	    P = .P -5;					!POINTER TO GROUP
+;	0993	    IF NOT CH$FAIL(CH$FIND_NOT_CH(10,.P,' ')) THEN
+;	0994	! THEY ARE NOT BLANK, SO NOW CHECK IF MEMBER IS BLANK
+;	0995		BEGIN
+;	0996		P = .P + 5;				!POINTER TO MEMBER FIELD
+;	0997		IF NOT CH$FAIL(CH$FIND_NOT_CH(5,.P,' ')) THEN
+;	0998		    BEGIN				!MEMBER IS NOT BLANK
+;	0999		    IF .(.P)<0,8> LSS 'A' THEN
+;	1000			BEGIN
+;	1001			TAPE_PROT[GROUP_WRITE] = 1;
+;	1002			TAPE_PROT[GROUP_READ] = 1;
+;	1003			END
+;	1004		    ELSE
+;	1005			BEGIN
+;	1006			TAPE_PROT[GROUP_WRITE] = 1;
+;	1007			END;
+;	1008		    END;
+;	1009		P = .P - 5;				!POINTER TO GROUP
+;	1010		IF .(.P)<0,8> LSS 'A' THEN
+;	1011		    BEGIN				!FIRST CHAR 0-9
+;	1012		    TAPE_PROT[WORLD_WRITE] = 1;
+;	1013		    TAPE_PROT[WORLD_READ] = 1;
+;	1014		    END
+;	1015	        ELSE
+;	1016		    BEGIN
+;	1017		    TAPE_PROT[WORLD_WRITE] = 1;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 6-2
+; Digital Equipment Corporation
+;
+;	1018		    END;
+;	1019		END;
+;	1020	    END;
+;	1021	RETURN 1;
+;	1022	END;						!END OF ROUTINE TAPE_OWN_PRO
+
+
+
+
+
+				007C   8F  BB 00316 TAPE_OWN_PRO:
+							    PUSHR   #^M<R2,R3,R4,R5,R6>					      ; 0908
+		         5E	       10  C2 0031A 	    SUBL2   #16, SP						      ;
+				0000'  CF  D4 0031D 	    CLRL    TAPE_PROT						      ; 0962
+		         50	0000G  CF  D0 00321 	    MOVL    CURRENT_UCB, R0					      ; 0963
+		  0000'  CF	  1C   A0  D0 00326 	    MOVL    28(R0), TAPE_OWNER					      ;
+      25   A9	         18	       00  ED 0032C 	    CMPZV   #0, #24, 37(SCRATCH), #4400452			      ; 0966
+			    00432544   8F     00331									      ;
+				       03  13 00336 	    BEQL    1$							      ;
+				     00AD  31 00338 	    BRW     13$							      ;
+		         56	  28   A9  9E 0033B 1$:     MOVAB   40(SCRATCH), P					      ; 0968
+		         20	       66  91 0033F 	    CMPB    (P), #32						      ; 0969
+				       28  13 00342 	    BEQL    3$							      ;
+      08   AE	         66	       05  28 00344 	    MOVC3   #5, (P), CONV_BUF					      ; 0971
+		    41   8F	       66  91 00349 	    CMPB    (P), #65						      ; 0972
+				       05  1F 0034D 	    BLSSU   2$							      ;
+      08   AE	         66	       11  83 0034F 	    SUBB3   #17, (P), CONV_BUF					      ; 0973
+				  04   AE  9F 00354 2$:     PUSHAB  VALUE						      ; 0975
+				  0C   AE  9F 00357 	    PUSHAB  CONV_BUF						      ;
+				       05  DD 0035A 	    PUSHL   #5							      ;
+	      00000000G  9F	       03  FB 0035C 	    CALLS   #3, @#LIB$CVT_OTB					      ;
+		         2F	       50  E9 00363 	    BLBC    R0, 5$						      ;
+		  0000'  CF	  04   AE  B0 00366 	    MOVW    VALUE, TAPE_OWNER+2					      ; 0976
+		         56	       05  C0 0036C 3$:     ADDL2   #5, P						      ; 0978
+		         20	       66  91 0036F 	    CMPB    (P), #32						      ; 0979
+				       2F  13 00372 	    BEQL    7$							      ;
+      08   AE	         66	       05  28 00374 	    MOVC3   #5, (P), CONV_BUF					      ; 0981
+		    41   8F	       66  91 00379 	    CMPB    (P), #65						      ; 0982
+				       05  1F 0037D 	    BLSSU   4$							      ;
+      08   AE	         66	       11  83 0037F 	    SUBB3   #17, (P), CONV_BUF					      ; 0983
+				       5E  DD 00384 4$:     PUSHL   SP							      ; 0985
+				  0C   AE  9F 00386 	    PUSHAB  CONV_BUF						      ;
+				       05  DD 00389 	    PUSHL   #5							      ;
+	      00000000G  9F	       03  FB 0038B 	    CALLS   #3, @#LIB$CVT_OTB					      ;
+		         09	       50  E8 00392 	    BLBS    R0, 6$						      ;
+		         50 007580D4   8F  D0 00395 5$:     MOVL    #7700692, R0					      ;
+				       4D  11 0039C 	    BRB     14$							      ;
+		  0000'  CF	       6E  B0 0039E 6$:     MOVW    VALUE, TAPE_OWNER					      ; 0986
+		         56	       04  C2 003A3 7$:     SUBL2   #4, P						      ; 0992
+	   76	         0A	       20  3B 003A6 	    SKPC    #32, #10, -(P)					      ; 0993
+				       02  12 003AA 	    BNEQ    8$							      ;
+				       51  D4 003AC 	    CLRL    R1							      ;
+				       51  D5 003AE 8$:     TSTL    R1							      ;
+				       36  13 003B0 	    BEQL    13$							      ;
+		         56	       05  C0 003B2 	    ADDL2   #5, P						      ; 0996
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 6-3
+; Digital Equipment Corporation
+;
+	   66	         05	       20  3B 003B5 	    SKPC    #32, #5, (P)					      ; 0997
+				       02  12 003B9 	    BNEQ    9$							      ;
+				       51  D4 003BB 	    CLRL    R1							      ;
+				       51  D5 003BD 9$:     TSTL    R1							      ;
+				       12  13 003BF 	    BEQL    11$							      ;
+		    41   8F	       66  91 003C1 	    CMPB    (P), #65						      ; 0999
+				       07  1E 003C5 	    BGEQU   10$							      ;
+		  0000'  CF	       03  88 003C7 	    BISB2   #3, TAPE_PROT+1					      ; 1002
+				       05  11 003CC 	    BRB     11$							      ; 0999
+		  0000'  CF	       02  88 003CE 10$:    BISB2   #2, TAPE_PROT+1					      ; 1006
+		         56	       04  C2 003D3 11$:    SUBL2   #4, P						      ; 1009
+		    41   8F	       76  91 003D6 	    CMPB    -(P), #65						      ; 1010
+				       07  1E 003DA 	    BGEQU   12$							      ;
+		  0000'  CF	       30  88 003DC 	    BISB2   #48, TAPE_PROT+1					      ; 1013
+				       05  11 003E1 	    BRB     13$							      ; 1010
+		  0000'  CF	       20  88 003E3 12$:    BISB2   #32, TAPE_PROT+1					      ; 1017
+		         50	       01  D0 003E8 13$:    MOVL    #1, R0						      ; 1021
+		         5E	       10  C0 003EB 14$:    ADDL2   #16, SP						      ; 0908
+				007C   8F  BA 003EE 	    POPR    #^M<R2,R3,R4,R5,R6>					      ;
+					   05 003F2 	    RSB     							      ;
+
+; Routine Size:  221 bytes
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 7
+; Digital Equipment Corporation
+;
+;	1023	ROUTINE FORMAT_VOLOWNER(VOL_LABEL,OWNER,PROTECTION) : NOVALUE  =
+;	1024	
+;	1025	!++
+;	1026	!
+;	1027	! FUNCTIONAL DESCRIPTION:
+;	1028	!	THIS ROUTINE FORMATS THE VOLUME OWNER FILED IN VOL1
+;	1029	!
+;	1030	! CALLING SEQUENCE:
+;	1031	!	FORMAT_VOLOWNER(ARG1,ARG2,ARG3)
+;	1032	!
+;	1033	! INPUT PARAMETERS:
+;	1034	!	ARG1 - ADDRESS OF VOL1 LABEL
+;	1035	!	ARG2 - OWNER OF TAPE
+;	1036	!	ARG3 - TAPE PROTECTION
+;	1037	!
+;	1038	! IMPLICIT INPUTS:
+;	1039	!	D%C PREINITIALIZED
+;	1040	!
+;	1041	! OUTPUT PARAMETERS:
+;	1042	!	NONE
+;	1043	!
+;	1044	! IMPLICIT OUTPUTS:
+;	1045	!	NONE
+;	1046	!
+;	1047	! ROUTINE VALUE:
+;	1048	!	NONE
+;	1049	!
+;	1050	! SIDE EFFECTS:
+;	1051	!	NONE
+;	1052	!
+;	1053	! USER ERRORS:
+;	1054	!	NONE
+;	1055	!
+;	1056	!--
+;	1057	
+;	1058	BEGIN
+;	1059	
+;	1060	MAP
+;	1061		VOL_LABEL	: REF BBLOCK,	!ADDRESS OF VOL1 LABEL
+;	1062		PROTECTION	: BITVECTOR;	!PROTECTION TO BE ENCODED ON TAPE
+;	1063	
+;	1064	LOCAL
+;	1065		DESCR		: VECTOR [2],	!DESCRIPTOR
+;	1066		P;				!POINTER
+;	1067	
+;	1068	LITERAL
+;	1069		WORLD_WRITE = 13,
+;	1070		WORLD_READ = 12,
+;	1071		GROUP_WRITE = 9,
+;	1072		GROUP_READ = 8;
+;	1073	
+;	1074	
+;	1075	! FIRST CONVERT BINARY OWNER TO ASCII
+;	1076	DESCR[0] = 10;
+;	1077	DESCR[1] = VOL_LABEL[VL1$T_VOLOWNER] + 3;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 7-1
+; Digital Equipment Corporation
+;
+;	1078	$FAO(
+;     P 1079		DESCRIPTOR('!5OW!5OW'),
+;     P 1080		,
+;     P 1081		DESCR[0],
+;     P 1082		.OWNER<16,16>,.OWNER<0,16>);
+;	1083	
+;	1084	! NOW FORMAT PROTECTION
+;	1085	!
+;	1086	
+;	1087	IF NOT .PROTECTION[GROUP_READ] OR NOT .PROTECTION[WORLD_READ] THEN
+;	1088	    BEGIN
+;	1089	    P = VOL_LABEL[VL1$T_VOLOWNER] + 8;
+;	1090	    (.P)<0,8> = .(.P)<0,8> + ('A' - '0');
+;	1091	    END;
+;	1092	
+;	1093	! NOW IF GROUP CAN ALSO WRITE, BLANK FILL MEMBER FIELD
+;	1094	IF NOT .PROTECTION[GROUP_WRITE] THEN CH$FILL(' ',5,VOL_LABEL[VL1$T_VOLOWNER] + 8);
+;	1095	
+;	1096	IF NOT .PROTECTION[WORLD_READ] THEN
+;	1097	    BEGIN
+;	1098	    P = VOL_LABEL[VL1$T_VOLOWNER] + 3;
+;	1099	    (.P)<0,8> = .(.P)<0,8> + ('A' - '0');
+;	1100	    END;
+;	1101	 
+;	1102	IF NOT .PROTECTION[WORLD_WRITE] THEN CH$FILL(' ',10,VOL_LABEL[VL1$T_VOLOWNER] + 3);
+;	1103	END;					!END OF ROUTINE FORMAT_VOLOWNER
+
+
+
+					      003F3	    .BLKB   1
+					      003F4 P.AAD:  .ASCII  \!5OW!5OW\						      ;
+					      003FC P.AAC:  .LONG   8							      ;
+					      00400 	    .ADDRESS  P.AAD						      ;
+
+							    .GLOBL  SYS$FAO
+
+					 00FC 00404 FORMAT_VOLOWNER:
+							    .WORD   Save R2,R3,R4,R5,R6,R7				      ; 1023
+		         5E	       04  C2 00406 	    SUBL2   #4, SP						      ;
+				       0A  DD 00409 	    PUSHL   #10							      ; 1076
+		         52	  04   AC  D0 0040B 	    MOVL    VOL_LABEL, R2					      ; 1077
+	   57	         52	       28  C1 0040F 	    ADDL3   #40, R2, R7						      ;
+		    04   AE	       57  D0 00413 	    MOVL    R7, DESCR+4						      ;
+		         7E	  08   AC  3C 00417 	    MOVZWL  OWNER, -(SP)					      ; 1082
+		         7E	  0A   AC  3C 0041B 	    MOVZWL  OWNER, -(SP)					      ;
+				  08   AE  9F 0041F 	    PUSHAB  DESCR						      ;
+				       7E  D4 00422 	    CLRL    -(SP)						      ;
+				  D5   AF  9F 00424 	    PUSHAB  P.AAC						      ;
+	      00000000G  9F	       05  FB 00427 	    CALLS   #5, @#SYS$FAO					      ;
+		         05	  0D   AC  E9 0042E 	    BLBC    PROTECTION, 1$					      ; 1087
+	   07	    0D   AC	       04  E0 00432 	    BBS     #4, PROTECTION, 2$					      ;
+	   56	         52	       2D  C1 00437 1$:     ADDL3   #45, R2, P						      ; 1089
+		         66	       11  80 0043B 	    ADDB2   #17, (P)						      ; 1090
+	   07	    0D   AC	       01  E0 0043E 2$:     BBS     #1, PROTECTION, 3$					      ; 1094
+	   20	         6E	       00  2C 00443 	    MOVC5   #0, (SP), #32, #5, 45(R2)				      ;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 7-2
+; Digital Equipment Corporation
+;
+		    2D   A2	       05     00447									      ;
+	   06	    0D   AC	       04  E0 0044A 3$:     BBS     #4, PROTECTION, 4$					      ; 1096
+		         56	       57  D0 0044F 	    MOVL    R7, P						      ; 1098
+		         66	       11  80 00452 	    ADDB2   #17, (P)						      ; 1099
+	   06	    0D   AC	       05  E0 00455 4$:     BBS     #5, PROTECTION, 5$					      ; 1102
+	   20	         6E	       00  2C 0045A 	    MOVC5   #0, (SP), #32, #10, (R7)				      ;
+		         67	       0A     0045E									      ;
+					   04 00460 5$:     RET     							      ; 1023
+
+; Routine Size:  93 bytes
+
+
+;	1104	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 8
+; Digital Equipment Corporation
+;
+;	1105	ROUTINE CHECK_HDR (MVL_ENTRY) : L$CHECK_HDR =
+;	1106	
+;	1107	!++
+;	1108	!
+;	1109	! FUNCTIONAL DESCRIPTION:
+;	1110	!	This routine checks that the tape can be overwritten.
+;	1111	!
+;	1112	! CALLING SEQUENCE:
+;	1113	!	CHECK_HDR(ARG1)
+;	1114	!
+;	1115	! INPUT PARAMETERS:
+;	1116	!	ARG1 - address of current mounted volume entry
+;	1117	!
+;	1118	! IMPLICIT INPUTS:
+;	1119	!	NONE
+;	1120	!
+;	1121	! OUTPUT PARAMETERS:
+;	1122	!	NONE
+;	1123	!
+;	1124	! IMPLICIT OUTPUTS:
+;	1125	!	NONE
+;	1126	!
+;	1127	! ROUTINE VALUE:
+;	1128	!	1 - ok to write
+;	1129	!	various error codes
+;	1130	!
+;	1131	! SIDE EFFECTS:
+;	1132	!	NONE
+;	1133	!
+;	1134	!--
+;	1135	
+;	1136	BEGIN
+;	1137	
+;	1138	MAP MVL_ENTRY : REF BBLOCK;
+;	1139	
+;	1140	EXTERNAL REGISTER
+;	1141		SCRATCH	= 9 : REF BBLOCK,
+;	1142		COMMON_REG;
+;	1143	LOCAL
+;	1144		SAVE_LABEL	: VECTOR [6,BYTE],
+;	1145		ERROR_NO,
+;	1146		STATUS;
+;	1147	
+;	1148	ERROR_NO = TAPE_OWN_PRO();
+;	1149	IF .ERROR_NO THEN
+;	1150	    BEGIN
+;	1151	    ERROR_NO = MOUN$_NOPRIV;
+;	1152	    IF EXE$CHKWRTACCES(.TAPE_PROT,.TAPE_OWNER,.SCH$GL_PCBVEC[.(IO_PACKET[IRP$L_PID])<0,16>])
+;	1153	    THEN
+;	1154		BEGIN
+;	1155		ERROR_NO = MOUN$_NOTANSI;
+;	1156		WHILE 1 DO
+;	1157		    BEGIN
+;	1158		    CH$MOVE(VL1$S_VOLLBL,SCRATCH[VL1$T_VOLLBL],SAVE_LABEL);
+;	1159		    STATUS = ISSUE_IO(IO$_READLBLK,.SCRATCH,80);
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 8-1
+; Digital Equipment Corporation
+;
+;	1160		    IF NOT .STATUS THEN ERROR_NO = MOUN$_IOERROR;
+;	1161		    IF NOT .STATUS THEN EXITLOOP;
+;	1162		    IF .STATUS AND .(.SCRATCH) EQL 'HDR1' THEN EXITLOOP;
+;	1163		    END;
+;	1164		IF .STATUS THEN
+;	1165	           BEGIN
+;	1166		   ERROR_NO = MOUN$_ACCERR;
+;	1167		   IF .CURRENT_VCB[VCB$V_OVRACC] 
+;	1168		   OR .SCRATCH[HD1$B_FILACCESS] EQL ' ' THEN
+;	1169			BEGIN
+;	1170			ERROR_NO = MOUN$_FILNOTEXP;
+;	1171			IF .CURRENT_VCB[VCB$V_OVREXP] 
+;	1172			OR EXPIRED(SCRATCH[HD1$T_EXPIREDT]) THEN
+;	1173			    BEGIN
+;	1174			    ERROR_NO = MOUN$_NOTLABEL;
+;	1175			    IF .CURRENT_VCB[VCB$V_OVRLBL]
+;	1176			    OR CH$EQL(VL1$S_VOLLBL,SAVE_LABEL,MVL$S_VOLLBL,MVL_ENTRY[MVL$T_VOLLBL])
+;	1177			    THEN RETURN 1;
+;	1178			    END;
+;	1179			END;
+;	1180		    END;
+;	1181		END;
+;	1182	    END;
+;	1183	RETURN .ERROR_NO;		
+;	1184	END;					! end of routine CHECK_HDR
+
+
+
+
+
+				007C   8F  BB 00461 CHECK_HDR:
+							    PUSHR   #^M<R2,R3,R4,R5,R6>					      ; 1105
+		         5E	       0C  C2 00465 	    SUBL2   #12, SP						      ;
+				     FEAB  30 00468 	    BSBW    TAPE_OWN_PRO					      ; 1148
+		         56	       50  D0 0046B 	    MOVL    R0, ERROR_NO					      ;
+		         03	       56  E8 0046E 	    BLBS    ERROR_NO, 1$					      ; 1149
+				     00A6  31 00471 	    BRW     7$							      ;
+		         56 007280F4   8F  D0 00474 1$:     MOVL    #7504116, ERROR_NO					      ; 1151
+		         53 00000000G  9F  D0 0047B 	    MOVL    @#SCH$GL_PCBVEC, R3					      ; 1152
+		         50	0000G  CF  D0 00482 	    MOVL    IO_PACKET, R0					      ;
+		         50	  0C   A0  3C 00487 	    MOVZWL  12(R0), R0						      ;
+		         51	0000'  CF  D0 0048B 	    MOVL    TAPE_PROT, R1					      ;
+		         52	0000'  CF  D0 00490 	    MOVL    TAPE_OWNER, R2					      ;
+		         54	     6340  D0 00495 	    MOVL    (R3)[R0], R4					      ;
+			    00000000G  9F  16 00499 	    JSB     @#EXE$CHKWRTACCES					      ;
+		         78	       50  E9 0049F 	    BLBC    R0, 7$						      ;
+		         56 007280FC   8F  D0 004A2 	    MOVL    #7504124, ERROR_NO					      ; 1155
+      04   AE	    04   A9	       06  28 004A9 2$:     MOVC3   #6, 4(SCRATCH), SAVE_LABEL				      ; 1158
+		         7E	  50   8F  9A 004AF 	    MOVZBL  #80, -(SP)						      ; 1159
+				       59  DD 004B3 	    PUSHL   SCRATCH						      ;
+				       21  DD 004B5 	    PUSHL   #33							      ;
+				     0000  30 004B7 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 004BA 	    ADDL2   #12, SP						      ;
+		         6E	       50  D0 004BD 	    MOVL    R0, STATUS						      ;
+		         0A	       6E  E8 004C0 	    BLBS    STATUS, 3$						      ; 1160
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 8-2
+; Digital Equipment Corporation
+;
+		         56 00728124   8F  D0 004C3 	    MOVL    #7504164, ERROR_NO					      ;
+		         4D	       6E  E9 004CA 	    BLBC    STATUS, 7$						      ; 1161
+	      31524448   8F	       69  D1 004CD 3$:     CMPL    (SCRATCH), #827475016				      ; 1162
+				       D3  12 004D4 	    BNEQ    2$							      ;
+		         41	       6E  E9 004D6 	    BLBC    STATUS, 7$						      ; 1164
+		         56 007280E4   8F  D0 004D9 	    MOVL    #7504100, ERROR_NO					      ; 1166
+	   06	    2C   AB	       01  E0 004E0 	    BBS     #1, 44(CURRENT_VCB), 4$				      ; 1167
+		         20	  35   A9  91 004E5 	    CMPB    53(SCRATCH), #32					      ; 1168
+				       2F  12 004E9 	    BNEQ    7$							      ;
+		         56 007280EC   8F  D0 004EB 4$:     MOVL    #7504108, ERROR_NO					      ; 1170
+		         0B	  2C   AB  E8 004F2 	    BLBS    44(CURRENT_VCB), 5$					      ; 1171
+				  2F   A9  9F 004F6 	    PUSHAB  47(SCRATCH)						      ; 1172
+		  0000G  CF	       01  FB 004F9 	    CALLS   #1, EXPIRED						      ;
+		         19	       50  E9 004FE 	    BLBC    R0, 7$						      ;
+		         56 00728104   8F  D0 00501 5$:     MOVL    #7504132, ERROR_NO					      ; 1174
+	   08	    2C   AB	       02  E0 00508 	    BBS     #2, 44(CURRENT_VCB), 6$				      ; 1175
+      24   BE	    04   AE	       06  29 0050D 	    CMPC3   #6, SAVE_LABEL, @MVL_ENTRY				      ; 1176
+				       05  12 00513 	    BNEQ    7$							      ;
+		         50	       01  D0 00515 6$:     MOVL    #1, R0						      ; 1177
+				       03  11 00518 	    BRB     8$							      ;
+		         50	       56  D0 0051A 7$:     MOVL    ERROR_NO, R0					      ; 1183
+		         5E	       0C  C0 0051D 8$:     ADDL2   #12, SP						      ; 1105
+				007C   8F  BA 00520 	    POPR    #^M<R2,R3,R4,R5,R6>					      ;
+					   05 00524 	    RSB     							      ;
+
+; Routine Size:  196 bytes
+
+
+;	1185	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 9
+; Digital Equipment Corporation
+;
+;	1186	GLOBAL ROUTINE RESET_UNIT : COMMON_CALL NOVALUE  =
+;	1187	
+;	1188	!++
+;	1189	!
+;	1190	! FUNCTIONAL DESCRIPTION:
+;	1191	!
+;	1192	!	THIS ROUTINE RESETS THE UNIT SO THAT AFTER AN ERROR MESSAGE
+;	1193	!	THE SAME UNIT IS CHOOSEN FOR MOUNT
+;	1194	!
+;	1195	!
+;	1196	! CALLING SEQUENCE:
+;	1197	!
+;	1198	! INPUT PARAMETERS:
+;	1199	!	NONE
+;	1200	!
+;	1201	! IMPLICIT INPUTS:
+;	1202	!	NONE
+;	1203	!
+;	1204	! OUTPUT PARAMETERS:
+;	1205	!	NONE
+;	1206	!
+;	1207	! IMPLICIT OUTPUTS:
+;	1208	!	NONE
+;	1209	!
+;	1210	! ROUTINE VALUE:
+;	1211	!	NONE
+;	1212	!
+;	1213	! SIDE EFFECTS:
+;	1214	!	NONE
+;	1215	!
+;	1216	!--
+;	1217	
+;	1218	BEGIN
+;	1219	EXTERNAL REGISTER
+;	1220		COMMON_REG;
+;	1221	
+;	1222	IF .CURRENT_VCB[VCB$W_RVN] NEQ 0
+;	1223	THEN CURRENT_VCB[VCB$W_RVN] = .CURRENT_VCB[VCB$W_RVN] - 1
+;	1224	ELSE CURRENT_VCB[VCB$W_RVN] = .BBLOCK[.CURRENT_VCB[VCB$L_RVT],RVT$B_NVOLS] - 1;
+;	1225	
+;	1226	END;
+
+
+
+
+
+					 0000 00525 	    .ENTRY  RESET_UNIT, Save nothing				      ; 1186
+				  0E   AB  B5 00527 	    TSTW    14(CURRENT_VCB)					      ; 1222
+				       09  12 0052A 	    BNEQ    1$							      ;
+		         50	  20   AB  D0 0052C 	    MOVL    32(CURRENT_VCB), R0					      ; 1224
+		    0E   AB	  0B   A0  9B 00530 	    MOVZBW  11(R0), 14(CURRENT_VCB)				      ;
+				  0E   AB  B7 00535 1$:     DECW    14(CURRENT_VCB)					      ;
+					   04 00538 	    RET     							      ; 1186
+
+; Routine Size:  20 bytes
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:39:47	DBB3:[MTAACP.SRC]NXTVOL.B32;78					Page 9-1
+; Digital Equipment Corporation
+;
+
+
+;	1227	END
+;	1228	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDD1$     	    32    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	  1337  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        52         0       255
+
+
+
+
+
+; Size:		1297 code + 72 data bytes
+; Run Time:	00:42.0
+; Elapsed Time:	01:31.2
+; Memory Used:	387 pages
+; Compilation Complete

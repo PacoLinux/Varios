@@ -1,0 +1,4121 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGINT (	! RST interface routines for DEBUG
+;	0002			ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0003			IDENT = '000042') =
+;	0004	BEGIN
+;	0005	
+;	0006	!
+;	0007	!			  COPYRIGHT (c) 1977 BY
+;	0008	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0009	!
+;	0010	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0011	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0012	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0013	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0014	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0015	! TRANSFERRED.
+;	0016	!
+;	0017	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0018	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0019	! CORPORATION.
+;	0020	!
+;	0021	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0022	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0023	!
+;	0024	
+;	0025	!++
+;	0026	! FACILITY:
+;	0027	!	DEBUG (DBG)
+;	0028	!
+;	0029	! ABSTRACT:
+;	0030	!	DBGINT - the RST/DST/DEBUG interface module.
+;	0031	!		 This module exists because the DST/RST
+;	0032	!		 module simply declares how it wants to see
+;	0033	!		 the world, and leaves it up to this module
+;	0034	!		 to interface to DEBUG to make things look
+;	0035	!		 that way.
+;	0036	!
+;	0037	!	This module defines the interface between the
+;	0038	!	DEBUG RST builder/manipulator and the LNK-produced
+;	0039	!	so-called DST.  The former would like to show as little
+;	0040	!	concern for where DST records are actually stored as
+;	0041	!	possible.  The latter would like to provide this facility,
+;	0042	!	but it must do so simply, (because we don't want to
+;	0043	!	re-invent the world), efficiently, and in such
+;	0044	!	as way as to allow us to do radically different
+;	0045	!	things about where the DST actually exists.
+;	0046	!
+;	0047	!	Essentially what we do to solve this is to restrict the
+;	0048	!	DST user to requesting records before he uses them,
+;	0049	!	(probably) saying something about how long he wants
+;	0050	!	to use them (or, equivalently, when he is willing to give
+;	0051	!	them up), and using them given that they exist at the
+;	0052	!	address he is told they are currently at.  This means that
+;	0053	!	he can never make any assumptions about where a record is at.
+;	0054	!	To get around this we introduce the concept of "Record Ids",
+;	0055	!	which are simply identifiers by which the two sides of the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!	interface agree to call records.  The first time you
+;	0057	!	gett a record, the interface tells you how you must
+;	0058	!	henceforth refer to it.
+;	0059	!
+;	0060	!	The other aspect of the interface concerns so-called
+;	0061	!	RST-pointers.  These pointers are used throught the
+;	0062	!	RST module to access various (all) records.  The code
+;	0063	!	uses these pointers implicitly, knowing nothing
+;	0064	!	about what they actually are, and leaves it up to this
+;	0065	!	interface to define them.  This is done by
+;	0066	!	having a special storage allocator for the RST
+;	0067	!	module.  It uses whatever kind of pointer this
+;	0068	!	allocator returns, and leaves it up to
+;	0069	!	the definition of the RST structures (RST_NT,
+;	0070	!	RST_MC, etc.  see DBGRST.BEG) to make
+;	0071	!	sure that these RST-pointers do the job.
+;	0072	!
+;	0073	! Version	42
+;	0074	!
+;	0075	! ENVIRONMENT:
+;	0076	!	This module runs on VAX under STARLET, user mode, non-AST level.
+;	0077	!
+;	0078	! AUTHOR:	Kevin Pammett, CREATION DATE: 12 JULY 77
+;	0079	!
+;	0080	! MODIFIED BY:
+;	0081	!		Dale Roedger, 24 July 1978:	42
+;	0082	!
+;	0083	! 02	04-aug-77	KGP	-Added the routine DBG$BUILD_PATH which
+;	0084	!				 interfaces between the SCANNER/LEX and
+;	0085	!				 the RST builder/manipulator.
+;	0086	! 03	11-aug-77	CP	Add the routine dbg$get_nxt_gst to return
+;	0087	!				sequential global symbol entry to its
+;	0088	!				caller.
+;	0089	! 04	12-AUG-77	KGP	-ADDED DBG$SAVE_SCOPE, AND CHANGED
+;	0090	!				 BUILD_PATH TO WORK FROM AN OWN INSTEAD OF 
+;	0091	!				 FROM A LOCAL, OWN SO THAT THE TWO ROUTINES
+;	0092	!				 COULD COOPERATE.
+;	0093	! 05	16-Aug-77	CP	Compute an estimated number of globals
+;	0094	!				in an image and send that number
+;	0095	!				as an argument to dbg$init_rst.
+;	0096	!				Add an argument to find_dst that is the
+;	0097	!				address of the counted string of the
+;	0098	!				result file specification.
+;	0099	! 05	17-08-77	CP	Change find_dst so that it can be called
+;	0100	!				from dbgstart instead of from dbg_init.
+;	0101	!				This permits the logic to read the image
+;	0102	!				header to be removed, and all the GETs
+;	0103	!				to be sequential. An argument is added:
+;	0104	!				It is the address of the image header
+;	0105	!				information passes from CLI to DEBUG.
+;	0106	!				Add a test to find_dst that just punts
+;	0107	!				the whole routine if no symbols are
+;	0108	!				available.
+;	0109	!  06	22-aug-77	KGP	-Changes in find_dst to try and
+;	0110	!				 get into step with the BL4 image 
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!				 activator and the new RMS.  
+;	0112	! 07	29-aug-77	KGP	-Made the change to see if there
+;	0113	!				 are no DST symbols more elaborate.
+;	0114	!				 It turns out that the previous checks
+;	0115	!				 implied inconsistency, not
+;	0116	!				 simply the orderly absence of symbols.
+;	0117	! 08	06-09-77	CP	In build_path, only clear out the path
+;	0118	!				vector if one really existed.
+;	0119	! 09	07-09-77	CP	Removed the static RAB/FAB connection
+;	0120	!				that was in the OWN declaration, and
+;	0121	!				loaded the FAB address into the RAB
+;	0122	!				dynamically in find_dst. This makes this
+;	0123	!				module PIC.
+;	0124	! 10	15-sept-1977	KGP	-Changed the call to CREMAPSEC so that
+;	0125	!				 a non-global section is created.
+;	0126	! 11	05-10-77	CP	Change calls to error_reprt to SIGNALs.
+;	0127	! 12	31 oct 77	KGP	-Changed so that we can handle NOT having a DST.
+;	0128	!				 Carol put in EXTERNAL LITERAL DBG$_RST_BEGIN
+;	0129	!				 since this was taken out of DBGRST.BEG (2 NOV)
+;	0130	! 13	3-nov-77	KGP	-Added code to SAVE_SCOPE to do semantic
+;	0131	!				 checking of a new (supposed) CSP.
+;	0132	!				-Also added the routine DELETE_PATH, taking
+;	0133	!				 the code from several places where this 
+;	0134	!				 now-parameterized thing was previously done.
+;	0135	! 14	9-NOV-77	KGP	-Added the action routine DBG$FIND_MODULE
+;	0136	! 15	10-nov-77	KGP	-Changed chaining thru MC so that we 
+;	0137	!				 'skip' the one reserved for globals so that
+;	0138	!				 we don't ever look at its name
+;	0139	!				 (since it doesn't have one).
+;	0140	! 16	29-11-77	CP	Add another option to build_path. If
+;	0141	!				it is called with a minus one as the
+;	0142	!				first argument. Remove that last element
+;	0143	!				in the path name before trying to
+;	0144	!				sym_to_val the resultant name. This is
+;	0145	!				for FORTRAN line numbers.
+;	0146	! 17	5-dec-77	KGP	-Added diagnostics to DBG$GET_DST_REC and
+;	0147	!				 fixed bug in DBG$GET_DST_REC about detecting
+;	0148	!				 end-of-DST when it ends exactly on the last
+;	0149	!				 byte that CREMAPSEC made available for the DST.
+;	0150	! 18	6-dec-77	KGP	-Changed reading .EXE file for global symbols
+;	0151	!				 so that we now quit when we have read the number
+;	0152	!				 of records that the linker tells us there are
+;	0153	!				 rather than reading to EOF (since PATCH 
+;	0154	!				 extends .EXE files with PATCHes).
+;	0155	! 19	6-dec-77	KGP	-Added DBG$POSITON_DST to sort out the conflict
+;	0156	!				 of whether DBG$GET_DST_REC affects the sequence
+;	0157	!				 defined by DBG$GET_NXT_DST or not.
+;	0158	!  20	28-dec-77	KGP	-Added code for new specific RST error messages.
+;	0159	!  21	02-dec-78	KGP	-SAVE_SCOPE now does a SET 
+;	0160	!				 MODUle on the scope's MODULE.
+;	0161	!  22	15-mar-78	KGP	-DBG$FIND_DST now maps the GST instead
+;	0162	!				 of setting up for GET_NXT_GST to $GET it.
+;	0163	!  23	15-MAR-78	DAR	Added routine POSITION_GST to chain thru the
+;	0164	!				RMS records of the mapped GST.  Also changed
+;	0165	!				the logic in DBG$GET_NXT_GST to call POSITION_GST.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 1-3
+; Digital Equipment Corporation
+;
+;	0166	!  24	17-mar-78	KGP	-Bug fix in FIND_DST so that we skip the
+;	0167	!				 first 2 GST records OK.  
+;	0168	!				-Bug fix in POSITION_GST - re have to round up
+;	0169	!				 a record byte count.  GSR_NEXT_ADDR is now a
+;	0170	!				 REF VECTOR[,byte].
+;	0171	!  25	22-mar-78	KGP	-Added code to BUILD_PATH to first see if a
+;	0172	!				 1-element pathname is a DEFine symbol or
+;	0173	!				 a DEBUG permanent symbol before then 
+;	0174	!				 consulting the RST.  BUILD_PATH is now
+;	0175	!				 the final word on whether a symbol
+;	0176	!				 has a value or not.
+;	0177	!  26	24-mar-78	KGP	-Error message SIGNALs now must give
+;	0178	!				 their parameter count explicitly.
+;	0179	!  27	10-apr-78	KGP	-FIND_DST now checks for the existence
+;	0180	!				 of the GST before it tries to map it in.
+;	0181	!				 If anything goes wrong in GST/DST init, the
+;	0182	!				 associated message is output with an INFOR
+;	0183	!				 severity and DEBUG continues.
+;	0184	!				-POSITION_GST now knows about there being
+;	0185	!				 no GST at all.
+;	0186	!				-NOLOCALS and NOGLOBALS message are produced
+;	0187	!				 when there is no DST/GST, resp.
+;	0188	!  28	11-apr-78	KGP	-BUILD_PATH now handles %LINE by itself.
+;	0189	!				-added new routines LINE_TO_VAL and IS_A_LINE
+;	0190	!  29	12-apr-78	KGP	-DELETE path is now global, doesn't take a parameter,
+;	0191	!				 and always delete's this module's OWN, PATH_VEC_PTR.
+;	0192	!				-Fixed bug in and changed SAVE_SCOPE
+;	0193	!  30	13-apr-78	KGP	-Better error message in SAVE_SCOPE
+;	0194	!				 (no more NOSUCHSYM since it doesn't give 
+;	0195	!				  the symbol name)
+;	0196	!  31	19-apr-78	KGP	-Fixed bug which was that you could cancel
+;	0197	!				 a module and leave your CSP (SCOPE) pointing
+;	0198	!				 into this now-defunct module.
+;	0199	!  32	25-apr-78	KGP	-Fixed bug in recognizing the end of the GST
+;	0200	!				 We now tell POSITION_GST that there are 3
+;	0201	!				 GST records less than what the header says,
+;	0202	!				 not 2 less.
+;	0203	!				-Note 'round up' in GET_NXT_GST so that we
+;	0204	!				 really know the end of a GST record.  This
+;	0205	!				 was a bug fix.
+;	0206	!  33	27-APR-78	DAR	Modified require and library directives for
+;	0207	!				the native build.
+;	0208	!  34	16-may-78	KGP	Added label_error_msg routine and changed
+;	0209	!				LIBRARY for the /10 build
+;	0210	!  35	17-may-78	KGP	-label_error_msg now called in build-path
+;	0211	!  36	19-MAY-78	DAR	The calls to DBG$RADX_CONVRT pass the address
+;	0212	!				of a string descriptor pointing to the text.
+;	0213	!  37	22-may-78	KGP	-Upgrade to conform to the new calling
+;	0214	!				 sequence for BUILD_PATH - we now pass back
+;	0215	!				 much more information on symbol evaluation.
+;	0216	!  38	23-may-78	KGP	-BUILD_PATH broken into two routines
+;	0217	!				 since it has always been two-functioned.
+;	0218	!				-LISTEL.REQ is no longer REQUIREd
+;	0219	!  39	01-JUN-78	DAR	DBG$FIND_MODULE is parameterized to indicate
+;	0220	!				whether it should signal if the module is not found.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 1-4
+; Digital Equipment Corporation
+;
+;	0221	!  40	20-JUN-78	KGP	-path_to_val now ALWAYS initializes the
+;	0222	!				 NT_PTR field of the value descriptor to 0.
+;	0223	!				 This is a bug fix.
+;	0224	!  41	26-JUN-78	DAR	Added new case to DBG$GET_NXT_GST to process
+;	0225	!				procedure definition records which include
+;	0226	!				argument validation information.
+;	0227	!				Cleaned up logic in DBG$FIND_DST and DBG$GET_DST_REC.
+;	0228	!  42	24-JUL-78	DAR	Changed "BADBUG" signal to "DEBUGBUG".
+;	0229	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 2
+; Digital Equipment Corporation
+;
+;	0230	! TABLE OF CONTENTS:
+;	0231	!
+;	0232	FORWARD ROUTINE
+;	0233		label_error_msg : NOVALUE,	! report on faulty %LABEL references
+;	0234		line_to_val,			! Translate pathnames to %line addresses
+;	0235		is_a_line,			! Used by LINE_TO_VAL
+;	0236		DBG$SAVE_SCOPE,			! STORE AWAY THE CURRENT SCOPE POSITION
+;	0237						! (CSP) VECTOR.
+;	0238		DBG$BUILD_PATH,			! Collect symbol pathnames
+;	0239		dbg$path_to_val,		! Pathname evaluation
+;	0240		dbg$DELETE_PATH : NOVALUE,	! Throw away a pathvector.
+;	0241		DBG$FIND_MODULE,		! Scan MC for a given module name.
+;	0242		DBG$RST_FREEZ,			! Storage allocator for anything which
+;	0243						!  which is accessed via RST-pointers.
+;	0244		DBG$RST_RELEASE : NOVALUE,	! Storage deallocator for anything which
+;	0245						!  which is allocated by DBG$RST_FREEZ.
+;	0246		dbg$find_dst : NOVALUE,		! Find the DST and make it available.
+;	0247		DBG$GET_DST_REC,		! Make a certain DST record available.
+;	0248		DBG$POSITON_DST,		! Make a certain DST record available
+;	0249						!  and set up for DBG$GET_NXT_DST
+;	0250		POSITION_GST,			! Make a certain GST record available
+;	0251		DBG$GET_NXT_DST,		! Make the next DST record available.
+;	0252		dbg$get_nxt_gst;		! make the next GST record available
+;	0253	
+;	0254	
+;	0255	!
+;	0256	! INCLUDE FILES:
+;	0257	!
+;	0258	%IF %VARIANT		! True for TEN
+;     L 0259	%THEN
+;     U 0260	
+;     U 0261	LIBRARY 'NEW:LIB';
+;     U 0262	
+;     U 0263	REQUIRE 'DBGPCT.REQ';
+;     U 0264	REQUIRE 'DBGGEN.REQ';
+;     U 0265	REQUIRE 'DBGMSG.REQ';
+;     U 0266	REQUIRE 'IMGDEF.REQ';
+;     U 0267	REQUIRE 'BSTRUC.REQ';
+;     U 0268	REQUIRE 'DLLNAM.REQ';
+;     U 0269	REQUIRE 'DBGRST.REQ';
+;     U 0270	REQUIRE 'VXSMAC.REQ';
+;     U 0271	REQUIRE 'SYSLIT.REQ';
+;     U 0272	REQUIRE 'SYSSER.REQ';
+;     U 0273	%ELSE
+;	0274	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0275	
+;	0276	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0288	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0538	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0817	REQUIRE 'SRC$:IMGDEF.REQ';
+;	0858	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0909	REQUIRE 'SRC$:DLLNAM.REQ';
+;	0960	REQUIRE 'SRC$:DBGRST.REQ';
+;	2107	REQUIRE 'SRC$:VXSMAC.REQ';
+;	2147	REQUIRE 'SRC$:SYSLIT.REQ';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 2-1
+; Digital Equipment Corporation
+;
+;	2170	REQUIRE 'SRC$:SYSSER.REQ';
+;      R2173	SWITCHES LIST (SOURCE);
+;      R2174	
+;      R2175	EXTERNAL ROUTINE
+;      R2176		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R2177	
+;      R2178	SWITCHES LIST (NOSOURCE);
+;	2223	%FI
+;	2224	
+;	2225	!
+;	2226	! MACROS:
+;	2227	!
+;	2228	
+;	2229	!
+;	2230	! EQUATED SYMBOLS:
+;	2231	!
+;	2232	LITERAL
+;	2233		dbg_int		= 0,		! for debugging statements 
+;	2234		DBG_INT2	= 0,		! DEBUG output in BUILD_PATH.
+;	2235		dbg_int22	= 0,		! A sub-set of INT2
+;	2236		DBG_INT3	= 0,		! Diagnostics in SAVE_SCOPE, DELETE_PATH,
+;	2237						!   and DBG$FIND_MODULE.
+;	2238		DBG_INT4	= 0,		! Control PRINT_SYM_PATH's output.
+;	2239		DBG_INT5	= 0,		! DEBUG in DBG$GET_DST_RECord.
+;	2240		DBG_INT6	= 0,		! Diagnostics for position_gst and
+;	2241						! DBG$GET_NXT_GST
+;	2242		dbg_int7	= 0;		! Diagnostics in label_error_msg
+;	2243	
+;	2244	!+
+;	2245	! Note: PRINT_SYM_PATH is included only for INT2 and INT3 
+;	2246	!      diagnostics.  This is (supposedly) the same
+;	2247	!      routine which is in DBGRST.B32, but it is LOCAL there
+;	2248	!      and using it for diagnostics here is not a good enough
+;	2249	!      reason to make it GLOBAL.
+;	2250	!-
+;	2251	
+;	2252	%IF DBG_INT2 OR DBG_INT3
+;     L 2253	%THEN
+;     U 2254	FORWARD ROUTINE
+;     U 2255		PRINT_SYM_PATH : NOVALUE;	! A debugging aid which IS ALSO IN DBGRST.B32
+;     U 2256	%FI
+;	2257	
+;	2258	!
+;	2259	! OWN STORAGE:
+;	2260	!
+;	2261	
+;	2262	OWN
+;	2263						! Pointer to the pathname vector we are 
+;	2264						! currently building.  If 0, no such vector
+;	2265						! is under construction.
+;	2266		PATH_VEC_PTR : REF PATHNAME_VECTOR INITIAL( 0 ),
+;	2267	
+;	2268		PV_INDEX,			! Current index into PATH_VEC_PTR
+;	2269	
+;	2270		dst_begin_addr,			! virtual address where DST begins.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 2-2
+; Digital Equipment Corporation
+;
+;	2271		dst_end_addr,			! virtual address of last byte in DST.
+;	2272		dst_next_addr,			! virtual address where 'next' DST record begins.
+;	2273	
+;	2274		! Like the DST, so the GST.
+;	2275	
+;	2276		gsr_begin_addr,				! virtual address where GST begins.
+;	2277		GSR_next_addr : ref vector[,word],	! virtual address of 'next' GST
+;	2278	
+;	2279		gst_begin_addr : ref gst_record,	! virtual address of current GST record
+;	2280							! This is used solely by GET_NXT_GST
+;	2281	
+;	2282		exe_file : $FAB (FAC = GET
+;     P 2283				),
+;	2284	
+;	2285		exe_input : $RAB (USZ = 512
+;     P 2286				),
+;	2287		gsd_rec_count;		! Count-down of GSD records.
+;	2288	
+;	2289	!
+;	2290	! EXTERNAL REFERENCES:
+;	2291	!
+;	2292	
+;	2293	EXTERNAL ROUTINE
+;	2294		dbg$pc_rule,			! Used for %LINE lookups
+;	2295		dbg$lookup_gbl,			! GST search
+;	2296		dbg$pc_to_line,			! Correspond %LINE to address
+;	2297		dbg$radx_convrt,		! ASCII to numeric
+;	2298		dbg$pv_to_cs,			! Encode pathname vectors for printing.
+;	2299		dbg$find_sym,			! Look up DEFine symbols.
+;	2300		dbg$reg_match,			! Compare a string to a register name.
+;	2301		dbg$set_module : NOVALUE,	! Add a module to the RST.
+;	2302		DBG$SYM_TO_VAL,			! Correspond pathnames and values.
+;	2303		DBG$SYM_TO_VALU,			! sym_to_val + goodies.
+;	2304		DBG$INIT_RST : NOVALUE,		! Build all RST data structures.
+;	2305		dbg$freez,			! Standard DEBUG storage allocator.
+;	2306		DBG$FREERELEASE : NOVALUE,	! Standard DEBUG storage deallocator.
+;	2307		lib$_cremapsec;			! creates and maps a global section
+;	2308	
+;	2309	EXTERNAL
+;	2310		dbg$gb_mod_ptr : ref vector[,byte],
+;	2311						! The current run frame is where
+;	2312						! DEBUG stores the users' registers.
+;	2313		DBG$GL_RUNFRAME : REF BLOCK[,BYTE],
+;	2314	
+;	2315						! The Current Scope Position (CSP)
+;	2316						! is defined by a pointer to the
+;	2317						! pathname vector which is the CSP.
+;	2318		DBG$GL_CSP_PTR : REF PATHNAME_VECTOR,
+;	2319	
+;	2320						! THE MODULE CHAIN
+;	2321		DBG$GL_MC_PTR : REF MC_RECORD,
+;	2322	
+;	2323		dbg$gl_head_lst;		! head of DEBUG argument list
+;	2324	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3
+; Digital Equipment Corporation
+;
+;	2325	GLOBAL ROUTINE DBG$PATH_TO_VAL( VALU_DESC_PTR ) =
+;	2326	
+;	2327	!++
+;	2328	! Functional Description:
+;	2329	!
+;	2330	!	This routine is called to translate PATHNAME to value.  It assumes
+;	2331	!    that no more elements are to come and that what we have accumulated
+;	2332	!    is supposedly a complete pathname.  What we are to do then
+;	2333	!    is to simply look up (or evaluate) this pathname and
+;	2334	!    return the corresponding value and NT_PTR via the given
+;	2335	!    'value descriptor'.
+;	2336	!
+;	2337	!	The pathnames build for (FORTRAN) %LINEs are evaluated
+;	2338	!	herein even though these paths are not in the RST.  There
+;	2339	!	are two basic flavors of %LINE pathnames.  
+;	2340	!	They would come from, for example:
+;	2341	!			DBG>e/i %line routine\4
+;	2342	!		or just
+;	2343	!			DBG>e/i %line 6
+;	2344	!	In these cases "routine\4" or just "6" are the actual 
+;	2345	!	pathnames, but these don't exist in the RST even though
+;	2346	!	they are 'valid'.  These %LINE pathnames are evaluated
+;	2347	!	by removing the last element, determining what of the
+;	2348	!	remaining pathname must be the assocaited routine name,
+;	2349	!	and then passing that off to LINE_TO_VAL who does the rest.
+;	2350	!
+;	2351	!    When a non-%LINE lookup is done, the following priority is observed:
+;	2352	!
+;	2353	!	1) a pathanme consisting of 1 element may first be:
+;	2354	!		1) a permanent symbol name (e.g. "R0")
+;	2355	!		2) a DEFine symbol
+;	2356	!	2) if 1), above, is not the case, or if the pathname
+;	2357	!	   is longer than 1 element, then the symbol must
+;	2358	!	   be found in the RST or an error occurs.
+;	2359	!
+;	2360	! Formal Parameters:
+;	2361	!
+;	2362	!	valu_desc_ptr	-the address of a VALU_DESCRIPTOR which we are to fill in.
+;	2363	!
+;	2364	! Implicit Inputs:
+;	2365	!
+;	2366	!	This routine works from the OWN that is local to this
+;	2367	!	module, PATH_VEC_PTR, which points to the current pathname vector
+;	2368	!	we are building.
+;	2369	!
+;	2370	! Implicit Outputs:
+;	2371	!
+;	2372	!	We return two values in the given value descriptor:
+;	2373	!	the actual value of the symbol (pathname), and the
+;	2374	!	associated NT_PTR, which may be 0 if the symbol
+;	2375	!	lookup is not done in the RST.
+;	2376	!
+;	2377	! Return Value:
+;	2378	!
+;	2379	!	TRUE, if the symbol was found and translated OK.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-1
+; Digital Equipment Corporation
+;
+;	2380	!	Otherwise a message is produced and an UNWIND is done.
+;	2381	!--
+;	2382	BEGIN
+;	2383	
+;	2384		MAP
+;	2385					! The user gives the address of a
+;	2386					! value descriptor so that we can pass
+;	2387					! back all relevant information.
+;	2388	
+;	2389			valu_desc_ptr : REF VALU_DESCRIPTOR;
+;	2390	
+;	2391		BIND
+;	2392					! This is where we are to pass back
+;	2393					! the pathname's VALUE to.  It is the 'value'
+;	2394					! field of the given value_descriptor's
+;	2395					! value field.
+;	2396	
+;	2397			PASS_BACK_VALUE = valu_desc_ptr[VALU_VALUE] : VECTOR[,LONG];
+;	2398	
+;	2399		LOCAL
+;	2400			CS_PTR : CS_POINTER,	! Temp counted string pointer.
+;	2401			STATUS;			! Success/failure indication that we return.
+;	2402	
+;	2403	%if dbg_int2
+;     L 2404	%then
+;     U 2405		$fao_tt_out('path_to_val: valu desc is at !XL',.valu_desc_ptr);
+;     U 2406	%FI
+;	2407	
+;	2408		!+
+;	2409		! Before any possible return, initialize the NT_PTR part
+;	2410		! of the given value descriptor so that any call to
+;	2411		! this routine can rely on this.
+;	2412		!-
+;	2413		valu_desc_ptr[VALU_NT_PTR] = 0;
+;	2414	
+;	2415		!++
+;	2416		!  Check first for the %LINE-type pathname evaluation.
+;	2417		!--
+;	2418		IF( .dbg$gb_mod_ptr[ MODE_FORTRAN ] eql LINE_MODE )
+;	2419		THEN
+;	2420			BEGIN
+;	2421			
+;	2422			! For %line pathname translation, the
+;	2423			! routine LINE_TO_VAL does all the work.
+;	2424			! It applies the search rules, etc, to see what
+;	2425			! address corresponds to the given line number.
+;	2426			! LINE_TO_VAL does not return if it produces
+;	2427			! an error message.  If it does return, then
+;	2428			! all went ok.
+;	2429	
+;	2430			pass_back_value[0] = line_to_val();
+;	2431	%if dbg_int22 OR dbg_int2
+;     L 2432	%then
+;     U 2433			$fao_tt_out('line_to_val returned !XL',
+;     U 2434				.pass_back_value[0]);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-2
+; Digital Equipment Corporation
+;
+;     U 2435	%FI
+;	2436			! The pathvector is of no further use.
+;	2437	
+;	2438			dbg$delete_path();
+;	2439	
+;	2440			! PATH_TO_VAL always returns the TRUE/FALSE
+;	2441			! status associated with the evaluation.
+;	2442	
+;	2443			return(TRUE);
+;	2444			END;
+;	2445	
+;	2446		!++
+;	2447		! If we get this far, a pathname translation to
+;	2448		! symbolic value is required.
+;	2449		! Evaluate the accumulated pathname if there is one.
+;	2450		! First make sure this is the case, even tho it
+;	2451		! should always be so.
+;	2452	
+;	2453		IF( .path_vec_ptr EQL 0 )
+;	2454		then
+;	2455			RETURN(FALSE);
+;	2456	
+;	2457	%IF DBG_INT2
+;     L 2458	%THEN
+;     U 2459		$FAO_TT_OUT('completed pathname vector == ');
+;     U 2460		IF( .PATH_VEC_PTR NEQ 0 )
+;     U 2461		THEN
+;     U 2462			PRINT_SYM_PATH(.PATH_VEC_PTR);
+;     U 2463	%FI
+;	2464		! Evaluate the symbol.  First, for single-element
+;	2465		! pathnames we give priority to the so-called
+;	2466		! DEBUG permanent symbols, and to the symbols
+;	2467		! DEFined by the user at DEBUG-time.  A pathname
+;	2468		! which is longer than 1 element could not be such
+;	2469		! a thing.
+;	2470	
+;	2471		STATUS = 0;
+;	2472	
+;	2473		IF( .PATH_VEC_PTR[1] EQL 0 )
+;	2474		THEN
+;	2475			BEGIN
+;	2476			LOCAL
+;	2477				def_sym_desc : BLOCK[8,byte];
+;	2478	
+;	2479			! A 1-element pathname may be a register name
+;	2480			! or a DEFine symbol.  First build a string
+;	2481			! descriptor for the name (since this is what
+;	2482			! FIND_SYM and REG_MATCH want).
+;	2483	
+;	2484			CS_PTR = .path_vec_ptr[0];
+;	2485			def_sym_desc[ DSC$W_LENGTH ] = .cs_ptr[0];
+;	2486			def_sym_desc[ DSC$A_POINTER ] = cs_ptr[1];
+;	2487			
+;	2488			! First, try for a match to a permanent symbol.
+;	2489	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-3
+; Digital Equipment Corporation
+;
+;	2490			STATUS = DBG$REG_MATCH(DEF_SYM_DESC);
+;	2491	%IF DBG_INT2
+;     L 2492	%THEN
+;     U 2493			$fao_tt_out('path_to_val: reg_match status = !XL',.status);
+;     U 2494	%FI
+;	2495			IF( .status geq 0 )
+;	2496			THEN
+;	2497				BEGIN
+;	2498				BIND
+;	2499					REGISTER_VECTOR
+;	2500					= DBG$GL_RUNFRAME[ DBG$L_USER_REGS ]
+;	2501					: VECTOR;
+;	2502	
+;	2503				! It is a register name.  The symbol is
+;	2504				! bound to the address of where we currently
+;	2505				! store the indicated register.  Pass back
+;	2506				! the address as the symbol's value.
+;	2507	
+;	2508				pass_back_value[0] = register_vector[.status];
+;	2509				status = true;
+;	2510				END
+;	2511			ELSE
+;	2512				BEGIN
+;	2513	
+;	2514				! The symbol is not a permanent one.
+;	2515				! Now lookup it up in the linked list
+;	2516				! reserved for DEFine symbols.
+;	2517		
+;	2518				status = dbg$find_sym(def_sym_desc);
+;	2519	%IF DBG_INT2
+;     L 2520	%THEN
+;     U 2521				$fao_tt_out('path_to_val: find_sym status = !XL',.status);
+;     U 2522	%FI
+;	2523				! If we found something, pass back the associated value
+;	2524				! and set STATUS to the standard success code.
+;	2525		
+;	2526				IF( .status neq 0 )
+;	2527				then
+;	2528					begin
+;	2529					pass_back_value[0] = .sym_value(.status);
+;	2530					status = true;
+;	2531					end;
+;	2532				END;
+;	2533			END;
+;	2534	
+;	2535		! Now, if we didn't get something from the DEFine
+;	2536		! or permanent symbol data bases, try the RST.
+;	2537	
+;	2538		IF( NOT .STATUS )
+;	2539		THEN
+;	2540			BEGIN
+;	2541			STATUS = DBG$SYM_TO_VALU( .PATH_VEC_PTR, .valu_desc_ptr);
+;	2542	%IF DBG_INT22 OR dbg_int2
+;     L 2543	%THEN
+;     U 2544			$fao_tt_out('path_to_val: sym_to_val status=!XB, valu=!XL, nt_ptr=!XW',
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-4
+; Digital Equipment Corporation
+;
+;     U 2545				.status,.valu_desc_ptr[VALU_VALUE],.valu_desc_ptr[VALU_NT_PTR]);
+;     U 2546	%FI
+;	2547			END;
+;	2548			
+;	2549		! If no translation can be found, we complain.
+;	2550	
+;	2551		IF( NOT .STATUS )
+;	2552		THEN
+;	2553			BEGIN
+;	2554			LOCAL MESSAGE_BUF : VECTOR[TTY_OUT_WIDTH,BYTE];
+;	2555	
+;	2556			! We produce a different message when a
+;	2557			! FORTRAN %LABEL lookup has been done.
+;	2558	
+;	2559			if( .dbg$gb_mod_ptr[ mode_fortran ] eql label_mode )
+;	2560			then
+;	2561				label_error_msg();
+;	2562				! no return
+;	2563		
+;	2564			! Encode the pathname into a counted
+;	2565			! string, and output the associated message.
+;	2566	
+;	2567			DBG$PV_TO_CS( .PATH_VEC_PTR, MESSAGE_BUF );
+;	2568			DBG$Delete_path();
+;	2569			SIGNAL(DBG$_NOSYMBOL, 1, MESSAGE_BUF );
+;	2570			! no return
+;	2571			END;
+;	2572	
+;	2573		! If the evaluation went OK, we must now
+;	2574		! throw away the pathname and return success.
+;	2575	
+;	2576		dbg$delete_path();
+;	2577	
+;	2578		! All's well that ends well.
+;	2579	
+;	2580		RETURN(.STATUS);
+;	2581	END;
+
+
+							    .TITLE  DBGINT
+							    .IDENT  \000042\
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 PATH_VEC_PTR:
+							    .LONG   0							      ;
+					      00004 PV_INDEX:
+							    .BLKB   4
+					      00008 DST_BEGIN_ADDR:
+							    .BLKB   4
+					      0000C DST_END_ADDR:
+							    .BLKB   4
+					      00010 DST_NEXT_ADDR:
+							    .BLKB   4
+					      00014 GSR_BEGIN_ADDR:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-5
+; Digital Equipment Corporation
+;
+							    .BLKB   4
+					      00018 GSR_NEXT_ADDR:
+							    .BLKB   4
+					      0001C GST_BEGIN_ADDR:
+							    .BLKB   4
+					      00020 EXE_FILE:
+							    .BYTE   3							      ;
+					      00021 	    .BYTE   80							      ;
+					      00022 	    .WORD   0							      ;
+					      00024 	    .LONG   0							      ;
+					      00028 	    .LONG   0							      ;
+					      0002C 	    .LONG   0							      ;
+					      00030 	    .LONG   0							      ;
+					      00034 	    .WORD   0							      ;
+					      00036 	    .BYTE   2							      ;
+					      00037 	    .BYTE   0							      ;
+					      00038 	    .LONG   0							      ;
+					      0003C 	    .BYTE   0							      ;
+					      0003D 	    .BYTE   0							      ;
+					      0003E 	    .BYTE   0							      ;
+					      0003F 	    .BYTE   2							      ;
+					      00040 	    .LONG   0							      ;
+					      00044 	    .LONG   0							      ;
+					      00048 	    .LONG   0							      ;
+					      0004C 	    .LONG   0							      ;
+					      00050 	    .LONG   0							      ;
+					      00054 	    .BYTE   0							      ;
+					      00055 	    .BYTE   0							      ;
+					      00056 	    .WORD   0							      ;
+					      00058 	    .LONG   0							      ;
+					      0005C 	    .WORD   0							      ;
+					      0005E 	    .BYTE   0							      ;
+					      0005F 	    .BYTE   0							      ;
+					      00060 	    .LONG   0							      ;
+					      00064 	    .LONG   0							      ;
+					      00068 	    .LONG   0, 0						      ;
+					      00070 EXE_INPUT:
+							    .BYTE   1							      ;
+					      00071 	    .BYTE   68							      ;
+					      00072 	    .WORD   0							      ;
+					      00074 	    .LONG   0							      ;
+					      00078 	    .LONG   0							      ;
+					      0007C 	    .LONG   0							      ;
+					      00080 	    .WORD   0, 0, 0						      ;
+					      00086 	    .WORD   0							      ;
+					      00088 	    .LONG   0							      ;
+					      0008C 	    .WORD   0							      ;
+					      0008E 	    .BYTE   0							      ;
+					      0008F 	    .BYTE   0							      ;
+					      00090 	    .WORD   512							      ;
+					      00092 	    .WORD   0							      ;
+					      00094 	    .LONG   0							      ;
+					      00098 	    .LONG   0							      ;
+					      0009C 	    .LONG   0							      ;
+					      000A0 	    .LONG   0							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-6
+; Digital Equipment Corporation
+;
+					      000A4 	    .BYTE   0							      ;
+					      000A5 	    .BYTE   0							      ;
+					      000A6 	    .BYTE   0							      ;
+					      000A7 	    .BYTE   0							      ;
+					      000A8 	    .LONG   0							      ;
+					      000AC 	    .LONG   0							      ;
+					      000B0 	    .LONG   0							      ;
+					      000B4 GSD_REC_COUNT:
+							    .BLKB   4
+
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$PC_RULE, DBG$LOOKUP_GBL
+							    .GLOBL  DBG$PC_TO_LINE, DBG$RADX_CONVRT, DBG$PV_TO_CS
+							    .GLOBL  DBG$FIND_SYM, DBG$REG_MATCH, DBG$SET_MODULE, DBG$SYM_TO_VAL
+							    .GLOBL  DBG$SYM_TO_VALU, DBG$INIT_RST, DBG$FREEZ, DBG$FREERELEASE
+							    .GLOBL  LIB$_CREMAPSEC, DBG$GB_MOD_PTR, DBG$GL_RUNFRAME
+							    .GLOBL  DBG$GL_CSP_PTR, DBG$GL_MC_PTR, DBG$GL_HEAD_LST
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0E0C 00000 	    .ENTRY  DBG$PATH_TO_VAL, Save R2,R3,R9,R10,R11		      ; 2325
+		         59	0000V  CF  9E 00002 	    MOVAB   DBG$DELETE_PATH, R9					      ;
+		         5A 00000000G  EF  9E 00007 	    MOVAB   DBG$GB_MOD_PTR, R10					      ;
+		         5B 00000000'  EF  9E 0000E 	    MOVAB   PATH_VEC_PTR, R11					      ;
+		         5E	FF7C   CE  9E 00015 	    MOVAB   -132(SP), SP					      ;
+	   53	    04   AC	       02  C1 0001A 	    ADDL3   #2, VALU_DESC_PTR, R3				      ; 2397
+				  04   BC  B4 0001F 	    CLRW    @VALU_DESC_PTR					      ; 2413
+		         50	       6A  D0 00022 	    MOVL    DBG$GB_MOD_PTR, R0					      ; 2418
+		         02	  07   A0  91 00025 	    CMPB    7(R0), #2						      ;
+				       0F  12 00029 	    BNEQ    1$							      ;
+		  0000V  CF	       00  FB 0002B 	    CALLS   #0, LINE_TO_VAL					      ; 2430
+		         63	       50  D0 00030 	    MOVL    R0, (R3)						      ;
+		         69	       00  FB 00033 	    CALLS   #0, DBG$DELETE_PATH					      ; 2438
+		         50	       01  D0 00036 	    MOVL    #1, R0						      ; 2443
+					   04 00039 	    RET     							      ;
+		         50	       6B  D0 0003A 1$:     MOVL    PATH_VEC_PTR, R0					      ; 2453
+				       03  12 0003D 	    BNEQ    2$							      ;
+				     008F  31 0003F 	    BRW     8$							      ;
+				       52  D4 00042 2$:     CLRL    STATUS						      ; 2471
+				  04   A0  D5 00044 	    TSTL    4(R0)						      ; 2473
+				       3F  12 00047 	    BNEQ    5$							      ;
+		         50	       60  D0 00049 	    MOVL    (R0), CS_PTR					      ; 2484
+		    7C   AE	       60  9B 0004C 	    MOVZBW  (CS_PTR), DEF_SYM_DESC				      ; 2485
+      FC   AD	         50	       01  C1 00050 	    ADDL3   #1, CS_PTR, DEF_SYM_DESC+4				      ; 2486
+				  7C   AE  9F 00055 	    PUSHAB  DEF_SYM_DESC					      ; 2490
+	      00000000G  EF	       01  FB 00058 	    CALLS   #1, DBG$REG_MATCH					      ;
+		         52	       50  D0 0005F 	    MOVL    R0, STATUS						      ;
+				       0E  19 00062 	    BLSS    3$							      ; 2495
+	   50 00000000G  EF	       04  C1 00064 	    ADDL3   #4, DBG$GL_RUNFRAME, R0				      ; 2500
+		         63	     6042  DE 0006C 	    MOVAL   (R0)[STATUS], (R3)					      ; 2508
+				       13  11 00070 	    BRB     4$							      ; 2509
+				  7C   AE  9F 00072 3$:     PUSHAB  DEF_SYM_DESC					      ; 2518
+	      00000000G  EF	       01  FB 00075 	    CALLS   #1, DBG$FIND_SYM					      ;
+		         52	       50  D0 0007C 	    MOVL    R0, STATUS						      ;
+				       07  13 0007F 	    BEQL    5$							      ; 2526
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 3-7
+; Digital Equipment Corporation
+;
+		         63	  08   A2  D0 00081 	    MOVL    8(STATUS), (R3)					      ; 2529
+		         52	       01  D0 00085 4$:     MOVL    #1, STATUS						      ; 2530
+		         3F	       52  E8 00088 5$:     BLBS    STATUS, 7$						      ; 2538
+				  04   AC  DD 0008B 	    PUSHL   VALU_DESC_PTR					      ; 2541
+				       6B  DD 0008E 	    PUSHL   PATH_VEC_PTR					      ;
+	      00000000G  EF	       02  FB 00090 	    CALLS   #2, DBG$SYM_TO_VALU					      ;
+		         52	       50  D0 00097 	    MOVL    R0, STATUS						      ;
+		         2D	       52  E8 0009A 	    BLBS    STATUS, 7$						      ; 2551
+		         50	       6A  D0 0009D 	    MOVL    DBG$GB_MOD_PTR, R0					      ; 2559
+		         01	  07   A0  91 000A0 	    CMPB    7(R0), #1						      ;
+				       05  12 000A4 	    BNEQ    6$							      ;
+		  0000V  CF	       00  FB 000A6 	    CALLS   #0, LABEL_ERROR_MSG					      ; 2561
+				       5E  DD 000AB 6$:     PUSHL   SP							      ; 2567
+				       6B  DD 000AD 	    PUSHL   PATH_VEC_PTR					      ;
+	      00000000G  EF	       02  FB 000AF 	    CALLS   #2, DBG$PV_TO_CS					      ;
+		         69	       00  FB 000B6 	    CALLS   #0, DBG$DELETE_PATH					      ; 2568
+				       5E  DD 000B9 	    PUSHL   SP							      ; 2569
+				       01  DD 000BB 	    PUSHL   #1							      ;
+			    00028230   8F  DD 000BD 	    PUSHL   #164400						      ;
+	      00000000G  00	       03  FB 000C3 	    CALLS   #3, LIB$SIGNAL					      ;
+		         69	       00  FB 000CA 7$:     CALLS   #0, DBG$DELETE_PATH					      ; 2576
+		         50	       52  D0 000CD 	    MOVL    STATUS, R0						      ; 2580
+					   04 000D0 	    RET     							      ;
+				       50  D4 000D1 8$:     CLRL    R0							      ; 2325
+					   04 000D3 	    RET     							      ;
+
+; Routine Size:  212 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 4
+; Digital Equipment Corporation
+;
+;	2582	GLOBAL ROUTINE DBG$BUILD_PATH( symbol_desc ) =
+;	2583	!++
+;	2584	! Functional Description:
+;	2585	!
+;	2586	!	This routine assumes that it is called with a valid string
+;	2587	!    descriptor - i.e. the call was made to BUILD_PATH so that it could
+;	2588	!    accumulate the elements of a pathname for later evaluation by PATH_TO_VAL.
+;	2589	!
+;	2590	! Formal Parameters:
+;	2591	!
+;	2592	!	symbol_desc	-the address of a string descriptor for the
+;	2593	!			 symbol we are to add to the current pathname
+;	2594	!
+;	2595	! Implicit Inputs:
+;	2596	!
+;	2597	!	This routine works from the OWN that is local to this
+;	2598	!	module, PATH_VEC_PTR, which points to the current pathname vector
+;	2599	!	we are building.
+;	2600	!
+;	2601	! Return Value:
+;	2602	!
+;	2603	!	TRUE, unless some error like no free storage
+;	2604	!	happens, in which case we SIGNAL our way out.
+;	2605	!--
+;	2606	BEGIN
+;	2607	
+;	2608		MAP
+;	2609					! This describes the element of the
+;	2610					! pathname which we are to add on
+;	2611					! to our list.
+;	2612			symbol_desc : REF BLOCK[,BYTE];
+;	2613		LOCAL
+;	2614			CS_PTR : CS_POINTER,	! Temp counted string pointer.
+;	2615			STATUS;			! Success/failure indication that we return.
+;	2616	
+;	2617		!++
+;	2618		! A real string descriptor is supposed to pass on
+;	2619		! to us another pathname element to accumulate.
+;	2620		!--
+;	2621	
+;	2622	%IF DBG_INT2
+;     L 2623	%THEN
+;     U 2624		$FAO_TT_OUT('build_path: string desc at !XL => !AD',
+;     U 2625		.symbol_desc,.symbol_desc[DSC$W_LENGTH],.symbol_desc[DSC$A_POINTER] );
+;     U 2626	%FI
+;	2627		! If this is the first call for a new pathname,
+;	2628		! we must allocate the storage we will need
+;	2629		! for the vector of pointers to the element strings.
+;	2630	
+;	2631		IF( .PATH_VEC_PTR EQL 0 )
+;	2632		THEN
+;	2633			BEGIN
+;	2634	
+;	2635	%IF DBG_INT2
+;     L 2636	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 4-1
+; Digital Equipment Corporation
+;
+;     U 2637			$FAO_TT_OUT('allocating !SL. bytes for path vector.',
+;     U 2638				%SIZE(PATHNAME_VECTOR));
+;     U 2639	%FI
+;	2640			PATH_VEC_PTR = dbg$freez(RST_UNITS(%SIZE(PATHNAME_VECTOR)));
+;	2641	%IF DBG_INT2
+;     L 2642	%THEN
+;     U 2643			$FAO_TT_OUT('allocated at address !XL',.PATH_VEC_PTR);
+;     U 2644	%FI
+;	2645			! The storage manager zeros out the pathname vector
+;	2646			! for us, so we only have to set up the right
+;	2647			! pathname vector index.
+;	2648	
+;	2649			PV_INDEX = 0;
+;	2650			END;
+;	2651	
+;	2652		! Now we need space for the element name itself.
+;	2653		! (including the count! ).
+;	2654	
+;	2655	%IF DBG_INT2
+;     L 2656	%THEN
+;     U 2657		$FAO_TT_OUT('allocating !SL. bytes for element name',
+;     U 2658			.symbol_desc[DSC$W_LENGTH]+1 );
+;     U 2659	%FI
+;	2660	
+;	2661		CS_PTR = dbg$freez(RST_UNITS(.symbol_desc[DSC$W_LENGTH]+1));
+;	2662	
+;	2663	%IF DBG_INT2
+;     L 2664	%THEN
+;     U 2665		$FAO_TT_OUT('allocated at address !XL',.CS_PTR);
+;     U 2666	%FI
+;	2667	
+;	2668		! Copy the string into the allocated storage.
+;	2669		! Note that we must make up a counted string
+;	2670		! because this is what pathname vector pointers
+;	2671		! are defined to point to.
+;	2672	
+;	2673		CS_PTR[0] = .symbol_desc[DSC$W_LENGTH];
+;	2674		CH$MOVE( .symbol_desc[DSC$W_LENGTH], .symbol_desc[DSC$A_POINTER], CS_PTR[1] );
+;	2675	
+;	2676		! Now store the address of this counted string in 
+;	2677		! the 'next' slot in the pathname vector.
+;	2678	
+;	2679	%IF DBG_INT2
+;     L 2680	%THEN
+;     U 2681		$FAO_TT_OUT('storing !XL into PV[!SL] which is at !XL',
+;     U 2682			.CS_PTR, .PV_INDEX, PATH_VEC_PTR[.PV_INDEX] );
+;     U 2683	%FI
+;	2684		PATH_VEC_PTR[.PV_INDEX] = .CS_PTR;
+;	2685	
+;	2686		! And set up so that the next call
+;	2687		! to this routine stores the CS pointer into the
+;	2688		! next slot.
+;	2689	
+;	2690		IF( (PV_INDEX = .PV_INDEX +1) GTR MAX_PATH_SIZE )
+;	2691		THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 4-2
+; Digital Equipment Corporation
+;
+;	2692			SIGNAL (dbg$_pathtlong);
+;	2693			! no return
+;	2694	
+;	2695		! All's well that ends well.
+;	2696	
+;	2697		RETURN(TRUE);
+;	2698	END;
+
+
+
+
+
+					 0C7C 000D4 	    .ENTRY  DBG$BUILD_PATH, Save R2,R3,R4,R5,R6,R10,R11		      ; 2582
+		         5A 00000000G  EF  9E 000D6 	    MOVAB   DBG$FREEZ, R10					      ;
+		         5B 00000000'  EF  9E 000DD 	    MOVAB   PV_INDEX, R11					      ;
+				  FC   AB  D5 000E4 	    TSTL    PATH_VEC_PTR					      ; 2631
+				       0B  12 000E7 	    BNEQ    1$							      ;
+				       0B  DD 000E9 	    PUSHL   #11							      ; 2640
+		         6A	       01  FB 000EB 	    CALLS   #1, DBG$FREEZ					      ;
+		    FC   AB	       50  D0 000EE 	    MOVL    R0, PATH_VEC_PTR					      ;
+				       6B  D4 000F2 	    CLRL    PV_INDEX						      ; 2649
+		         52	  04   AC  D0 000F4 1$:     MOVL    SYMBOL_DESC, R2					      ; 2661
+		         50	       62  3C 000F8 	    MOVZWL  (R2), R0						      ;
+		         50	       04  C0 000FB 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 000FE 	    DIVL3   #4, R0, -(SP)					      ;
+		         6A	       01  FB 00102 	    CALLS   #1, DBG$FREEZ					      ;
+		         56	       50  D0 00105 	    MOVL    R0, CS_PTR						      ;
+		         66	       62  90 00108 	    MOVB    (R2), (CS_PTR)					      ; 2673
+      01   A6	    04   B2	       62  28 0010B 	    MOVC3   (R2), @4(R2), 1(CS_PTR)				      ; 2674
+		         50	       6B  D0 00111 	    MOVL    PV_INDEX, R0					      ; 2684
+		    FC BB40	       56  D0 00114 	    MOVL    CS_PTR, @PATH_VEC_PTR[R0]				      ;
+	   50	         6B	       01  C1 00119 	    ADDL3   #1, PV_INDEX, R0					      ; 2690
+		         6B	       50  D0 0011D 	    MOVL    R0, PV_INDEX					      ;
+		         0A	       50  D1 00120 	    CMPL    R0, #10						      ;
+				       0D  15 00123 	    BLEQ    2$							      ;
+			    00028250   8F  DD 00125 	    PUSHL   #164432						      ; 2692
+	      00000000G  00	       01  FB 0012B 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50	       01  D0 00132 2$:     MOVL    #1, R0						      ; 2697
+					   04 00135 	    RET     							      ; 2582
+
+; Routine Size:  98 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 5
+; Digital Equipment Corporation
+;
+;	2699	routine label_error_msg : NOVALUE =
+;	2700	!++
+;	2701	! Functional Description:
+;	2702	!	Produce the proper error message given that a %LABEL
+;	2703	!	lookup has been tried and failed.
+;	2704	!
+;	2705	! Formal Parameters:
+;	2706	!	none
+;	2707	!
+;	2708	! Implicit Inputs:
+;	2709	!
+;	2710	!	We use the OWN, PV_INDEX, that is maintained by
+;	2711	!	several routines in this module.  This index points
+;	2712	!	into the currently-free entry in PATH_VEC_PTR.
+;	2713	!
+;	2714	!	We are doing FORTRAN %LABELs, and the whole pathvector
+;	2715	!	has been collected by BUILD_PATH.
+;	2716	!
+;	2717	!	We don't bother to DELETE_PATH the path vector because
+;	2718	!	we assume that the END_OF_LINE processing will do it.
+;	2719	!
+;	2720	! Routine Value
+;	2721	!	A signal is done and the routine doesn't return.
+;	2722	!
+;	2723	! Side Effects:
+;	2724	!	A SIGNAL is done - see above.
+;	2725	!--
+;	2726	
+;	2727	BEGIN
+;	2728		local
+;	2729			label_name : vector[ chs_per_lexeme, byte],
+;	2730			message_buf : vector[ tty_out_width, byte],
+;	2731			label_cs : CS_POINTER,
+;	2732			pc_vector : pathname_vector;
+;	2733	%IF dbg_int7
+;     L 2734	%THEN
+;     U 2735		$fao_tt_out ('label_error_msg: pv_index is !SL',.pv_index);
+;     U 2736	%FI
+;	2737		!+
+;	2738		! This routine works from the same pathvector that
+;	2739		! several others in the module do, namely, the one
+;	2740		! pointer to by PATH_VEC_PTR.  Associated with this
+;	2741		! is PV_INDEX which points into this pathname vector
+;	2742		! currently under construction.  If PV_INDEX is
+;	2743		! 0, then this routine should not have been called.
+;	2744		!-
+;	2745	
+;	2746		IF( (PV_INDEX = .pv_index -1) LSS 0 )
+;	2747		THEN
+;	2748			SIGNAL(DBG$_DEBUGBUG, 1, 4);
+;	2749			! no return
+;	2750	
+;	2751		!+
+;	2752		! The last pathname entry added is supposedly
+;	2753		! a pointer to a counted string which is
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 5-1
+; Digital Equipment Corporation
+;
+;	2754		! the ASCII of the %LABEL number.  We purposely don't
+;	2755		! convert this to numeric and put the number in
+;	2756		! the error message so that the expression
+;	2757		! "%label rtn\abc" will cause 'abc' to appear in
+;	2758		! the message.  We would get 'number conversion error'
+;	2759		! otherwise which is a less-obvious message.
+;	2760		! Also move this name to safer storage maintaining
+;	2761		! it as a counted string.
+;	2762		!-
+;	2763	
+;	2764		label_cs = .path_vec_ptr [.PV_INDEX];
+;	2765		CH$MOVE( .label_cs[0]+1, label_cs[0], label_name );
+;	2766	
+;	2767	%IF dbg_int7
+;     L 2768	%THEN
+;     U 2769		$fao_tt_out('label element pointer => "!AC"', .label_cs);
+;     U 2770	%FI
+;	2771		!+
+;	2772		! Remove this last element from the pathvector
+;	2773		! in case we have to use the pathvector for the later
+;	2774		! 'routine' name part of the error message.
+;	2775		!-
+;	2776	
+;	2777		path_vec_ptr[.pv_index] = 0;
+;	2778		dbg$freerelease( .label_cs, rst_units(.label_cs[0]+1) );
+;	2779	
+;	2780	%IF dbg_int7
+;     L 2781	%THEN
+;     U 2782		$fao_tt_out('saved label name = "!AC"', label_name);
+;     U 2783	%FI
+;	2784		!+
+;	2785		! The remaining elements in the pathname vector 
+;	2786		! may implicate which routine the %LABEL number is relative to.
+;	2787		! How we handle this depends on how many elements there
+;	2788		! are left in the initial pathname vector.
+;	2789		!-
+;	2790	
+;	2791		IF( .pv_index GTR 0 )
+;	2792		then
+;	2793			begin
+;	2794	
+;	2795			! Make up a counted string which contains
+;	2796			! the given pathname, and produce the corresponding
+;	2797			! error message.
+;	2798	
+;	2799			dbg$pv_to_cs( .path_vec_ptr, message_buf);
+;	2800			signal(dbg$_nolabel, 2, message_buf, label_name);
+;	2801			! no return
+;	2802			end;
+;	2803	
+;	2804		! If no base found so far, we check the current setting of
+;	2805		! the SCOPE mode and associated pathname vector.
+;	2806		! If things are OK, we produce a message based on SCOPE.
+;	2807	
+;	2808		IF( .DBG$GB_MOD_PTR[ MODE_SCOPE ] AND .DBG$GL_CSP_PTR NEQ 0 ) 
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 5-2
+; Digital Equipment Corporation
+;
+;	2809		THEN
+;	2810			begin
+;	2811	
+;	2812			! Make up a counted string which contains
+;	2813			! the SCOPE pathname, and produce the corresponding
+;	2814			! error message.
+;	2815	
+;	2816			dbg$pv_to_cs( .dbg$gl_csp_ptr, message_buf);
+;	2817			signal(dbg$_nolabel, 2, message_buf, label_name);
+;	2818			! no return
+;	2819			end;
+;	2820	
+;	2821		!+
+;	2822		! If we get this far, then we havn't found a base routine
+;	2823		! yet.  Now we mimick the "PC rule" by building a pathname
+;	2824		! vector based on the PC, and then use that routine
+;	2825		! name as the base for the given %LABEL.
+;	2826		!-
+;	2827	
+;	2828		if( dbg$pc_rule( pc_vector ) )
+;	2829		then
+;	2830			begin
+;	2831	
+;	2832			! Make up a counted string which contains
+;	2833			! the PC pathname, and produce the corresponding
+;	2834			! error message.
+;	2835	
+;	2836			dbg$pv_to_cs( pc_vector, message_buf);
+;	2837			signal(dbg$_nolabel, 2, message_buf, label_name);
+;	2838			! no return
+;	2839			end;
+;	2840	
+;	2841		!+
+;	2842		! If we get this far we are not going to find
+;	2843		! the %LABEL correspondence so we have no 'routine'
+;	2844		! to point to in the message.  We therefore produce an 
+;	2845		! appropriate message and we're done.
+;	2846		!-
+;	2847	
+;	2848		signal(dbg$_nosuchlab, 1, label_name);
+;	2849		! no return
+;	2850	END;
+
+
+
+
+
+					 0FFC 00136 LABEL_ERROR_MSG:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 2699
+		         58 00000000G  EF  9E 00138 	    MOVAB   DBG$GL_CSP_PTR, R8					      ;
+		         59 00000000G  EF  9E 0013F 	    MOVAB   DBG$PV_TO_CS, R9					      ;
+		         5A 00000000G  00  9E 00146 	    MOVAB   LIB$SIGNAL, R10					      ;
+		         5B 00000000'  EF  9E 0014D 	    MOVAB   PV_INDEX, R11					      ;
+		         5E	FF38   CE  9E 00154 	    MOVAB   -200(SP), SP					      ;
+				       6B  D7 00159 	    DECL    PV_INDEX						      ; 2746
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 5-3
+; Digital Equipment Corporation
+;
+				       0D  18 0015B 	    BGEQ    1$							      ;
+				       04  DD 0015D 	    PUSHL   #4							      ; 2748
+				       01  DD 0015F 	    PUSHL   #1							      ;
+			    00028352   8F  DD 00161 	    PUSHL   #164690						      ;
+		         6A	       03  FB 00167 	    CALLS   #3, LIB$SIGNAL					      ;
+		         56	       6B  D0 0016A 1$:     MOVL    PV_INDEX, R6					      ; 2764
+		         57	  FC BB46  D0 0016D 	    MOVL    @PATH_VEC_PTR[R6], LABEL_CS				      ;
+		         50	       67  9A 00172 	    MOVZBL  (LABEL_CS), R0					      ; 2765
+				       50  D6 00175 	    INCL    R0							      ;
+      E8   AD	         67	       50  28 00177 	    MOVC3   R0, (LABEL_CS), LABEL_NAME				      ;
+				  FC BB46  D4 0017C 	    CLRL    @PATH_VEC_PTR[R6]					      ; 2777
+		         50	       67  9A 00180 	    MOVZBL  (LABEL_CS), R0					      ; 2778
+		         50	       04  C0 00183 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 00186 	    DIVL3   #4, R0, -(SP)					      ;
+				       57  DD 0018A 	    PUSHL   LABEL_CS						      ;
+	      00000000G  EF	       02  FB 0018C 	    CALLS   #2, DBG$FREERELEASE					      ;
+				       6B  D5 00193 	    TSTL    PV_INDEX						      ; 2791
+				       1A  15 00195 	    BLEQ    2$							      ;
+				  2C   AE  9F 00197 	    PUSHAB  MESSAGE_BUF						      ; 2799
+				  FC   AB  DD 0019A 	    PUSHL   PATH_VEC_PTR					      ;
+		         69	       02  FB 0019D 	    CALLS   #2, DBG$PV_TO_CS					      ;
+				  E8   AD  9F 001A0 	    PUSHAB  LABEL_NAME						      ; 2800
+				  30   AE  9F 001A3 	    PUSHAB  MESSAGE_BUF						      ;
+				       02  DD 001A6 	    PUSHL   #2							      ;
+			    000282C8   8F  DD 001A8 	    PUSHL   #164552						      ;
+		         6A	       04  FB 001AE 	    CALLS   #4, LIB$SIGNAL					      ;
+		         50 00000000G  EF  D0 001B1 2$:     MOVL    DBG$GB_MOD_PTR, R0					      ; 2808
+		         1D	  05   A0  E9 001B8 	    BLBC    5(R0), 3$						      ;
+				       68  D5 001BC 	    TSTL    DBG$GL_CSP_PTR					      ;
+				       19  13 001BE 	    BEQL    3$							      ;
+				  2C   AE  9F 001C0 	    PUSHAB  MESSAGE_BUF						      ; 2816
+				       68  DD 001C3 	    PUSHL   DBG$GL_CSP_PTR					      ;
+		         69	       02  FB 001C5 	    CALLS   #2, DBG$PV_TO_CS					      ;
+				  E8   AD  9F 001C8 	    PUSHAB  LABEL_NAME						      ; 2817
+				  30   AE  9F 001CB 	    PUSHAB  MESSAGE_BUF						      ;
+				       02  DD 001CE 	    PUSHL   #2							      ;
+			    000282C8   8F  DD 001D0 	    PUSHL   #164552						      ;
+		         6A	       04  FB 001D6 	    CALLS   #4, LIB$SIGNAL					      ;
+				       5E  DD 001D9 3$:     PUSHL   SP							      ; 2828
+	      00000000G  EF	       01  FB 001DB 	    CALLS   #1, DBG$PC_RULE					      ;
+		         1A	       50  E9 001E2 	    BLBC    R0, 4$						      ;
+				  2C   AE  9F 001E5 	    PUSHAB  MESSAGE_BUF						      ; 2836
+				  04   AE  9F 001E8 	    PUSHAB  PC_VECTOR						      ;
+		         69	       02  FB 001EB 	    CALLS   #2, DBG$PV_TO_CS					      ;
+				  E8   AD  9F 001EE 	    PUSHAB  LABEL_NAME						      ; 2837
+				  30   AE  9F 001F1 	    PUSHAB  MESSAGE_BUF						      ;
+				       02  DD 001F4 	    PUSHL   #2							      ;
+			    000282C8   8F  DD 001F6 	    PUSHL   #164552						      ;
+		         6A	       04  FB 001FC 	    CALLS   #4, LIB$SIGNAL					      ;
+				  E8   AD  9F 001FF 4$:     PUSHAB  LABEL_NAME						      ; 2848
+				       01  DD 00202 	    PUSHL   #1							      ;
+			    00028310   8F  DD 00204 	    PUSHL   #164624						      ;
+		         6A	       03  FB 0020A 	    CALLS   #3, LIB$SIGNAL					      ;
+					   04 0020D 	    RET     							      ; 2699
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 5-4
+; Digital Equipment Corporation
+;
+; Routine Size:  216 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6
+; Digital Equipment Corporation
+;
+;	2851	routine line_to_val =
+;	2852	!++
+;	2853	! Functional Description:
+;	2854	!	Translate a pathvector supposedly containing a %LINE
+;	2855	!	reference to its corresponding address.
+;	2856	!
+;	2857	! Formal Parameters:
+;	2858	!	none.
+;	2859	!
+;	2860	! Implicit Inputs:
+;	2861	!
+;	2862	!	We use the OWN, PV_INDEX, that is maintained by
+;	2863	!	several routines in this module.  This index points
+;	2864	!	into the currently-free entry in PATH_VEC_PTR.
+;	2865	!
+;	2866	!	We are doing FORTRAN %LINEs, and the whole pathvector
+;	2867	!	has been collected by BUILD_PATH.
+;	2868	!
+;	2869	! Routine Value
+;	2870	!	The address which corresponds to the %LINE,
+;	2871	!   or
+;	2872	!	a signal is done and the routine doesn't return
+;	2873	!	if the correspondence is not discovered.
+;	2874	!
+;	2875	! Side Effects:
+;	2876	!	A SIGNAL may be done - see above.
+;	2877	!--
+;	2878	
+;	2879	BEGIN
+;	2880		local
+;	2881			message_buf : vector[ tty_out_width, byte],
+;	2882			line_number,
+;	2883			line_address,
+;	2884			line_no_desc : BLOCK [8,BYTE],		! string descriptor for line number
+;	2885			cs_ptr : CS_POINTER,
+;	2886			pc_vector : pathname_vector,
+;	2887			rtn_cs_ptr : CS_POINTER,
+;	2888			rtn_pc_ptr : CS_POINTER;
+;	2889	%IF dbg_int2
+;     L 2890	%THEN
+;     U 2891		$fao_tt_out ('line_to_val: pv_index is !SL',.pv_index);
+;     U 2892	%FI
+;	2893		!+
+;	2894		! This routine works from the same pathvector that
+;	2895		! several others in the module do, namely, the one
+;	2896		! pointer to by PATH_VEC_PTR.  Associated with this
+;	2897		! is PV_INDEX which points into this pathname vector
+;	2898		! currently under construction.  If PV_INDEX is
+;	2899		! 0, then this routine should not have been called.
+;	2900	
+;	2901		IF( (PV_INDEX = .pv_index -1) LSS 0 )
+;	2902		THEN
+;	2903			SIGNAL(DBG$_DEBUGBUG, 1, 3);
+;	2904			! no return
+;	2905	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-1
+; Digital Equipment Corporation
+;
+;	2906		! The last pathname entry added is supposedly
+;	2907		! a pointer to a counted string which is
+;	2908		! the ASCII of the %LINE number.  Pick up
+;	2909		! this pointer and convert the ASCII string to
+;	2910		! numeric to deduce the %LINE number.
+;	2911	
+;	2912		cs_ptr = .path_vec_ptr [.PV_INDEX];
+;	2913		line_no_desc[dsc$w_length] = .cs_ptr[0];	! load string length
+;	2914		line_no_desc[dsc$a_pointer] = cs_ptr[1];	! load address of string
+;	2915	%IF dbg_int2
+;     L 2916	%THEN
+;     U 2917		$fao_tt_out('pathname element pointer => "!AS"', line_no_desc);
+;     U 2918	%FI
+;	2919	
+;	2920		line_number = dbg$radx_convrt (line_no_desc);
+;	2921	
+;	2922	%IF DBG_INT2
+;     L 2923	%THEN
+;     U 2924		$FAO_TT_OUT('line_to_val: line number is !SL',.line_number);
+;     U 2925	%FI
+;	2926		! Remove this last element from the pathvector.
+;	2927	
+;	2928		path_vec_ptr[.pv_index] = 0;
+;	2929		dbg$freerelease( .cs_ptr, rst_units(.cs_ptr[0]+1) );
+;	2930	
+;	2931		! We use two pointers to supposed routine names.
+;	2932		! RTN_CS_PTR may point to a routine name which came
+;	2933		! from the pathname vector originally given by the
+;	2934		! users.  Later it may also point to the routine
+;	2935		! name implied by SCOPE.  If we get to the PC rule,
+;	2936		! we must leave RTN_CS_PTR and then use RTN_PC_PTR so
+;	2937		! that if all fails we know which routine to give
+;	2938		! in the final error message.
+;	2939	
+;	2940		rtn_cs_ptr = 0;
+;	2941		rtn_pc_ptr = 0;
+;	2942	
+;	2943		!+
+;	2944		! The remaining elements in the pathname vector 
+;	2945		! implicate which routine the %LINE number is relative to.
+;	2946		! How we handle this depends on how many elements there
+;	2947		! are left in the initial pathname vector.
+;	2948	
+;	2949		SELECTONE (.PV_INDEX) OF 
+;	2950		    SET
+;	2951			[0]:
+;	2952				! This is the usual case - no routine
+;	2953				! name was actually given.  We continue on to apply
+;	2954				! the SCOPE and PC search rules to pick up the
+;	2955				! implicated routine name.
+;	2956				;
+;	2957	
+;	2958			[1]:
+;	2959				! This case is the next-most common - a single-element
+;	2960				! pathvector is left after we delete the line number.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-2
+; Digital Equipment Corporation
+;
+;	2961				! This element must be taken as the base routine.
+;	2962	
+;	2963				rtn_cs_ptr = .path_vec_ptr[0]
+;	2964				;
+;	2965			[2]:
+;	2966				BEGIN
+;	2967				! This case is not usual because FORTRAN pathnames
+;	2968				! never have 3 elements except in the 'fake' case
+;	2969				! of %LINE.  The "routine\routine" base pathname
+;	2970				! given is acceptable only if both elements match.
+;	2971				
+;	2972				rtn_cs_ptr = .path_vec_ptr[0];
+;	2973				cs_ptr = .path_vec_ptr[1];
+;	2974	
+;	2975				IF CH$NEQ (.cs_ptr[0], cs_ptr[1],.rtn_cs_ptr[0], rtn_cs_ptr[1])
+;	2976				THEN
+;	2977					begin
+;	2978	
+;	2979					! No matter what, these cases must be
+;	2980					! wrong.  Make up a counted string which contains
+;	2981					! the given pathname, and produce the corresponding
+;	2982					! error message.
+;	2983	
+;	2984					dbg$pv_to_cs( .path_vec_ptr, message_buf);
+;	2985					signal(dbg$_noline, 2, message_buf, .line_number);
+;	2986					! no return
+;	2987					end;
+;	2988	
+;	2989				! The two names match so we take that as
+;	2990				! the indicated routine name and continue.
+;	2991				END;
+;	2992	
+;	2993			[OTHERWISE]:
+;	2994				BEGIN
+;	2995	
+;	2996				! No matter what, these cases must be
+;	2997				! wrong.  Make up a counted string which contains
+;	2998				! the given pathname, and produce the corresponding
+;	2999				! error message.
+;	3000	
+;	3001				dbg$pv_to_cs( .path_vec_ptr, message_buf);
+;	3002				signal(dbg$_noline, 2, message_buf, .line_number);
+;	3003				! no return
+;	3004				END;
+;	3005		    TES;
+;	3006	
+;	3007		! If we get this far, then RTN_CS_PTR indicates whether
+;	3008		! or not the %LINE is relative to a specifically-given
+;	3009		! routine name.
+;	3010	
+;	3011		! If an explicit pathname was given along with
+;	3012		! the %LINE in the first place, then this symbol
+;	3013		! name has first priority in determining the base
+;	3014		! address that the %LINE is relative to.
+;	3015	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-3
+; Digital Equipment Corporation
+;
+;	3016		IF( .RTN_CS_PTR neq 0 )
+;	3017		then
+;	3018			if( (line_address = is_a_line( .rtn_cs_ptr, .line_number)) neq 0 )
+;	3019			then
+;	3020				! Found.  Simply reutrn the 
+;	3021				! corresponding address.
+;	3022	
+;	3023				RETURN( .line_address )
+;	3024			else
+;	3025				begin
+;	3026	
+;	3027				! There is no %LINE in the given routine.
+;	3028				! Moreover, there is no point in perpending the 
+;	3029				! SCOPE or even the PC scope, since routine names
+;	3030				! in FORTRAN are not nested, and because they
+;	3031				! are also always globals.
+;	3032			
+;	3033				signal(dbg$_noline, 2, .rtn_cs_ptr, .line_number);
+;	3034				! no return
+;	3035				END;
+;	3036	
+;	3037		! If that didn't work, we check the current setting of
+;	3038		! the SCOPE mode and associated pathname vector.
+;	3039		! If things are OK, we try a lookup based on SCOPE.
+;	3040	
+;	3041		IF( .DBG$GB_MOD_PTR[ MODE_SCOPE ] AND .DBG$GL_CSP_PTR NEQ 0 ) 
+;	3042		THEN
+;	3043			IF( (rtn_cs_ptr = .DBG$GL_CSP_PTR[0]) neq 0 )
+;	3044			then
+;	3045				if( (line_address = is_a_line( .rtn_cs_ptr, .line_number)) neq 0 )
+;	3046				then
+;	3047					! Found.  Simply reutrn the 
+;	3048					! corresponding address.
+;	3049	
+;	3050					RETURN( .line_address );
+;	3051	
+;	3052		! If we get this far, then we havn't found a correspondence
+;	3053		! yet.  Now we implement the "PC rule" by building a pathname
+;	3054		! vector based on the PC, and then trying to use that routine
+;	3055		! name as the base for the given %LINE.
+;	3056	
+;	3057		if( dbg$pc_rule( pc_vector ) )
+;	3058		then
+;	3059			IF( (rtn_pc_ptr = .pc_vector[0]) neq 0 )
+;	3060			then
+;	3061				if( (line_address = is_a_line( .rtn_pc_ptr, .line_number)) neq 0 )
+;	3062				then
+;	3063					! Found.  Simply return the 
+;	3064					! corresponding address.
+;	3065	
+;	3066					RETURN( .line_address );
+;	3067	
+;	3068		! If we get this far we are not going to find
+;	3069		! the %LINE correspondence.  Now the only problem
+;	3070		! lies in which routine name to give in the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-4
+; Digital Equipment Corporation
+;
+;	3071		! error message.
+;	3072	
+;	3073		IF( .rtn_cs_ptr eql 0 )
+;	3074		then
+;	3075			! We we didn't get to use SCOPE, we blame the
+;	3076			! routine we got from PC_RULE.
+;	3077	
+;	3078			rtn_cs_ptr = .rtn_pc_ptr;
+;	3079	
+;	3080		if( .rtn_cs_ptr eql 0 )
+;	3081		then
+;	3082			! If we didn't get anything from PC_RULE either,
+;	3083			! then we can't give a routine name at all.
+;	3084	
+;	3085			signal(dbg$_nosuchlin, 1, .line_number);
+;	3086			! no return
+;	3087	
+;	3088		! We have the culprit - put up the message
+;	3089		! and cause an UNWIND.
+;	3090	
+;	3091		signal(dbg$_noline, 2, .rtn_cs_ptr, .line_number);
+;	3092		! no return
+;	3093	END;
+
+
+
+
+
+					 0FFC 0020E LINE_TO_VAL:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 2851
+		         59	0000V  CF  9E 00210 	    MOVAB   IS_A_LINE, R9					      ;
+		         5A 00000000G  00  9E 00215 	    MOVAB   LIB$SIGNAL, R10					      ;
+		         5B 00000000'  EF  9E 0021C 	    MOVAB   PATH_VEC_PTR, R11					      ;
+		         5E	FF48   CE  9E 00223 	    MOVAB   -184(SP), SP					      ;
+				  04   AB  D7 00228 	    DECL    PV_INDEX						      ; 2901
+				       0D  18 0022B 	    BGEQ    1$							      ;
+				       03  DD 0022D 	    PUSHL   #3							      ; 2903
+				       01  DD 0022F 	    PUSHL   #1							      ;
+			    00028352   8F  DD 00231 	    PUSHL   #164690						      ;
+		         6A	       03  FB 00237 	    CALLS   #3, LIB$SIGNAL					      ;
+		         50	  04   AB  D0 0023A 1$:     MOVL    PV_INDEX, R0					      ; 2912
+		         52	  00 BB40  D0 0023E 	    MOVL    @PATH_VEC_PTR[R0], CS_PTR				      ;
+		    2C   AE	       62  9B 00243 	    MOVZBW  (CS_PTR), LINE_NO_DESC				      ; 2913
+      30   AE	         52	       01  C1 00247 	    ADDL3   #1, CS_PTR, LINE_NO_DESC+4				      ; 2914
+				  2C   AE  9F 0024C 	    PUSHAB  LINE_NO_DESC					      ; 2920
+	      00000000G  EF	       01  FB 0024F 	    CALLS   #1, DBG$RADX_CONVRT					      ;
+		         57	       50  D0 00256 	    MOVL    R0, LINE_NUMBER					      ;
+		         50	  04   AB  D0 00259 	    MOVL    PV_INDEX, R0					      ; 2928
+				  00 BB40  D4 0025D 	    CLRL    @PATH_VEC_PTR[R0]					      ;
+		         50	       62  9A 00261 	    MOVZBL  (CS_PTR), R0					      ; 2929
+		         50	       04  C0 00264 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 00267 	    DIVL3   #4, R0, -(SP)					      ;
+				       52  DD 0026B 	    PUSHL   CS_PTR						      ;
+	      00000000G  EF	       02  FB 0026D 	    CALLS   #2, DBG$FREERELEASE					      ;
+				       55  D4 00274 	    CLRL    RTN_CS_PTR						      ; 2940
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-5
+; Digital Equipment Corporation
+;
+				       58  D4 00276 	    CLRL    RTN_PC_PTR						      ; 2941
+		         56	  04   AB  D0 00278 	    MOVL    PV_INDEX, R6					      ; 2949
+				       4D  13 0027C 	    BEQL    5$							      ;
+		         01	       56  D1 0027E 	    CMPL    R6, #1						      ;
+				       06  12 00281 	    BNEQ    2$							      ;
+		         55	  00   BB  D0 00283 	    MOVL    @PATH_VEC_PTR, RTN_CS_PTR				      ; 2963
+				       42  11 00287 	    BRB     5$							      ; 2949
+		         02	       56  D1 00289 2$:     CMPL    R6, #2						      ;
+				       21  12 0028C 	    BNEQ    3$							      ;
+		         54	       6B  D0 0028E 	    MOVL    PATH_VEC_PTR, R4					      ; 2972
+		         55	       64  D0 00291 	    MOVL    (R4), RTN_CS_PTR					      ;
+		         52	  04   A4  D0 00294 	    MOVL    4(R4), CS_PTR					      ; 2973
+		         51	       62  9A 00298 	    MOVZBL  (CS_PTR), R1					      ; 2975
+		         50	       65  9A 0029B 	    MOVZBL  (RTN_CS_PTR), R0					      ;
+	   00	    01   A2	       51  2D 0029E 	    CMPC5   R1, 1(CS_PTR), #0, R0, 1(RTN_CS_PTR)		      ;
+		    01   A5	       50     002A3									      ;
+				       23  13 002A6 	    BEQL    5$							      ;
+				  34   AE  9F 002A8 	    PUSHAB  MESSAGE_BUF						      ; 2984
+				       54  DD 002AB 	    PUSHL   R4							      ;
+				       05  11 002AD 	    BRB     4$							      ;
+				  34   AE  9F 002AF 3$:     PUSHAB  MESSAGE_BUF						      ; 3001
+				       6B  DD 002B2 	    PUSHL   PATH_VEC_PTR					      ;
+	      00000000G  EF	       02  FB 002B4 4$:     CALLS   #2, DBG$PV_TO_CS					      ;
+				       57  DD 002BB 	    PUSHL   LINE_NUMBER						      ; 3002
+				  38   AE  9F 002BD 	    PUSHAB  MESSAGE_BUF						      ;
+				       02  DD 002C0 	    PUSHL   #2							      ;
+			    000282D0   8F  DD 002C2 	    PUSHL   #164560						      ;
+		         6A	       04  FB 002C8 	    CALLS   #4, LIB$SIGNAL					      ;
+				       55  D5 002CB 5$:     TSTL    RTN_CS_PTR						      ; 3016
+				       1B  13 002CD 	    BEQL    6$							      ;
+				00A0   8F  BB 002CF 	    PUSHR   #^M<R5,R7>						      ; 3018
+		         69	       02  FB 002D3 	    CALLS   #2, IS_A_LINE					      ;
+		         52	       50  D0 002D6 	    MOVL    R0, LINE_ADDRESS					      ;
+				       54  12 002D9 	    BNEQ    8$							      ;
+				00A0   8F  BB 002DB 	    PUSHR   #^M<R5,R7>						      ; 3033
+				       02  DD 002DF 	    PUSHL   #2							      ;
+			    000282D0   8F  DD 002E1 	    PUSHL   #164560						      ;
+		         6A	       04  FB 002E7 	    CALLS   #4, LIB$SIGNAL					      ;
+		         50 00000000G  EF  D0 002EA 6$:     MOVL    DBG$GB_MOD_PTR, R0					      ; 3041
+		         1D	  05   A0  E9 002F1 	    BLBC    5(R0), 7$						      ;
+			    00000000G  EF  D5 002F5 	    TSTL    DBG$GL_CSP_PTR					      ;
+				       15  13 002FB 	    BEQL    7$							      ;
+		         55 00000000G  FF  D0 002FD 	    MOVL    @DBG$GL_CSP_PTR, RTN_CS_PTR				      ; 3043
+				       0C  13 00304 	    BEQL    7$							      ;
+				00A0   8F  BB 00306 	    PUSHR   #^M<R5,R7>						      ; 3045
+		         69	       02  FB 0030A 	    CALLS   #2, IS_A_LINE					      ;
+		         52	       50  D0 0030D 	    MOVL    R0, LINE_ADDRESS					      ;
+				       1D  12 00310 	    BNEQ    8$							      ;
+				       5E  DD 00312 7$:     PUSHL   SP							      ; 3057
+	      00000000G  EF	       01  FB 00314 	    CALLS   #1, DBG$PC_RULE					      ;
+		         15	       50  E9 0031B 	    BLBC    R0, 9$						      ;
+		         58	       6E  D0 0031E 	    MOVL    PC_VECTOR, RTN_PC_PTR				      ; 3059
+				       10  13 00321 	    BEQL    9$							      ;
+				       57  DD 00323 	    PUSHL   LINE_NUMBER						      ; 3061
+				       58  DD 00325 	    PUSHL   RTN_PC_PTR						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 6-6
+; Digital Equipment Corporation
+;
+		         69	       02  FB 00327 	    CALLS   #2, IS_A_LINE					      ;
+		         52	       50  D0 0032A 	    MOVL    R0, LINE_ADDRESS					      ;
+				       04  13 0032D 	    BEQL    9$							      ;
+		         50	       52  D0 0032F 8$:     MOVL    LINE_ADDRESS, R0					      ; 3066
+					   04 00332 	    RET     							      ;
+				       55  D5 00333 9$:     TSTL    RTN_CS_PTR						      ; 3073
+				       03  12 00335 	    BNEQ    10$							      ;
+		         55	       58  D0 00337 	    MOVL    RTN_PC_PTR, RTN_CS_PTR				      ; 3078
+				       55  D5 0033A 10$:    TSTL    RTN_CS_PTR						      ; 3080
+				       0D  12 0033C 	    BNEQ    11$							      ;
+				       57  DD 0033E 	    PUSHL   LINE_NUMBER						      ; 3085
+				       01  DD 00340 	    PUSHL   #1							      ;
+			    00028218   8F  DD 00342 	    PUSHL   #164376						      ;
+		         6A	       03  FB 00348 	    CALLS   #3, LIB$SIGNAL					      ;
+				00A0   8F  BB 0034B 11$:    PUSHR   #^M<R5,R7>						      ; 3091
+				       02  DD 0034F 	    PUSHL   #2							      ;
+			    000282D0   8F  DD 00351 	    PUSHL   #164560						      ;
+		         6A	       04  FB 00357 	    CALLS   #4, LIB$SIGNAL					      ;
+				       50  D4 0035A 	    CLRL    R0							      ; 2851
+					   04 0035C 	    RET     							      ;
+
+; Routine Size:  335 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 7
+; Digital Equipment Corporation
+;
+;	3094	routine is_a_line( rtn_cs_ptr, line_number ) =
+;	3095	!++
+;	3096	! Functional Description:
+;	3097	!	See if the given line number exists as a %LINE
+;	3098	!	in the indicated routine.
+;	3099	!
+;	3100	! Return Value:
+;	3101	!	The line address or 0 if no line number match.
+;	3102	!--
+;	3103	
+;	3104	BEGIN
+;	3105		map
+;	3106			rtn_cs_ptr : CS_POINTER;
+;	3107		local
+;	3108			status,
+;	3109			gst_recrd : ref GST_RECORD,
+;	3110			exception_type,
+;	3111			line_address,
+;	3112			line_num_2;
+;	3113	%IF DBG_INT2
+;     L 3114	%THEN
+;     U 3115		$FAO_TT_OUT('is_a_line: line number !SL, rtn = !AC',
+;     U 3116			.line_number,.rtn_cs_ptr);
+;     U 3117	%FI
+;	3118		status = 0;
+;	3119		exception_type = not_an_exc;
+;	3120	
+;	3121		IF( (GST_RECRD = DBG$LOOKUP_GBL( .RTN_CS_PTR )) NEQ 0 )
+;	3122		THEN
+;	3123			! Make sure that we found an entry-point symbol
+;	3124			! before doing the lookup.
+;	3125	
+;	3126			IF( .gst_recrd[ GST_ENTRY_TYPE ] eql GST_ENTRY_DEFN )
+;	3127			then
+;	3128				status = dbg$pc_to_line(	line_address,
+;	3129						.gst_recrd[ GST_VALUE ],
+;	3130						exception_type,
+;	3131						line_number,
+;	3132						line_num_2 );
+;	3133	
+;	3134	%if dbg_int2
+;     L 3135	%then
+;     U 3136		$fao_tt_out('line_to_val: status = !XL, address = !XL',.status,.line_address);
+;     U 3137	%FI
+;	3138	
+;	3139		! Return the line address, it if was
+;	3140		! determined above, 0, otherwise.
+;	3141	
+;	3142		if( .status )
+;	3143		then
+;	3144			return(.line_address);
+;	3145		return(0);
+;	3146	END;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 7-1
+; Digital Equipment Corporation
+;
+
+
+
+					 0004 0035D IS_A_LINE:
+							    .WORD   Save R2						      ; 3094
+		         5E	       0C  C2 0035F 	    SUBL2   #12, SP						      ;
+				       52  D4 00362 	    CLRL    STATUS						      ; 3118
+				  04   AE  D4 00364 	    CLRL    EXCEPTION_TYPE					      ; 3119
+				  04   AC  DD 00367 	    PUSHL   RTN_CS_PTR						      ; 3121
+	      00000000G  EF	       01  FB 0036A 	    CALLS   #1, DBG$LOOKUP_GBL					      ;
+				       50  D5 00371 	    TSTL    GST_RECRD						      ;
+				       1E  13 00373 	    BEQL    1$							      ;
+		         02	       60  91 00375 	    CMPB    (GST_RECRD), #2					      ; 3126
+				       19  12 00378 	    BNEQ    1$							      ;
+				  08   AE  9F 0037A 	    PUSHAB  LINE_NUM_2						      ; 3128
+				  08   AC  9F 0037D 	    PUSHAB  LINE_NUMBER						      ;
+				  0C   AE  9F 00380 	    PUSHAB  EXCEPTION_TYPE					      ;
+				  05   A0  DD 00383 	    PUSHL   5(GST_RECRD)					      ;
+				  10   AE  9F 00386 	    PUSHAB  LINE_ADDRESS					      ;
+	      00000000G  EF	       05  FB 00389 	    CALLS   #5, DBG$PC_TO_LINE					      ;
+		         52	       50  D0 00390 	    MOVL    R0, STATUS						      ;
+		         04	       52  E9 00393 1$:     BLBC    STATUS, 2$						      ; 3142
+		         50	       6E  D0 00396 	    MOVL    LINE_ADDRESS, R0					      ; 3144
+					   04 00399 	    RET     							      ;
+				       50  D4 0039A 2$:     CLRL    R0							      ; 3145
+					   04 0039C 	    RET     							      ; 3094
+
+; Routine Size:  64 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 8
+; Digital Equipment Corporation
+;
+;	3147	GLOBAL ROUTINE DBG$DELETE_PATH : NOVALUE =
+;	3148	!++
+;	3149	! Functional Description:
+;	3150	!
+;	3151	!	Delete the pathname vector which is pointed to
+;	3152	!	by the OWN, PATH_VEC_PTR, which several routines in this
+;	3153	!	module work from.  Also zero out this pointer so that the
+;	3154	!	next call to BUILD_PATH knows that there is no 'current'
+;	3155	!	pathname vector being built.
+;	3156	!
+;	3157	! Formal Parameters:
+;	3158	!	none
+;	3159	!
+;	3160	! Implicit Inputs:
+;	3161	!	PATH_VEC_PTR - see above.
+;	3162	!
+;	3163	! Return Value:
+;	3164	!
+;	3165	!	NOVALUE - because the only thing which can (but shouldn't) go 
+;	3166	!		  wrong is a free storage error and in that
+;	3167	!		  case the manager itself SIGNALs its way out.
+;	3168	!--
+;	3169	
+;	3170	BEGIN
+;	3171		LOCAL
+;	3172				! Each element of the pathname vector
+;	3173				! is a pointer to a counted string.
+;	3174			CS_PTR : CS_POINTER;
+;	3175	
+;	3176	%IF DBG_INT3
+;     L 3177	%THEN
+;     U 3178		$FAO_TT_OUT('delete_path: !XL',.PATH_VEC_PTR);
+;     U 3179	%FI
+;	3180		! Now see if there really is a pathanme vector
+;	3181		! currently pointed to by the PATH_VEC_PTR.
+;	3182	
+;	3183		IF( .PATH_VEC_PTR EQL 0 )
+;	3184		THEN
+;	3185			! No such vector is allocated so we're done.
+;	3186	
+;	3187			RETURN;
+;	3188		!+
+;	3189		! Simply throw away the storage which we allocated
+;	3190		! for each element of the vector.
+;	3191		!-
+;	3192	
+;	3193		INCR I FROM 0 TO MAX_PATH_SIZE
+;	3194			DO
+;	3195	
+;	3196			! The first 0 entry ends the vector.
+;	3197	
+;	3198			IF( (CS_PTR = .PATH_VEC_PTR[.I]) EQL 0 )
+;	3199			THEN
+;	3200				EXITLOOP
+;	3201			ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 8-1
+; Digital Equipment Corporation
+;
+;	3202				DBG$FREERELEASE( .CS_PTR, RST_UNITS(.CS_PTR[0]+1) );
+;	3203	
+;	3204		! Then throw away the vector itself.
+;	3205	
+;	3206		DBG$FREERELEASE( .PATH_VEC_PTR, RST_UNITS( %SIZE(PATHNAME_VECTOR) ));
+;	3207	
+;	3208		! Zero out the PATH_VEC_PTR pointer so that
+;	3209		! subsequent re-uses know there is no longer
+;	3210		! one there.
+;	3211	
+;	3212		path_Vec_ptr = 0;
+;	3213	END;
+
+
+
+
+
+					 0C0C 0039D 	    .ENTRY  DBG$DELETE_PATH, Save R2,R3,R10,R11			      ; 3147
+		         5A 00000000G  EF  9E 0039F 	    MOVAB   DBG$FREERELEASE, R10				      ;
+		         5B 00000000'  EF  9E 003A6 	    MOVAB   PATH_VEC_PTR, R11					      ;
+				       6B  D5 003AD 	    TSTL    PATH_VEC_PTR					      ; 3183
+				       25  13 003AF 	    BEQL    3$							      ;
+				       52  D4 003B1 	    CLRL    I							      ; 3193
+		         53	  00 BB42  D0 003B3 1$:     MOVL    @PATH_VEC_PTR[I], CS_PTR				      ; 3198
+				       13  13 003B8 	    BEQL    2$							      ;
+		         50	       63  9A 003BA 	    MOVZBL  (CS_PTR), R0					      ; 3202
+		         50	       04  C0 003BD 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 003C0 	    DIVL3   #4, R0, -(SP)					      ;
+				       53  DD 003C4 	    PUSHL   CS_PTR						      ;
+		         6A	       02  FB 003C6 	    CALLS   #2, DBG$FREERELEASE					      ;
+	   E6	         52	       0A  F3 003C9 	    AOBLEQ  #10, I, 1$						      ; 3193
+				       0B  DD 003CD 2$:     PUSHL   #11							      ; 3206
+				       6B  DD 003CF 	    PUSHL   PATH_VEC_PTR					      ;
+		         6A	       02  FB 003D1 	    CALLS   #2, DBG$FREERELEASE					      ;
+				       6B  D4 003D4 	    CLRL    PATH_VEC_PTR					      ; 3212
+					   04 003D6 3$:     RET     							      ; 3147
+
+; Routine Size:  58 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9
+; Digital Equipment Corporation
+;
+;	3214	GLOBAL ROUTINE DBG$SAVE_SCOPE( SET_SCOPE_FLAG ) =
+;	3215	!++
+;	3216	! Functional Description:
+;	3217	!
+;	3218	!    This routine serves two fairly distinct purposes.
+;	3219	!
+;	3220	! 1. IF SET_SCOPE_FLAG in ON, then this routine was
+;	3221	!    called to SET the new current scope position (CSP).
+;	3222	!    In this case we delete the storage taken by the old
+;	3223	!    CSP, if there was any, and install the new CSP
+;	3224	!    having checked its validity.
+;	3225	!
+;	3226	!	SET SCOPE also implies SET MODULE.
+;	3227	!	
+;	3228	! 2. If SET_SCOPE_FLAG is OFF, then the call was made to simply
+;	3229	!    install a null CSP vector.  This happens as a result of the
+;	3230	!    user CANcelling SCope, or CANcelling a MODUle whose name is 
+;	3231	!    the same as what the CSP pathname begins with.  The latter
+;	3232	!    avoids the 'dangling SCOPE' problem.
+;	3233	!
+;	3234	! Implicit Inputs:
+;	3235	!
+;	3236	!	This routine works from the OWN that is local to this
+;	3237	!	module, PATH_VEC_PTR, which points to the current pathname vector
+;	3238	!	which was (presumably) built by BUILD_PATH.  We store
+;	3239	!	away this pathname vector pointer, and then zero out the
+;	3240	!	one that BUILD_PATH uses so that it 'forgets' completely
+;	3241	!	about having built it.
+;	3242	!
+;	3243	! Return Value:
+;	3244	!
+;	3245	! TRUE, if we are simply throwing away the old CSP, or if we
+;	3246	!        installed a new scope and module which was acceptable.
+;	3247	! An UNWIND is done (i.e. no RETURN), otherwise.
+;	3248	!
+;	3249	!--
+;	3250	BEGIN
+;	3251		LOCAL
+;	3252			new_csp_ptr : ref pathname_vector,
+;	3253	
+;	3254			MC_PTR : REF MC_RECORD,	! Used to chain along the MC.
+;	3255			CS_PTR : CS_POINTER,	! Temp counted string pointer.
+;	3256			STATUS;			! Success/failure indication that we return.
+;	3257	
+;	3258	
+;	3259		! The gross structure of this routine just implements
+;	3260		! the two-function logic.
+;	3261	
+;	3262		IF( .SET_SCOPE_FLAG )
+;	3263		THEN
+;	3264			BEGIN
+;	3265	
+;	3266			! Install a new CSP vector.
+;	3267	%IF DBG_INT3
+;     L 3268	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9-1
+; Digital Equipment Corporation
+;
+;     U 3269			$FAO_TT_OUT('save_scope: pathname vector == ');
+;     U 3270			IF( .PATH_VEC_PTR NEQ 0 )
+;     U 3271			THEN
+;     U 3272				PRINT_SYM_PATH(.PATH_VEC_PTR);
+;     U 3273	%FI
+;	3274			! Check that the CSP we were given is valid.
+;	3275			! First, see if the beginning element of the pathvector
+;	3276			! (which must be MODULE) is in the MC.  Note that we
+;	3277			! don't consider the first entry in the MC since it
+;	3278			! is used for globals only and hence is nameless.
+;	3279	
+;	3280			CS_PTR = .PATH_VEC_PTR[0];
+;	3281			MC_PTR = .DBG$GL_MC_PTR;
+;	3282	
+;	3283			WHILE( (MC_PTR = .MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	3284				DO
+;	3285				BEGIN
+;	3286				IF( CH$EQL(	.MC_PTR[MC_NAME_CS], MC_PTR[MC_NAME_ADDR],
+;	3287						.CS_PTR[0], CS_PTR[1] )
+;	3288				  )
+;	3289				THEN
+;	3290					! Found.  Continue on to do further checking.
+;	3291	
+;	3292					EXITLOOP
+;	3293				END;
+;	3294	
+;	3295			! If the module name was not found, we must
+;	3296			! not accept the CSP.
+;	3297	
+;	3298			IF( .MC_PTR EQL 0 )
+;	3299			THEN
+;	3300				BEGIN
+;	3301	%IF DBG_INT3
+;     L 3302	%THEN
+;     U 3303				$FAO_TT_OUT('module name !AC not in MC.',.CS_PTR);
+;     U 3304	%FI
+;	3305				! This is an error.  Note that if there was
+;	3306				! previous to this call a valid CSP, it is not
+;	3307				! affected by this error.  Also note that the
+;	3308				! storage for the CSP we just found to be
+;	3309				! invalid is discarded by the end-of-line
+;	3310				! processing AFTER the SIGNAL produces the
+;	3311				! message.
+;	3312	
+;	3313				SIGNAL(DBG$_NOSUCHMODU, 1, .CS_PTR);
+;	3314				! no return
+;	3315	
+;	3316				RETURN(FALSE);
+;	3317				END;
+;	3318	
+;	3319			! Make sure that the indicated module is in
+;	3320			! the RST so that we can do further checking
+;	3321			! and because the user expects SET SCOPE to 
+;	3322			! imply a 'free' SET MODULE. 
+;	3323	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9-2
+; Digital Equipment Corporation
+;
+;	3324			IF( NOT .MC_PTR[ MC_IN_RST ] )
+;	3325			THEN
+;	3326				! If the module does not get SET,
+;	3327				! there is no return from this call.
+;	3328	
+;	3329				DBG$SET_MODULE(.MC_PTR);
+;	3330	
+;	3331			! The module is SET OK.  Any further checking depends
+;	3332			! on whether the given CSP is any longer than
+;	3333			! simply "module".  If this is the case,
+;	3334			! we've done all the validating we can.
+;	3335	
+;	3336			IF( .PATH_VEC_PTR[1] NEQ 0 )
+;	3337			THEN
+;	3338				BEGIN
+;	3339	
+;	3340				! Further checking is RST-dependent.
+;	3341	
+;	3342				LOCAL
+;	3343					VAL_DESC : VALU_DESCRIPTOR,
+;	3344					NT_PTR : REF NT_RECORD;
+;	3345	
+;	3346				! For initialized modules, we can do
+;	3347				! a complete check.  This means that
+;	3348				! we effectively do a lookup, and then
+;	3349				! make sure that the path leads to a
+;	3350				! symbol of type ROUTINE.
+;	3351	%IF DBG_INT3
+;     L 3352	%THEN
+;     U 3353				$FAO_TT_OUT('calling sym_to_valu');
+;     U 3354	%FI
+;	3355				IF( NOT DBG$SYM_TO_VALU( .PATH_VEC_PTR, VAL_DESC) )
+;	3356				THEN
+;	3357					BEGIN
+;	3358					LOCAL MESSAGE_BUF : VECTOR[TTY_OUT_WIDTH,BYTE];
+;	3359		
+;	3360					! Encode the pathname into a counted
+;	3361					! string, and output the associated message.
+;	3362		
+;	3363					DBG$PV_TO_CS( .PATH_VEC_PTR, MESSAGE_BUF );
+;	3364					SIGNAL(DBG$_NOSYMBOL, 1, MESSAGE_BUF );
+;	3365					! no return
+;	3366					END;
+;	3367	
+;	3368				! Now we simply have to see that the
+;	3369				! valid path leads to ROUTINE.  First we
+;	3370				! pick up the pointer to this symbol's
+;	3371				! name table record.
+;	3372		
+;	3373				NT_PTR = .VAL_DESC[ VALU_NT_PTR ];
+;	3374		
+;	3375				IF( .NT_PTR[ NT_TYPE ] NEQ DSC$K_DTYPE_RTN )
+;	3376				THEN
+;	3377					BEGIN
+;	3378		
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9-3
+; Digital Equipment Corporation
+;
+;	3379					! A valid path, but we can't accept it
+;	3380					! as a CSP because perpending it to
+;	3381					! any symbol would never result in
+;	3382					! a valid path.
+;	3383		
+;	3384					SIGNAL(DBG$_BADCSP);
+;	3385					! no return
+;	3386		
+;	3387					RETURN(FALSE);
+;	3388					END;
+;	3389				END;
+;	3390	
+;	3391			! The CSP we are to SET has been checked out OK.
+;	3392	
+;	3393			new_csp_ptr = .path_vec_ptr;
+;	3394			END;
+;	3395	
+;	3396		! If we get this far, the new CSP will be accepted.
+;	3397		! First, we have to release the storage we used up
+;	3398		! in accumulating the pathname elements of the 
+;	3399		! old CSP, if there was one.
+;	3400	
+;	3401		IF( (path_vec_ptr = .DBG$GL_CSP_PTR) NEQ 0 )
+;	3402		THEN
+;	3403			BEGIN
+;	3404	%IF DBG_INT3
+;     L 3405	%THEN
+;     U 3406			$FAO_TT_OUT('releasing old CSP at !XL',.DBG$GL_CSP_PTR);
+;     U 3407	%FI
+;	3408			DBG$DELETE_PATH();
+;	3409			END;
+;	3410	
+;	3411		! If we were only throwing away the old vector,
+;	3412		! then we note that the old one is gone and return success.
+;	3413	
+;	3414		IF( NOT .SET_SCOPE_FLAG )
+;	3415		THEN
+;	3416			BEGIN
+;	3417	%IF DBG_INT3
+;     L 3418	%THEN
+;     U 3419			$FAO_TT_OUT('threw away old CSP');
+;     U 3420	%FI
+;	3421			dbg$gl_csp_ptr = 0;
+;	3422			RETURN(TRUE);
+;	3423			END;
+;	3424	
+;	3425		! Installing a new CSP is simply a matter of saving
+;	3426		! away the pointer to the PATHNAME_VECTOR.  We must
+;	3427		! also zero out the pointer to the vector which
+;	3428		! BUILD_PATH uses to deal with these vectors,
+;	3429		! since we have effectively taken this one away.
+;	3430	
+;	3431		DBG$GL_CSP_PTR = .new_csp_ptr;
+;	3432		PATH_VEC_PTR = 0;
+;	3433	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9-4
+; Digital Equipment Corporation
+;
+;	3434	%IF DBG_INT3
+;     L 3435	%THEN
+;     U 3436		$FAO_TT_OUT('installed the new CSP OK.');
+;     U 3437	%FI
+;	3438		! All's well that ends well.
+;	3439	
+;	3440		RETURN(TRUE);
+;	3441	END;
+
+
+
+
+
+					 0F7C 003D7 	    .ENTRY  DBG$SAVE_SCOPE, Save R2,R3,R4,R5,R6,R8,R9,R10,R11	      ; 3214
+		         58 00000000G  8F  D0 003D9 	    MOVL    #DBG$_RST_BEGIN, R8					      ;
+		         59 00000000G  EF  9E 003E0 	    MOVAB   DBG$GL_CSP_PTR, R9					      ;
+		         5A 00000000G  00  9E 003E7 	    MOVAB   LIB$SIGNAL, R10					      ;
+		         5B 00000000'  EF  9E 003EE 	    MOVAB   PATH_VEC_PTR, R11					      ;
+		         5E	FF74   CE  9E 003F5 	    MOVAB   -140(SP), SP					      ;
+		         03	  04   AC  E8 003FA 	    BLBS    SET_SCOPE_FLAG, 1$					      ; 3262
+				     0098  31 003FE 	    BRW     8$							      ;
+		         56	  00   BB  D0 00401 1$:     MOVL    @PATH_VEC_PTR, CS_PTR				      ; 3280
+		         54 00000000G  EF  D0 00405 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3281
+	   55	         54	       58  C1 0040C 	    ADDL3   R8, MC_PTR, R5					      ; 3283
+		         54	       65  3C 00410 2$:     MOVZWL  (R5), MC_PTR					      ;
+				       15  13 00413 	    BEQL    3$							      ;
+	   55	         54	       58  C1 00415 	    ADDL3   R8, MC_PTR, R5					      ; 3286
+		         51	  0C   A5  9A 00419 	    MOVZBL  12(R5), R1						      ;
+		         50	       66  9A 0041D 	    MOVZBL  (CS_PTR), R0					      ; 3287
+	   00	    0D   A5	       51  2D 00420 	    CMPC5   R1, 13(R5), #0, R0, 1(CS_PTR)			      ; 3286
+		    01   A6	       50     00425									      ;
+				       E6  12 00428 	    BNEQ    2$							      ;
+				       54  D5 0042A 3$:     TSTL    MC_PTR						      ; 3298
+				       0F  12 0042C 	    BNEQ    4$							      ;
+				       56  DD 0042E 	    PUSHL   CS_PTR						      ; 3313
+				       01  DD 00430 	    PUSHL   #1							      ;
+			    00028220   8F  DD 00432 	    PUSHL   #164384						      ;
+		         6A	       03  FB 00438 	    CALLS   #3, LIB$SIGNAL					      ;
+				       77  11 0043B 	    BRB     12$							      ; 3316
+	   09 00000000G  E4	       01  E0 0043D 4$:     BBS     #1, DBG$_RST_BEGIN+3(MC_PTR), 5$			      ; 3324
+				       54  DD 00445 	    PUSHL   MC_PTR						      ; 3329
+	      00000000G  EF	       01  FB 00447 	    CALLS   #1, DBG$SET_MODULE					      ;
+		         50	       6B  D0 0044E 5$:     MOVL    PATH_VEC_PTR, R0					      ; 3336
+				  04   A0  D5 00451 	    TSTL    4(R0)						      ;
+				       40  13 00454 	    BEQL    7$							      ;
+				  F8   AD  9F 00456 	    PUSHAB  VAL_DESC						      ; 3355
+				       50  DD 00459 	    PUSHL   R0							      ;
+	      00000000G  EF	       02  FB 0045B 	    CALLS   #2, DBG$SYM_TO_VALU					      ;
+		         18	       50  E8 00462 	    BLBS    R0, 6$						      ;
+				       5E  DD 00465 	    PUSHL   SP							      ; 3363
+				       6B  DD 00467 	    PUSHL   PATH_VEC_PTR					      ;
+	      00000000G  EF	       02  FB 00469 	    CALLS   #2, DBG$PV_TO_CS					      ;
+				       5E  DD 00470 	    PUSHL   SP							      ; 3364
+				       01  DD 00472 	    PUSHL   #1							      ;
+			    00028230   8F  DD 00474 	    PUSHL   #164400						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 9-5
+; Digital Equipment Corporation
+;
+		         6A	       03  FB 0047A 	    CALLS   #3, LIB$SIGNAL					      ;
+		         50	  F8   AD  3C 0047D 6$:     MOVZWL  VAL_DESC, NT_PTR					      ; 3373
+		    BE   8F 00000000G  E0  91 00481 	    CMPB    DBG$_RST_BEGIN+2(NT_PTR), #190			      ; 3375
+				       0B  13 00489 	    BEQL    7$							      ;
+			    00028198   8F  DD 0048B 	    PUSHL   #164248						      ; 3384
+		         6A	       01  FB 00491 	    CALLS   #1, LIB$SIGNAL					      ;
+				       1E  11 00494 	    BRB     12$							      ; 3387
+		         52	       6B  D0 00496 7$:     MOVL    PATH_VEC_PTR, NEW_CSP_PTR				      ; 3393
+		         6B	       69  D0 00499 8$:     MOVL    DBG$GL_CSP_PTR, PATH_VEC_PTR			      ; 3401
+				       05  13 0049C 	    BEQL    9$							      ;
+		  FEFA   CF	       00  FB 0049E 	    CALLS   #0, DBG$DELETE_PATH					      ; 3408
+		         04	  04   AC  E8 004A3 9$:     BLBS    SET_SCOPE_FLAG, 10$					      ; 3414
+				       69  D4 004A7 	    CLRL    DBG$GL_CSP_PTR					      ; 3421
+				       05  11 004A9 	    BRB     11$							      ; 3422
+		         69	       52  D0 004AB 10$:    MOVL    NEW_CSP_PTR, DBG$GL_CSP_PTR				      ; 3431
+				       6B  D4 004AE 	    CLRL    PATH_VEC_PTR					      ; 3432
+		         50	       01  D0 004B0 11$:    MOVL    #1, R0						      ; 3440
+					   04 004B3 	    RET     							      ;
+				       50  D4 004B4 12$:    CLRL    R0							      ; 3214
+					   04 004B6 	    RET     							      ;
+
+; Routine Size:  224 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 10
+; Digital Equipment Corporation
+;
+;	3442	GLOBAL ROUTINE DBG$FIND_MODULE( MOD_NAME_DESC, SIGNAL_FLAG ) =
+;	3443	!++
+;	3444	! Functional Description:
+;	3445	!
+;	3446	!	Search the MC to see if the given module is there.
+;	3447	!
+;	3448	! Formal Parameters:
+;	3449	!
+;	3450	!	MOD_NAME_DESC	-a string descriptor for the supposed
+;	3451	!			 module name.
+;	3452	!	SIGNAL_FLAG	-flag that indicates if this routine should
+;	3453	!			 signal if the module is not found
+;	3454	!
+;	3455	! Implicit Inputs:
+;	3456	!
+;	3457	!	none.
+;	3458	!
+;	3459	! Implicit Outputs:
+;	3460	!
+;	3461	!	none.
+;	3462	!
+;	3463	! Returned Value:
+;	3464	!
+;	3465	!	0	 - if the module is not found,
+;	3466	!	non-zero - an MC_PTR to the indicated MC record.
+;	3467	!
+;	3468	! Side Effects:
+;	3469	!
+;	3470	!	none.
+;	3471	!--
+;	3472	
+;	3473	BEGIN
+;	3474		MAP
+;	3475					! The supposed module name is
+;	3476					! described via an SRM string descriptor.
+;	3477			MOD_NAME_DESC : REF BLOCK[,BYTE];
+;	3478		LOCAL
+;	3479					! We make a copy of the module name so that we
+;	3480					! can supply the needed counted-string pointer
+;	3481					! for the NOSUCHMODU error message.
+;	3482			MODU_CS_NAME : VECTOR[ SYM_MAX_LENGTH+1, BYTE],
+;	3483	
+;	3484					! We chain along the MC via this temp pointer.
+;	3485			MC_PTR : REF MC_RECORD;
+;	3486	
+;	3487	%IF DBG_INT3
+;     L 3488	%THEN
+;     U 3489		$FAO_TT_OUT('find_module: look for !AD in MC.',
+;     U 3490			.MOD_NAME_DESC[DSC$W_LENGTH], .MOD_NAME_DESC[DSC$A_POINTER] );
+;     U 3491	%FI
+;	3492	
+;	3493		! Scan along the MC comparing the given string
+;	3494		! with the module name stored therein.
+;	3495		! Note that we skip the first MC record because
+;	3496		! it is reserved for globals and is therefore nameless.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 10-1
+; Digital Equipment Corporation
+;
+;	3497	
+;	3498		MC_PTR = .DBG$GL_MC_PTR;
+;	3499	
+;	3500		WHILE( (MC_PTR = .MC_PTR[ MC_NEXT ]) NEQ 0 )
+;	3501			DO
+;	3502			BEGIN
+;	3503			IF( CH$EQL(	.MC_PTR[MC_NAME_CS],
+;	3504					MC_PTR[MC_NAME_ADDR],
+;	3505					.MOD_NAME_DESC[dsc$w_length],
+;	3506					.MOD_NAME_DESC[DSC$A_POINTER] )
+;	3507			  )
+;	3508			THEN
+;	3509				BEGIN
+;	3510	
+;	3511				! Found.  Internally in DEBUG we agree that
+;	3512				! the 'value' of a module string will be the
+;	3513				! RST address of its MC record.
+;	3514	%IF DBG_INT3
+;     L 3515	%THEN
+;     U 3516				$FAO_TT_OUT('find_module returning !XL',.mc_ptr);
+;     U 3517	%FI
+;	3518				RETURN(.MC_PTR);
+;	3519				END;
+;	3520			END;
+;	3521		!+
+;	3522		! If we fall out of the above loop, then
+;	3523		! the given module name was not found.
+;	3524		! We must construct a counted-string pointer
+;	3525		! and pass it on to the error message routine.
+;	3526		!-
+;	3527	
+;	3528		IF .SIGNAL_FLAG
+;	3529		THEN
+;	3530		    BEGIN
+;	3531		    MODU_CS_NAME[0] = .MOD_NAME_DESC[ DSC$W_LENGTH ];
+;	3532		    CH$MOVE( .MODU_CS_NAME[0], .MOD_NAME_DESC[ DSC$A_POINTER ],
+;	3533				MODU_CS_NAME[1]);
+;	3534		    SIGNAL(DBG$_NOSUCHMODU, 1, MODU_CS_NAME[0]);
+;	3535		    END;
+;	3536	
+;	3537		RETURN (0);
+;	3538	END;
+
+
+
+
+
+					 087C 004B7 	    .ENTRY  DBG$FIND_MODULE, Save R2,R3,R4,R5,R6,R11		      ; 3442
+		         5B 00000000G  8F  D0 004B9 	    MOVL    #DBG$_RST_BEGIN, R11				      ;
+		         5E	       10  C2 004C0 	    SUBL2   #16, SP						      ;
+		         56 00000000G  EF  D0 004C3 	    MOVL    DBG$GL_MC_PTR, MC_PTR				      ; 3498
+	   54	         56	       5B  C1 004CA 	    ADDL3   R11, MC_PTR, R4					      ; 3500
+	   55	    04   AC	       04  C1 004CE 	    ADDL3   #4, MOD_NAME_DESC, R5				      ; 3506
+		         56	       64  3C 004D3 1$:     MOVZWL  (R4), MC_PTR					      ; 3500
+				       17  13 004D6 	    BEQL    2$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 10-2
+; Digital Equipment Corporation
+;
+	   54	         56	       5B  C1 004D8 	    ADDL3   R11, MC_PTR, R4					      ; 3503
+		         50	  0C   A4  9A 004DC 	    MOVZBL  12(R4), R0						      ;
+	   00	    0D   A4	       50  2D 004E0 	    CMPC5   R0, 13(R4), #0, @MOD_NAME_DESC, @0(R5)		      ;
+		    00   B5	  04   BC     004E5									      ;
+				       E8  12 004E9 	    BNEQ    1$							      ;
+		         50	       56  D0 004EB 	    MOVL    MC_PTR, R0						      ; 3518
+					   04 004EE 	    RET     							      ;
+		         1E	  08   AC  E9 004EF 2$:     BLBC    SIGNAL_FLAG, 3$					      ; 3528
+		         6E	  04   BC  90 004F3 	    MOVB    @MOD_NAME_DESC, MODU_CS_NAME			      ; 3531
+		         50	       6E  9A 004F7 	    MOVZBL  MODU_CS_NAME, R0					      ; 3532
+      01   AE	    00   B5	       50  28 004FA 	    MOVC3   R0, @0(R5), MODU_CS_NAME+1				      ;
+				       5E  DD 00500 	    PUSHL   SP							      ; 3534
+				       01  DD 00502 	    PUSHL   #1							      ;
+			    00028220   8F  DD 00504 	    PUSHL   #164384						      ;
+	      00000000G  00	       03  FB 0050A 	    CALLS   #3, LIB$SIGNAL					      ;
+				       50  D4 00511 3$:     CLRL    R0							      ; 3537
+					   04 00513 	    RET     							      ; 3442
+
+; Routine Size:  93 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 11
+; Digital Equipment Corporation
+;
+;	3539	%IF DBG_INT2 OR DBG_INT3
+;     L 3540	%THEN
+;     U 3541			! We only use this routine for debugging.
+;     U 3542	
+;     U 3543	ROUTINE PRINT_SYM_PATH( PATH_VEC_PTR ) : NOVALUE =
+;     U 3544	
+;     U 3545	!++
+;     U 3546	! Functional Description:
+;     U 3547	!
+;     U 3548	!	Print out the pathname specified by a given
+;     U 3549	!	PATHNAME_VECTOR - a 0-ended vector of CS_POINTERs.
+;     U 3550	!
+;     U 3551	! *** THIS ROUTINE IS IN DBGRST.B32, BUT IT IS NOT GLOBAL THERE.
+;     U 3552	!	SINCE WE ONLY USE IT HERE FOR DIAGNOSTICS,  WE DON'T
+;     U 3553	!	WANT TO MAKE IT GLOBAL.
+;     U 3554	!
+;     U 3555	! Routine Value:
+;     U 3556	!	NOVALUE.
+;     U 3557	!--
+;     U 3558	
+;     U 3559	BEGIN
+;     U 3560		MAP
+;     U 3561			PATH_VEC_PTR : REF PATHNAME_VECTOR;
+;     U 3562		
+;     U 3563	%IF DBG_INT4 
+;     U 3564	%THEN
+;     U 3565		$FAO_TT_OUT('print_sym_path: Vector begins at !XL', .PATH_VEC_PTR );
+;     U 3566	%ELSE
+;     U 3567		$FAO_TT_OUT('''');
+;     U 3568	%FI
+;     U 3569	
+;     U 3570		INCR I FROM 0 TO MAX_PATH_SIZE
+;     U 3571			DO
+;     U 3572			IF( .PATH_VEC_PTR[.I] NEQ 0 )
+;     U 3573			THEN
+;     U 3574				BEGIN
+;     U 3575	%IF DBG_INT4 
+;     U 3576	%THEN
+;     U 3577				! If debugging, just spew out the information.
+;     U 3578	
+;     U 3579				$FAO_TT_OUT('vec[!SL] = !XL, ', .I, .PATH_VEC_PTR[.I] );
+;     U 3580				PR_CS(.PATH_VEC_PTR[.I]);
+;     U 3581	%ELSE
+;     U 3582				! Otherwise we get pretty about it.
+;     U 3583				! The pathname separation character (\)
+;     U 3584				! divides pathname elements but does not
+;     U 3585				! precede the first (MODULE) one.
+;     U 3586	
+;     U 3587				IF( .I NEQ 0 )
+;     U 3588				THEN
+;     U 3589					$FAO_TT_OUT('\');
+;     U 3590				$FAO_TT_OUT('!AC', .PATH_VEC_PTR[.I] );
+;     U 3591	%FI
+;     U 3592				END
+;     U 3593			ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 11-1
+; Digital Equipment Corporation
+;
+;     U 3594				BEGIN
+;     U 3595	%IF DBG_INT4 
+;     U 3596	%THEN
+;     U 3597				$FAO_TT_OUT('path_vec[!SL] == 0', .I );
+;     U 3598	%ELSE
+;     U 3599				! This routine should exit here becuase we
+;     U 3600				! insist on the pathname vector ending
+;     U 3601				! with 0.
+;     U 3602	
+;     U 3603				$FAO_TT_OUT('''');
+;     U 3604	%FI
+;     U 3605				RETURN;
+;     U 3606				END;
+;     U 3607	
+;     U 3608		! Control should never get to here.  (see above).
+;     U 3609	
+;     U 3610		$FAO_TT_OUT('print_sym_path error.');
+;     U 3611	END;
+;     U 3612	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12
+; Digital Equipment Corporation
+;
+;	3613	GLOBAL ROUTINE dbg$find_dst (file_name, img_header_blk, open_flag) : NOVALUE =
+;	3614	!++
+;	3615	! FUNCTIONAL DESCRIPTION:
+;	3616	!	-Find out where the DST begins and make it
+;	3617	!	 available for DBG$GET_NXT_DST and DBG$GET_DST_REC.
+;	3618	!	(or make it so that these routine return EOF if no
+;	3619	!	 DST exists)
+;	3620	!	-Then do the same for the GST.
+;	3621	!	
+;	3622	!	If anything goes wrong during the GST/DST initializations,
+;	3623	!	(can't EXPREG, etc), we output the corresponding message
+;	3624	!	forcing the severity to -I-, and then continue on without
+;	3625	!	the GST or DST.  The exceptions to this are that there
+;	3626	!	must be symbol table info in the header (even if
+;	3627	!	what's there is simply a pointer to say that there is no
+;	3628	!	DST or GST), and we must be able to open and connect the .EXE file.
+;	3629	!
+;	3630	! Calling Sequence:
+;	3631	!	-This routine will be called by DEBUG itself as part
+;	3632	!	 of its INIT procedure.
+;	3633	!
+;	3634	! FORMAL PARAMETERS:
+;	3635	!
+;	3636	!	file_name	a counted string to the file specification of
+;	3637	!			the image file.
+;	3638	!	img_header_blk	address of a byte block containing the image
+;	3639	!			header data needed to find DST and GST data
+;	3640	!			for the image.
+;	3641	!	open_flag	a flag. If true, then open file and map DST;
+;	3642	!				If false, then just position to GST
+;	3643	!					and do the first GET.
+;	3644	!
+;	3645	! IMPLICIT INPUTS:
+;	3646	!
+;	3647	!	The image activator (or someone) has read in the
+;	3648	!	header of the *.EXE file - otherwise our outer-level
+;	3649	!	dynamic bind (to sym_tbl_data) is in the wrong place.
+;	3650	!
+;	3651	! IMPLICIT OUTPUTS:
+;	3652	!
+;	3653	!	none
+;	3654	!
+;	3655	! ROUTINE VALUE:
+;	3656	! COMPLETION CODES:
+;	3657	!	none
+;	3658	!
+;	3659	! SIDE EFFECTS:
+;	3660	!
+;	3661	!	The notion of 'next' DST record is initialized
+;	3662	!	here so that a call to DBG$GET_NXT_DST made after
+;	3663	!	a call to this routine will fetch the first record.
+;	3664	!
+;	3665	!	The begin and end address of the DST are also established,
+;	3666	!	but only for the purposes of the interface routines.
+;	3667	!	There is no explicit requirement for this from the RST's 
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-1
+; Digital Equipment Corporation
+;
+;	3668	!	viewpoint - so long as the interface can somehow
+;	3669	!	know when the last record has been passed on.
+;	3670	!
+;	3671	!--
+;	3672	
+;	3673	BEGIN
+;	3674		MAP
+;	3675			file_name	: REF VECTOR [, BYTE],
+;	3676			img_header_blk	: REF BLOCK [, BYTE];
+;	3677	
+;	3678		BIND
+;	3679			sym_tbl_data	=
+;	3680					.img_header_blk + .img_header_blk [ihd$w_symdbgoff]
+;	3681						: BLOCK [, BYTE],
+;	3682	
+;	3683			exesecnam	= UPLIT BYTE (%ASCIC 'DST'),
+;	3684			gstsecnam	= UPLIT BYTE (%ASCIC 'GST');
+;	3685	
+;	3686		LITERAL
+;	3687			gl_overhead_rec	= 2,	! GST overhead records from Linker
+;	3688			syms_per_glrec	= 28,	! average GSTs per GST record.
+;	3689			dst_end_address	= 1;
+;	3690	
+;	3691		LOCAL
+;	3692			status : block[ %upval, byte],
+;	3693			global_record : BLOCK [512, BYTE],
+;	3694			exe_sec_bounds : VECTOR [2, LONG],
+;	3695			exesecnam_desc : VECTOR [2, LONG],
+;	3696			exefilnam_desc : VECTOR [2, LONG],
+;	3697			gl_sym_count;
+;	3698	
+;	3699		! Check if this *.EXE file has symbols at all.
+;	3700		! There are two kinds of check which we make.
+;	3701		! First, we see if the image header is consistent.
+;	3702		! There are two checks for this - one which is always
+;	3703		! relevant, and one which is relevant only if we have
+;	3704		! already determined that there will be DSTs.
+;	3705	
+;	3706		IF( .IMG_HEADER_BLK[ IHD$W_SYMDBGOFF ] EQL 0 )
+;	3707		THEN
+;	3708			BEGIN
+;	3709	
+;	3710			! This check must not fail because sym_tbl_data
+;	3711			! relies on it not failing.
+;	3712	%IF DBG_INT
+;     L 3713	%THEN
+;     U 3714			$FAO_TT_OUT('find_dst: IHD is inconsistent.');
+;     U 3715	%FI
+;	3716			SIGNAL (dbg$_norstbld);
+;	3717			! no return
+;	3718			RETURN;
+;	3719			END;
+;	3720	
+;	3721		! Then we see if this is a simple case of there
+;	3722		! legitimately not being a DST.  (i.e. the modules
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-2
+; Digital Equipment Corporation
+;
+;	3723		! were simply not compiled with /DEBUG or /TRACE on).
+;	3724	
+;	3725		IF( .SYM_TBL_DATA[ IHS$W_DSTBLKS ] EQL 0 )
+;	3726		THEN
+;	3727			! We use DST_BEGIN_ADDR as a flag for this condition.
+;	3728	
+;	3729			DST_BEGIN_ADDR = 0
+;	3730		ELSE
+;	3731			BEGIN
+;	3732	
+;	3733			! There will (hopefully) be a DST.  In this case
+;	3734			! we have two more consistency checks.
+;	3735	
+;	3736			dst_begin_addr = 1;
+;	3737	
+;	3738			IF (.SYM_TBL_DATA[ IHS$L_DSTVBN ] LEQU 2 ) 
+;	3739			THEN
+;	3740				BEGIN
+;	3741	%IF DBG_INT
+;     L 3742	%THEN
+;     U 3743				$FAO_TT_OUT('find_dst: IHS is inconsistent.');
+;     U 3744	%FI
+;	3745				! There is no point in failing in a fatal way -
+;	3746				! we just pretend there there are no local symbols.
+;	3747	
+;	3748				DST_BEGIN_ADDR = 0;
+;	3749				END;
+;	3750			END;
+;	3751	
+;	3752		! Open and connect the .EXE file so that we
+;	3753		! can map the DST and GST as process sections.
+;	3754	
+;	3755		exe_file [fab$l_fna] = file_name [1];
+;	3756		exe_file [fab$b_fns] = .file_name [0];
+;	3757		IF NOT (status = $OPEN (FAB = exe_file))
+;	3758		THEN
+;	3759			BEGIN
+;	3760			SIGNAL (.status);
+;	3761			RETURN
+;	3762			END;
+;	3763	
+;	3764		exe_input [rab$l_ubf] = global_record;
+;	3765		exe_input [rab$l_fab] = exe_file;
+;	3766		IF NOT (status = $CONNECT (RAB = exe_input))
+;	3767		THEN
+;	3768			BEGIN
+;	3769			SIGNAL (.status);
+;	3770			RETURN
+;	3771			END;
+;	3772	
+;	3773	
+;	3774	%IF dbg_int
+;     L 3775	%THEN
+;     U 3776		$fao_tt_out ('EXE file is open');
+;     U 3777	%FI
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-3
+; Digital Equipment Corporation
+;
+;	3778		! Don't try to create and map the DST if there
+;	3779		! is not one in the .exe file to map in.
+;	3780	
+;	3781		IF (.DST_BEGIN_ADDR NEQ 0)
+;	3782		THEN
+;	3783			BEGIN
+;	3784			!+
+;	3785			! Find the end of P0 so that we know
+;	3786			! where we can map the DST into.
+;	3787			!-
+;	3788			IF NOT (status = $EXPREG (pagcnt = 1, retadr = exe_sec_bounds))
+;	3789			THEN
+;	3790				BEGIN
+;	3791	
+;	3792				! Unconditionally make the severity level informational
+;	3793				! so that the message will be produced with no side effects.
+;	3794	
+;	3795	!			status[ STS$V_SEVERITY ] = SYS$K_INFO;
+;	3796				status[ STS$V_SEVERITY ] = 3;
+;	3797				dst_begin_addr = 0;
+;	3798				SIGNAL(.status);
+;	3799				END
+;	3800			else
+;	3801				begin
+;	3802	
+;	3803				! Now, try to map in the section.
+;	3804	
+;	3805				exe_sec_bounds [dst_end_address] = 1 ^ 30;
+;	3806				exesecnam_desc [0] = 3;
+;	3807				exesecnam_desc [1] = exesecnam;
+;	3808				exefilnam_desc [0] = .file_name [0];
+;	3809				exefilnam_desc [1] = file_name[1];
+;	3810		
+;	3811				IF NOT (status = lib$_cremapsec (exe_sec_bounds
+;	3812								, exe_sec_bounds
+;	3813								, 0
+;	3814								, exesecnam_desc
+;	3815								, 0
+;	3816								, exefilnam_desc
+;	3817								, .sym_tbl_data [ihs$w_dstblks]
+;	3818								, .sym_tbl_data [ihs$l_dstvbn]
+;	3819								))
+;	3820				THEN
+;	3821					BEGIN
+;	3822	
+;	3823					! Unconditionally make the severity level informational
+;	3824					! so that the message will be produced with no side effects.
+;	3825	
+;	3826	!				status[ STS$V_SEVERITY ] = SYS$K_INFO;
+;	3827					status[ STS$V_SEVERITY ] = 3;
+;	3828					dst_begin_addr = 0;
+;	3829					SIGNAL(.status);
+;	3830					end
+;	3831				else
+;	3832					begin
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-4
+; Digital Equipment Corporation
+;
+;	3833	%IF dbg_int
+;     L 3834	%THEN
+;     U 3835					$fao_tt_out ('dst section is mapped, start address is !XL, end address is !XL',
+;     U 3836					.exe_sec_bounds [0], .exe_sec_bounds [dst_end_address]);
+;     U 3837	%FI
+;	3838					!++
+;	3839					! Now load up the addresses of the beginning
+;	3840					! and end of the DST.
+;	3841					!--
+;	3842					dst_begin_addr = .exe_sec_bounds [0];
+;	3843					dst_end_addr = .exe_sec_bounds [1];
+;	3844					dst_next_addr = .dst_begin_addr;
+;	3845					END; ! for no DSTs.
+;	3846				END;
+;	3847	
+;	3848			END
+;	3849		ELSE
+;	3850			SIGNAL (dbg$_nolocals);		! Produce a message if we didn't map in the DST.
+;	3851	
+;	3852	%IF dbg_int
+;     L 3853	%THEN
+;     U 3854		$fao_tt_out ('global symbol table starts at block !SL (!XL), contains !SW (!XW) records',
+;     U 3855				.sym_tbl_data [ihs$l_gstvbn], .sym_tbl_data [ihs$l_gstvbn],
+;     U 3856				.sym_tbl_data [ihs$w_gstrecs], .sym_tbl_data [ihs$w_gstrecs]);
+;     U 3857	%FI
+;	3858		!+
+;	3859		! Now map in the GST in the same way we did the DST.
+;	3860		! First, the consistency/existence checks:  There must
+;	3861		! be symbol-table info in the header, there must be
+;	3862		! atleast 4 GST records (1 for image header, 1 for image
+;	3863		! sub-header, 1 for end-module record, and one for data).
+;	3864		! Like the DST VBN, the GST VBN must be atleast 2.
+;	3865		!-
+;	3866	
+;	3867		IF( .SYM_TBL_DATA[ IHS$W_GSTRECS ] LEQU 3 )
+;	3868		THEN
+;	3869			!+
+;	3870			! We use GSR_BEGIN_ADDR as a flag for this
+;	3871			! condition.  This is why it must be initialized.
+;	3872			!-
+;	3873			GSR_BEGIN_ADDR = 0
+;	3874		ELSE
+;	3875			BEGIN
+;	3876			!+
+;	3877			! There will (hopefully) be a GST.  In this case
+;	3878			! we have two more consistency checks.
+;	3879			!-
+;	3880			gsr_begin_addr = 1;
+;	3881	
+;	3882			IF (.SYM_TBL_DATA[ IHS$L_GSTVBN ] LEQU 2 ) 
+;	3883			THEN
+;	3884				BEGIN
+;	3885	%IF DBG_INT
+;     L 3886	%THEN
+;     U 3887				$FAO_TT_OUT('find_dst: IHS/GST is inconsistent.');
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-5
+; Digital Equipment Corporation
+;
+;     U 3888	%FI
+;	3889				! There is no point in failing in a fatal way -
+;	3890				! we just pretend there there are no global symbols.
+;	3891	
+;	3892				GSR_BEGIN_ADDR = 0;
+;	3893				END;
+;	3894			END;
+;	3895	
+;	3896		! Don't try to create and map the GST if there
+;	3897		! is not one in the .exe file to map in.
+;	3898	
+;	3899		IF (.gsr_begin_addr NEQ 0)
+;	3900		THEN
+;	3901			BEGIN
+;	3902			LOCAL
+;	3903				GST_REC_PTR : REF VECTOR[,WORD];
+;	3904	
+;	3905			! Find the end of P0 so that we know
+;	3906			! where we can map the GST into.
+;	3907	
+;	3908			IF NOT (status = $EXPREG (pagcnt = 1, retadr = exe_sec_bounds))
+;	3909			THEN
+;	3910				BEGIN
+;	3911	
+;	3912				! Unconditionally make the severity level informational
+;	3913				! so that the message will be produced with no side effects.
+;	3914	
+;	3915	!			status[ STS$V_SEVERITY ] = SYS$K_INFO;
+;	3916				status[ STS$V_SEVERITY ] = 3;
+;	3917				gsr_begin_addr = 0;
+;	3918				SIGNAL(.status);
+;	3919				END
+;	3920			ELSE
+;	3921				begin
+;	3922	
+;	3923				exe_sec_bounds [dst_end_address] = 1 ^ 30;
+;	3924				exesecnam_desc [0] = 3;
+;	3925				exesecnam_desc [1] = gstsecnam;
+;	3926				exefilnam_desc [0] = .file_name [0];
+;	3927				exefilnam_desc [1] = file_name[1];
+;	3928		
+;	3929				IF NOT (status = lib$_cremapsec (exe_sec_bounds
+;	3930								, exe_sec_bounds
+;	3931								, 0
+;	3932								, exesecnam_desc
+;	3933								, 0
+;	3934								, exefilnam_desc
+;	3935								, .sym_tbl_data [ihs$w_gstrecs]
+;	3936								, .sym_tbl_data [ihs$l_gstvbn]
+;	3937								))
+;	3938				THEN
+;	3939					BEGIN
+;	3940	
+;	3941					! Unconditionally make the severity level informational
+;	3942					! so that the message will be produced with no side effects.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-6
+; Digital Equipment Corporation
+;
+;	3943		
+;	3944	!				status[ STS$V_SEVERITY ] = SYS$K_INFO;
+;	3945					status[ STS$V_SEVERITY ] = 3;
+;	3946					gsr_begin_addr = 0;
+;	3947					SIGNAL(.status);
+;	3948					END
+;	3949				ELSE
+;	3950					BEGIN
+;	3951	%IF dbg_int
+;     L 3952	%THEN
+;     U 3953					$fao_tt_out ('gst section is mapped, start address is !XL, end address is !XL',
+;     U 3954					.exe_sec_bounds [0], .exe_sec_bounds [dst_end_address]);
+;     U 3955	%FI
+;	3956					!++
+;	3957					! Now skip the first two records because they
+;	3958					! are module header and module sub-header, respectively.
+;	3959					! NOTE: this builds in the knowledge of how these
+;	3960					! usually-RMS records are formatted.
+;	3961					!--
+;	3962			
+;	3963					gst_rec_ptr = .exe_sec_bounds[0];
+;	3964	%IF DBG_INT
+;     L 3965	%THEN
+;     U 3966					$fao_tt_out('first gst rec has count !XL',.gst_rec_ptr[0]);
+;     U 3967	%FI
+;	3968					! Get to the next record by adding the rounded-up
+;	3969					! record byte count to the previous beginning
+;	3970					! virtual address, then adding on 2 because the count
+;	3971					! field is 2 bytes long.
+;	3972			
+;	3973					gst_rec_ptr = .gst_rec_ptr + 2 + ((.gst_rec_ptr[0] +1)/2)*2;
+;	3974	%IF DBG_INT
+;     L 3975	%THEN
+;     U 3976					$fao_tt_out('second gst rec has count !XL',.gst_rec_ptr[0]);
+;     U 3977	%FI
+;	3978					! Now skip the sub-module header.
+;	3979			
+;	3980					gst_rec_ptr = .gst_rec_ptr + 2 + ((.gst_rec_ptr[0] +1)/2)*2;
+;	3981	%IF DBG_INT
+;     L 3982	%THEN
+;     U 3983					$FAO_TT_OUT('first real rec begins at !XL',.gst_rec_ptr);
+;     U 3984					$fao_tt_out('get_nxt_gst is at !XL within DEBUG',dbg$get_nxt_gst);
+;     U 3985	%FI
+;	3986					! And this is the address we wanted.
+;	3987					! Both the first, and, at this point, the 'next'
+;	3988					! records, start at this address.
+;	3989			
+;	3990					gsr_begin_addr = .gst_rec_ptr;
+;	3991					gsr_next_addr = .gsr_begin_addr;
+;	3992			
+;	3993					! Tell the inner mechanism how many GST records
+;	3994					! there will be.  This number is the number
+;	3995					! that the linker gave us, -3, because of the
+;	3996					! 2 records we just skipped over, PLUS the
+;	3997					! module-end record at the end of the GST.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-7
+; Digital Equipment Corporation
+;
+;	3998	
+;	3999					POSITION_GST( .sym_tbl_data[ ihs$W_GSTRECS ] -3 );
+;	4000					END;
+;	4001				END;
+;	4002			END
+;	4003	
+;	4004		ELSE
+;	4005			SIGNAL (dbg$_noglobals);	! Produce a message if we didn't map in the GST.
+;	4006	
+;	4007		!+
+;	4008		! Now we are all set up to do the once-only initialization
+;	4009		! of the the RST.
+;	4010		!-
+;	4011		DBG$INIT_RST ();
+;	4012	
+;	4013		!++
+;	4014		! Now close the EXE file and leave.
+;	4015		!--
+;	4016		IF NOT (status = $CLOSE (FAB = exe_file))
+;	4017		THEN
+;	4018			BEGIN
+;	4019	
+;	4020			! Unconditionally make the severity level informational
+;	4021			! so that the message will be produced with no side effects.
+;	4022	
+;	4023	!		status[ STS$V_SEVERITY ] = SYS$K_INFO;
+;	4024			status[ STS$V_SEVERITY ] = 3;
+;	4025			SIGNAL (.status);
+;	4026	
+;	4027			! Continue on - we don't care if we can't close the .EXE
+;	4028			! as long as we've produced a message to this effect.
+;	4029			END;
+;	4030	END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .ASCII  <3>\DST\						      ;
+					      00004 P.AAB:  .ASCII  <3>\GST\						      ;
+
+						    EXESECNAM=		P.AAA
+						    GSTSECNAM=		P.AAB
+							    .GLOBL  SYS$OPEN, SYS$CONNECT, SYS$EXPREG, SYS$CLOSE
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0F1C 00514 	    .ENTRY  DBG$FIND_DST, Save R2,R3,R4,R8,R9,R10,R11		      ; 3613
+		         58 00000000G  EF  9E 00516 	    MOVAB   LIB$_CREMAPSEC, R8					      ;
+		         59 00000000G  9F  9E 0051D 	    MOVAB   @#SYS$EXPREG, R9					      ;
+		         5A 00000000G  00  9E 00524 	    MOVAB   LIB$SIGNAL, R10					      ;
+		         5B 00000000'  EF  9E 0052B 	    MOVAB   DST_BEGIN_ADDR, R11					      ;
+		         5E	FDE8   CE  9E 00532 	    MOVAB   -536(SP), SP					      ;
+		         50	  08   AC  D0 00537 	    MOVL    IMG_HEADER_BLK, R0					      ; 3680
+		         52	  04   A0  3C 0053B 	    MOVZWL  4(R0), R2						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-8
+; Digital Equipment Corporation
+;
+		         52	       50  C0 0053F 	    ADDL2   R0, R2						      ;
+				  04   A0  B5 00542 	    TSTW    4(R0)						      ; 3706
+				       09  12 00545 	    BNEQ    1$							      ;
+			    0002835A   8F  DD 00547 	    PUSHL   #164698						      ; 3716
+				     0188  31 0054D 	    BRW     20$							      ;
+				  08   A2  B5 00550 1$:     TSTW    8(R2)						      ; 3725
+				       08  13 00553 	    BEQL    2$							      ;
+		         6B	       01  D0 00555 	    MOVL    #1, DST_BEGIN_ADDR					      ; 3736
+		         02	       62  D1 00558 	    CMPL    (R2), #2						      ; 3738
+				       02  1A 0055B 	    BGTRU   3$							      ;
+				       6B  D4 0055D 2$:     CLRL    DST_BEGIN_ADDR					      ; 3748
+	   54	    04   AC	       01  C1 0055F 3$:     ADDL3   #1, FILE_NAME, R4					      ; 3755
+		    44   AB	       54  D0 00564 	    MOVL    R4, EXE_FILE+44					      ;
+		    4C   AB	  04   BC  90 00568 	    MOVB    @FILE_NAME, EXE_FILE+52				      ; 3756
+				  18   AB  9F 0056D 	    PUSHAB  EXE_FILE						      ; 3757
+	      00000000G  9F	       01  FB 00570 	    CALLS   #1, @#SYS$OPEN					      ;
+		         53	       50  D0 00577 	    MOVL    R0, STATUS						      ;
+		         19	       53  E9 0057A 	    BLBC    STATUS, 4$						      ;
+		  008C   CB	  18   AE  9E 0057D 	    MOVAB   GLOBAL_RECORD, EXE_INPUT+36				      ; 3764
+		  00A4   CB	  18   AB  9E 00583 	    MOVAB   EXE_FILE, EXE_INPUT+60				      ; 3765
+				  68   AB  9F 00589 	    PUSHAB  EXE_INPUT						      ; 3766
+	      00000000G  9F	       01  FB 0058C 	    CALLS   #1, @#SYS$CONNECT					      ;
+		         53	       50  D0 00593 	    MOVL    R0, STATUS						      ;
+		         03	       53  E8 00596 4$:     BLBS    STATUS, 5$						      ;
+				     013A  31 00599 	    BRW     19$							      ;
+				       6B  D5 0059C 5$:     TSTL    DST_BEGIN_ADDR					      ; 3781
+				       60  13 0059E 	    BEQL    8$							      ;
+				       7E  7C 005A0 	    CLRQ    -(SP)						      ; 3788
+				  18   AE  9F 005A2 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				       01  DD 005A5 	    PUSHL   #1							      ;
+		         69	       04  FB 005A7 	    CALLS   #4, SYS$EXPREG					      ;
+		         53	       50  D0 005AA 	    MOVL    R0, STATUS						      ;
+		         3B	       53  E9 005AD 	    BLBC    STATUS, 6$						      ;
+		    14   AE 40000000   8F  D0 005B0 	    MOVL    #1073741824, EXE_SEC_BOUNDS+4			      ; 3805
+		    08   AE	       03  D0 005B8 	    MOVL    #3, EXESECNAM_DESC					      ; 3806
+		    0C   AE 00000000'  EF  9E 005BC 	    MOVAB   EXESECNAM, EXESECNAM_DESC+4				      ; 3613
+		         6E	  04   BC  9A 005C4 	    MOVZBL  @FILE_NAME, EXEFILNAM_DESC				      ; 3808
+		    04   AE	       54  D0 005C8 	    MOVL    R4, EXEFILNAM_DESC+4				      ; 3809
+				       62  DD 005CC 	    PUSHL   (R2)						      ; 3811
+		         7E	  08   A2  3C 005CE 	    MOVZWL  8(R2), -(SP)					      ;
+				  08   AE  9F 005D2 	    PUSHAB  EXEFILNAM_DESC					      ;
+				       7E  D4 005D5 	    CLRL    -(SP)						      ;
+				  18   AE  9F 005D7 	    PUSHAB  EXESECNAM_DESC					      ;
+				       7E  D4 005DA 	    CLRL    -(SP)						      ;
+				  28   AE  9F 005DC 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				  2C   AE  9F 005DF 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+		         68	       08  FB 005E2 	    CALLS   #8, LIB$_CREMAPSEC					      ;
+		         53	       50  D0 005E5 	    MOVL    R0, STATUS						      ;
+		         0B	       53  E8 005E8 	    BLBS    STATUS, 7$						      ;
+	   03	         00	       03  F0 005EB 6$:     INSV    #3, #0, #3, STATUS					      ; 3827
+				       53     005EF									      ;
+				       6B  D4 005F0 	    CLRL    DST_BEGIN_ADDR					      ; 3828
+				       53  DD 005F2 	    PUSHL   STATUS						      ; 3829
+				       10  11 005F4 	    BRB     9$							      ;
+		         6B	  10   AE  7D 005F6 7$:     MOVQ    EXE_SEC_BOUNDS, DST_BEGIN_ADDR			      ; 3842
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-9
+; Digital Equipment Corporation
+;
+		    08   AB	       6B  D0 005FA 	    MOVL    DST_BEGIN_ADDR, DST_NEXT_ADDR			      ; 3844
+				       09  11 005FE 	    BRB     10$							      ; 3781
+			    0002806B   8F  DD 00600 8$:     PUSHL   #163947						      ; 3850
+		         6A	       01  FB 00606 9$:     CALLS   #1, LIB$SIGNAL					      ;
+		         03	  0A   A2  B1 00609 10$:    CMPW    10(R2), #3						      ; 3867
+				       0A  1B 0060D 	    BLEQU   11$							      ;
+		    0C   AB	       01  D0 0060F 	    MOVL    #1, GSR_BEGIN_ADDR					      ; 3880
+		         02	  04   A2  D1 00613 	    CMPL    4(R2), #2						      ; 3882
+				       03  1A 00617 	    BGTRU   12$							      ;
+				  0C   AB  D4 00619 11$:    CLRL    GSR_BEGIN_ADDR					      ; 3892
+				  0C   AB  D5 0061C 12$:    TSTL    GSR_BEGIN_ADDR					      ; 3899
+				       03  12 0061F 	    BNEQ    13$							      ;
+				     008D  31 00621 	    BRW     16$							      ;
+				       7E  7C 00624 13$:    CLRQ    -(SP)						      ; 3908
+				  18   AE  9F 00626 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				       01  DD 00629 	    PUSHL   #1							      ;
+		         69	       04  FB 0062B 	    CALLS   #4, SYS$EXPREG					      ;
+		         53	       50  D0 0062E 	    MOVL    R0, STATUS						      ;
+		         3C	       53  E9 00631 	    BLBC    STATUS, 14$						      ;
+		    14   AE 40000000   8F  D0 00634 	    MOVL    #1073741824, EXE_SEC_BOUNDS+4			      ; 3923
+		    08   AE	       03  D0 0063C 	    MOVL    #3, EXESECNAM_DESC					      ; 3924
+		    0C   AE 00000000'  EF  9E 00640 	    MOVAB   GSTSECNAM, EXESECNAM_DESC+4				      ; 3613
+		         6E	  04   BC  9A 00648 	    MOVZBL  @FILE_NAME, EXEFILNAM_DESC				      ; 3926
+		    04   AE	       54  D0 0064C 	    MOVL    R4, EXEFILNAM_DESC+4				      ; 3927
+				  04   A2  DD 00650 	    PUSHL   4(R2)						      ; 3929
+		         7E	  0A   A2  3C 00653 	    MOVZWL  10(R2), -(SP)					      ;
+				  08   AE  9F 00657 	    PUSHAB  EXEFILNAM_DESC					      ;
+				       7E  D4 0065A 	    CLRL    -(SP)						      ;
+				  18   AE  9F 0065C 	    PUSHAB  EXESECNAM_DESC					      ;
+				       7E  D4 0065F 	    CLRL    -(SP)						      ;
+				  28   AE  9F 00661 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+				  2C   AE  9F 00664 	    PUSHAB  EXE_SEC_BOUNDS					      ;
+		         68	       08  FB 00667 	    CALLS   #8, LIB$_CREMAPSEC					      ;
+		         53	       50  D0 0066A 	    MOVL    R0, STATUS						      ;
+		         0C	       53  E8 0066D 	    BLBS    STATUS, 15$						      ;
+	   03	         00	       03  F0 00670 14$:    INSV    #3, #0, #3, STATUS					      ; 3945
+				       53     00674									      ;
+				  0C   AB  D4 00675 	    CLRL    GSR_BEGIN_ADDR					      ; 3946
+				       53  DD 00678 	    PUSHL   STATUS						      ; 3947
+				       3B  11 0067A 	    BRB     17$							      ;
+		         51	  10   AE  D0 0067C 15$:    MOVL    EXE_SEC_BOUNDS, GST_REC_PTR				      ; 3963
+		         50	       61  3C 00680 	    MOVZWL  (GST_REC_PTR), R0					      ; 3973
+				       50  D6 00683 	    INCL    R0							      ;
+		         50	       02  C6 00685 	    DIVL2   #2, R0						      ;
+		         51	  02 A140  3E 00688 	    MOVAW   2(GST_REC_PTR)[R0], GST_REC_PTR			      ;
+		         50	       61  3C 0068D 	    MOVZWL  (GST_REC_PTR), R0					      ; 3980
+				       50  D6 00690 	    INCL    R0							      ;
+		         50	       02  C6 00692 	    DIVL2   #2, R0						      ;
+		         51	  02 A140  3E 00695 	    MOVAW   2(GST_REC_PTR)[R0], GST_REC_PTR			      ;
+		    0C   AB	       51  D0 0069A 	    MOVL    GST_REC_PTR, GSR_BEGIN_ADDR				      ; 3990
+		    10   AB	  0C   AB  D0 0069E 	    MOVL    GSR_BEGIN_ADDR, GSR_NEXT_ADDR			      ; 3991
+		         7E	  0A   A2  3C 006A3 	    MOVZWL  10(R2), -(SP)					      ; 3999
+		         6E	       03  C2 006A7 	    SUBL2   #3, (SP)						      ;
+		  0000V  CF	       01  FB 006AA 	    CALLS   #1, POSITION_GST					      ;
+				       09  11 006AF 	    BRB     18$							      ; 3899
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 12-10
+; Digital Equipment Corporation
+;
+			    00028073   8F  DD 006B1 16$:    PUSHL   #163955						      ; 4005
+		         6A	       01  FB 006B7 17$:    CALLS   #1, LIB$SIGNAL					      ;
+	      00000000G  EF	       00  FB 006BA 18$:    CALLS   #0, DBG$INIT_RST					      ; 4011
+				  18   AB  9F 006C1 	    PUSHAB  EXE_FILE						      ; 4016
+	      00000000G  9F	       01  FB 006C4 	    CALLS   #1, @#SYS$CLOSE					      ;
+		         53	       50  D0 006CB 	    MOVL    R0, STATUS						      ;
+		         0A	       53  E8 006CE 	    BLBS    STATUS, 21$						      ;
+	   03	         00	       03  F0 006D1 	    INSV    #3, #0, #3, STATUS					      ; 4024
+				       53     006D5									      ;
+				       53  DD 006D6 19$:    PUSHL   STATUS						      ; 4025
+		         6A	       01  FB 006D8 20$:    CALLS   #1, LIB$SIGNAL					      ;
+					   04 006DB 21$:    RET     							      ; 3613
+
+; Routine Size:  456 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 13
+; Digital Equipment Corporation
+;
+;	4031	GLOBAL ROUTINE DBG$GET_DST_REC ( REC_ID ) =
+;	4032	!++
+;	4033	! FUNCTIONAL DESCRIPTION:
+;	4034	!	Make the indicated DST record available.
+;	4035	!
+;	4036	! FORMAL PARAMETERS:
+;	4037	!
+;	4038	!	REC_ID	- The ID of the record we are to fetch.
+;	4039	!
+;	4040	! IMPLICIT INPUTS:
+;	4041	!
+;	4042	!	NONE
+;	4043	!
+;	4044	! IMPLICIT OUTPUTS:
+;	4045	!
+;	4046	!	NONE
+;	4047	!
+;	4048	! ROUTINE VALUE:
+;	4049	!
+;	4050	!	0, if the indicated record does not exist,
+;	4051	!	the address of where is can now be referenced, otherwise.
+;	4052	!
+;	4053	! SIDE EFFECTS:
+;	4054	!
+;	4055	!	NONE
+;	4056	!
+;	4057	!--
+;	4058	
+;	4059	BEGIN
+;	4060	
+;	4061		BIND
+;	4062			DST_RECRD = .REC_ID : DST_RECORD;
+;	4063	
+;	4064		! If there is no DST, simply return as tho we
+;	4065		! were asked to read one past the last one.
+;	4066		! (The interface's notion of EOF).
+;	4067	
+;	4068	%IF DBG_INT5
+;     L 4069	%THEN
+;     U 4070		$FAO_TT_OUT('get dst !XL, end addr=!XL',.rec_id,.dst_end_addr);
+;     U 4071	%FI
+;	4072		IF ( .DST_BEGIN_ADDR EQL 0 ) OR ( .REC_ID EQL 0 )
+;	4073		THEN
+;	4074			RETURN(0);
+;	4075	
+;	4076		! The record ID is the same as the virtual
+;	4077		! address at which it can be referenced!
+;	4078		! The next record, then, is simply the one
+;	4079		! which is virtually contiguous to this one,
+;	4080		! excepting for the case of the last record.
+;	4081		! Here we are lenient - we say that the DST ended
+;	4082		! OK if one asks for a record which is
+;	4083		! past the end marker, OR, if the count field
+;	4084		! for a supposed 'next' record is 0.
+;	4085	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 13-1
+; Digital Equipment Corporation
+;
+;	4086		IF( .REC_ID EQL .DST_END_ADDR +1)
+;	4087		THEN
+;	4088			RETURN(0);
+;	4089	
+;	4090		! Now that it is safe, check for 0-length records.
+;	4091	
+;	4092		IF( .DST_RECRD[ DSTR_SIZE ] EQL 0 )
+;	4093		THEN
+;	4094			RETURN(0);
+;	4095	
+;	4096		! Then check that the ID is valid.  
+;	4097	
+;	4098		IF( .REC_ID LSSA .dst_begin_addr
+;	4099		   OR
+;	4100		    .REC_ID GTRA .dst_end_addr
+;	4101		  )
+;	4102		THEN
+;	4103			BEGIN
+;	4104			! This should not happen - we check and report
+;	4105			! errors here only to help us while debugging.
+;	4106		
+;	4107			SIGNAL (dbg$_invdstrec);
+;	4108			! no return
+;	4109			RETURN(0);
+;	4110			END;
+;	4111	
+;	4112	%if dbg_int5
+;     L 4113	%then
+;     U 4114		$fao_tt_out(', mapped to !XL',.rec_id);
+;     U 4115	%FI
+;	4116		RETURN( .REC_ID );
+;	4117	END;
+
+
+
+
+
+					 080C 006DC 	    .ENTRY  DBG$GET_DST_REC, Save R2,R3,R11			      ; 4031
+		         5B 00000000'  EF  9E 006DE 	    MOVAB   DST_END_ADDR, R11					      ;
+		         52	  04   AC  D0 006E5 	    MOVL    REC_ID, R2						      ; 4062
+		         53	       52  D0 006E9 	    MOVL    R2, R3						      ; 4059
+		         51	  FC   AB  D0 006EC 	    MOVL    DST_BEGIN_ADDR, R1					      ; 4072
+				       2E  13 006F0 	    BEQL    3$							      ;
+				       52  D5 006F2 	    TSTL    R2							      ;
+				       2A  13 006F4 	    BEQL    3$							      ;
+	   50	         6B	       01  C1 006F6 	    ADDL3   #1, DST_END_ADDR, R0				      ; 4086
+		         50	       52  D1 006FA 	    CMPL    R2, R0						      ;
+				       21  13 006FD 	    BEQL    3$							      ;
+				       63  95 006FF 	    TSTB    (R3)						      ; 4092
+				       1D  13 00701 	    BEQL    3$							      ;
+		         51	       52  D1 00703 	    CMPL    R2, R1						      ; 4098
+				       05  1F 00706 	    BLSSU   1$							      ;
+		         6B	       52  D1 00708 	    CMPL    R2, DST_END_ADDR					      ; 4100
+				       0F  1B 0070B 	    BLEQU   2$							      ;
+			    0002833A   8F  DD 0070D 1$:     PUSHL   #164666						      ; 4107
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 13-2
+; Digital Equipment Corporation
+;
+	      00000000G  00	       01  FB 00713 	    CALLS   #1, LIB$SIGNAL					      ;
+				       04  11 0071A 	    BRB     3$							      ; 4109
+		         50	       52  D0 0071C 2$:     MOVL    R2, R0						      ; 4116
+					   04 0071F 	    RET     							      ;
+				       50  D4 00720 3$:     CLRL    R0							      ; 4031
+					   04 00722 	    RET     							      ;
+
+; Routine Size:  71 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 14
+; Digital Equipment Corporation
+;
+;	4118	GLOBAL ROUTINE DBG$POSITON_DST ( REC_ID ) =
+;	4119	!++
+;	4120	! FUNCTIONAL DESCRIPTION:
+;	4121	!	Make the indicated DST record available in such
+;	4122	!	a way that DBG$GET_NXT_DST's idea of 'next' is
+;	4123	!	defined to be the one after this routine fetches.
+;	4124	!
+;	4125	! FORMAL PARAMETERS:
+;	4126	!
+;	4127	!	REC_ID	- The ID of the record we are to fetch.
+;	4128	!		  This ID must be one which was previously returned
+;	4129	!		  by a call to DBG$GET_NXT_DST.
+;	4130	!
+;	4131	! IMPLICIT INPUTS:
+;	4132	!
+;	4133	!	NONE
+;	4134	!
+;	4135	! IMPLICIT OUTPUTS:
+;	4136	!
+;	4137	!	NONE
+;	4138	!
+;	4139	! ROUTINE VALUE:
+;	4140	! COMPLETION CODES:
+;	4141	!
+;	4142	!	0, if the indicated record does not exist,
+;	4143	!	the address of where is can now be referenced, otherwise.
+;	4144	!
+;	4145	! SIDE EFFECTS:
+;	4146	!
+;	4147	!	The DST record is made available.
+;	4148	!	The 'next' DST record is henceforth defined to
+;	4149	!	be the one after the one fetched by this call.
+;	4150	!
+;	4151	!--
+;	4152	
+;	4153	BEGIN
+;	4154	
+;	4155		LOCAL
+;	4156			REC_ADDR : REF DST_RECORD;
+;	4157	
+;	4158	%IF DBG_INT5
+;     L 4159	%THEN
+;     U 4160		$FAO_TT_OUT('seek dst !XL, end addr=!XL',.rec_id,.dst_end_addr);
+;     U 4161	%FI
+;	4162		! DBG$GET_DST_REC does most of the work - 
+;	4163		! we just include the above-described side effect.
+;	4164	
+;	4165		IF( (REC_ADDR = DBG$GET_DST_REC( .REC_ID )) EQL 0 )
+;	4166		THEN
+;	4167			RETURN(0);
+;	4168	
+;	4169		! RE-initialize INT's notion of 'next' DST record.
+;	4170	
+;	4171		dst_next_addr = .REC_ADDR + .REC_ADDR[ DSTR_SIZE ] +1;
+;	4172		RETURN( .REC_ADDR );
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 14-1
+; Digital Equipment Corporation
+;
+;	4173	END;
+
+
+
+
+
+					 0000 00723 	    .ENTRY  DBG$POSITON_DST, Save nothing			      ; 4118
+				  04   AC  DD 00725 	    PUSHL   REC_ID						      ; 4165
+		    B0   AF	       01  FB 00728 	    CALLS   #1, DBG$GET_DST_REC					      ;
+		         51	       50  D0 0072C 	    MOVL    R0, REC_ADDR					      ;
+				       12  13 0072F 	    BEQL    1$							      ;
+		         50	       61  9A 00731 	    MOVZBL  (REC_ADDR), R0					      ; 4171
+		         50	       51  C0 00734 	    ADDL2   REC_ADDR, R0					      ;
+00000000'  EF	         50	       01  C1 00737 	    ADDL3   #1, R0, DST_NEXT_ADDR				      ;
+		         50	       51  D0 0073F 	    MOVL    REC_ADDR, R0					      ; 4172
+					   04 00742 	    RET     							      ;
+				       50  D4 00743 1$:     CLRL    R0							      ; 4118
+					   04 00745 	    RET     							      ;
+
+; Routine Size:  35 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 15
+; Digital Equipment Corporation
+;
+;	4174	ROUTINE POSITION_GST ( gst_rec_count ) =
+;	4175	!++
+;	4176	! FUNCTIONAL DESCRIPTION:
+;	4177	!	This routine, if called with a positive value initializes its OWN
+;	4178	!	storage to remember the number of RMS-type records in the GST.
+;	4179	!	If it is called with a negative or zero value, it returns the address
+;	4180	!	of the next RMS-type record in the GST.  A negative value also causes
+;	4181	!	the pointers to be positioned at the start of the GST.
+;	4182	!
+;	4183	! FORMAL PARAMETERS:
+;	4184	!
+;	4185	!	GST_REC_COUNT	- The number of RMS records in the GST.
+;	4186	!			  (negative value) re-position to start and return
+;	4187	!			  address of first GLOBAL.
+;	4188	!			  (zero) return address of the next GLOBAL.
+;	4189	!
+;	4190	! IMPLICIT INPUTS:
+;	4191	!
+;	4192	!	GSR_BEGIN_ADDR	- holds the starting address of the GST.  If this
+;	4193	!			  value is not GTR 0 or 1, then the GST has
+;	4194	!			  not been mapped in so this routine returns 0.
+;	4195	!
+;	4196	! IMPLICIT OUTPUTS:
+;	4197	!
+;	4198	!	GSR_NEXT_ADDR	- holds the address of the next RMS record in the GST.
+;	4199	!
+;	4200	! ROUTINE VALUE:
+;	4201	!
+;	4202	!	0		- If there are no more records in the GST,
+;	4203	!			  of if the GST was not mapped in.
+;	4204	!	non-zero	- The address of the next GST RMS record.
+;	4205	!
+;	4206	! SIDE EFFECTS:
+;	4207	!
+;	4208	!	The next GST record can now be accessed, and an OWN pointer to the next
+;	4209	!	one is maintained.  The number of GST records yet to go is also updated
+;	4210	!	so that the end of the GST can be detected.
+;	4211	!--
+;	4212	
+;	4213	BEGIN
+;	4214	
+;	4215	OWN
+;	4216		TOTAL_RECORDS,
+;	4217		RECORDS_LEFT;
+;	4218	
+;	4219	LOCAL
+;	4220		BLOCK_ADDR;
+;	4221	
+;	4222		! If there is no mapped GST, then return 0,
+;	4223		! no matter why this routine was called.
+;	4224	
+;	4225		IF (.gsr_begin_addr LEQA 1)
+;	4226		THEN
+;	4227		    RETURN (0);
+;	4228	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 15-1
+; Digital Equipment Corporation
+;
+;	4229		IF (.gst_rec_count GTR 0)
+;	4230		THEN
+;	4231		    BEGIN
+;	4232		    total_records = .gst_rec_count;
+;	4233	
+;	4234	%IF DBG_INT6
+;     L 4235	%THEN
+;     U 4236		$FAO_TT_OUT('position_GST: there are !SL. gst records',.gst_rec_count);
+;     U 4237	%FI
+;	4238		    RETURN (0);
+;	4239		    END;
+;	4240	
+;	4241		IF (.gst_rec_count NEQ 0)
+;	4242		THEN
+;	4243		    BEGIN
+;	4244	%IF DBG_INT6
+;     L 4245	%THEN
+;     U 4246		$fao_tt_out ('re-positioning GST to !XL',.gsr_begin_addr);
+;     U 4247	%FI
+;	4248		    gsr_next_addr = .gsr_begin_addr;
+;	4249		    records_left  = .total_records;
+;	4250		    END;
+;	4251	
+;	4252		! Stop the following from faulting if some caller
+;	4253		! ignores the end condition and effectively causes
+;	4254		! us to 'run off the end' of the mapped GST.
+;	4255	
+;	4256		IF (.records_left LSS 1)
+;	4257		THEN
+;	4258		    RETURN (0);
+;	4259	
+;	4260		! Pick up the address of the current record,
+;	4261		! and update the pointer to the subsequent one.
+;	4262	
+;	4263		block_addr = .gsr_next_addr + 2;
+;	4264		gsr_next_addr = .gsr_next_addr + 2 + ((.gsr_next_addr[0] +1)/2)*2;
+;	4265		records_left = .records_left - 1;
+;	4266	%IF DBG_INT6
+;     L 4267	%THEN
+;     U 4268		$fao_tt_out ('returning GST pointer !XL, !SL records left.',.gsr_next_addr,.records_left);
+;     U 4269	%FI
+;	4270		RETURN (.block_addr);
+;	4271	
+;	4272	END;
+
+
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      000B8 TOTAL_RECORDS:
+							    .BLKB   4
+					      000BC RECORDS_LEFT:
+							    .BLKB   4
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 15-2
+; Digital Equipment Corporation
+;
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0804 00746 POSITION_GST:
+							    .WORD   Save R2,R11						      ; 4174
+		         5B 00000000'  EF  9E 00748 	    MOVAB   GSR_NEXT_ADDR, R11					      ;
+		         01	  FC   AB  D1 0074F 	    CMPL    GSR_BEGIN_ADDR, #1					      ; 4225
+				       3F  1B 00753 	    BLEQU   3$							      ;
+		         50	  04   AC  D0 00755 	    MOVL    GST_REC_COUNT, R0					      ; 4229
+				       07  15 00759 	    BLEQ    1$							      ;
+		  00A0   CB	       50  D0 0075B 	    MOVL    R0, TOTAL_RECORDS					      ; 4232
+				       32  11 00760 	    BRB     3$							      ; 4238
+				       50  D5 00762 1$:     TSTL    R0							      ; 4241
+				       0B  13 00764 	    BEQL    2$							      ;
+		         6B	  FC   AB  D0 00766 	    MOVL    GSR_BEGIN_ADDR, GSR_NEXT_ADDR			      ; 4248
+		  00A4   CB	00A0   CB  D0 0076A 	    MOVL    TOTAL_RECORDS, RECORDS_LEFT				      ; 4249
+		         01	00A4   CB  D1 00771 2$:     CMPL    RECORDS_LEFT, #1					      ; 4256
+				       1C  19 00776 	    BLSS    3$							      ;
+	   51	         6B	       02  C1 00778 	    ADDL3   #2, GSR_NEXT_ADDR, R1				      ; 4263
+		         52	       51  D0 0077C 	    MOVL    R1, BLOCK_ADDR					      ;
+		         50	  00   BB  3C 0077F 	    MOVZWL  @GSR_NEXT_ADDR, R0					      ; 4264
+				       50  D6 00783 	    INCL    R0							      ;
+		         50	       02  C6 00785 	    DIVL2   #2, R0						      ;
+		         6B	     6140  3E 00788 	    MOVAW   (R1)[R0], GSR_NEXT_ADDR				      ;
+				00A4   CB  D7 0078C 	    DECL    RECORDS_LEFT					      ; 4265
+		         50	       52  D0 00790 	    MOVL    BLOCK_ADDR, R0					      ; 4270
+					   04 00793 	    RET     							      ;
+				       50  D4 00794 3$:     CLRL    R0							      ; 4174
+					   04 00796 	    RET     							      ;
+
+; Routine Size:  81 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 16
+; Digital Equipment Corporation
+;
+;	4273	GLOBAL ROUTINE DBG$GET_NXT_DST ( REC_ID_PTR ) =
+;	4274	!++
+;	4275	! FUNCTIONAL DESCRIPTION:
+;	4276	!	Make the next DST record available,
+;	4277	!	and return both a pointer to where it
+;	4278	!	can now be referenced, as well as an ID
+;	4279	!	for it so that we can ask for it later.
+;	4280	!
+;	4281	! FORMAL PARAMETERS:
+;	4282	!
+;	4283	!	REC_ID_PTR - the address of where this routine will
+;	4284	!		     stuff the ID it wants subsequent calls
+;	4285	!		     to DBG$GET_DST_REC to use to refer
+;	4286	!		     to the record fetched by this call.
+;	4287	!
+;	4288	! IMPLICIT INPUTS:
+;	4289	!
+;	4290	!	To be defined.
+;	4291	!	(whatever context these routines work from).
+;	4292	!
+;	4293	! IMPLICIT OUTPUTS:
+;	4294	!
+;	4295	!	NONE
+;	4296	!
+;	4297	! ROUTINE VALUE:
+;	4298	! COMPLETION CODES:
+;	4299	!
+;	4300	!	0, if the indicated record does not exist,
+;	4301	!	the address of where is can now be referenced, otherwise.
+;	4302	!
+;	4303	! SIDE EFFECTS:
+;	4304	!
+;	4305	!	The DST record after the last one fetched is made available.
+;	4306	!	If no record has yet been fetched, the first record in
+;	4307	!	the DST is made available.
+;	4308	!
+;	4309	!--
+;	4310	
+;	4311	BEGIN
+;	4312	
+;	4313		MAP
+;	4314			REC_ID_PTR : REF VECTOR[,LONG];
+;	4315		!+
+;	4316		! Since for us record IDs are the same as their
+;	4317		! virtual addresses, we can get the next one
+;	4318		! the same way we can get ANY one.  The only
+;	4319		! detail to fill in is passing back the ID
+;	4320		! for this next one.
+;	4321		!-
+;	4322		RETURN ( REC_ID_PTR[0] = DBG$POSITON_DST (.dst_next_addr) );
+;	4323	END;
+
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 16-1
+; Digital Equipment Corporation
+;
+
+					 0000 00797 	    .ENTRY  DBG$GET_NXT_DST, Save nothing			      ; 4273
+			    00000000'  EF  DD 00799 	    PUSHL   DST_NEXT_ADDR					      ; 4322
+		    80   AF	       01  FB 0079F 	    CALLS   #1, DBG$POSITON_DST					      ;
+		    04   BC	       50  D0 007A3 	    MOVL    R0, @REC_ID_PTR					      ;
+					   04 007A7 	    RET     							      ; 4273
+
+; Routine Size:  17 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17
+; Digital Equipment Corporation
+;
+;	4324	GLOBAL ROUTINE DBG$GET_NXT_GST (access_flag) =
+;	4325	!++
+;	4326	! Functional description:
+;	4327	!	This routine returns the address of a fixed length record that
+;	4328	!	contains a global symbol name and its associated value. This
+;	4329	!	routine expects to be called repeatedly until each global symbol
+;	4330	!	has been returned to the caller.
+;	4331	!
+;	4332	!	Before this routine is ever called, the location of the GST in
+;	4333	!	the image file is found, and it is mapped into DEBUG's image.
+;	4334	!	The address of this buffer is
+;	4335	!	held in the OWN variable gst_begin_addr. This routine
+;	4336	!	analyzes the GST record, and moves through the buffer, returning
+;	4337	!	the buffer address of each global symbol entry as it is
+;	4338	!	seen. When the buffer is exhausted, this routine reads in the
+;	4339	!	next GST record. It halts at end of file and returns a value of
+;	4340	!	zero to the caller.
+;	4341	!
+;	4342	!	This routine keeps the variable gst_begin_addr up to date.
+;	4343	!
+;	4344	!	The format of one of these concatenated records is a single
+;	4345	!	leading byte containing the value 1, indicating that the record
+;	4346	!	is indeed a GSD record. The variable gst_begin_addr addresses
+;	4347	!	the byte following this leading byte.
+;	4348	!
+;	4349	!	Each entry in the record has a fixed number of overhead
+;	4350	!	bytes followed by a symbol name that is a variable number of
+;	4351	!	bytes. The entries we are interested in processing are the
+;	4352	!	global symbol definitions and entry point symbol and mask
+;	4353	!	definitions. The other defined type, PSECT definition, is
+;	4354	!	noted only because it must be successfully passed over. The
+;	4355	!	format of each of these types is illustrated below:
+;	4356	!
+;	4357	!	Global symbol definition:
+;	4358	!
+;	4359	!		-----------------
+;	4360	!	0	!   GSD type 1  !
+;	4361	!		-----------------
+;	4362	!	1	!   data type   !	ignored for now
+;	4363	!		-----------------
+;	4364	!	2	!     flag      !	bit 1 set means that this is
+;	4365	!	3	!     bytes     !	a definition. ignore bit 0.
+;	4366	!		-----------------
+;	4367	!	4	!  psect index  !	ignored.
+;	4368	!		-----------------
+;	4369	!	5	!		!
+;	4370	!		!     value     !	4 bytes
+;	4371	!		!		!
+;	4372	!		-----------------
+;	4373	!	9	!		!
+;	4374	!		!    symbol     !	stock counted character
+;	4375	!		!     name      !	string.
+;	4376	!		!		!
+;	4377	!		-----------------
+;	4378	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-1
+; Digital Equipment Corporation
+;
+;	4379	!	The entry point symbol and mask definition entry is identical to
+;	4380	!	the global symbol definition illustrated above, with the 
+;	4381	!	addition of a two byte field for the procedure's register save
+;	4382	!	mask. This two byte field is located after the symbol value
+;	4383	!	field (which is an entry point address).
+;	4384	!
+;	4385	!		-----------------
+;	4386	!	0	!   GSD type 2  !
+;	4387	!		-----------------
+;	4388	!	1	!   data type   !	ignored for now
+;	4389	!		-----------------
+;	4390	!	2	!     flag      !	not relevant for
+;	4391	!	3	!     bytes     !	entry point def.
+;	4392	!		-----------------
+;	4393	!	4	!  psect index  !	ignored
+;	4394	!		-----------------
+;	4395	!		!		!
+;	4396	!	5	!     value     !	4 bytes
+;	4397	!		!		!
+;	4398	!		-----------------
+;	4399	!	9	!   register    !	ignored,
+;	4400	!	10	!   save mask   !	2 bytes
+;	4401	!		-----------------
+;	4402	!	11	!		!
+;	4403	!		!    symbol     !	stock counted character
+;	4404	!		!     name      !	string
+;	4405	!		!		!
+;	4406	!		-----------------
+;	4407	!
+;	4408	!	The procedure definition with formal argument descriptions is
+;	4409	!	identical to the "GSD type 2" definition above with the addition
+;	4410	!	of fields that describe each formal argument.
+;	4411	!	Following the symbol name there is one byte containing the minimum
+;	4412	!	number of arguments allowed, and one byte containing the maximum
+;	4413	!	number of arguments.
+;	4414	!	These bytes are followed by a series of records of 2 - 257 bytes
+;	4415	!	that describe each of the formal arguments (the number of these
+;	4416	!	records is equal to the maximum number of arguments for the procedure.
+;	4417	!
+;	4418	!		-----------------
+;	4419	!	0	!   GSD type 3  !
+;	4420	!		-----------------
+;	4421	!	1	!   data type   !	ignored for now
+;	4422	!		-----------------
+;	4423	!	2	!     flag      !	bit 1 set indicates that this is
+;	4424	!	3	!     bytes     !	a definition.  Bit 0 ignored.
+;	4425	!		-----------------
+;	4426	!	4	!  psect index  !	ignored
+;	4427	!		-----------------
+;	4428	!		!		!
+;	4429	!	5	!     value     !	4 bytes
+;	4430	!		!		!
+;	4431	!		-----------------
+;	4432	!	9	!   register    !	ignored,
+;	4433	!	10	!   save mask   !	2 bytes
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-2
+; Digital Equipment Corporation
+;
+;	4434	!		-----------------
+;	4435	!	11	!		!
+;	4436	!		!    symbol     !	stock counted character
+;	4437	!		!     name      !	string
+;	4438	!		!		!
+;	4439	!		-----------------
+;	4440	!		! min # of args !	1 byte
+;	4441	!		-----------------
+;	4442	!		! max # of args !	1 byte
+;	4443	!		-----------------
+;	4444	!		! formal arg #1 !
+;	4445	!		!  description  !
+;	4446	!		-----------------
+;	4447	!		!	.	!
+;	4448	!		!	.	!
+;	4449	!		!	.	!
+;	4450	!		-----------------
+;	4451	!		! formal arg #n !
+;	4452	!		!  description  !
+;	4453	!		-----------------
+;	4454	!	Format of each formal argument description.
+;	4455	!
+;	4456	!		-----------------
+;	4457	!	0	! arg value ctl !	1 byte
+;	4458	!		-----------------
+;	4459	!	1	! remaining byte!	1 byte ( 0 - 255 )
+;	4460	!		-----------------
+;	4461	!		!   detailed	!
+;	4462	!		!   argument	!
+;	4463	!		!  description	!
+;	4464	!		-----------------
+;	4465	!
+;	4466	!	PSECT definition:
+;	4467	!
+;	4468	!		-----------------
+;	4469	!	0	!   GSD type 0  !
+;	4470	!		-----------------
+;	4471	!	1	!   alignment   !
+;	4472	!		-----------------
+;	4473	!	2	!     flag      !
+;	4474	!	3	!     bytes     !
+;	4475	!		-----------------
+;	4476	!	4	!		!
+;	4477	!		!  allocation   !	4 bytes
+;	4478	!		!		!
+;	4479	!		-----------------
+;	4480	!	8	!		!
+;	4481	!		!    symbol     !	stock counted character
+;	4482	!		!     name      !	string.
+;	4483	!		!		!
+;	4484	!		-----------------
+;	4485	!
+;	4486	! Formal Parameters:
+;	4487	!	access_flag	- 0 - return address of next GLOBAL symbol.
+;	4488	!			  1 - reposition to start of GST and return address of
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-3
+; Digital Equipment Corporation
+;
+;	4489	!			      the first GLOBAL symbol.
+;	4490	!
+;	4491	! Implicit inputs:
+;	4492	!	gst_begin_addr	- current address of record buffer
+;	4493	!
+;	4494	! Outputs:
+;	4495	!	the address of the next global symbol entry, or 0, if EOF.
+;	4496	!
+;	4497	! Implicit outputs:
+;	4498	!	gst_begin_addr is updated to address the next entry
+;	4499	!
+;	4500	! Routine value:
+;	4501	!	an address or 0
+;	4502	!
+;	4503	! Side effects:
+;	4504	!	another record may be read in.
+;	4505	!--
+;	4506	
+;	4507		BEGIN
+;	4508	
+;	4509		LOCAL
+;	4510			old_address : REF BLOCK [, BYTE];
+;	4511	
+;	4512		LABEL
+;	4513			get_record;
+;	4514	
+;	4515	%IF dbg_int6
+;     L 4516	%THEN
+;     U 4517		$fao_tt_out ('getting another global symbol');
+;     U 4518	%FI
+;	4519	
+;	4520		IF (.access_flag NEQ 0)
+;	4521		THEN
+;	4522			BEGIN
+;	4523			IF ((gst_begin_addr = position_gst(-1)) EQL 0)
+;	4524			THEN	gst_begin_addr = %X'FFFFFFFF';
+;	4525			RETURN (0);
+;	4526			END;
+;	4527	
+;	4528		!++
+;	4529		! See whether the current buffer address is beyond the
+;	4530		! end of the last GST record we looked at.  Note that we
+;	4531		! rounded up GSR_NEXT_ADDR when calculating where the next
+;	4532		! GST record will begin.  Therefore we must temporarily round
+;	4533		! it down again when comparing it with GST_BEGIN_ADDR since it
+;	4534		! may point to the last unused byte in a GST record.
+;	4535		!--
+;	4536		REPEAT
+;	4537	get_record:
+;	4538			BEGIN
+;	4539			IF (.gst_begin_addr GEQA .gsr_next_addr -1)
+;	4540			THEN
+;	4541				BEGIN
+;	4542	%IF DBG_INT6
+;     L 4543	%THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-4
+; Digital Equipment Corporation
+;
+;     U 4544				$FAO_TT_OUT('GET ANOTHER GST RECORD');
+;     U 4545	%FI
+;	4546				IF ((gst_begin_addr = position_gst(0)) EQL 0)
+;	4547				THEN
+;	4548					! There are no more GST records.
+;	4549					RETURN (0)
+;	4550				ELSE
+;	4551					BEGIN
+;	4552	
+;	4553					!++
+;	4554					! GET succeeded. If the new record
+;	4555					! is a GST record, then initialize
+;	4556					! the variable gst_begin_addr to point 
+;	4557					! to the first global symbol definition
+;	4558					! block in this record.
+;	4559					!--
+;	4560	
+;	4561					LOCAL
+;	4562						buffer_address : REF VECTOR [, BYTE];
+;	4563	
+;	4564					buffer_address = .gst_begin_addr;
+;	4565	%IF DBG_INT6
+;     L 4566	%THEN
+;     U 4567					$FAO_TT_OUT(' INTO !XL, TYPE= !XB',
+;     U 4568					.BUFFER_ADDRESS,.BUFFER_ADDRESS[GST_RECORD_TYPE] );
+;     U 4569	%FI
+;	4570					IF .buffer_address [gst_record_type] EQL gst_type
+;	4571					THEN gst_begin_addr = .gst_begin_addr + 1
+;	4572					ELSE
+;	4573						BEGIN
+;	4574	
+;	4575						!++
+;	4576						! This record is not a GST record.
+;	4577						! Go on to the next.
+;	4578						!--
+;	4579						gst_begin_addr = %X'FFFFFFFF';
+;	4580						LEAVE get_record;
+;	4581						END;
+;	4582					END;
+;	4583				END
+;	4584			ELSE
+;	4585				BEGIN
+;	4586	
+;	4587				!++
+;	4588				! This is a global symbol. Save its address.
+;	4589				! Then update the variable gst_begin_addr to
+;	4590				! point to the next symbol.
+;	4591				!--
+;	4592	
+;	4593				old_address = .gst_begin_addr;
+;	4594	%IF DBG_INT6
+;     L 4595	%THEN
+;     U 4596				$FAO_TT_OUT('OLD ADDR=!XL, ',.OLD_ADDRESS);
+;     U 4597	%FI
+;	4598				CASE .old_address [entry_type] FROM psect_def TO proc_def OF
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-5
+; Digital Equipment Corporation
+;
+;	4599	
+;	4600					SET
+;	4601	
+;	4602					[psect_def]:
+;	4603						BEGIN
+;	4604						gst_begin_addr = .old_address + psect_overhead
+;	4605							+ .old_address [psect_nam_count];
+;	4606	%IF DBG_INT6
+;     L 4607	%THEN
+;     U 4608						$FAO_TT_OUT(' PSECT (!UB):!AC',
+;     U 4609							.OLD_ADDRESS[PSECT_NAM_COUNT],
+;     U 4610							OLD_ADDRESS[PSECT_NAM_COUNT]);
+;     U 4611						$FAO_TT_OUT(' NXT AT !XL IS !XL',
+;     U 4612							.GST_BEGIN_ADDR,..GST_BEGIN_ADDR);
+;     U 4613	%FI
+;	4614						END;
+;	4615	
+;	4616	
+;	4617					[global_symbol]:
+;	4618						BEGIN
+;	4619						gst_begin_addr = .old_address + glsym_overhead
+;	4620							+ .old_address [glsym_nam_count];
+;	4621	%IF DBG_INT6
+;     L 4622	%THEN
+;     U 4623						$FAO_TT_OUT(' SYMBOL.  NXT AT !XL, IS !XL',
+;     U 4624						.GST_BEGIN_ADDR,..GST_BEGIN_ADDR);
+;     U 4625	%FI
+;	4626						RETURN .old_address
+;	4627						END;
+;	4628	
+;	4629	
+;	4630					[entmsk_def]:
+;	4631						BEGIN
+;	4632						gst_begin_addr = .old_address + entmsk_overhead
+;	4633							+ .old_address [entms_nam_count];
+;	4634	%IF DBG_INT6
+;     L 4635	%THEN
+;     U 4636						$FAO_TT_OUT(' ENTRY.  NXT AT !XL, IS !XL',
+;     U 4637						.GST_BEGIN_ADDR,..GST_BEGIN_ADDR);
+;     U 4638	%FI
+;	4639						RETURN .old_address
+;	4640						END;
+;	4641	
+;	4642	
+;	4643					[proc_def]:
+;	4644						BEGIN
+;	4645						LOCAL
+;	4646						    num_args;			! maximum number of arguments.
+;	4647						gst_begin_addr = .old_address + entmsk_overhead
+;	4648								+ .old_address [entms_nam_count];
+;	4649						num_args = .gst_begin_addr[gst_p_max_arg];
+;	4650						gst_begin_addr = .gst_begin_addr + minmax_overhead;
+;	4651						DECR I FROM .num_args-1 TO 0 BY 1
+;	4652						DO
+;	4653						    BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-6
+; Digital Equipment Corporation
+;
+;	4654						    gst_begin_addr = .gst_begin_addr +
+;	4655								.gst_begin_addr[gst_p_rem_cnt] + argdsc_overhead;
+;	4656						    END;
+;	4657	%IF DBG_INT6
+;     L 4658	%THEN
+;     U 4659						$FAO_TT_OUT(' PROCEDURE.  NEXT AT !XL, IS !XL',
+;     U 4660						.GST_BEGIN_ADDR,..GST_BEGIN_ADDR);
+;     U 4661	%FI
+;	4662						RETURN .old_address
+;	4663						END;
+;	4664	
+;	4665					[OUTRANGE]:
+;	4666						BEGIN
+;	4667						GST_BEGIN_ADDR = %X'FFFFFFFF';
+;	4668	%IF DBG_INT6
+;     L 4669	%THEN
+;     U 4670						$FAO_TT_OUT ('GST out of range. Type = !XL', .OLD_ADDRESS[ENTRY_TYPE]);
+;     U 4671	%FI
+;	4672						END;
+;	4673	
+;	4674					TES;
+;	4675	
+;	4676				END;
+;	4677			END;
+;	4678		END;
+
+
+
+
+
+					 080C 007A8 	    .ENTRY  DBG$GET_NXT_GST, Save R2,R3,R11			      ; 4324
+		         5B 00000000'  EF  9E 007AA 	    MOVAB   GST_BEGIN_ADDR, R11					      ;
+				  04   AC  D5 007B1 	    TSTL    ACCESS_FLAG						      ; 4520
+				       12  13 007B4 	    BEQL    2$							      ;
+		         7E	       01  CE 007B6 	    MNEGL   #1, -(SP)						      ; 4523
+		    89   AF	       01  FB 007B9 	    CALLS   #1, POSITION_GST					      ;
+		         6B	       50  D0 007BD 	    MOVL    R0, GST_BEGIN_ADDR					      ;
+				       03  12 007C0 	    BNEQ    1$							      ;
+		         6B	       01  CE 007C2 	    MNEGL   #1, GST_BEGIN_ADDR					      ; 4524
+				     0089  31 007C5 1$:     BRW     13$							      ; 4525
+	   50	    FC   AB	       01  C3 007C8 2$:     SUBL3   #1, GSR_NEXT_ADDR, R0				      ; 4539
+		         50	       6B  D1 007CD 	    CMPL    GST_BEGIN_ADDR, R0					      ;
+				       18  1F 007D0 	    BLSSU   3$							      ;
+				       7E  D4 007D2 	    CLRL    -(SP)						      ; 4546
+		  FF6D   CF	       01  FB 007D4 	    CALLS   #1, POSITION_GST					      ;
+		         6B	       50  D0 007D9 	    MOVL    R0, GST_BEGIN_ADDR					      ;
+				       73  13 007DC 	    BEQL    13$							      ;
+		         50	       6B  D0 007DE 	    MOVL    GST_BEGIN_ADDR, BUFFER_ADDRESS			      ; 4564
+		         01	       60  91 007E1 	    CMPB    (BUFFER_ADDRESS), #1				      ; 4570
+				       13  12 007E4 	    BNEQ    5$							      ;
+				       6B  D6 007E6 	    INCL    GST_BEGIN_ADDR					      ; 4571
+				       DE  11 007E8 	    BRB     2$							      ; 4570
+		         52	       6B  D0 007EA 3$:     MOVL    GST_BEGIN_ADDR, OLD_ADDRESS				      ; 4593
+	   03	         00	       62  8F 007ED 	    CASEB   (OLD_ADDRESS), #0, #3				      ; 4598
+	 0027	       001A	     000D     007F1 4$:     .WORD   6$-4$,-						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 17-7
+; Digital Equipment Corporation
+;
+				     0034     007F7		    7$-4$,-						      ;
+								    8$-4$,-						      ;
+								    9$-4$						      ;
+		         6B	       01  CE 007F9 5$:     MNEGL   #1, GST_BEGIN_ADDR					      ; 4667
+				       CA  11 007FC 	    BRB     2$							      ; 4598
+		         50	  08   A2  9A 007FE 6$:     MOVZBL  8(OLD_ADDRESS), R0					      ; 4605
+		         50	       52  C0 00802 	    ADDL2   OLD_ADDRESS, R0					      ;
+	   6B	         50	       09  C1 00805 	    ADDL3   #9, R0, GST_BEGIN_ADDR				      ;
+				       BD  11 00809 	    BRB     2$							      ; 4598
+		         50	  09   A2  9A 0080B 7$:     MOVZBL  9(OLD_ADDRESS), R0					      ; 4620
+		         50	       52  C0 0080F 	    ADDL2   OLD_ADDRESS, R0					      ;
+	   6B	         50	       0A  C1 00812 	    ADDL3   #10, R0, GST_BEGIN_ADDR				      ;
+				       35  11 00816 	    BRB     12$							      ; 4626
+		         50	  0B   A2  9A 00818 8$:     MOVZBL  11(OLD_ADDRESS), R0					      ; 4633
+		         50	       52  C0 0081C 	    ADDL2   OLD_ADDRESS, R0					      ;
+	   6B	         50	       0C  C1 0081F 	    ADDL3   #12, R0, GST_BEGIN_ADDR				      ;
+				       28  11 00823 	    BRB     12$							      ; 4639
+		         50	  0B   A2  9A 00825 9$:     MOVZBL  11(OLD_ADDRESS), R0					      ; 4648
+		         50	       52  C0 00829 	    ADDL2   OLD_ADDRESS, R0					      ;
+	   6B	         50	       0C  C1 0082C 	    ADDL3   #12, R0, GST_BEGIN_ADDR				      ;
+		         50	       6B  D0 00830 	    MOVL    GST_BEGIN_ADDR, R0					      ; 4649
+		         51	  01   A0  9A 00833 	    MOVZBL  1(R0), NUM_ARGS					      ;
+		         6B	       02  C0 00837 	    ADDL2   #2, GST_BEGIN_ADDR					      ; 4650
+				       0E  11 0083A 	    BRB     11$							      ; 4651
+		         50	       6B  D0 0083C 10$:    MOVL    GST_BEGIN_ADDR, R0					      ; 4654
+		         53	  01   A0  9A 0083F 	    MOVZBL  1(R0), R3						      ;
+		         50	       53  C0 00843 	    ADDL2   R3, R0						      ;
+	   6B	         50	       02  C1 00846 	    ADDL3   #2, R0, GST_BEGIN_ADDR				      ; 4655
+		         EF	       51  F4 0084A 11$:    SOBGEQ  I, 10$						      ; 4651
+		         50	       52  D0 0084D 12$:    MOVL    OLD_ADDRESS, R0					      ; 4662
+					   04 00850 	    RET     							      ;
+				       50  D4 00851 13$:    CLRL    R0							      ; 4324
+					   04 00853 	    RET     							      ;
+
+; Routine Size:  172 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 18
+; Digital Equipment Corporation
+;
+;	4679	GLOBAL ROUTINE DBG$RST_FREEZ ( UNITS ) =
+;	4680	
+;	4681	!++
+;	4682	! FUNCTIONAL DESCRIPTION:
+;	4683	!
+;	4684	!	Isolate storage allocation for the RST builder/manipulator.
+;	4685	!	i.e. Do exactly what dbg$freez does for the rest of 
+;	4686	!	DEBUG, but take care of any differences (which may
+;	4687	!	or may not exits), when it is the RST interface
+;	4688	!	which wants the storage.
+;	4689	!
+;	4690	!	For now, there IS a difference - an RST-pointer is 
+;	4691	!	returned, NOT the usual longword pointer.  RST-pointers
+;	4692	!	are something internal to the RST builder/manipulator,
+;	4693	!	and it doesn't want to ever see anything but RST-pointers
+;	4694	!	(even if someday RST-pointers are the same thing as
+;	4695	!	virtual addresses).  This is really the motivation for
+;	4696	!	having DBG$RST_FREEZ.
+;	4697	!
+;	4698	! Formal Parameters:
+;	4699	!
+;	4700	!	UNITS - the number of units of storage which are
+;	4701	!		required.  This unit will remain whatever
+;	4702	!		unit dbg$freez knows about.
+;	4703	!
+;	4704	! Implicit Inputs:
+;	4705	!
+;	4706	!	See dbg$freez
+;	4707	!
+;	4708	! Implicit Outputs:
+;	4709	!
+;	4710	!	See dbg$freez
+;	4711	!
+;	4712	! Routine Value
+;	4713	!	0, if something goes wrong, an RST-pointer to the
+;	4714	!	allocated storage, otherwise.
+;	4715	!
+;	4716	! Side Effects:
+;	4717	!
+;	4718	!	See dbg$freez
+;	4719	!--
+;	4720	
+;	4721	BEGIN
+;	4722		EXTERNAL LITERAL
+;	4723			dbg$_rst_begin;
+;	4724	
+;	4725		LOCAL
+;	4726			STORAGE_PTR;
+;	4727	
+;	4728		STORAGE_PTR = dbg$freez( .UNITS );
+;	4729	
+;	4730		! Currently an RST-pointer is just like a virtual
+;	4731		! address except that the top 16 bits are 0 in the
+;	4732		! former, and hex 7FFF0000 in the latter.
+;	4733	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 18-1
+; Digital Equipment Corporation
+;
+;	4734		RETURN( .STORAGE_PTR AND NOT DBG$_RST_BEGIN );
+;	4735	
+;	4736	END;
+
+
+
+
+
+					 0000 00854 	    .ENTRY  DBG$RST_FREEZ, Save nothing				      ; 4679
+				  04   AC  DD 00856 	    PUSHL   UNITS						      ; 4728
+	      00000000G  EF	       01  FB 00859 	    CALLS   #1, DBG$FREEZ					      ;
+		         51 00000000*  8F  D2 00860 	    MCOML   #<^CDBG$_RST_BEGIN>, R1				      ; 4734
+		         50	       51  CA 00867 	    BICL2   R1, R0						      ;
+					   04 0086A 	    RET     							      ; 4679
+
+; Routine Size:  23 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 19
+; Digital Equipment Corporation
+;
+;	4737	GLOBAL ROUTINE DBG$RST_RELEASE ( rst_ptr, SIZE ) : NOVALUE =
+;	4738	
+;	4739	!++
+;	4740	! FUNCTIONAL DESCRIPTION:
+;	4741	!
+;	4742	!	Isolate storage deallocation for all storage which
+;	4743	!	is accessed via RST-pointers.
+;	4744	!
+;	4745	!	i.e. Do exactly what DBG$FREERELEASE does for the rest of 
+;	4746	!	DEBUG, but take care of any differences (which may
+;	4747	!	or may not exits), when it is the RST interface
+;	4748	!	which wants to free up this special-access storage.
+;	4749	!
+;	4750	!	For now, there IS a difference - an RST-pointer is
+;	4751	!	given to indicate which storage to free up.  This makes
+;	4752	!	DBG$RST_RELEASE the inverse of DBG$RST_FREEZ, just
+;	4753	!	as is true for the standard DEBUG storage primitives.
+;	4754	!
+;	4755	! Formal Parameters:
+;	4756	!
+;	4757	!  rst_ptr - this indicates which storage
+;	4758	!		 is to be freed.  This must be the same as
+;	4759	!		 one which was returned by DBG$RST_FREEZ.
+;	4760	!  SIZE		-The number of units which corresponds
+;	4761	!		 to the storage to be freed.
+;	4762	!
+;	4763	! Implicit Inputs:
+;	4764	!
+;	4765	!	See dbg$freez
+;	4766	!
+;	4767	! Implicit Outputs:
+;	4768	!
+;	4769	!	See dbg$freez
+;	4770	!
+;	4771	! Routine Value
+;	4772	!	NOVALUE!
+;	4773	! Side Effects:
+;	4774	!
+;	4775	!	See dbg$freez
+;	4776	!--
+;	4777	
+;	4778	BEGIN
+;	4779	
+;	4780		EXTERNAL LITERAL
+;	4781			dbg$_rst_begin;
+;	4782	
+;	4783		! Currently an RST-pointer is just like a virtual
+;	4784		! address except that the top 16 bits are 0 in
+;	4785		! in the former and hex 7FFF0000 in the latter.
+;	4786	
+;	4787		DBG$FREERELEASE( .rst_ptr OR DBG$_RST_BEGIN, .SIZE );
+;	4788	END;
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 19-1
+; Digital Equipment Corporation
+;
+
+
+					 0000 0086B 	    .ENTRY  DBG$RST_RELEASE, Save nothing			      ; 4737
+				  08   AC  DD 0086D 	    PUSHL   SIZE						      ; 4787
+	   7E	    04   AC 00000000G  8F  C9 00870 	    BISL3   #DBG$_RST_BEGIN, RST_PTR, -(SP)			      ;
+	      00000000G  EF	       02  FB 00879 	    CALLS   #2, DBG$FREERELEASE					      ;
+					   04 00880 	    RET     							      ; 4737
+
+; Routine Size:  22 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:22:29	DBB3:[DEBUG.SRC]DBGINT.B32;7					Page 20
+; Digital Equipment Corporation
+;
+;	4789	END				!End of module
+;	4790	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$OWN        	   192    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$CODE       	  2177  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$PLIT       	     8  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        38         0       255
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	     1118	00:46.1		01:24.3
+;	FLOWAN	       58	00:07.0		00:13.5
+;	DELAY	       56	00:03.1		00:05.9
+;	TNBIND	       90	00:04.7		00:08.9
+;	CODE	      104	00:08.8		00:15.4
+;	FINAL	      232	00:13.9		00:24.6
+;	Total	     1658	01:23.6		02:32.6
+
+; Size:		2177 code + 200 data bytes
+; Run Time:	01:24.4
+; Elapsed Time:	02:34.1
+; Memory Used:	455 pages
+; Compilation Complete

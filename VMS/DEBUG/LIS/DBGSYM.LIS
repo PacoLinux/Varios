@@ -1,0 +1,568 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGSYM ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000019') =
+;	0003	BEGIN
+;	0004	
+;	0005	!
+;	0006	!			  COPYRIGHT (c) 1977 BY
+;	0007	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0008	!
+;	0009	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0010	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0011	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0012	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0013	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0014	! TRANSFERRED.
+;	0015	!
+;	0016	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0017	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0018	! CORPORATION.
+;	0019	!
+;	0020	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0021	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0022	!
+;	0023	
+;	0024	!++
+;	0025	! FACILITY:	DEBUG (DBG)
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	This module contains the routines for manipulating the
+;	0029	!	user-defined and global symbols.
+;	0030	!
+;	0031	! ENVIRONMENT:	STARLET, user mode, interrupts disabled.
+;	0032	!
+;	0033	! Version:	19
+;	0034	!
+;	0035	! History:
+;	0036	!	Author:
+;	0037	!		Carol Peters, 13 Dec 1976: Version 01
+;	0038	!
+;	0039	!	Modified by:
+;	0040	!		Dale Roedger, 27 April 1978:	19
+;	0041	!
+;	0042	! Revision history:
+;	0043	!	06	08-04-77	CP	added routine DBG$INIT_GLOBLS, to
+;	0044	!					put the global symbols into the
+;	0045	!					linked list of symbols available
+;	0046	!					at DEBUG time.
+;	0047	!	07	20-04-77	CP	Change VAXDEB.BEG to be named
+;	0048	!					DBGGEN.BEG. Also add DBGPCT.BEG
+;	0049	!					for PSECT declarations.
+;	0050	!	08	21-04-77	CP	CLOSE STB file after processing
+;	0051	!					so that another can be opened.
+;	0052	!	09	26-04-77	CP	Add default file name and type
+;	0053	!					for STB file. Also remove
+;	0054	!					$DISCONNECT before a $CLOSE.
+;	0055	!	10	29-04-77	CP	Comment out DElete_SYM since it
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					is not being used now. Change
+;	0057	!					DEFINE_SYM to no longer set
+;	0058	!					DBG$GB_PARS_MOR. Just have it
+;	0059	!					return false as previously.
+;	0060	!	11	02-05-77	CP	In dbg$process_gst, the number of
+;	0061	!					overhead bytes to add per entry
+;	0062	!					is dependent upon the type of
+;	0063	!					entry. Thus, the entry overhead
+;	0064	!					for symbol definitions is 10, for
+;	0065	!					psects is nine.
+;	0066	!	12	19-05-77	CP	Change default file specification
+;	0067	!					for STB file to include only file
+;	0068	!					name and type, not device, UIC,
+;	0069	!					or version number. These will all
+;	0070	!					default properly according to the
+;	0071	!					characteristics of the process.
+;	0072	!	13	05-07-77	CP	Change REQUIRE files for system
+;	0073	!					definitions to be those on NEW:,
+;	0074	!					STARDE, RMSMAC, etc.
+;	0075	!	14	08-07-77	CP	In routine dbg$process_gst, must
+;	0076	!					make symbol table entries for
+;	0077	!					"entry point symbol and mask
+;	0078	!					definitions" in STB as well as
+;	0079	!					for GSDs. This wasn't a problem
+;	0080	!					previously because no language
+;	0081	!					processors output .ENTRY defs.
+;	0082	!					Now, however, BLISS outputs these,
+;	0083	!					and the bug was reported that no
+;	0084	!					global routine names were
+;	0085	!					entered into the DEBUG symbol
+;	0086	!					table when the STB was read in.
+;	0087	!	15	22-07-77	CP	Rewrite dbg$find_sym to use
+;	0088	!					string descriptor as input instead
+;	0089	!					of the address of a counted string.
+;	0090	!					Entirely delete DELETE_SYM.
+;	0091	!					And init_globls. It is replaced
+;	0092	!					by dbg$find_sym. Delete process_gst,
+;	0093	!					it is replaced by RST processing
+;	0094	!					and the routine dbg$get_nxt_gst
+;	0095	!					in dbgint.b32.
+;	0096	!	16	12-10-77	CP	Change calls to error_reprt to
+;	0097	!					SIGNALs. Make define_sym a
+;	0098	!					NOVALUE routine.
+;	0099	!	17	26-10-77	CP	In define_sym, don't allow the
+;	0100	!					user to redefine a register name.
+;	0101	!	18	23-mar-78	KGP	-Add routine DBG$FIND_VAL, so that
+;	0102	!					 we can lookup a DEFine symbol 
+;	0103	!					 given a value.
+;	0104	!	19	27-APR-78	DAR	Modified require and library directives
+;	0105	!					for the native build.
+;	0106	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0107	FORWARD ROUTINE
+;	0108		dbg$find_val,			! Lookup symbol given value.
+;	0109		dbg$define_sym : NOVALUE,	! STORES A USER-DEFINED SYMBOL IN SYMBOL TABLE
+;	0110		dbg$find_sym;			! FINDS A SYMBOL IN THE SYMBOL TABLE
+;	0111	
+;	0112	!
+;	0113	! REQUIRE FILES:
+;	0114	!
+;	0115	%IF %VARIANT		! True for TEN.
+;     L 0116	%THEN
+;     U 0117	LIBRARY	'NEW:LIB';
+;     U 0118	
+;     U 0119	REQUIRE 'DBGPCT.REQ';
+;     U 0120	REQUIRE 'VXSMAC.REQ';
+;     U 0121	REQUIRE 'DBGGEN.REQ';
+;     U 0122	REQUIRE 'DBGMSG.REQ';
+;     U 0123	REQUIRE 'BSTRUC.REQ';
+;     U 0124	REQUIRE 'DLLNAM.REQ';
+;     U 0125	REQUIRE 'SYSSER.REQ';
+;     U 0126	%ELSE
+;	0127	LIBRARY	'SYS$LIBRARY:LIB.L32';
+;	0128	
+;	0129	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0141	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0181	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0431	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0710	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0761	REQUIRE 'SRC$:DLLNAM.REQ';
+;	0812	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0815	SWITCHES LIST (SOURCE);
+;      R0816	
+;      R0817	EXTERNAL ROUTINE
+;      R0818		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R0819	
+;      R0820	SWITCHES LIST (NOSOURCE);
+;	0865	%FI
+;	0866	
+;	0867	EXTERNAL ROUTINE
+;	0868		dbg$freez,			! ALLOCATES A BLOCK OF FREE STORAGE
+;	0869		dbg$reg_match;			! matches a string to the register names
+;	0870	
+;	0871	EXTERNAL
+;	0872		dbg$gl_symhead: VECTOR;		! SYMBOL TABLE
+;	0873	
+;	0874	BUILTIN
+;	0875		insque;
+;	0876	
+;	0877	LITERAL
+;	0878		dbg_sym		= 0,		! for debugging purposes
+;	0879		dbg_sym1	= 0,		! ditto
+;	0880		dbg_sym2	= 0;		! ditto
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	0881	GLOBAL ROUTINE dbg$define_sym (string_desc, value) : NOVALUE =
+;	0882	
+;	0883	!++
+;	0884	! Functional description:
+;	0885	!	STORES A USER-DEFINED SYMBOL IN THE SYMBOL TABLE, WHICH IS A DOUBLY
+;	0886	!	LINKED LIST. FIRST SEARCHES (IN A BINARY FASHION) THE TABLE TO SEE
+;	0887	!	WHETHER THE SYMBOL EXISTS. If it does not, then
+;	0888	!	THE SYMBOL IS INSERTED, EXCEPT IF NO FREE STORAGE IS LEFT,
+;	0889	!	IN WHICH CASE ANOTHER ERROR MESSAGE IS REPORTED from freez.
+;	0890	!
+;	0891	! Calling sequence:
+;	0892	!	CALLS #2, dbg$define_sym
+;	0893	!
+;	0894	! Inputs:
+;	0895	!	string_desc	- a string descriptor describing the string
+;	0896	!			  representing the symbol.
+;	0897	!	value		- the value to be stored as the equivalent of the
+;	0898	!			  symbol.
+;	0899	!
+;	0900	! Implicit inputs:
+;	0901	!	the head link of the symbol table
+;	0902	!
+;	0903	! Implicit outputs:
+;	0904	!	none
+;	0905	!
+;	0906	! Routine value:
+;	0907	!	novalue
+;	0908	!
+;	0909	! Side effects:
+;	0910	!	The symbol is inserted into the symbol table. The links of
+;	0911	!	the table are appropriately adjusted.
+;	0912	!--
+;	0913	
+;	0914		BEGIN
+;	0915	
+;	0916		MAP
+;	0917			string_desc : REF BLOCK [, BYTE];
+;	0918	
+;	0919		LOCAL
+;	0920			pointer;
+;	0921	
+;	0922	%IF dbg_sym
+;     L 0923	%THEN
+;     U 0924		$fao_tt_out ('!/defining symbol !AD, value is !XL', .string_desc [dsc$w_length],
+;     U 0925			.string_desc [dsc$a_pointer], .value);
+;     U 0926	%FI
+;	0927	
+;	0928		IF dbg$reg_match (.string_desc) NEQ -1
+;	0929		THEN SIGNAL (dbg$_redefreg);
+;	0930		pointer = dbg$find_sym (.string_desc);
+;	0931		IF .pointer EQL 0
+;	0932		THEN
+;	0933			BEGIN
+;	0934	
+;	0935			!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+;	0936			! Symbol did not exist. Insert it into
+;	0937			! the symbol table. First allocate a block of dynamic
+;	0938			! storage to hold it.
+;	0939			!--
+;	0940			pointer = dbg$freez ((.string_desc [dsc$w_length] + 1 + 3) / 4 + overhead_sym - 1);
+;	0941	
+;	0942			!++
+;	0943			! Space allocated. Insert the new link. Then
+;	0944			! write the symbol name and value into the new
+;	0945			! symbol table entry.
+;	0946			!--
+;	0947			insque (.pointer, .dbg$gl_symhead);
+;	0948			ch$move (.string_desc [dsc$w_length], ch$ptr (.string_desc [dsc$a_pointer]),
+;	0949					ch$ptr (sym_name (.pointer)));
+;	0950			sym_chcount (.pointer) = .string_desc [dsc$w_length];
+;	0951			sym_value (.pointer) = .value;
+;	0952			END
+;	0953		ELSE
+;	0954			BEGIN
+;	0955	
+;	0956			!++
+;	0957			! Symbol already was defined. Just reset the value of
+;	0958			! the symbol stored in the symbol table.
+;	0959			!--
+;	0960			sym_value (.pointer) = .value;
+;	0961			END;
+;	0962		END;
+
+
+							    .TITLE  DBGSYM
+							    .IDENT  \000019\
+
+							    .GLOBL  DBG$FAO_OUT, DBG$FREEZ, DBG$REG_MATCH, DBG$GL_SYMHEAD
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 00FC 00000 	    .ENTRY  DBG$DEFINE_SYM, Save R2,R3,R4,R5,R6,R7		      ; 0881
+				  04   AC  DD 00002 	    PUSHL   STRING_DESC						      ; 0928
+	      00000000G  EF	       01  FB 00005 	    CALLS   #1, DBG$REG_MATCH					      ;
+	      FFFFFFFF   8F	       50  D1 0000C 	    CMPL    R0, #-1						      ;
+				       0D  13 00013 	    BEQL    1$							      ;
+			    00028260   8F  DD 00015 	    PUSHL   #164448						      ; 0929
+	      00000000G  00	       01  FB 0001B 	    CALLS   #1, LIB$SIGNAL					      ;
+				  04   AC  DD 00022 1$:     PUSHL   STRING_DESC						      ; 0930
+		  0000V  CF	       01  FB 00025 	    CALLS   #1, DBG$FIND_SYM					      ;
+		         57	       50  D0 0002A 	    MOVL    R0, POINTER						      ;
+				       2F  12 0002D 	    BNEQ    2$							      ; 0931
+		         50	  04   BC  3C 0002F 	    MOVZWL  @STRING_DESC, R0					      ; 0940
+		         50	       04  C0 00033 	    ADDL2   #4, R0						      ;
+		         50	       04  C6 00036 	    DIVL2   #4, R0						      ;
+				  03   A0  9F 00039 	    PUSHAB  3(R0)						      ;
+	      00000000G  EF	       01  FB 0003C 	    CALLS   #1, DBG$FREEZ					      ;
+		         57	       50  D0 00043 	    MOVL    R0, POINTER						      ;
+	      00000000G  FF	       67  0E 00046 	    INSQUE  (POINTER), @DBG$GL_SYMHEAD				      ; 0947
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+		         56	  04   AC  D0 0004D 	    MOVL    STRING_DESC, R6					      ; 0948
+      0D   A7	    04   B6	       66  28 00051 	    MOVC3   (R6), @4(R6), 13(POINTER)				      ;
+		         50	       57  D0 00057 	    MOVL    POINTER, R0						      ; 0950
+		    0C   A0	       66  90 0005A 	    MOVB    (R6), 12(R0)					      ;
+		    08   A7	  08   AC  D0 0005E 2$:     MOVL    VALUE, 8(POINTER)					      ; 0960
+					   04 00063 	    RET     							      ; 0881
+
+; Routine Size:  100 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	0963	GLOBAL ROUTINE dbg$find_val (value, match_flag) =
+;	0964	
+;	0965	!++
+;	0966	! Functional description:
+;	0967	!	Searches (in a binary manner) through the doubly-linked symbol
+;	0968	!	table for the name of a symbol which matches the given value.
+;	0969	!	If such a symbol is found, the address of the entry is
+;	0970	!	returned.  Otherwise 0 is returned.
+;	0971	!
+;	0972	!	If match_flag is TRUE, an exact match must be found.
+;	0973	!	Otherwise we return a pointer to the closest symbol.
+;	0974	!
+;	0975	! Calling sequence:
+;	0976	!	CALLS #2, dbg$find_val
+;	0977	!
+;	0978	! Inputs:
+;	0979	!	value		-the key we are to search on
+;	0980	!	match_flag	-TRUE => insist on an exact match,
+;	0981	!			 otherwise, the closest one will do.
+;	0982	!
+;	0983	! Implicit inputs:
+;	0984	!	dbg$gl_symhead, the address of the header link in the symbol table.
+;	0985	!
+;	0986	! Outputs:
+;	0987	!	The address of the symbol entry, or zero, if the name is not found.
+;	0988	!
+;	0989	! Implicit outputs:
+;	0990	!	none
+;	0991	!
+;	0992	! Routine value:
+;	0993	!	an address or zero
+;	0994	!
+;	0995	! Side effects:
+;	0996	!	none
+;	0997	!--
+;	0998	
+;	0999		BEGIN
+;	1000	
+;	1001		LOCAL
+;	1002			pointer;
+;	1003	
+;	1004	%IF dbg_sym1
+;     L 1005	%THEN
+;     U 1006		$fao_tt_out ('looking for symbol whose value is !XL, flag = !XB',
+;     U 1007			.value,.match_flag);
+;     U 1008	%FI
+;	1009	
+;	1010		pointer = .dll_rlink (.dbg$gl_symhead);
+;	1011		WHILE .pointer NEQ .dbg$gl_symhead
+;	1012		DO
+;	1013			BEGIN
+;	1014	
+;	1015	%IF dbg_sym2
+;     L 1016	%THEN
+;     U 1017			$fao_tt_out ('symbol "!AD" has value !XL',
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+;     U 1018			.sym_chcount (.pointer), sym_name (.pointer),sym_value(.pointer));
+;     U 1019	%FI
+;	1020			! Look for exact or non-exact match.
+;	1021	
+;	1022			IF( .MATCH_FLAG )
+;	1023			THEN
+;	1024				BEGIN
+;	1025				IF( .SYM_VALUE(.POINTER) EQL .VALUE )
+;	1026				THEN
+;	1027					RETURN(.POINTER)
+;	1028				END
+;	1029			ELSE
+;	1030				BEGIN
+;	1031				$fao_tt_out('non-exact DEFine match not implemented');
+;	1032				END;
+;	1033			
+;	1034			! Go back and look at the next element on the list.
+;	1035	
+;	1036			pointer = .dll_rlink (.pointer);
+;	1037			END;
+;	1038		RETURN 0
+;	1039		END;
+
+
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .BYTE   38							      ;
+					      00001 	    .ASCII  \non-exact DEFine match not implemented\		      ;
+					      00027	    .BLKB   1
+
+
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0004 00064 	    .ENTRY  DBG$FIND_VAL, Save R2				      ; 0963
+		         52 00000000G  FF  D0 00066 	    MOVL    @DBG$GL_SYMHEAD, POINTER				      ; 1010
+	      00000000G  EF	       52  D1 0006D 1$:     CMPL    POINTER, DBG$GL_SYMHEAD				      ; 1011
+				       23  13 00074 	    BEQL    4$							      ;
+		         0B	  08   AC  E9 00076 	    BLBC    MATCH_FLAG, 2$					      ; 1022
+		    04   AC	  08   A2  D1 0007A 	    CMPL    8(POINTER), VALUE					      ; 1025
+				       13  12 0007F 	    BNEQ    3$							      ;
+		         50	       52  D0 00081 	    MOVL    POINTER, R0						      ; 1027
+					   04 00084 	    RET     							      ;
+				       7E  D4 00085 2$:     CLRL    -(SP)						      ; 1031
+			    00000000'  EF  9F 00087 	    PUSHAB  P.AAA						      ;
+	      00000000G  EF	       02  FB 0008D 	    CALLS   #2, DBG$FAO_OUT					      ;
+		         52	       62  D0 00094 3$:     MOVL    (POINTER), POINTER					      ; 1036
+				       D4  11 00097 	    BRB     1$							      ; 1011
+				       50  D4 00099 4$:     CLRL    R0							      ; 1038
+					   04 0009B 	    RET     							      ; 0963
+
+; Routine Size:  56 bytes
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 4-2
+; Digital Equipment Corporation
+;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	1040	GLOBAL ROUTINE dbg$find_sym (string_desc) =
+;	1041	
+;	1042	!++
+;	1043	! Functional description:
+;	1044	!	Searches (in a binary manner) through the doubly-linked symbol
+;	1045	!	table for a symbol name. If it is found, the address of the entry
+;	1046	!	is returned. Else a zero is returned.
+;	1047	!
+;	1048	! Calling sequence:
+;	1049	!	CALLS #1, dbg$find_sym
+;	1050	!
+;	1051	! Inputs:
+;	1052	!	string_desc	- the string descriptor of the symbol to find
+;	1053	!
+;	1054	! Implicit inputs:
+;	1055	!	dbg$gl_symhead, the address of the header link in the symbol table.
+;	1056	!
+;	1057	! Outputs:
+;	1058	!	The address of the symbol entry, or zero, if the name is not found.
+;	1059	!
+;	1060	! Implicit outputs:
+;	1061	!	none
+;	1062	!
+;	1063	! Routine value:
+;	1064	!	an address or zero
+;	1065	!
+;	1066	! Side effects:
+;	1067	!	none
+;	1068	!--
+;	1069	
+;	1070		BEGIN
+;	1071	
+;	1072		MAP
+;	1073			string_desc : REF BLOCK [, BYTE];
+;	1074	
+;	1075		LOCAL
+;	1076			pointer;
+;	1077	
+;	1078	%IF dbg_sym1
+;     L 1079	%THEN
+;     U 1080		$fao_tt_out ('!/looking for symbol "!AD"', .string_desc [dsc$w_length],
+;     U 1081				.string_desc [dsc$a_pointer]);
+;     U 1082	%FI
+;	1083	
+;	1084		pointer = .dll_rlink (.dbg$gl_symhead);
+;	1085		WHILE .pointer NEQ .dbg$gl_symhead
+;	1086		DO
+;	1087			BEGIN
+;	1088	
+;	1089	%IF dbg_sym2
+;     L 1090	%THEN
+;     U 1091			$fao_tt_out ('!/matching symbol "!AD"', .sym_chcount (.pointer), sym_name (.pointer));
+;     U 1092	%FI
+;	1093	
+;	1094			IF ch$eql (.string_desc [dsc$w_length], ch$ptr (.string_desc [dsc$a_pointer]),
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 5-1
+; Digital Equipment Corporation
+;
+;	1095					.sym_chcount (.pointer), ch$ptr (sym_name (.pointer)))
+;	1096			THEN RETURN .pointer
+;	1097			ELSE pointer = .dll_rlink (.pointer);
+;	1098			END;
+;	1099		RETURN 0
+;	1100		END;
+
+
+
+
+
+					 003C 0009C 	    .ENTRY  DBG$FIND_SYM, Save R2,R3,R4,R5			      ; 1040
+		         55 00000000G  FF  D0 0009E 	    MOVL    @DBG$GL_SYMHEAD, POINTER				      ; 1084
+	   54	    04   AC	       04  C1 000A5 	    ADDL3   #4, STRING_DESC, R4					      ; 1094
+	      00000000G  EF	       55  D1 000AA 1$:     CMPL    POINTER, DBG$GL_SYMHEAD				      ; 1085
+				       1B  13 000B1 	    BEQL    3$							      ;
+		         50	  0C   A5  9E 000B3 	    MOVAB   12(POINTER), R0					      ; 1095
+		         51	       60  9A 000B7 	    MOVZBL  (R0), R1						      ;
+	   00	    00   B4	  04   BC  2D 000BA 	    CMPC5   @STRING_DESC, @0(R4), #0, R1, 1(R0)			      ; 1094
+		    01   A0	       51     000C0									      ;
+				       04  12 000C3 	    BNEQ    2$							      ;
+		         50	       55  D0 000C5 	    MOVL    POINTER, R0						      ; 1096
+					   04 000C8 	    RET     							      ;
+		         55	       65  D0 000C9 2$:     MOVL    (POINTER), POINTER					      ; 1097
+				       DC  11 000CC 	    BRB     1$							      ; 1085
+				       50  D4 000CE 3$:     CLRL    R0							      ; 1099
+					   04 000D0 	    RET     							      ; 1040
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:35:14	DBB3:[DEBUG.SRC]DBGSYM.B32;5					Page 6
+; Digital Equipment Corporation
+;
+;	1101	END
+;	1102	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	   209  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$PLIT       	    40  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         5         0       223
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      533	00:15.5		00:19.0
+;	FLOWAN	       23	00:00.4		00:00.5
+;	DELAY	       25	00:00.3		00:00.3
+;	TNBIND	       32	00:00.4		00:00.4
+;	CODE	       61	00:00.6		00:00.6
+;	FINAL	       93	00:01.2		00:01.2
+;	Total	      767	00:18.3		00:22.0
+
+; Size:		209 code + 40 data bytes
+; Run Time:	00:18.7
+; Elapsed Time:	00:22.5
+; Memory Used:	305 pages
+; Compilation Complete

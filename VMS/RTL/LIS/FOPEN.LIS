@@ -1,0 +1,2751 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 1
+;
+;00100  0001	MODULE FOR$OPEN (	! FORTRAN OPEN and default OPEN
+;00200  0002		IDENT = '0-104'	! File: FOPEN.B32
+;00300  0003			) =
+;00400  0004	BEGIN
+;00500  0005	
+;00600  0006	!
+;00700  0007	! COPYRIGHT (C) 1977
+;00800  0008	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;00900  0009	!
+;01000  0010	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;01100  0011	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;01200  0012	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;01300  0013	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;01400  0014	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;01500  0015	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;01600  0016	! REMAIN IN DEC.
+;01700  0017	!
+;01800  0018	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;01900  0019	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;02000  0020	! CORPORATION.
+;02100  0021	!
+;02200  0022	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;02300  0023	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;02400  0024	
+;02500  0025	!++
+;02600  0026	! FACILITY: FORTRAN Support Library - user callable
+;02700  0027	!
+;02800  0028	! ABSTRACT:
+;02900  0029	!
+;03000  0030	!	This module opens a file on a specified logical unit
+;03100  0031	!	(LUN) and allocates 3 control blocks for use by subsequent
+;03200  0032	!	I/O statement calls for this LUN. The 3 control blocks
+;03300  0033	!	are: Logical Unit Block (LUB), I/O statement Block (ISB),
+;03400  0034	!	and an RMS Record Access Block (RAB). A default entry
+;03500  0035	!	point is also provided for use of I/O statements with
+;03600  0036	!	no previous explicit OPEN.
+;03700  0037	!
+;03800  0038	! ENVIRONMENT: User access mode; mixture of AST level or not.
+;03900  0039	!
+;04000  0040	! AUTHOR:	Thomas N. Hastings, CREATION DATE: 6-Mar-77; Version 0
+;04100  0041	!
+;04200  0042	! MODIFIED BY:
+;04300  0043	!
+;04400  0044	!	Thomas N. Hastings, 15-Mar-77: Version 0
+;04500  0045	! 0-1	- original
+;04600  0046	!	Jonathan M. Taylor, 7-jul-77: Version 0
+;04700  0047	! 0-36	- added code for the following:
+;04800  0048	!		after the OPEN, if recordtype = fixed,
+;04900  0049	!		store the length into the RAB.
+;05000  0050	! 0-44	- unwind action is pop 9-SEP-77 TNH
+;05100  0051	! 0-45	- Set default record size properly 9-SEP-77 TNH
+;05200  0052	! 0-47	- Setup buffer size properly 17-SEP-77 TNH
+;05300  0053	! 0-48	- Init. RAB here including UIF. Also set LUB$A_FAB always TNH 19-SEP-77
+;05400  0054	! 0-49	- Call FOR$$SIG_NO_LUB when no LUB.  TNH 24-SEP-77
+;05500  0055	! 0-50	- store max. record in LUB$L_REC_MAX instead of FAB in DEFINE FILE.  TNH 24-SEP-77
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 1-1
+;
+;05600  0056	! 0-51	- Make ERR= not get access vilation TNH 31-SEP-77
+;05700  0057	! 0-52	- A few changes for DEFINE FILE JMT 1-OCT-77
+;05800  0058	! 0-53	- Bug fix in open_proc (assvar check just looked
+;05900  0059	!	  at low bit, should check entire longword)
+;06000  0060	! 0-54	- Bug fix for grabbing assoc. var. in OPECLO_ARG JMT 4-OCT-77
+;06100  0061	! 0-55	- Set KBF and KSZ fields in RAB at open time for
+;06200  0062	!	  FORTRAN direct access files
+;06300  0063	!	  Now gets virtual memory for record buffer and
+;06400  0064	!	  returns virtual memory for FAB from ASSIGN, FDBSET JMT 16-OCT-77
+;06500  0065	! 0-56	- couple of comment changes for clarity JMT 17-OCT-77
+;06600  0066	!	  Also some changes so locate mode works for GETS.
+;06700  0067	! 0-57	- Bug fix for call to LIB$GET_VM so size is longword JMT 19-OCT-77
+;06800  0068	! 0-58	- Set new LUB$V_NOTSEQORG bit if sequential organization
+;06900  0069	!	  JMT 24-Oct-77
+;07000  0070	! 0-59	- Use FOR$K_abcmno59yz as E59TERNAL LITERALs.  TNH 27-Oct-77
+;07100  0071	! 0-60	- Use FOR$_KEYVALERR, chng to FILNOTFOU>  TNH 29-Oct-77
+;07200  0072	! 0-61	- Edit file name.  TNH 3-Nov-77
+;07300  0073	! 0-63	- Get recordsize from file if not specified.
+;07400  0074	!	  Save directory ID so can delete at close.  JMT 6-Nov-77
+;07500  0075	! 0-64	- Bug fixes for DID hack.  Set FAB CBT bit if
+;07600  0076	!	  user specified INITIALSIZE.  JMT 8-Nov-77
+;07700  0077	! 0-65	- Get resultant name string.  Make SCRATCH and DELETE work
+;07800  0078	!	  properly.  Fixes for ECO: TYPE='SPANNED'.  Fix recordsize bugs.  JMT 9-Nov-77
+;07900  0079	! 0-66	- Bug fix for name string.  JMT 13-Nov-77
+;08000  0080	! 0-67	- Fix to clear LUB$A_FAB when FAB goes away.  JMT 16-Nov-77
+;08100  0081	! 0-68	- Set resultant name immediately after OPEN.  TNH 01-Dec-77
+;08200  0082	! 0-69	- Get both expanded and resultant strings for errors.  TNH 2-Dec-77
+;08300  0083	! 0-70	- MAP FAB in FOR$OPEN_FNAME.  TNH 2-Dec-77
+;08400  0084	! 0-71	- Add UNWINDRET condition in FOR$OPEN.  JMT 2-Dec-77
+;08500  0085	! 0-72	- Use FOR$$GET_VM, FOR$$FREE_VM.  TNH 8-Dec-77.
+;08600  0086	! 0-73	- Add user open; bug fixes.  JMT 12-Dec-77
+;08700  0087	! 0-76	- Fix RMS creates but OTS thinks it's old bug.  JMT 19-Dec-77
+;08800  0088	! 0-77	- Fix EXTENDSIZE bug.  JMT 3-Jan-78
+;08900  0089	! 0-78	- Fix FDBSET interface bugs.  JMT 5-Jan-78
+;09000  0090	! 0-79	- Add FORTRAN Exit Handler to DELETE, PRINT.  JMT 11-Jan-78
+;09100  0091	! 0-80	- Make OTS$$LUB_TAB addressing mode general.  JMT 12-Jan-78
+;09200  0092	! 0-84	- Fix 'SHARED' per ECO #40.
+;09300  0093	!	  Check signed/unsigned keywords properly.  JMT 27-Jan-78
+;09400  0094	! 0-85	- Set NEF bit in FAB for access=DIRECT, SEQUENTIAL. JMT 21-Feb-78
+;09500  0095	! 0-87	- New RECORDSIZE checking.  JMT 22-Feb-78
+;09600  0096	! 0-88	- Global register CCB.  JMT 8-Apr-78
+;09700  0097	! 0-89	- Change to STARLET library.  DGP 20-Apr-78
+;09800  0098	! 0-90	- Remove RMS External Literals.  DGP 24-Apr-78
+;09900  0099	! 0-91	- Change REQUIRE files for VAX system build.  DGP 28-Apr-78
+;10000  0100	! 0-92	- Change STARLET to RTLSTARLE to avoid conflicts.  DGP 1-May-78
+;10100  0101	! 0-93	- Set TRN bit in FAB$B_FAC so TPT bit will still work (RMS change). TNH 18-May-78
+;10200  0102	! 0-94	- Use JSB linkages.  TNH 22-May-78
+;10300  0103	! 0-95	- Set UPI for sequentila file, not relative.  TNH 13-June-78
+;10400  0104	! 0-96	- Add comment on ENDFILE.  TNH 17-june-78
+;10500  0105	! 0-97	- Make USEROPEN work.  TNH 20-June-78.
+;10600  0106	! 0-102	- Default RECORDSIZE 133 on ENDFILE OPEN, OWN be PIC.  TNH 17-July-78
+;10610  0107	! 0-103	- Check for NOT RMS$_CREATED and check OLD_FILE on USEROPEN.  TNH 18-July-78
+;10700  0108	!--
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 2
+;
+;00100  0109	!
+;00200  0110	! LINKAGES:
+;00300  0111	!
+;00400  0112	REQUIRE 'RTLIN:FLNK';		! Define all linkages
+; %PRINT:	File: FLNK.B32; Version 1, edit 12, TNH 2-Aug-78
+;00500  0334	
+;00600  0335	!
+;00700  0336	! TABLE OF CONTENTS:
+;00800  0337	!
+;00900  0338	
+;01000  0339	FORWARD ROUTINE
+;01100  0340		FOR$OPEN,			! FORTRAN OPEN statement
+;01200  0341		FOR$$OPECLO_ARG: NOVALUE,	! Get OPEN/CLOSE arguments
+;01300  0342		FOR$$OPEN_DEFLT: CALL_CCB NOVALUE,! default OPEN
+;01400  0343		OPEN_PROC: CALL_CCB NOVALUE,	! common OPEN procedure
+;01500  0344		FOR$$OPEN_FNAME: NOVALUE,	! Edit file name string
+;01600  0345		DECL_EXIT_HAND: NOVALUE,	! Declare EXIT handler
+;01700  0346		EXIT_HANDLER: NOVALUE,		! Exit Handler for 'PRINT', 'DELETE'
+;01800  0347		TRY_TO_CLOSE: CALL_CCB NOVALUE;	! Subroutine for EXIT_HANDLER
+;01900  0348	
+;02000  0349	!
+;02100  0350	! BUILTIN ROUTINES:
+;02200  0351	!
+;02300  0352	
+;02400  0353	BUILTIN
+;02500  0354		ACTUALCOUNT,		! number of actual parameters
+;02600  0355		TESTBITCS;		! test for bit clear and set re-entrantly
+;02700  0356	
+;02800  0357	!
+;02900  0358	! INCLUDE FILES:
+;03000  0359	!
+;03100  0360		REQUIRE 'RTLML:FERR';		! FORTRAN error number definitions
+; %PRINT:	Filename: FERR.MDL! Version 0, edit 36, TNH 19-June-78
+;03200  0478		REQUIRE 'RTLML:FISB';		! I/O statement control block
+; %PRINT:	File: FISB.MDL which produces FISB.B32! Version 1, EDIT 16, DGP 02-Jun-78
+;03300  0687		REQUIRE 'RTLML:FLUB';		! logical Unit Block definitions
+; %PRINT:	File: FLUB.MDL which produces FLUB.B32! Version 0, edit 30, TNH, 17-June-78
+;03400  0855		REQUIRE 'RTLIN:FMAC';		! macros
+; %PRINT:	Filename: FMAC.B32; Version 1, edit 29, TNH, 7-JUN-78
+; %PRINT:	 REQUIRE FILE: LPSECT.B32, VERSION 01-5, TNH, 27-Jun-78
+;03500  1035		REQUIRE 'RTLIN:FOPN';		! definition of OPEN parameters
+; %PRINT:	Filename: FOPN.B32; version 0, edit 22, TNH, 30-May-78
+;03600  1174		REQUIRE	'RTLML:FPAR';		! FORTRAN inter-module paramters
+; %PRINT:	File: FPAR.MDL! version 0, edit 11, TNH, 30-May-78
+;03700  1276		REQUIRE 'RTLIN:ODBG';		! debugging macros
+; %PRINT:	Filename: NODBG.B32; Version 0, edit 20, JMT, 17-Jan-78
+;03800  1352		LIBRARY	'RTLSTARLE';	! STARLET library for macros and symbols
+;03900  1353	
+;04000  1354	!
+;04100  1355	! MACROS:
+;04200  1356	!
+;04300  1357	!	NONE
+;04400  1358	
+;04500  1359	!
+;04600  1360	! EQUATED SYMBOLS:
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 2-1
+;
+;04700  1361	!
+;04800  1362	
+;04900  1363	!
+;05000  1364	! PSECT DECLARATIONS:
+;05100  1365	!
+;05200  1366	
+;05300  1367		DECLARE_PSECTS (FOR);	! declare PSECTs for FOR$ facility
+;05400  1368	
+;05500  1369	!
+;05600  1370	! OWN STORAGE:
+;05700  1371	!
+;05800  1372	OWN
+;05900  1373		EXIT_REASON,			! VMS stuffs with reason for exiting
+;06000  1374		EXIT_BLOCK: VECTOR[4] INITIAL (
+;06100  1375		    0,		! Filled in by VMS with forward link to next EXIT control block
+;06200  1376		    0,		! Set to EXIT_HANDLER if RTL sets up EXIT handler
+;06300  1377		    0,		! Set to arg count (1) if RTL sets up EXIT handler
+;06400  1378		    0),		! Set to EXIT_REASON if RTL sets up EXIT handler
+;06500  1379		HANDLER_LOCK: INITIAL (0);	! Clear if no handler linked yet
+;06600  1380				! Used to make sure only one handler even is ASTs
+;06700  1381	
+;06800  1382	!
+;06900  1383	! EXTERNAL REFERENCES:
+;07000  1384	!
+;07100  1385	
+;07200  1386	!
+;07300  1387	! EXTERNAL LITERAL
+;07400  1388	!
+;07500  1389	!	NONE
+;07600  1390	
+;07700  1391	EXTERNAL
+;07800  1392		OTS$$AA_LUB_TAB: VECTOR ADDRESSING_MODE (GENERAL);
+;07900  1393	
+;08000  1394	EXTERNAL ROUTINE
+;08100  1395		FOR$$ERR_OPECLO,		! OPEN/CLOSE condition handler
+;08200  1396		FOR$$SIGNAL_STO: NOVALUE,	! Convert small FORTRAN err #
+;08300  1397						! to 32-bit VAX error # and SIGNAL_STOP
+;08400  1398		FOR$$SIG_NO_LUB: NOVALUE,	! same as FOR$$SIGNAL_STO except no LUB setup
+;08500  1399						! so must pass LUN explicitly.
+;08600  1400		FOR$$CB_PUSH: JSB_CB_PUSH NOVALUE,	! push current LUB/ISB/RAB, if any, and allocate LUB/ISB/RAB
+;08700  1401						! for this logical unit
+;08800  1402		FOR$$CB_POP: JSB_CB_POP NOVALUE,	! Pop I/O system back to previous LUB or indicate
+;08900  1403						! no I/O statement is currently being processed.
+;09000  1404		FOR$$FREE_VM,			! Return virtual memory
+;09100  1405		FOR$$GET_VM,			! Allocate virtual memory
+;09200  1406		FOR$$CLOSE_FILE: CALL_CCB NOVALUE,! Internal file closer
+;09300  1407		FOR$$SIG_FATINT: NOVALUE,	! Signal_stop internal error
+;09400  1408		LIB$SIG_TO_RET: ADDRESSING_MODE (GENERAL);
+;09500  1409						! convert signal to function value
+;09600  1410	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 3
+;
+;00100  1411	GLOBAL ROUTINE FOR$OPEN (	! FORTRAN OPEN statement
+;00200  1412		KEYWD,		! keyword code - repeated arguments
+;00300  1413		INFO)		! value of keyword (optional)
+;00400  1414		=		! value is TRUE iff successful, FALSE
+;00500  1415				! if error and ERR=
+;00600  1416	
+;00700  1417	!++
+;00800  1418	! ABSTRACT:
+;00900  1419	!
+;01000  1420	!	Open file on the specified logical unit (LUN) with
+;01100  1421	!	attributes specified in the keyword parameters and allocate
+;01200  1422	!	3 control blocks for use by subsequent I/O statement calls
+;01300  1423	!	for this LUN. The 3 control blocks are: Logical Unit
+;01400  1424	!	Block (LUB), I/O statement block (ISB), and an RMS
+;01500  1425	!	Record Access Block (RAB). If a previous CALL ASSIGN or
+;01600  1426	!	CALL FDBSET had been done, the LUB/ISB/RAB
+;01700  1427	!	had already been allocated along with a FAB. Otherwise
+;01800  1428	!	FAB is allocated as LOCAL storage and the RMS$OPEN and
+;01900  1429	!	$CONNECT is performed.  Then a record buffer is allocated for LUN.
+;02000  1430	!
+;02100  1431	! FORMAL PARAMETERS:
+;02200  1432	!
+;02300  1433	!    The following pair is repeated for each user specified keyword:
+;02400  1434	!	KEYWD.rlu.v		Contains KEY<7:0>, ARGTYPE<15:8>, and possibly
+;02500  1435	!				INFO<31:16>
+;02600  1436	!	INFO.rlu.v		optional information if need more than
+;02700  1437	!				16-bits
+;02800  1438	!
+;02900  1439	! IMPLICIT INPUTS:
+;03000  1440	!
+;03100  1441	!	OTS$$A_CUR_LUB		Current active LUB to be pushed
+;03200  1442	!				down or 0 if no LUB has an I/O
+;03300  1443	!				statement in progress (usual).
+;03400  1444	!				Restored on return from FOR$OPEN
+;03500  1445	!	LUB$V_FAB		1 if FAB allocated by FDBSET, CALL ASSIGN
+;03600  1446	!	LUB$V_DIRECT		1 if DEFINE FILE done
+;03700  1447	!	LUB$V_OPENED		1 if unit already opened (error!)
+;03800  1448	!
+;03900  1449	! IMPLICIT OUTPUTS:
+;04000  1450	!
+;04100  1451	!	LUB$V_READ_ONLY		1 if 'READONLY' present
+;04200  1452	!	LUB$V_DIRECT		1 if ACCESS = 'DIRECT'
+;04300  1453	!	LUB$V_APPEND		1 if ACCESS = 'APPEND'
+;04400  1454	!	LUB$V_OLD_FILE		1 if TYPE = 'OLD'
+;04500  1455	!	LUB$V_SCRATCH		1 if TYPE = 'SCRATCH'
+;04600  1456	!	LUB$V_PRINT		1 if DISPOSE = 'PRINT'
+;04700  1457	!	LUB$V_FIXED		1 if RECORDTYPE = 'FIXED'
+;04800  1458	!	LUB$V_FORMATTED		1 if FORM = 'FORMATTED' or ommitted
+;04900  1459	!	LUB$V_UNFORMAT		1 if FORM = 'UNFORMATTED'
+;05000  1460	!	LUB$A_ASSOC_VAR		adr. of n if ASSOCIATEVARIABLE = n is present
+;05100  1461	!	LUB$V_ASS_VAR_L		1 if n is longword
+;05200  1462	!	LUB$W_IFI		RMS internal file id. Needed in case
+;05300  1463	!				FORTRAN CLOSE done.
+;05400  1464	!	LUB$W_RBUF_SIZE		Size in bytes of record buffer allocated.
+;05500  1465	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 3-1
+;
+;05600  1466	! COMPLETTION STATUS:
+;05700  1467	!
+;05800  1468	!	TRUE if success, FALSE if failure and ERR= keyword present
+;05900  1469	!
+;06000  1470	! SIDE EFFECTS:
+;06100  1471	!
+;06200  1472	!	Allocates LUB/ISB/RAB if not already allocated
+;06300  1473	!	by CALL ASSIGN, DEFINE FILE, OR CALL FDBSET.
+;06400  1474	!	SIGNALs or SIGNAL_STOPs the following errors unless ERR=
+;06500  1475	!	keyword is present: SIGNAL_STOPs FOR$_INCOPECLO (46 =
+;06600  1476	!	'INCONSISTENT OPEN/CLOSE STATEMENT SPECIFICATIONS')
+;06700  1477	!	SIGNAL_STOPS FOR$RECIO_OPE (40='RECURSIVE I/O OPERATION')
+;06800  1478	!	SIGNAL_STOPS FOR$_INVLOGUNI (32='INVALID LOGICAL UNIT NUMBER')
+;06900  1479	!	See OPEN_PROC for other SIGNAL_STOPS.
+;07000  1480	!
+;07100  1481	!--
+;07200  1482	
+;07300  1483	    BEGIN
+;07400  1484	
+;07500  1485	    GLOBAL REGISTER
+;07600  1486		CCB = 11: REF BLOCK[, BYTE];
+;07700  1487	
+;07800  1488	    MAP
+;07900  1489		KEYWD: BLOCKVECTOR[100,1];	! Use the formal arg list 
+;08000  1490					! as a VECTOR of blocks
+;08100  1491					! each block=1 longword.
+;08200  1492	    LOCAL
+;08300  1493		NAM_DSC: DSC$DESCRIPTOR,	! String descriptor for ASCIZ filename
+;08400  1494		L_UNWIND_ACTION: VOLATILE,	! UNWIND action code for handler
+;08500  1495		OPEN: VOLATILE VECTOR[OPEN$K_KEY_MAX+1]; ! open parameter array
+;08600  1496	
+;08700  1497	    ENABLE	! Establish handler to RESIGNAL
+;08800  1498			! or UNWIND if ERR= present
+;08900  1499		FOR$$ERR_OPECLO (L_UNWIND_ACTION, OPEN);	! depending on OPEN[OPEN$K_ERR]
+;09000  1500							! Pass UNWIND action code.
+;09100  1501	
+;09200  1502	    !+
+;09300  1503	    ! Set UNWIND cleanup to be a no-operation since LUB/ISB/RAB
+;09400  1504	    ! has not been pushed yet.
+;09500  1505	    !-
+;09600  1506	
+;09700  1507	    L_UNWIND_ACTION = FOR$K_UNWINDNOP;
+;09800  1508	
+;09900  1509	    !+
+;10000  1510	    ! Copy user keyword arglist into array OPEN
+;10100  1511	    ! in cannonical order, so that args may be processed in order
+;10200  1512	    ! If ASCIZ name string, setup NAM_DSC as its descriptor
+;10300  1513	    ! SIGNAL_STOP FOR$_INVARGFOR (48='INVALID ARGUMENT TO FORTRAN I/O SYSTEM'),
+;10400  1514	    ! after scanning all parameters and setting up ERR= in OPEN array.
+;10500  1515	    !-
+;10600  1516	
+;10700  1517	    FOR$$OPECLO_ARG (KEYWD, ACTUALCOUNT(), OPEN, OPEN$K_KEY_MAX, NAM_DSC);
+;10800  1518	
+;10900  1519	    !+
+;11000  1520	    ! Allocate LUB/ISB/RAB if not already allocated for this
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 3-2
+;
+;11100  1521	    ! logical unit. Push down if an I/O statement already in progress
+;11200  1522	    ! on another unit. Store new current LUB address in OTS
+;11300  1523	    ! GLOBAL OWN OTS$A_CUR_LUB. SIGNAL_STOP FOR$_RECIO_OPE
+;11400  1524	    ! (40='RECURSIVE I/O OPERATION'). If an I/O statement already
+;11500  1525	    ! in progress for this logical unit. SIGNAL_STOP FOR$_INVLOGUNI
+;11600  1526	    ! (32='INVALID LOGICAL UNIT NUMBER') if logical unit
+;11700  1527	    ! number outside of the allowed range of 0:99 for explicit OPEN.
+;11800  1528	    ! Finally change UNWIND cleanup action to be to pop current LUB/ISB/RAB
+;11900  1529	    ! since it has now been successfully pushed.
+;12000  1530	    ! On return, CCB points to the current control block.
+;12100  1531	    !-
+;12200  1532	
+;12300  1533	    FOR$$CB_PUSH (.OPEN[OPEN$K_UNIT], OPEN$K_LUN_MIN);
+;12400  1534	    L_UNWIND_ACTION = FOR$K_UNWINDPOP;
+;12500  1535	
+;12600  1536	    !+
+;12700  1537	    ! If logical unit already open, SIGNAL_STOP FOR$_UNIALROPE
+;12800  1538	    ! (34='UNIT ALREADY OPEN').
+;12900  1539	    !-
+;13000  1540	
+;13100  1541	    IF .CCB[LUB$V_OPENED]
+;13200  1542	    THEN
+;13300  1543		FOR$$SIGNAL_STO (FOR$K_UNIALROPE);
+;13400  1544	
+;13500  1545	    !+
+;13600  1546	    ! Set unwind condition to RET so if an error occurs the file will
+;13700  1547	    ! be closed and the LUB returned (thus freeing up the LUN),
+;13800  1548	    !-
+;13900  1549	
+;14000  1550	    L_UNWIND_ACTION = FOR$K_UNWINDRET;
+;14100  1551	
+;14200  1552	    !+
+;14300  1553	    ! If DEFINE FILE, CALL FDBSET, or CALL ASSIGN have already been
+;14400  1554	    ! done for this logical unit, SIGNAL_STOP FOR$DUPFILSPE
+;14500  1555	    ! (21='DUPLICATE FILE SPECIFICATION').
+;14600  1556	    !-
+;14700  1557	
+;14800  1558	    IF .CCB[LUB$A_FAB] NEQA 0 OR .CCB[LUB$V_DIRECT]
+;14900  1559	    THEN
+;15000  1560		FOR$$SIGNAL_STO (FOR$K_DUPFILSPE);
+;15100  1561	
+;15200  1562	    !+
+;15300  1563	    ! Perform the OPEN - call common procedure with a pointer
+;15400  1564	    ! to the OPEN parameter VECTOR of longword values.
+;15500  1565	    !-
+;15600  1566	
+;15700  1567	    OPEN_PROC (OPEN);
+;15800  1568	
+;15900  1569	    !+
+;16000  1570	    ! Pop back previous LUB or indicate that no I/O statement
+;16100  1571	    ! is currently active (OTS$$A_CUR_LUB = 0).
+;16200  1572	    !-
+;16300  1573	
+;16400  1574	    FOR$$CB_POP ();
+;16500  1575	    RETURN 1;	! Return SUCCESS from FOR$OPEN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 3-3
+;
+;16600  1576	    END;	! End of FOR$OPEN routine
+
+
+							    .TITLE  FOR$OPEN
+							    .IDENT  \0-104\
+
+							    .PSECT  FOR$DATA,NOEXE,  PIC,2
+
+					      00000 EXIT_REASON:
+							    .BLKB   4
+      00000000  00000000  00000000  00000000  00004 EXIT_BLOCK:
+							    .LONG   0, 0, 0, 0						      ;
+				    00000000  00014 HANDLER_LOCK:
+							    .LONG   0							      ;
+
+							    .EXTRN  OTS$$AA_LUB_TAB, FOR$$ERR_OPECLO, FOR$$SIGNAL_STO
+							    .EXTRN  FOR$$SIG_NO_LUB, FOR$$CB_PUSH, FOR$$CB_POP, FOR$$FREE_VM
+							    .EXTRN  FOR$$GET_VM, FOR$$CLOSE_FILE, FOR$$SIG_FATINT
+							    .EXTRN  LIB$SIG_TO_RET
+
+							    .PSECT  FOR$CODE,NOWRT,  SHR,  PIC,2
+
+					 0804 00000 	    .ENTRY  FOR$OPEN, Save R2,R11				      ; 1411
+		         5E 	  A4   AE  9E 00002 	    MOVAB   -92(SP), SP						      ;
+				       7E  7C 00006 	    CLRQ    OPEN						      ; 1483
+				  08   AE  7C 00008 	    CLRQ    OPEN						      ;
+				  10   AE  7C 0000B 	    CLRQ    OPEN						      ;
+				  18   AE  7C 0000E 	    CLRQ    OPEN						      ;
+				  20   AE  7C 00011 	    CLRQ    OPEN						      ;
+				  28   AE  7C 00014 	    CLRQ    OPEN						      ;
+				  30   AE  7C 00017 	    CLRQ    OPEN						      ;
+				  38   AE  7C 0001A 	    CLRQ    OPEN						      ;
+				  40   AE  7C 0001D 	    CLRQ    OPEN						      ;
+				  48   AE  7C 00020 	    CLRQ    OPEN						      ;
+				  50   AE  7C 00023 	    CLRQ    OPEN						      ;
+				  58   AE  D4 00026 	    CLRL    L_UNWIND_ACTION					      ;
+		         6D 00000052   EF  DE 00029 	    MOVAL   4$, (FP)						      ;
+		    58   AE	       01  D0 00030 	    MOVL    #1, L_UNWIND_ACTION					      ; 1507
+				  5C   AE  9F 00034 	    PUSHAB  NAM_DSC						      ; 1517
+				       15  DD 00037 	    PUSHL   #21							      ;
+				  08   AE  9F 00039 	    PUSHAB  OPEN						      ;
+		         7E 	       6C  9A 0003C 	    MOVZBL  (AP), -(SP)						      ;
+				  04   AC  9F 0003F 	    PUSHAB  KEYWD						      ; 1411
+		  0000V  CF	       05  FB 00042 	    CALLS   #5, FOR$$OPECLO_ARG					      ; 1517
+		         52 	  04   AE  D0 00047 	    MOVL    OPEN+4, R2						      ; 1533
+				       50  D4 0004B 	    CLRL    R0							      ;
+				     0000G 30 0004D 	    BSBW    FOR$$CB_PUSH					      ;
+				  58   AE  D4 00050 	    CLRL    L_UNWIND_ACTION					      ; 1534
+		         07 	  FC   AB  E9 00053 	    BLBC    -4(CCB), 1$						      ; 1541
+				       22  DD 00057 	    PUSHL   #34							      ; 1543
+		  0000G  CF	       01  FB 00059 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    58   AE	       02  D0 0005E 1$:     MOVL    #2, L_UNWIND_ACTION					      ; 1550
+				  E8   AB  D5 00062 	    TSTL    -24(CCB)						      ; 1558
+				       05  12 00065 	    BNEQ    2$							      ;
+	   07 	    FC   AB	       04  E1 00067 	    BBC     #4, -4(CCB), 3$					      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 3-4
+;
+				       15  DD 0006C 2$:     PUSHL   #21							      ; 1560
+		  0000G  CF	       01  FB 0006E 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       5E  DD 00073 3$:     PUSHL   SP							      ; 1567
+		  0000V  CF	       01  FB 00075 	    CALLS   #1, OPEN_PROC					      ;
+				     0000G 30 0007A 	    BSBW    FOR$$CB_POP						      ; 1574
+		         50 	       01  D0 0007D 	    MOVL    #1, R0						      ; 1575
+					   04 00080 	    RET     							      ; 1411
+					 0000 00081 4$:     .WORD   Save nothing					      ; 1483
+		         50 	  08   AC  D0 00083 	    MOVL    8(AP), R0						      ;
+		         50 	  04   A0  D0 00087 	    MOVL    4(R0), R0						      ;
+				  9C   A0  9F 0008B 	    PUSHAB  OPEN						      ;
+				  F4   A0  9F 0008E 	    PUSHAB  L_UNWIND_ACTION					      ;
+				       02  DD 00091 	    PUSHL   #2							      ;
+				       5E  DD 00093 	    PUSHL   SP							      ;
+		         7E 	  04   AC  7D 00095 	    MOVQ    4(AP), -(SP)					      ;
+		  0000G  CF	       03  FB 00099 	    CALLS   #3, FOR$$ERR_OPECLO					      ;
+					   04 0009E 	    RET     							      ;
+
+; Routine Size:  159 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4
+;
+;00100  1577	GLOBAL ROUTINE FOR$$OPECLO_ARG (	! FORTRAN copy OPEN/CLOSE args
+;00200  1578		KEYWD_ADR,	! Adr. of first keyword arg
+;00300  1579		ACTUAL_COUNT,	! No. of actual parameters in arg list
+;00400  1580		OPEN_ADR,	! Adr. of array to store keyword values
+;00500  1581		KEY_MAX,	! Max. value of keyword parameter
+;00600  1582		NAM_DSC_ADR)	! Adr. of descriptor for name string
+;00700  1583		: NOVALUE =
+;00800  1584	
+;00900  1585	!++
+;01000  1586	! ABSTRACT:
+;01100  1587	!
+;01200  1588	!	Routine to copy keyword OPEN/CLOSE parameters
+;01300  1589	!	into an array for sequential processing in cannonical order.
+;01400  1590	!	Note: LUB cannot be located until all OPEN arguments are scanned and UNIT=n found.
+;01500  1591	!
+;01600  1592	! FORMAL PARAMETERS:
+;01700  1593	!
+;01800  1594	!	KEYWD_ADR.rlu.ra	Address of first keyword
+;01900  1595	!				in user arg list
+;02000  1596	!	ACTUAL_COUNT.rlu.v	Count of no. of users args
+;02100  1597	!	OPEN_ADR.wlu.ra		Adr. of array to write keyword values
+;02200  1598	!	KEY_MAX.rlu.v	Max. OPEN/CLOSE keyword value
+;02300  1599	!	NAM_DSC_ADR	Adr. of a descriptor if ASCIZ name string given by user
+;02400  1600	!			Descriptors must be allocated by caller
+;02500  1601	!			not called procedure.
+;02600  1602	!
+;02700  1603	! IMPLICIT INPUTS:
+;02800  1604	!
+;02900  1605	!	NONE
+;03000  1606	!
+;03100  1607	! IMPLICIT OUTPUTS:
+;03200  1608	!
+;03300  1609	!	NONE
+;03400  1610	!
+;03500  1611	! COMPLETITION STATUS:
+;03600  1612	!
+;03700  1613	!	NONE
+;03800  1614	!
+;03900  1615	! SIDE EFFECTS:
+;04000  1616	!
+;04100  1617	!	SIGNAL_STOPs FOR$_INVARGFOR (48='INVALID ARGUMENT TO FORTRAN I/O SYSTEM')
+;04200  1618	!	if keyword parameter is out of range, but only after all parameters
+;04300  1619	!	are scanned so that ERR= parameter, if present, has been setup in array OPEN_ADR.
+;04400  1620	!	Uses FOR$$SIG_NO_LUB to signal, since no LUB setup yet
+;04500  1621	!	so logical unit number must be passed explicitly on errors.
+;04600  1622	!--
+;04700  1623	
+;04800  1624	    BEGIN
+;04900  1625	    MAP
+;05000  1626		KEYWD_ADR: REF BLOCKVECTOR[100,1],	! Vector of blocks, each block
+;05100  1627							! is one longword.
+;05200  1628		OPEN_ADR: REF VECTOR[OPEN$K_KEY_MAX+1, LONG],	! Vector to receive cannonical ordering
+;05300  1629								! of users parameter values.
+;05400  1630		NAM_DSC_ADR: REF DSC$DESCRIPTOR;	! string descriptor to use in case ASCIZ file name
+;05500  1631	    LOCAL
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4-1
+;
+;05600  1632		V_ARG_KEY_ERR;				! error flag, 1 if ARG or KEY out of range
+;05700  1633	
+;05800  1634	    !+
+;05900  1635	    ! Clear OPEN or CLOSE parameter array and clear error flag
+;06000  1636	    !-
+;06100  1637	
+;06200  1638	    FILL_VAL (0, .KEY_MAX + 1, .OPEN_ADR);
+;06300  1639	    V_ARG_KEY_ERR = 0;
+;06400  1640	
+;06500  1641	    !+
+;06600  1642	    ! Scan actual keyword parameter list (KEYWD_ADR) and copy (sign extend)
+;06700  1643	    ! associated information to formal array OPEN_ADR of longwords ordered
+;06800  1644	    ! by parameter dependencies, i. e., sort by KEY.
+;06900  1645	    !-
+;07000  1646	
+;07100  1647	    INCR I FROM 0 TO .ACTUAL_COUNT-1 DO
+;07200  1648	
+;07300  1649	    !+
+;07400  1650	    ! Set longword value to sign extension of each type of OPEN/CLOSE
+;07500  1651	    ! parameter present to: Bits 31:16 of this actual, next
+;07600  1652	    ! actual, or location specified by next actual depending
+;07700  1653	    ! on the type of OPEN argument (OPEN$B_ARG_TYPE).
+;07800  1654	    ! If ARGTYPE or KEY code is not one of defined values, set error flag and keep scanning
+;07900  1655	    ! to see if ERR= is present so error handler will handle properly.
+;08000  1656	    ! error FOR$_INVARGFOR (48='INVALID ARGUMENT TO FORTRAN I/O SYSTEM')
+;08100  1657	    !-
+;08200  1658	
+;08300  1659		BEGIN
+;08400  1660		LOCAL
+;08500  1661		    K,			! temp value of KEY
+;08600  1662		    V;			! temp value of value to be stored
+;08700  1663	
+;08800  1664		K = .KEYWD_ADR[.I, OPEN$B_KEY];
+;08900  1665		V = (CASE .KEYWD_ADR[.I, OPEN$B_ARG_TYPE] FROM 0 TO OPEN$K_ARG_MAX OF
+;09000  1666			SET
+;09100  1667			[OPEN$K_ARG_NULL]:
+;09200  1668	
+;09300  1669			    !+
+;09400  1670			    ! keyword with no value - make value be 1
+;09500  1671			    ! to distinguish from not present.
+;09600  1672			    !-
+;09700  1673	
+;09800  1674				    1;
+;09900  1675	
+;10000  1676			[OPEN$K_ARG_LIT, OPEN$K_ARG_W_V]:
+;10100  1677	
+;10200  1678			    !+
+;10300  1679			    ! literal or word-by-value - bits <31:16> is value
+;10400  1680			    ! sign extend to full machine value
+;10500  1681			    !-
+;10600  1682	
+;10700  1683			    .KEYWD_ADR[.I, OPEN$W_INFO];
+;10800  1684	
+;10900  1685			[OPEN$K_ARG_W_R]:
+;11000  1686	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4-2
+;
+;11100  1687	
+;11200  1688			    !+
+;11300  1689			    ! Word by reference - use adr. in next longword
+;11400  1690			    ! sign extend word to longword
+;11500  1691			    !-
+;11600  1692	
+;11700  1693			    IF .KEYWD_ADR[.I, OPEN$B_KEY] EQLU OPEN$K_ASSOCIAT
+;11800  1694			    THEN
+;11900  1695				! special case! we want the address of the value
+;12000  1696				! not the value itself.
+;12100  1697				.KEYWD_ADR[(I = .I + 1), OPEN$A_VALUE]
+;12200  1698			    ELSE
+;12300  1699				.(.KEYWD_ADR[(I = .I + 1), OPEN$A_VALUE]) <0, %BPVAL/2, 1>;
+;12400  1700	
+;12500  1701			[OPEN$K_ARG_L_R]:
+;12600  1702	
+;12700  1703			    !+
+;12800  1704			    ! Longword by-reference-next parameter slot contains adr. of value
+;12900  1705			    !-
+;13000  1706	
+;13100  1707			    IF .KEYWD_ADR[.I, OPEN$B_KEY] EQLU OPEN$K_ASSOCIAT
+;13200  1708			    THEN
+;13300  1709				! Special case! Get the address of the value not the
+;13400  1710				! value itself.  Set longword ass. var. flag, too.
+;13500  1711				BEGIN
+;13600  1712				OPEN_ADR[OPEN$K_ASSOC_L] = 1;
+;13700  1713				.KEYWD_ADR[(I = .I + 1), OPEN$A_VALUE]
+;13800  1714				END
+;13900  1715			    ELSE
+;14000  1716				..KEYWD_ADR[(I = .I + 1), OPEN$A_VALUE];
+;14100  1717	
+;14200  1718			[OPEN$K_ARG_L_V, OPEN$K_ARG_T_DS, OPEN$K_ARG_ZI]:
+;14300  1719	
+;14400  1720			    !+
+;14500  1721			    ! Longword by value, adr. of string desc., or procedure adr.
+;14600  1722			    !-
+;14700  1723	
+;14800  1724			    .KEYWD_ADR[(I = .I + 1), OPEN$G_VALUE];
+;14900  1725	
+;15000  1726			[OPEN$K_ARG_TZ_R]:
+;15100  1727	
+;15200  1728			    !+
+;15300  1729			    ! Address of array of ASCIZ characters.
+;15400  1730			    ! Next parameter slot contains address of first byte of string
+;15500  1731			    ! If this file name keyword, store length and address of string in descriptor
+;15600  1732			    ! Else SIGNAL_STOP FOR$_INVARGFOR (48='INVALID ARGUMENT TO FORTRAN I/O SYSTEM')
+;15700  1733			    !-
+;15800  1734	
+;15900  1735			    IF .KEYWD_ADR[.I, OPEN$B_KEY] EQLU OPEN$K_NAME
+;16000  1736			    THEN
+;16100  1737				BEGIN
+;16200  1738				LOCAL P;		! char. pointer to null char or 0
+;16300  1739				NAM_DSC_ADR[DSC$A_POINTER] = .KEYWD_ADR[(I=.I+1), OPEN$A_VALUE];
+;16400  1740				P = CH$FIND_CH (OPEN$K_STR_MAX, .NAM_DSC_ADR[DSC$A_POINTER], 0);
+;16500  1741				NAM_DSC_ADR[DSC$W_LENGTH] =
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4-3
+;
+;16600  1742				    (IF .P NEQ 0
+;16700  1743				     THEN
+;16800  1744					CH$DIFF (.P, .NAM_DSC_ADR[DSC$A_POINTER])
+;16900  1745				     ELSE
+;17000  1746					OPEN$K_STR_MAX);
+;17100  1747				.NAM_DSC_ADR		! value of the CASE-expr is adr. of descr.
+;17200  1748				END
+;17300  1749	
+;17400  1750			    ELSE
+;17500  1751	
+;17600  1752				!+
+;17700  1753				! ASCIZ string not file name, just skip next longword and flag error
+;17800  1754				!-
+;17900  1755	
+;18000  1756				BEGIN
+;18100  1757				I = .I + 1;
+;18200  1758				V_ARG_KEY_ERR = 1;
+;18300  1759				0		! value of the CASE-expr is 0 if error
+;18400  1760				END;
+;18500  1761	
+;18600  1762			[OUTRANGE]:
+;18700  1763	
+;18800  1764			    !+
+;18900  1765			    ! If KEY is out of range, set error flag (V_ARG_KEY_ERR) and
+;19000  1766			    ! keep scanning to see if ERR= is present or not.
+;19100  1767			    !-
+;19200  1768	
+;19300  1769			    BEGIN
+;19400  1770			    V_ARG_KEY_ERR = 1;
+;19500  1771			    0		! Store 0 
+;19600  1772			    END;
+;19700  1773	
+;19800  1774			TES);	! End of CASE on ARG_TYPE.
+;19900  1775	
+;20000  1776		!+
+;20100  1777		! If KEY value is in range, store in cannonical array OPEN_ADR,
+;20200  1778		! else set error flag and keep scanning to see if ERR= is present
+;20300  1779		! so error handler will handle properly when signaled.
+;20400  1780		! Note: I advanced correctly (by 1 or 2) depending on ARGTYPE
+;20500  1781		! even though KEY is not one of the defined ones.
+;20600  1782		!-
+;20700  1783	
+;20800  1784		IF .K LEQU .KEY_MAX
+;20900  1785		THEN
+;21000  1786		    OPEN_ADR[.K] = .V
+;21100  1787		ELSE
+;21200  1788		    V_ARG_KEY_ERR = 1
+;21300  1789	
+;21400  1790		END;		! End of loop
+;21500  1791	
+;21600  1792	    !+
+;21700  1793	    ! Check for any errors during scan.
+;21800  1794	    ! If yes, SIGNAL_STOP FOR$_INVARGFOR (48='INVALID ARGUMENT TO FORTRAN I/O SYSTEM')
+;21900  1795	    !-
+;22000  1796	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4-4
+;
+;22100  1797	    IF .V_ARG_KEY_ERR THEN FOR$$SIG_NO_LUB (FOR$K_INVARGFOR, .OPEN_ADR[OPEN$K_UNIT]);
+;22200  1798	
+;22300  1799	    RETURN;		! Return from FOR$$OPECLO_ARG routine
+;22400  1800	    END;		! End of FOR$$OPECLO_ARG routine
+
+
+
+
+
+					 01FC 0009F 	    .ENTRY  FOR$$OPECLO_ARG, Save R2,R3,R4,R5,R6,R7,R8		      ; 1577
+	   50 	    10   AC	       01  C1 000A1 	    ADDL3   #1, KEY_MAX, R0					      ; 1638
+		         50 	       04  C4 000A6 	    MULL2   #4, R0						      ;
+		         57 	  0C   AC  D0 000A9 	    MOVL    OPEN_ADR, R7					      ;
+	   00 	         6E 	       00  2C 000AD 	    MOVC5   #0, (SP), #0, R0, (R7)				      ;
+		         67 	       50     000B1									      ;
+				       58  D4 000B3 	    CLRL    V_ARG_KEY_ERR					      ; 1639
+		         54 	  04   AC  D0 000B5 	    MOVL    KEYWD_ADR, R4					      ; 1664
+		         52 	       01  CE 000B9 	    MNEGL   #1, I						      ; 1647
+				     00AE  31 000BC 	    BRW     17$							      ;
+				     6442  DF 000BF 1$:     PUSHAL  (R4)[I]						      ; 1664
+		         56 	       9E  9A 000C2 	    MOVZBL  @(SP)+, K						      ;
+				  01 A442  DF 000C5 	    PUSHAL  1(R4)[I]						      ; 1665
+	   08 	         00 	       9E  8F 000C9 	    CASEB   @(SP)+, #0, #8					      ;
+	 0019 	       0019 	     0014     000CD 2$:     .WORD   3$-2$,-						      ;
+	 0035 	       004D 	     0022     000D3		    4$-2$,-						      ;
+	 004D 	       004D 	     0055     000D9		    4$-2$,-						      ;
+								    5$-2$,-						      ;
+								    8$-2$,-						      ;
+								    6$-2$,-						      ;
+								    9$-2$,-						      ;
+								    8$-2$,-						      ;
+								    8$-2$						      ;
+				       78  11 000DF 	    BRB     14$							      ; 1770
+		         55 	       01  D0 000E1 3$:     MOVL    #1, V						      ; 1665
+				       78  11 000E4 	    BRB     15$							      ;
+				  02 A442  DF 000E6 4$:     PUSHAL  2(R4)[I]						      ;
+		         55 	       9E  32 000EA 	    CVTWL   @(SP)+, V						      ;
+				       6F  11 000ED 	    BRB     15$							      ;
+				     6442  DF 000EF 5$:     PUSHAL  (R4)[I]						      ; 1693
+		         11 	       9E  91 000F2 	    CMPB    @(SP)+, #17						      ;
+				       23  13 000F5 	    BEQL    8$							      ;
+				       52  D6 000F7 	    INCL    I							      ; 1699
+		         50 	     6442  D0 000F9 	    MOVL    (R4)[I], R0						      ;
+		         55 	       60  32 000FD 	    CVTWL   (R0), V						      ; 1693
+				       5C  11 00100 	    BRB     15$							      ; 1665
+				     6442  DF 00102 6$:     PUSHAL  (R4)[I]						      ; 1707
+		         11 	       9E  91 00105 	    CMPB    @(SP)+, #17						      ;
+				       05  12 00108 	    BNEQ    7$							      ;
+		         67 	       01  D0 0010A 	    MOVL    #1, (R7)						      ; 1712
+				       0B  11 0010D 	    BRB     8$							      ; 1713
+				       52  D6 0010F 7$:     INCL    I							      ; 1716
+		         50 	     6442  D0 00111 	    MOVL    (R4)[I], R0						      ;
+		         55 	       60  D0 00115 	    MOVL    (R0), V						      ; 1707
+				       44  11 00118 	    BRB     15$							      ; 1665
+				       52  D6 0011A 8$:     INCL    I							      ; 1724
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 4-5
+;
+		         55 	     6442  D0 0011C 	    MOVL    (R4)[I], V						      ; 1665
+				       3C  11 00120 	    BRB     15$							      ;
+				     6442  DF 00122 9$:     PUSHAL  (R4)[I]						      ; 1735
+		         0E 	       9E  91 00125 	    CMPB    @(SP)+, #14						      ;
+				       2D  12 00128 	    BNEQ    13$							      ;
+		         53 	  14   AC  D0 0012A 	    MOVL    NAM_DSC_ADR, R3					      ; 1739
+				       52  D6 0012E 	    INCL    I							      ;
+		    04   A3	     6442  D0 00130 	    MOVL    (R4)[I], 4(R3)					      ;
+      04   B3	  0064   8F	       00  3A 00135 	    LOCC    #0, #100, @4(R3)					      ; 1740
+				       02  12 0013C 	    BNEQ    10$							      ;
+				       51  D4 0013E 	    CLRL    R1							      ;
+		         50 	       51  D0 00140 10$:    MOVL    R1, P						      ;
+				       06  13 00143 	    BEQL    11$							      ; 1742
+		         50 	  04   A3  C2 00145 	    SUBL2   4(R3), R0						      ; 1744
+				       04  11 00149 	    BRB     12$							      ; 1742
+		         50 	  64   8F  9A 0014B 11$:    MOVZBL  #100, R0						      ;
+		         63 	       50  B0 0014F 12$:    MOVW    R0, (R3)						      ; 1741
+		         55 	       53  D0 00152 	    MOVL    R3, V						      ; 1735
+				       07  11 00155 	    BRB     15$							      ;
+				       52  D6 00157 13$:    INCL    I							      ; 1757
+		         58 	       01  D0 00159 14$:    MOVL    #1, V_ARG_KEY_ERR					      ; 1758
+				       55  D4 0015C 	    CLRL    V							      ; 1735
+		    10   AC	       56  D1 0015E 15$:    CMPL    K, KEY_MAX						      ; 1784
+				       06  1A 00162 	    BGTRU   16$							      ;
+		       6746 	       55  D0 00164 	    MOVL    V, (R7)[K]						      ; 1786
+				       03  11 00168 	    BRB     17$							      ; 1784
+		         58 	       01  D0 0016A 16$:    MOVL    #1, V_ARG_KEY_ERR					      ; 1788
+	   02 	         52 	  08   AC  F2 0016D 17$:    AOBLSS  ACTUAL_COUNT, I, 18$				      ; 1647
+				       03  11 00172 	    BRB     19$							      ;
+				     FF48  31 00174 18$:    BRW     1$							      ;
+		         0A 	       58  E9 00177 19$:    BLBC    V_ARG_KEY_ERR, 20$					      ; 1797
+				  04   A7  DD 0017A 	    PUSHL   4(R7)						      ;
+				       30  DD 0017D 	    PUSHL   #48							      ;
+		  0000G  CF	       02  FB 0017F 	    CALLS   #2, FOR$$SIG_NO_LUB					      ;
+					   04 00184 20$:    RET     							      ; 1577
+
+; Routine Size:  230 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 5
+;
+;00100  1801	GLOBAL ROUTINE FOR$$OPEN_DEFLT (	! Default OPEN
+;00200  1802		ACCESS_VAL,	! Access = OPEN$K_ACC_{SEQ, DIR}
+;00300  1803		TYPE_VAL,	! TYPE = OPEN$K_ACC_{NEW,OLD}
+;00400  1804		FORM_VAL)	! FORM = OPEN$K_FOR_{UNF, FOR, UNS}
+;00500  1805		: CALL_CCB NOVALUE =
+;00600  1806	
+;00700  1807	!++
+;00800  1808	! ABSTRACT:
+;00900  1809	!
+;01000  1810	!	Perform default OPEN for an I/O statement for the indicated
+;01100  1811	!	logical unit. The possible parameters are a restricted
+;01200  1812	!	subset of explicit OPEN, plus FORM = 'UNSPECIFIED' (for
+;01300  1813	!	ENDFILE only). The keywords for default OPEN are:
+;01400  1814	!	ACCESS, TYPE, and FORM.
+;01500  1815	!
+;01600  1816	! FORMAL PARAMETERS:
+;01700  1817	!
+;01800  1818	!	LUB_ADR.mlu.ra		adr of LUB/ISB/RAB control block
+;01900  1819	!	ACCESS_VAL.rlu.v	Value = OPEN$K_ACC_{SEQ,DIR}
+;02000  1820	!				to indicate ACCESS = 'SEQUENTIAL'
+;02100  1821	!				or 'DIRECT'.
+;02200  1822	!	TYPE_VAL.rlu.v		Value = OPEN$K_TYPE_{NEW, OLD} TO
+;02300  1823	!				indicate TYPE = 'NEW' or 'OLD'
+;02400  1824	!	FORM_VAL.rlu.v		Value = OPEN$K_FORM_{UNF, FOR, UNS}
+;02500  1825	!				to indicate FORM = 'UNFORMATTED',
+;02600  1826	!				'FORMATTED', or 'UNSPECIFIED
+;02700  1827	!				(ENDFILE only).
+;02800  1828	!
+;02900  1829	! IMPLICIT INPUTS:
+;03000  1830	!
+;03100  1831	!	LUB$V_READ_ONLY		1 if 'READONLY' specified in CALL FDBSET
+;03200  1832	!	LUB$V_DIRECT		1 if specified on previous DEFINEFILE
+;03300  1833	!	LUB$V_OLD_FILE		1 if specified on previous CALL FDBSET
+;03400  1834	!	LUB$V_UNFORMAT		1 if specified on previous DEFINEFILE
+;03500  1835	!	LUB$B_LUN		FORTRAN logical unit number
+;03600  1836	!
+;03700  1837	! IMPLICIT OUTPUTS:
+;03800  1838	!
+;03900  1839	!	LUB$V_DIRECT		1 if ACCESS = 'DIRECT' or DEFINEFILE
+;04000  1840	!	LUB$V_OLD_FILE		1 if TYPE = 'OLD' or CALL FDBSET 'OLD'
+;04100  1841	!	LUB$V_FORMATTED		1 if FORM = 'FORMATTED' 
+;04200  1842	!	LUB$V_UNFORMAT		1 if FORM = 'UNFORMATTED' or DEFINEFILE
+;04300  1843	!
+;04400  1844	! COMPLETION STATUS:
+;04500  1845	!
+;04600  1846	!	NONE
+;04700  1847	!
+;04800  1848	! SIDE EFFECTS:
+;04900  1849	!
+;05000  1850	!	See OPEN_PROC for SIGNAL_STOPs.
+;05100  1851	!--
+;05200  1852	
+;05300  1853	    BEGIN
+;05400  1854	
+;05500  1855	    EXTERNAL REGISTER
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 5-1
+;
+;05600  1856		CCB: REF BLOCK[, BYTE];
+;05700  1857	
+;05800  1858	    LOCAL
+;05900  1859		OPEN: VECTOR[OPEN$K_KEY_MAX+1];	! OPEN parameter array
+;06000  1860	
+;06100  1861	    !+
+;06200  1862	    ! Clear OPEN parameter array
+;06300  1863	    !-
+;06400  1864	
+;06500  1865	    FILL_VAL (0, OPEN$K_KEY_MAX + 1, OPEN);
+;06600  1866	
+;06700  1867	    !+
+;06800  1868	    ! Setup count, ACCESS, TYPE, and FORM parameter values
+;06900  1869	    !-
+;07000  1870	
+;07100  1871	    OPEN[OPEN$K_ACCESS] = .ACCESS_VAL;
+;07200  1872	    OPEN[OPEN$K_TYPE]   = .TYPE_VAL;
+;07300  1873	    OPEN[OPEN$K_FORM]   = .FORM_VAL;
+;07400  1874	
+;07500  1875	    !+
+;07600  1876	    ! Perform the OPEN - call common procedure with a pointer
+;07700  1877	    ! to the OPEN parameter VECTOR of longword values.
+;07800  1878	    !-
+;07900  1879	
+;08000  1880	    OPEN_PROC (OPEN);
+;08100  1881	    RETURN;
+;08200  1882	    END;	! End of FOR$OPEN_DEFLT routine
+
+
+
+
+
+					 003C 00185 	    .ENTRY  FOR$$OPEN_DEFLT, Save R2,R3,R4,R5			      ; 1801
+		         5E 	  A8   AE  9E 00187 	    MOVAB   -88(SP), SP						      ;
+	   00 	         6E 	       00  2C 0018B 	    MOVC5   #0, (SP), #0, #88, OPEN				      ; 1865
+		         6E 	0058   8F     0018F									      ;
+		    10   AE	  04   AC  D0 00193 	    MOVL    ACCESS_VAL, OPEN+16					      ; 1871
+		    3C   AE	  08   AC  D0 00198 	    MOVL    TYPE_VAL, OPEN+60					      ; 1872
+		    14   AE	  0C   AC  D0 0019D 	    MOVL    FORM_VAL, OPEN+20					      ; 1873
+				       5E  DD 001A2 	    PUSHL   SP							      ; 1880
+		  0000V  CF	       01  FB 001A4 	    CALLS   #1, OPEN_PROC					      ;
+					   04 001A9 	    RET     							      ; 1801
+
+; Routine Size:  37 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 6
+;
+;00100  1883	ROUTINE OPEN_PROC (	! Do an OPEN
+;00200  1884		OPEN_ADR)	! Address of OPEN parameter vector
+;00300  1885		: CALL_CCB NOVALUE =
+;00400  1886	
+;00500  1887	!++
+;00600  1888	! ABSTRACT:
+;00700  1889	!
+;00800  1890	!	This routine performs the OPEN for FOR$OPEN and FOR$$OPEN_DEFLT.
+;00900  1891	!	The OPEN parameters have been picked up and placed in a
+;01000  1892	!	longword array. The index is parameter specific. The parameters
+;01100  1893	!	are processed in a logical order which minimizes the
+;01200  1894	!	distance between parameters which depend on each other.
+;01300  1895	!	Each parameter sets an appropriate part of the LUB/ISB/RAB
+;01400  1896	!	control block or the FAB control block. If the FAB
+;01500  1897	!	has not been allocated, it is allocated locally. After the
+;01600  1898	!	$OPEN/$CREATE and $CONNECT, the FAB is deallocated, since
+;01700  1899	!	it is no longer needed, except for the RMS internal file id (RMS$W_IFI).  
+;01800  1900	!	which is copied to LUB$W_IFI.
+;01900  1901	!	Whenever the FAB, RAB, LUB, or ISB
+;02000  1902	!	are allocated they are initially set to 0. Thus, default values
+;02100  1903	!	are often indicated by zero in these structures.
+;02200  1904	!
+;02300  1905	! FORMAL PARAMETERS:
+;02400  1906	!
+;02500  1907	!	LUB_ADR.mlu.ra		Adr. of LUB/ISB/RAB control block
+;02600  1908	!	OPEN_ADR.mlu.ra		Adr. of OPEN parameter array of 
+;02700  1909	!				longwords. Index is of form:
+;02800  1910	!				OPEN$K_name. A longword value of 0
+;02900  1911	!				indiates an omitted keyword.
+;03000  1912	!
+;03100  1913	! IMPLICIT INPUTS:
+;03200  1914	!
+;03300  1915	!	LUB$V_READ_ONLY		1 if 'READONLY' specified in CALL FDBSET
+;03400  1916	!	LUB$V_DIRECT		1 if specified on previous DEFINEFILE
+;03500  1917	!	LUB$V_OLD_FILE		1 if specified on previous CALL FDBSET
+;03600  1918	!	LUB$V_UNFORMAT		1 if specified on previous DEFINEFILE
+;03700  1919	!	LUB$B_LUN		FORTRAN logical unit number
+;03800  1920	!	LUB$W_RBUF_SIZE		Size in bytes of record buffer to be allocated
+;03900  1921	!	LUB$A_FAB		Adr. of FAB for FOR$$SIGNAL to find RMS error codes
+;04000  1922	!				if FDBSET had been called.
+;04100  1923	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 7
+;
+;00100  1924	! IMPLICIT OUTPUTS:
+;00200  1925	!
+;00300  1926	!	LUB$V_READ_ONLY		1 if 'READONLY' present or CALL FDBSET
+;00400  1927	!	LUB$V_DIRECT		1 if ACCESS = 'DIRECT' or DEFINEFILE
+;00500  1928	!	LUB$V_OLD_FILE		1 if TYPE = 'OLD' or CALL FDBSET 'OLD'
+;00600  1929	!	LUB$V_SCRATCH		1 if TYPE = 'SCRATCH'
+;00700  1930	!	LUB$V_PRINT		1 if DISPOSE = 'PRINT'
+;00800  1931	!	LUB$V_FIXED		1 if RECORDTYPE = 'FIXED'
+;00900  1932	!	LUB$V_FORMATTED		1 if FORM = 'FORMATTED' or ommitted
+;01000  1933	!	LUB$V_UNFORMAT		1 if FORM = 'UNFORMATTED'
+;01100  1934	!				or DEFINEFILE
+;01200  1935	!	LUB$A_ASSOC_VAR		adr. of n if ASSOCIATEVARIABLE = n is present
+;01300  1936	!				in OPEN or DEFINEFILE
+;01400  1937	!	LUB$V_ASS_VAR_L		1 if n is longword
+;01500  1938	!	LUB$W_IFI		RMS internal file id. Needed in case
+;01600  1939	!				FORTRAN CLOSE done.
+;01700  1940	!	LUB$W_RBUF_SIZE		Size in bytes of record buffer allocated.
+;01800  1941	!	LUB$L_LOG_RECNO		1
+;01900  1942	!
+;02000  1943	! COMPLETION STATUS:
+;02100  1944	!
+;02200  1945	!	NONE
+;02300  1946	!
+;02400  1947	! SIDE EFFECTS:
+;02500  1948	!
+;02600  1949	!	If FAB was allocated previously by FDBSET or CALL ASSIGN then
+;02700  1950	!	it is free'd.  SIGNAL_STOPs the following errors:
+;02800  1951	!	FOR$_FILNOTFOU	(29 = 'FILE NOT FOUND')
+;02900  1952	!	FOR$_OPEFAI	(30 = 'OPEN FAILURE')
+;03000  1953	!	FOR$_INCRECLEN	(37 = 'INCONSISTENT RECORD LENGTH')
+;03100  1954	!	FOR$_INSVIRMEM	(41 = 'INSUFFICIENT VIRTUAL MEMORY)
+;03200  1955	!	FOR$_NO_SUCDEV	(42 = 'NO SUCH DEVICE')
+;03300  1956	!	FOR$_FILNAMSPE	(43 = 'FILE NAME SPECIFICATION ERROR')
+;03400  1957	!	FOR$_RECSPEERR	(44 = 'RECORD SPECIFICATION ERROR')
+;03500  1958	!	FOR$_KEYVALERR	(45 = 'KEYWORD VALUE ERROR IN OPEN STATEMENT')
+;03600  1959	!	FOR$_INVARGFOR	(47 = 'INVALID ARGUMENT TO FORTRAN I/O LIBRARY')
+;03700  1960	!--
+;03800  1961	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 8
+;
+;00100  1962	    BEGIN
+;00200  1963	
+;00300  1964	    EXTERNAL REGISTER
+;00400  1965		CCB: REF BLOCK[, BYTE];
+;00500  1966	
+;00600  1967	    MAP
+;00700  1968		OPEN_ADR: REF VECTOR[OPEN$K_KEY_MAX+1];
+;00800  1969	
+;00900  1970	    LOCAL
+;01000  1971		V_DEFAULT_SIZE,
+;01100  1972		OPEN_STATUS,		! RMS status returned on $OPEN or $CREATE
+;01200  1973		T_DFLT_FILE_NAM: VECTOR[10, BYTE],	! 10-byte  default filename string
+;01300  1974							! Form: FOR0nn.DAT
+;01400  1975		FAB_BLOCK: BLOCK[FAB$C_BLN, BYTE],	! allocate local FAB
+;01500  1976		NAM_BLOCK: BLOCK[NAM$C_BLN, BYTE],	! allocate local NAME BLOCK
+;01600  1977		XAB_BLOCK: BLOCK[XAB$C_FHCLEN, BYTE],	! allocate local FHC XAB BLOCK
+;01700  1978		FAB: REF BLOCK[FAB$C_BLN, BYTE],	! declare FAB base pointer
+;01800  1979		RES_OR_EXP_NAME: VECTOR[NAM$C_MAXRSS, BYTE];	! Storage for resultant or expanded name string
+;01900  1980	
+;02000  1981	    !+
+;02100  1982	    ! Print input formals, implicit inputs
+;02200  1983	    !-
+;02300  1984	
+;02400  1985	    INPUT_FORMALS ('OPEN_PROC', '.LUB_ADR', .LUB_ADR, '.OPEN_ADR', .OPEN_ADR,
+;02500P 1986	        '.OPEN_ADR[OPEN$K_NAME]', .OPEN_ADR[OPEN$K_NAME], 'OPEN_ADR[OPEN$K_TYPE]', .OPEN_ADR[OPEN$K_TYPE]);
+;02600  1987	    IMPLICIT_INPUTS ('OPEN_PROC');
+;02700  1988	
+;02800  1989	    !+
+;02900  1990	    ! If FAB not already setup by a previous CALL ASSIGN,
+;03000  1991	    ! or CALL FDBSET, clear LOCAL FAB so that defaults are setup.
+;03100  1992	    ! Then initialize. Else setup base pointer FAB to already allocated FAB and
+;03200  1993	    ! store FAB address (in FAB and LUB) for error processing so RMS error 
+;03300  1994	    ! status can be found and setup up for $CONNECT.
+;03400  1995	    ! Set deferred write bit in FAB for speed improvment.
+;03500  1996	    !-
+;03600  1997	
+;03700  1998	    IF .CCB[LUB$A_FAB] NEQA 0
+;03800  1999	    THEN		! FAB already setup
+;03900  2000		FAB = .CCB[LUB$A_FAB]
+;04000  2001	    ELSE		! initialize LOCAL FAB
+;04100  2002		BEGIN
+;04200  2003		CH$FILL (0, FAB$C_BLN, FAB_BLOCK);
+;04300  2004		FAB = FAB_BLOCK;
+;04400  2005		CCB[LUB$A_FAB] = FAB_BLOCK;
+;04500  2006		FAB[FAB$B_BID] = FAB$C_BID;
+;04600  2007		FAB[FAB$B_BLN] = FAB$C_BLN;
+;04700  2008		END;
+;04800  2009	
+;04900  2010	    CCB[RAB$L_FAB] = .FAB;
+;05000  2011	    FAB[FAB$V_DFW] = 1;
+;05100  2012	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 9
+;
+;00100  2013	    !+
+;00200  2014	    ! NAME
+;00300  2015	    ! Setup RMS default filname string (FAB$L_DNA, FAB$B_DNS) depending on logical_unit.
+;00400  2016	    ! Make file name string for the following form depending on logical_unit:
+;00500  2017	    !
+;00600  2018	    !	unit	file name string (FAB$L_FNA)	default file name string (FAB$L_DNA)
+;00700  2019	    !
+;00800  2020	    !	-4	FOR$READ:			FORREAD.DAT
+;00900  2021	    !	-3	FOR$ACCEPT:			FORACCEPT.DAT
+;01000  2022	    !	-2	FOR$TYPE:			FORTYPE.DAT
+;01100  2023	    !	-1	FOR$PRINT:			FORPRINT.DAT
+;01200  2024	    !	0:99	FOR0nn				FOR0nn.DAT
+;01300  2025	    !
+;01400  2026	    ! NOTE: The -4 to 99 LUN range was already checked by CB_PUSH.
+;01500  2027	    ! Get nn from LUB$B_LUN instead of OPEN[OPEN$K_UNIT] since default OPEN doesn't setup
+;01600  2028	    ! Set string length and address in FAB.  Legal range checked when LUB$B_LUN set.
+;01700  2029	    !-
+;01800  2030	
+;01900  2031	    CASE .CCB[LUB$B_LUN] FROM -4 TO -1 OF
+;02000  2032		SET
+;02100  2033		[-4]:		    	! READ statement (therefore default open)
+;02200  2034		    BEGIN
+;02300  2035		    FAB[FAB$B_DNS] = 11;
+;02400  2036		    FAB[FAB$L_DNA] = UPLIT ('FORREAD.DAT');
+;02500  2037		    FAB[FAB$B_FNS] = 9;
+;02600  2038		    FAB[FAB$L_FNA] = UPLIT ('FOR$READ:');
+;02700  2039		    END;
+;02800  2040	
+;02900  2041		[-3]:		    	! ACCEPT statement (therefore default open)
+;03000  2042		    BEGIN
+;03100  2043		    FAB[FAB$B_DNS] = 13;
+;03200  2044		    FAB[FAB$L_DNA] = UPLIT ('FORACCEPT.DAT');
+;03300  2045		    FAB[FAB$B_FNS] = 11;
+;03400  2046		    FAB[FAB$L_FNA] = UPLIT ('FOR$ACCEPT:');
+;03500  2047		    END;
+;03600  2048	
+;03700  2049		[-2]:		    	! TYPE statement (therefore default open)
+;03800  2050		    BEGIN
+;03900  2051		    FAB[FAB$B_DNS] = 11;
+;04000  2052		    FAB[FAB$L_DNA] = UPLIT ('FORTYPE.DAT');
+;04100  2053		    FAB[FAB$B_FNS] = 9;
+;04200  2054		    FAB[FAB$L_FNA] = UPLIT ('FOR$TYPE:');
+;04300  2055		    END;
+;04400  2056	
+;04500  2057		[-1]:		    	! PRINT statement (therefore default open)
+;04600  2058		    BEGIN
+;04700  2059		    FAB[FAB$B_DNS] = 12;
+;04800  2060		    FAB[FAB$L_DNA] = UPLIT ('FORPRINT.DAT');
+;04900  2061		    FAB[FAB$B_FNS] = 10;
+;05000  2062		    FAB[FAB$L_FNA] = UPLIT ('FOR$PRINT:');
+;05100  2063		    END;
+;05200  2064	
+;05300  2065		[OUTRANGE]:	! READ/WRITE (OPEN or default OPEN)
+;05400  2066		    BEGIN
+;05500  2067		    FAB[FAB$B_DNS] = 10;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 9-1
+;
+;05600  2068		    FAB[FAB$L_DNA] = T_DFLT_FILE_NAM;
+;05700  2069		    T_DFLT_FILE_NAM[0] = %C'F';
+;05800  2070		    T_DFLT_FILE_NAM[1] = %C'O';
+;05900  2071		    T_DFLT_FILE_NAM[2] = %C'R';
+;06000  2072		    T_DFLT_FILE_NAM[3] = %C'0';
+;06100  2073		    T_DFLT_FILE_NAM[4] = .CCB[LUB$B_LUN]/10 + %C'0';
+;06200  2074		    T_DFLT_FILE_NAM[5] = .CCB[LUB$B_LUN] - ((.CCB[LUB$B_LUN]/10) * 10) + %C'0';
+;06300  2075		    T_DFLT_FILE_NAM[6] = %C'.';
+;06400  2076		    T_DFLT_FILE_NAM[7] = %C'D';
+;06500  2077		    T_DFLT_FILE_NAM[8] = %C'A';
+;06600  2078		    T_DFLT_FILE_NAM[9] = %C'T';
+;06700  2079	
+;06800  2080		    !+
+;06900  2081		    ! Setup file name string to be used in RMS $OPEN
+;07000  2082		    !-
+;07100  2083	
+;07200  2084		    IF .OPEN_ADR[OPEN$K_NAME] NEQA 0
+;07300  2085		    THEN
+;07400  2086	
+;07500  2087			!+
+;07600  2088			! file name speified in OPEN
+;07700  2089			! Set length and address in FAB
+;07800  2090			!-
+;07900  2091	
+;08000  2092			FOR$$OPEN_FNAME (.OPEN_ADR[OPEN$K_NAME], .FAB)
+;08100  2093	
+;08200  2094		    ELSE
+;08300  2095	
+;08400  2096			!+
+;08500  2097			! File name not specified in OPEN or this is default OPEN.
+;08600  2098			! If name not already setup (CALL ASSIGN), use all but last 4 characters of default filename string,
+;08700  2099			! i.e., all characters but .DAT
+;08800  2100			! Thus filename string is a string with no punctuation so it can be a logical name
+;08900  2101			!-
+;09000  2102	
+;09100  2103			IF .FAB[FAB$L_FNA] EQLA 0
+;09200  2104			THEN
+;09300  2105			    BEGIN
+;09400  2106			    FAB[FAB$B_FNS] = .FAB[FAB$B_DNS] - 4;
+;09500  2107			    FAB[FAB$L_FNA] = .FAB[FAB$L_DNA];
+;09600  2108			    END;
+;09700  2109	
+;09800  2110		    END;		! End OUTRANGE expression
+;09900  2111		TES;
+;10000  2112	
+;10100  2113	    !+
+;10200  2114	    ! Set the filename in the LUB in case an error occurs.
+;10300  2115	    !-
+;10400  2116	
+;10500  2117	    CCB[LUB$A_RSN] = .FAB[FAB$L_FNA];
+;10600  2118	    CCB[LUB$B_RSL] = .FAB[FAB$B_FNS];
+;10700  2119	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 10
+;
+;00100  2120	    !+
+;00200  2121	    ! READONLY
+;00300  2122	    ! Set functions which may be done subsequently (FAB$B_FAC).
+;00400  2123	    ! If not READONLY, permit GET, PUT, UPDATE, and TRUNCATE (via TPT).
+;00500  2124	    ! If READONLY, set LUB$V_READ_ONLY bit and use RMS default functions
+;00600  2125	    ! which can be done subsequently, namely just GETs.
+;00700  2126	    !-
+;00800  2127	
+;00900  2128	    IF .OPEN_ADR[OPEN$K_READONLY]
+;01000  2129	    THEN
+;01100  2130		BEGIN
+;01200  2131		CCB[LUB$V_READ_ONLY] = 1;
+;01300  2132		END
+;01400  2133	    ELSE
+;01500  2134		IF .FAB[FAB$B_FAC] EQLU 0
+;01600  2135		THEN
+;01700  2136		    FAB[FAB$B_FAC] = FAB$M_GET + FAB$M_PUT + FAB$M_UPD + FAB$M_TRN;
+;01800  2137	
+;01900  2138	    !+
+;02000  2139	    ! ACCESS
+;02100  2140	    !-
+;02200  2141	
+;02300  2142	    CCB[LUB$L_LOG_RECNO] = 1;
+;02400  2143	    FAB[FAB$V_NEF] = 1;			! inhibit EOF positioning on MT
+;02500  2144	
+;02600  2145	    CASE .OPEN_ADR[OPEN$K_ACCESS] FROM 0 TO OPEN$K_ACC_APP OF
+;02700  2146		SET
+;02800  2147		[OPEN$K_ACC_DIR]:		! ACCESS = 'DIRECT'
+;02900  2148		    BEGIN
+;03000  2149		    CCB[LUB$V_DIRECT] = 1;
+;03100  2150		    CCB[RAB$B_RAC] = RAB$C_KEY;
+;03200  2151		    CCB[RAB$L_KBF] = CCB[LUB$L_LOG_RECNO];
+;03300  2152		    CCB[RAB$B_KSZ] = 0;
+;03400  2153		    END;
+;03500  2154		[0, OPEN$K_ACC_SEQ]:		! ommitted or ACCESS = 'SEQUENTIAL'
+;03600  2155		    CCB[RAB$B_RAC] = RAB$C_SEQ;
+;03700  2156		[OPEN$K_ACC_APP]:		! ACCESS = 'APPEND'
+;03800  2157		    BEGIN
+;03900  2158		    IF .CCB[LUB$V_READ_ONLY]
+;04000  2159		    THEN
+;04100  2160			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;04200  2161		    CCB[RAB$V_EOF] = 1;
+;04300  2162		    CCB[LUB$V_APPEND] = 1;
+;04400  2163		    CCB[RAB$B_RAC] = RAB$C_SEQ;
+;04500  2164		    FAB[FAB$V_NEF] = 0;		! don't inhibit EOF positioning on MT
+;04600  2165		    END;
+;04700  2166		[OUTRANGE]:
+;04800  2167		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;04900  2168		    TES;
+;05000  2169	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 11
+;
+;00100  2170	    !+
+;00200  2171	    ! TYPE
+;00300  2172	    !-
+;00400  2173	
+;00500  2174	    CASE .OPEN_ADR[OPEN$K_TYPE] FROM 0 TO OPEN$K_TYP_UNK OF
+;00600  2175		SET
+;00700  2176		[OPEN$K_TYP_OLD]:		! TYPE = 'OLD'
+;00800  2177		    CCB[LUB$V_OLD_FILE] = 1;
+;00900  2178		[0, OPEN$K_TYP_NEW]:		! omitted or TYPE = 'NEW'
+;01000  2179		    IF NOT .CCB[LUB$V_OLD_FILE]
+;01100  2180		    THEN			! don't do anything if FDBSET said
+;01200  2181						! OLD file!
+;01300  2182			IF .CCB[LUB$V_READ_ONLY] OR .CCB[LUB$V_APPEND]
+;01400  2183			THEN
+;01500  2184			    FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;01600  2185		[OPEN$K_TYP_SCR]:		! TYPE = 'SCRATCH'
+;01700  2186		    BEGIN
+;01800  2187		    IF .CCB[LUB$V_READ_ONLY] OR .CCB[LUB$V_APPEND]
+;01900  2188		    THEN
+;02000  2189			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;02100  2190		    CCB[LUB$V_SCRATCH] = 1;
+;02200  2191		    FAB[FAB$V_TMD] = 1;
+;02300  2192		    END;
+;02400  2193		[OPEN$K_TYP_UNK]:		! TYPE = 'UNKNOWN'
+;02500  2194		    BEGIN
+;02600  2195		    IF .CCB[LUB$V_READ_ONLY]
+;02700  2196		    THEN
+;02800  2197			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;02900  2198		    FAB[FAB$V_CIF] = 1;
+;03000  2199		    END;
+;03100  2200		[OUTRANGE]:
+;03200  2201			FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;03300  2202		    TES;
+;03400  2203	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 12
+;
+;00100  2204	    !+
+;00200  2205	    ! DISPOSE
+;00300  2206	    ! For PRINT or DELETE, setup an EXIT handler to scan all logical units
+;00400  2207	    ! and PRINT or DELETE them, in case program EXITs without doing CLOSEs.
+;00500  2208	    !-
+;00600  2209	
+;00700  2210	    CASE .OPEN_ADR[OPEN$K_DISPOSE] FROM 0 TO OPEN$K_DIS_PRI OF
+;00800  2211		SET
+;00900  2212		[0]:		;		! ommitted, do nothing
+;01000  2213		[OPEN$K_DIS_SAV]:		! DISPOSE = 'SAVE'
+;01100  2214		    IF .CCB[LUB$V_SCRATCH]
+;01200  2215		    THEN
+;01300  2216			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;01400  2217		[OPEN$K_DIS_DEL]:		! DISPOSE = 'DELETE'
+;01500  2218		    BEGIN
+;01600  2219		    IF .CCB[LUB$V_READ_ONLY]
+;01700  2220		    THEN
+;01800  2221			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;01900  2222		    CCB[LUB$V_DELETE] = 1;
+;02000  2223		    IF TESTBITCS (HANDLER_LOCK)
+;02100  2224		    THEN
+;02200  2225			DECL_EXIT_HAND ();
+;02300  2226		    END;
+;02400  2227		[OPEN$K_DIS_PRI]:		! DISPOSE = 'PRINT'
+;02500  2228		    BEGIN
+;02600  2229		    IF .CCB[LUB$V_READ_ONLY] OR .CCB[LUB$V_SCRATCH]
+;02700  2230		    THEN
+;02800  2231			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;02900  2232		    CCB[LUB$V_PRINT] = 1;
+;03000  2233		    IF TESTBITCS (HANDLER_LOCK)
+;03100  2234		    THEN
+;03200  2235			DECL_EXIT_HAND ();
+;03300  2236		    END;
+;03400  2237		[OUTRANGE]:
+;03500  2238		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;03600  2239		TES;
+;03700  2240	
+;03800  2241	    !+
+;03900  2242	    ! FORM
+;04000  2243	    !-
+;04100  2244	
+;04200  2245	    CASE .OPEN_ADR[OPEN$K_FORM] FROM OPEN$K_FOR_UNS TO OPEN$K_FOR_UNF OF
+;04300  2246		SET
+;04400  2247		[OPEN$K_FOR_UNS]:	;	! unspecified, used by default OPEN only
+;04500  2248		[0]:				! omitted
+;04600  2249		    IF .CCB[LUB$V_DIRECT] THEN CCB[LUB$V_UNFORMAT] = 1 ELSE CCB[LUB$V_FORMATTED] = 1;
+;04700  2250		[OPEN$K_FOR_FOR]:		! FORM = 'FORMATTED''
+;04800  2251		    CCB[LUB$V_FORMATTED] = 1;
+;04900  2252		[OPEN$K_FOR_UNF]:		! FORM = 'UNFORMATTED'
+;05000  2253		    CCB[LUB$V_UNFORMAT] = 1;
+;05100  2254		[OUTRANGE]:
+;05200  2255		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;05300  2256		TES;
+;05400  2257	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 13
+;
+;00100  2258	    !+
+;00200  2259	    ! RECORDTYPE
+;00300  2260	    !-
+;00400  2261	
+;00500  2262	    CASE .OPEN_ADR[OPEN$K_RECORDTY] FROM 0 TO OPEN$K_REC_SEGM OF
+;00600  2263		SET
+;00700  2264		[0]:				! omitted
+;00800  2265		    FAB[FAB$B_RFM] = (IF .CCB[LUB$V_DIRECT]
+;00900  2266					THEN
+;01000  2267					    BEGIN
+;01100  2268					    CCB[LUB$V_FIXED] = 1;
+;01200  2269					    FAB$C_FIX
+;01300  2270					    END
+;01400  2271					ELSE
+;01500  2272					    BEGIN
+;01600  2273					    IF .CCB[LUB$V_UNFORMAT]
+;01700  2274					    THEN
+;01800  2275						CCB[LUB$V_SEGMENTED] = 1;
+;01900  2276					    FAB$C_VAR
+;02000  2277					    END);
+;02100  2278	
+;02200  2279		[OPEN$K_REC_FIX]:		! RECORDTYPE = 'FIXED'
+;02300  2280		    BEGIN
+;02400  2281		    CCB[LUB$V_FIXED] = 1;
+;02500  2282		    FAB[FAB$B_RFM] = FAB$C_FIX;
+;02600  2283		    END;
+;02700  2284		[OPEN$K_REC_VAR]:		! RECORDTYPE = 'VARIABLE'
+;02800  2285		    FAB[FAB$B_RFM] = FAB$C_VAR;
+;02900  2286		[OPEN$K_REC_SEGM]:		! RECORDTYPE = 'SEGMENTED'
+;03000  2287		    BEGIN
+;03100  2288		    IF .CCB[LUB$V_DIRECT] OR .CCB[LUB$V_FORMATTED]
+;03200  2289		    THEN
+;03300  2290			FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;03400  2291		    FAB[FAB$B_RFM] = FAB$C_VAR;
+;03500  2292		    CCB[LUB$V_SEGMENTED] = 1;
+;03600  2293		    END;
+;03700  2294		[OUTRANGE]:
+;03800  2295		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;03900  2296		TES;
+;04000  2297	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 14
+;
+;04100  2298	    !+
+;04200  2299	    ! CARRIAGECONTROL
+;04300  2300	    !-
+;04400  2301	
+;04500  2302	    CASE .OPEN_ADR[OPEN$K_CARRIAGE] FROM 0 TO OPEN$K_CAR_NON OF
+;04600  2303		SET
+;04700  2304		[0]:				! omitted
+;04800  2305		    IF .CCB[LUB$V_FORMATTED] THEN FAB[FAB$V_FTN] = 1;
+;04900  2306		[OPEN$K_CAR_FOR]:		! CARRIAGECONTROL = 'FORTRAN'
+;05000  2307		    FAB[FAB$V_FTN] = 1;
+;05100  2308		[OPEN$K_CAR_LIS]:		! CARRIAGECONTROL = 'LIST'
+;05200  2309		    FAB[FAB$V_CR] = 1;
+;05300  2310		[OPEN$K_CAR_NON]:	;	! CARRIAGECONTROL = 'NONE', do nothing
+;05400  2311		[OUTRANGE]:
+;05500  2312		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;05600  2313		TES;
+;05700  2314	
+;05710  2315	    !+
+;05720  2316	    ! ORGANIZATION
+;05730  2317	    !-
+;05740  2318	
+;05750  2319	    CCB[LUB$V_NOTSEQORG] = 1;		! Assume not sequential organization
+;05760  2320	    CASE .OPEN_ADR[OPEN$K_ORGANIZA] FROM 0 TO OPEN$K_ORG_REL OF
+;05770  2321		SET
+;05780  2322		[0, OPEN$K_ORG_SEQ]:		! omitted or ORGANIZATION = ;SEQUENTIAL'
+;05790  2323		    BEGIN
+;05800  2324		    FAB[FAB$B_ORG] = FAB$C_SEQ;
+;05810  2325		    CCB[LUB$V_NOTSEQORG] = 0;	! So ENDFILE will know its sequential
+;05820  2326		    END;
+;05830  2327		[OPEN$K_ORG_REL]:		! ORGANIZATION = 'RELATIVE'
+;05840  2328		    FAB[FAB$B_ORG] = FAB$C_REL;
+;05850  2329		[OUTRANGE]:
+;05860  2330		    FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+;05870  2331		TES;
+;05880  2332	
+;05890  2333	    !+
+;05900  2334	    ! SHARED
+;05910  2335	    ! If SHARED, indicate user provided record interlock (UPI) (for SEQUENTIAL ORG only)
+;05920  2336	    ! If not SHARED, RMS defaults is read, sharing only if READONLY, else no sharing.
+;05930  2337	    !-
+;05940  2338	
+;05950  2339	    IF .OPEN_ADR[OPEN$K_SHARED]
+;05960  2340	    THEN
+;05970  2341		BEGIN
+;05980  2342		FAB[FAB$B_SHR] = FAB$M_SHRGET + FAB$M_SHRPUT + FAB$M_SHRUPD;
+;05990  2343		IF NOT .CCB[LUB$V_NOTSEQORG]	! Sequential only, set UPI
+;06000  2344		THEN
+;06010  2345		    FAB[FAB$V_UPI] = 1;
+;06020  2346		END;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 15
+;
+;00100  2347	    !+
+;00200  2348	    ! RECORDSIZE
+;00300  2349	    ! Set RMS (max.) record size parameter (FAB$W_MRS)
+;00400  2350	    ! if FLR.  Local flag V_DEFAULT_SIZE is set if the user never
+;00500  2351	    ! specified a record-size (LUB$W_RBUF_SIZE will contain OTS default).
+;00600  2352	    ! Pick default size so that the total record size will fit in 128 bytes,
+;00700  2353	    ! including RMS overhead.  This is the only place where RTL takes
+;00800  2354	    ! account of RMS control info (and only the size at that).
+;00900  2355	    ! Default is 128 for unformatted fixed langth, 126 for unformatted
+;01000  2356	    ! variable length (2 bytes for RMS control info to make total 128).
+;01100  2357	    ! and 133 for formatted (line printer width) or unspecified (ENDFILE
+;01200  2358	    ! default OPEN).
+;01300  2359	    !-
+;01400  2360	
+;01500  2361	    V_DEFAULT_SIZE = 0;		! assume user specifies
+;01600  2362	
+;01700  2363	    SELECTONEU .OPEN_ADR[OPEN$K_RECORDSI] OF
+;01800  2364		SET
+;01900  2365		[0]:
+;02000  2366		    IF .CCB[LUB$W_RBUF_SIZE] EQLU 0
+;02100  2367		    THEN
+;02200  2368			BEGIN
+;02300  2369			CCB[LUB$W_RBUF_SIZE] = (IF .CCB[LUB$V_UNFORMAT]
+;02400  2370					  THEN		! unformatted
+;02500  2371					    IF .CCB[LUB$V_FIXED] THEN 128 ELSE 126
+;02600  2372					  ELSE		! formatted or unspecified (ENDFILE default open)
+;02700  2373					    133);
+;02800  2374			V_DEFAULT_SIZE = 1;	! user took the default
+;02900  2375			END;
+;03000  2376	
+;03100  2377		[1 TO 65535]:
+;03200  2378		    BEGIN
+;03300  2379		    LOCAL T;
+;03400  2380	
+;03500  2381		    T = .OPEN_ADR[OPEN$K_RECORDSI]
+;03600  2382					* (IF .CCB[LUB$V_UNFORMAT] THEN %UPVAL ELSE 1)
+;03700  2383					+ (IF .CCB[LUB$V_SEGMENTED] THEN 2 ELSE 0);
+;03800  2384		    IF .T GTRU 65535
+;03900  2385		    THEN
+;04000  2386			FOR$$SIGNAL_STO (FOR$K_RECSPEERR);
+;04100  2387		    CCB[LUB$W_RBUF_SIZE] = .T;
+;04200  2388		    END;
+;04300  2389	
+;04400  2390		[OTHERWISE]:
+;04500  2391		    FOR$$SIGNAL_STO (FOR$K_RECSPEERR);
+;04600  2392		TES;
+;04700  2393	
+;04800  2394	    IF .CCB[LUB$V_FIXED] OR .FAB[FAB$B_ORG] EQL FAB$C_REL
+;04900  2395	    THEN
+;05000  2396		FAB[FAB$W_MRS] = .CCB[LUB$W_RBUF_SIZE];
+;05100  2397	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 16
+;
+;00100  2398	    !+
+;00200  2399	    ! INITIALSIZE
+;00300  2400	    ! Only set if specified in explicit OPEN, since may be set by FDBSET on default OPEN.
+;00400  2401	    !-
+;00500  2402	
+;00600  2403	    IF .OPEN_ADR[OPEN$K_INITIALS] NEQ 0
+;00700  2404	    THEN
+;00800  2405		BEGIN
+;00900  2406		FAB[FAB$L_ALQ] = ABS (.OPEN_ADR[OPEN$K_INITIALS]);
+;01000  2407		FAB[FAB$V_CBT] = 1;
+;01100  2408		END;
+;01200  2409	
+;01300  2410	    !+
+;01400  2411	    ! EXTENDSIZE
+;01500  2412	    ! Only set if specified explicitly in explicit OPEN, since FDBSET could set on default open.
+;01600  2413	    !-
+;01700  2414	
+;01800  2415	    IF .OPEN_ADR[OPEN$K_EXTENDSI] NEQU 0
+;01900  2416	    THEN
+;02000  2417		IF ABS (.OPEN_ADR[OPEN$K_EXTENDSI]) LSSU 1^16
+;02100  2418		THEN
+;02200  2419		    FAB[FAB$W_DEQ] = ABS (.OPEN_ADR[OPEN$K_EXTENDSI])
+;02300  2420		ELSE
+;02400  2421		    FOR$$SIGNAL_STO (FOR$K_KEYVALERR);
+;02500  2422	
+;02600  2423	    !+
+;02700  2424	    ! NOSPANBLOCKS
+;02800  2425	    !-
+;02900  2426	
+;03000  2427	    FAB[FAB$V_BLK] = .OPEN_ADR[OPEN$K_NOSPANBL];
+;03100  2428	
+;03200  2429	    !+
+;03300  2430	    ! MAXREC
+;03400  2431	    ! Only set if explicitly passed by OPEN statement, since
+;03500  2432	    ! DEFINE FILE could have pre-set it if this is default open.
+;03600  2433	    !-
+;03700  2434	
+;03800  2435	    IF .OPEN_ADR[OPEN$K_MAXREC] NEQU 0
+;03900  2436	    THEN
+;04000  2437		CCB[LUB$L_REC_MAX] = .OPEN_ADR[OPEN$K_MAXREC];
+;04100  2438	    FAB[FAB$L_MRN] = .CCB[LUB$L_REC_MAX];
+;04200  2439	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 17
+;
+;00100  2440	    !+
+;00200  2441	    ! BLOCKSIZE
+;00300  2442	    !-
+;00400  2443	
+;00500  2444	    SELECTONEU .OPEN_ADR[OPEN$K_BLOCKSIZ] OF
+;00600  2445		SET
+;00700  2446		[0 TO 65535]:
+;00800  2447		    BEGIN
+;00900  2448		    FAB[FAB$W_BLS] = .OPEN_ADR[OPEN$K_BLOCKSIZ];
+;01000  2449		    CCB[RAB$B_MBC] = (.OPEN_ADR[OPEN$K_BLOCKSIZ] + 511)/512;
+;01100  2450		    END;
+;01200  2451		[OTHERWISE]:
+;01300  2452		    FOR$$SIGNAL_STO (FOR$K_KEYVALERR);
+;01400  2453		TES;
+;01500  2454	
+;01600  2455	    !+
+;01700  2456	    ! BUFFERCOUNT
+;01800  2457	    ! Only set if explicitly passed by OPEN statement since FDBSET could
+;01900  2458	    ! have pre-set it if this is a default open.
+;02000  2459	    !-
+;02100  2460	
+;02200  2461	    SELECTONEU .OPEN_ADR[OPEN$K_BUFFERCO] OF
+;02300  2462		SET
+;02400  2463		[0]:		;
+;02500  2464		[1 TO 127]:
+;02600  2465		    CCB[RAB$B_MBF] = .OPEN_ADR[OPEN$K_BUFFERCO];
+;02700  2466		[OTHERWISE]:
+;02800  2467		    FOR$$SIGNAL_STO (FOR$K_KEYVALERR);
+;02900  2468		TES;
+;03000  2469	
+;03100  2470	    !+
+;03200  2471	    ! ASSOCIATEVARIABLE
+;03300  2472	    !-
+;03400  2473	
+;03500  2474	    IF .OPEN_ADR[OPEN$K_ASSOCIAT] NEQA 0
+;03600  2475	    THEN
+;03700  2476		BEGIN
+;03800  2477		CCB[LUB$A_ASSOC_VAR] = .OPEN_ADR[OPEN$K_ASSOCIAT];
+;03900  2478		IF .OPEN_ADR[OPEN$K_ASSOC_L] THEN CCB[LUB$V_ASS_VAR_L] = 1
+;04000  2479		END;
+;04100  2480	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 18
+;
+;00100  2481	    !+
+;00200  2482	    ! Initialize local NAM_BLOCK and point FAB to NAM_BLOCK so
+;00300  2483	    ! RMS can return directory ID and resultant name or expanded name string.
+;00400  2484	    ! NOTE: Resultant and expanded string areas are the same place.
+;00500  2485	    ! RMS will not return a resultant name string if file
+;00600  2486	    ! was not successfully opened, so we will use expanded string in that case.
+;00700  2487	    ! Close uses the DID if the file is to be deleted.
+;00800  2488	    !-
+;00900  2489	
+;01000  2490	    CH$FILL (0, NAM$C_BLN, NAM_BLOCK);
+;01100  2491	    NAM_BLOCK[NAM$B_BID] = NAM$C_BID;
+;01200  2492	    NAM_BLOCK[NAM$B_BLN] = NAM$C_BLN;
+;01300  2493	    NAM_BLOCK[NAM$L_RSA] = NAM_BLOCK[NAM$L_ESA] = RES_OR_EXP_NAME;
+;01400  2494	    NAM_BLOCK[NAM$B_RSS] = NAM_BLOCK[NAM$B_ESS] = NAM$C_MAXRSS;
+;01500  2495	    FAB[FAB$L_NAM] = NAM_BLOCK;
+;01600  2496	
+;01700  2497	    !+
+;01800  2498	    ! Initialize local FHC XAB and point the FAB to it.  We'll use it
+;01900  2499	    ! to get the largest record size from existing (OLD) files.
+;02000  2500	    !-
+;02100  2501	
+;02200  2502	    CH$FILL (0, XAB$C_FHCLEN, XAB_BLOCK);
+;02300  2503	    XAB_BLOCK[XAB$B_COD] = XAB$C_FHC;
+;02400  2504	    XAB_BLOCK[XAB$B_BLN] = XAB$C_FHCLEN;
+;02500  2505	    FAB[FAB$L_XAB] = XAB_BLOCK;
+;02600  2506	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 19
+;
+;00100  2507	    !+
+;00200  2508	    ! USEROPEN
+;00300  2509	    !
+;00400  2510	    ! If a USEROPEN procedure address was specified then call the procedure
+;00500  2511	    ! to do the $OPEN and $CONNECT; it will return an RMS status code as
+;00600  2512	    ! procedure value.  Otherwise do the $OPEN and $CONNECT ourselves.
+;00700  2513	    ! Set useropen flag, just as a debugging aid in case we get a dump with an SPR.
+;00800  2514	    !-
+;00900  2515	
+;01000  2516	    IF .OPEN_ADR[OPEN$K_USEROPEN] NEQA 0
+;01100  2517	    THEN
+;01200  2518		BEGIN
+;01300  2519		CCB[LUB$V_USEROPEN] = 1;	! so we know the user opened the file!
+;01400  2520		OPEN_STATUS = (.OPEN_ADR[OPEN$K_USEROPEN]) (.FAB, .CCB);
+;01500  2521		END
+;01510  2522	
+;01600  2523	    ELSE
+;01610  2524	
+;01700  2525		BEGIN				! not USEROPEN
+;01800  2526	
+;01900  2527		!+
+;02000  2528		! If old file is explicitly wanted, do an $OPEN. Otherwise
+;02100  2529		! (NEW, SCRATCH, UNKNOWN, default = NEW) do a $CREATE.
+;02200  2530		! UNKNOWN has set RMS FAB$V_FOP_CIF to do an OPEN if file
+;02300  2531		! exists rather than a $CREATE.  If file already existed
+;02400  2532		! on $CREATE (TYPE='UNKNOWN'), set LUB$V_OLD_FILE
+;02500  2533		! as flag that file already existed for error checking below.
+;02600  2534		!-
+;02700  2535	
+;02800  2536		OPEN_STATUS = (IF .CCB[LUB$V_OLD_FILE] THEN $OPEN (FAB=.FAB) ELSE $CREATE (FAB=.FAB));
+;02900  2537	
+;03000  2538		!+
+;03100  2539		! If no error in open/create, do $CONNECT (pointer to FAB already set in RAB).
+;03200  2540		!-
+;03300  2541	
+;03400  2542		IF .OPEN_STATUS THEN OPEN_STATUS = $CONNECT (RAB = .CCB);
+;03500  2543		END;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 20
+;
+;00100  2544	    !+
+;00200  2545	    ! TYPE = 'UNKNOWN' has set RMS FAB$V_FOP_CIF to do an open if file exitsts
+;00300  2546	    ! rather than a create.  If file already existed on $CREATE (TYPE='UNKNOWN'),
+;00400  2547	    ! set LUB$V_OLD_FILE as flag that file already existed for error checking below.
+;00500  2548	    !-
+;00600  2549	
+;00700  2550	    IF .FAB[FAB$V_CIF] AND .FAB[FAB$L_STS] NEQU RMS$_CREATED
+;00800  2551	    THEN
+;00900  2552		CCB[LUB$V_OLD_FILE] = 1;
+;01000  2553	
+;01100  2554	    !+
+;01200  2555	    ! Store away the Directory ID in case CLOSE needs to delete
+;01300  2556	    ! the file.  Also save the IFI.
+;01400  2557	    !-
+;01500  2558	
+;01600  2559	    CH$MOVE (NAM$S_DID, NAM_BLOCK[NAM$W_DID], CCB[LUB$W_DID]);
+;01700  2560	    CCB[LUB$W_IFI] = .FAB[FAB$W_IFI];
+;01800  2561	
+;01900  2562	    !+
+;02000  2563	    ! If we have an expanded name string (or even better, a resultant name string),
+;02100  2564	    ! point the LUB to it instead of the user supplied name.  This will be
+;02200  2565	    ! the file name used for error messages from now on.
+;02300  2566	    !-
+;02400  2567	
+;02500  2568	    IF .NAM_BLOCK[NAM$B_RSL] NEQ 0
+;02600  2569	    THEN
+;02700  2570		BEGIN
+;02800  2571		CCB[LUB$A_RSN] = .NAM_BLOCK[NAM$L_RSA];
+;02900  2572		CCB[LUB$B_RSL] = .NAM_BLOCK[NAM$B_RSL];
+;03000  2573		END
+;03100  2574	    ELSE
+;03200  2575	    IF .NAM_BLOCK[NAM$B_ESL] NEQ 0
+;03300  2576	    THEN
+;03400  2577		BEGIN
+;03500  2578		CCB[LUB$A_RSN] = .NAM_BLOCK[NAM$L_ESA];
+;03600  2579		CCB[LUB$B_RSL] = .NAM_BLOCK[NAM$B_ESL];
+;03700  2580		END;
+;03800  2581	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 21
+;
+;00100  2582	    !+
+;00200  2583	    ! If OPEN or CREATE error, SIGNAL_STOP one of:
+;00300  2584	    ! FOR$_FILNOTFOU (29='FILE NOT FOUND') or
+;00400  2585	    ! FOR$_OPEFAI (30='OPEN FAILURE')
+;00500  2586	    ! FOR$_NO_SUCDEV (42='NO SUCH DEVICE')
+;00600  2587	    ! FOR$_FILNAMSPE (43='FILE NAME SPECIFICATION ERROR)
+;00700  2588	    ! Note: OPEN_STATUS can be anything for USEROPEN, so use status in FAB.
+;00800  2589	    !-
+;00900  2590	
+;01000  2591	    IF NOT .OPEN_STATUS
+;01100  2592	    THEN
+;01200  2593		FOR$$SIGNAL_STO (SELECTONEU .FAB[FAB$L_STS] OF
+;01300  2594				    SET
+;01400  2595				    [RMS$_FNF]:  FOR$K_FILNOTFOU;	! FILE NOT FOUND
+;01500  2596				    [RMS$_DEV]:  FOR$K_NO_SUCDEV;	! NO SUCH DEVICE
+;01600  2597				    [RMS$_FNM]:  FOR$K_FILNAMSPE;	! FILE NAME SPECIFICATION ERROR
+;01700  2598				    [OTHERWISE]: FOR$K_OPEFAI;		! OPEN FAILURE
+;01800  2599				    TES);
+;01900  2600	
+;02000  2601	    !+
+;02100  2602	    ! If the file we just opened was an existing file, perform a couple of
+;02200  2603	    ! consistency checks.
+;02300  2604	    !-
+;02400  2605	
+;02500  2606	    IF .CCB[LUB$V_OLD_FILE]
+;02600  2607	    THEN
+;02700  2608		BEGIN
+;02800  2609	
+;02900  2610		!+
+;03000  2611		! Organization check:
+;03100  2612		! If user program did not specify organization with this OPEN,
+;03200  2613		! use the attributes from the file.  If the user program did specify,
+;03300  2614		! check that it agrees with the file.
+;03400  2615		!-
+;03500  2616	
+;03600  2617		IF .OPEN_ADR[OPEN$K_ORGANIZA] EQLU 0
+;03700  2618		THEN
+;03800  2619		    BEGIN
+;03900  2620		    IF .FAB[FAB$B_ORG] NEQ FAB$C_SEQ
+;04000  2621		    THEN
+;04100  2622			CCB[LUB$V_NOTSEQORG] = 1;
+;04200  2623		    END
+;04300  2624		ELSE
+;04400  2625		    BEGIN
+;04500  2626		    LOCAL T;
+;04600  2627		    T = (IF .OPEN_ADR[OPEN$K_ORGANIZA] EQL OPEN$K_ORG_SEQ
+;04700  2628		         THEN
+;04800  2629		 	    FAB$C_SEQ
+;04900  2630		 	 ELSE
+;05000  2631		            FAB$C_REL);
+;05100  2632		    IF .T NEQ .FAB[FAB$B_ORG]
+;05200  2633		    THEN
+;05300  2634		        FOR$$SIGNAL_STO (FOR$K_INCOPECLO);
+;05400  2635		    END;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22
+;
+;00100  2636		!+
+;00200  2637		! Record type check:
+;00300  2638		! If user-program did not specified record-type in this OPEN,
+;00400  2639		! use the file attributes. If user-program did specify
+;00500  2640		! this OPEN, check that it agrees with the file.
+;00600  2641		!-
+;00700  2642	
+;00800  2643		IF .OPEN_ADR[OPEN$K_RECORDTY] EQLU 0
+;00900  2644		THEN		! User-program did not specify
+;01000  2645	
+;01100  2646		    BEGIN
+;01200  2647		    IF .FAB[FAB$B_RFM] EQLU FAB$C_FIX
+;01300  2648		    THEN
+;01400  2649			CCB[LUB$V_FIXED] = 1
+;01500  2650		    ELSE
+;01600  2651			BEGIN
+;01700  2652			IF .CCB[LUB$V_DIRECT]
+;01800  2653			THEN
+;01900  2654		 	    FOR$$SIGNAL_STO (FOR$K_INCRECLEN);
+;02000  2655		        IF .CCB[LUB$V_UNFORMAT]
+;02100  2656		        THEN
+;02200  2657		            CCB[LUB$V_SEGMENTED] = 1;
+;02300  2658		        END;
+;02400  2659		    END
+;02500  2660	
+;02600  2661		ELSE		! User-program did specify
+;02700  2662	
+;02800  2663		    IF .CCB[LUB$V_FIXED] AND (.FAB[FAB$B_RFM] NEQU FAB$C_FIX) OR
+;02900  2664			NOT .CCB[LUB$V_FIXED] AND (.FAB[FAB$B_RFM] NEQU FAB$C_VAR)
+;03000  2665		    THEN
+;03100  2666			FOR$$SIGNAL_STO (FOR$K_INCRECLEN);
+;03200  2667	
+;03300  2668		!+
+;03400  2669		! Record size check:
+;03500  2670		!	If user specified a record size (with DEFINE FILE or RECORDSIZE
+;03600  2671		!	OPEN keyword, and MRS is non-zero in the FAB then they must agree.
+;03700  2672		!	The recordsize the OTS will use is then computed in a reasonable
+;03800  2673		!	manner.
+;03900  2674		!-
+;04000  2675	
+;04100  2676		IF NOT .V_DEFAULT_SIZE AND .FAB[FAB$W_MRS] NEQU 0
+;04200  2677		THEN
+;04300  2678		    IF .CCB[LUB$W_RBUF_SIZE] NEQU .FAB[FAB$W_MRS]
+;04400  2679		    THEN
+;04500  2680			FOR$$SIGNAL_STO (FOR$K_INCRECLEN);
+;04600  2681		CCB[LUB$W_RBUF_SIZE] = MAXU (.CCB[LUB$W_RBUF_SIZE],
+;04700  2682			    		    .FAB[FAB$W_MRS], .XAB_BLOCK[XAB$W_LRL] );
+;04800  2683		END		! End of old file processing
+;04900  2684	
+;05000  2685	    ELSE		! Being new file processing
+;05100  2686	
+;05200  2687		!+
+;05300  2688		! Else (file was created)
+;05400  2689		!	SIGNAL_STOP FOR$_RECSPEERR (44='RECORD SPECIFICATION ERROR')
+;05500  2690		!	if direct access or Relative and user didn't specify record size.
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-1
+;
+;05600  2691		!	Make sure V_APPEND is off so BACKSPACE will work.
+;05700  2692		!-
+;05800  2693	
+;05900  2694		BEGIN
+;06000  2695		IF .V_DEFAULT_SIZE AND (.CCB[LUB$V_DIRECT] OR .FAB[FAB$B_ORG] EQLU FAB$C_REL)
+;06100  2696		THEN
+;06200  2697		    FOR$$SIGNAL_STO (FOR$K_RECSPEERR);
+;06300  2698		CCB[LUB$V_APPEND] = 0;
+;06400  2699		END;
+;06500  2700	
+;06600  2701	    !+
+;06700  2702	    ! Allocate record buffer dynamically from LUB$W_RBUF_SIZE setting in bytes.
+;06800  2703	    ! Set LUB$A_RBUF_ADR to address of buffer allocated.
+;06900  2704	    !-
+;07000  2705	
+;07100  2706	    CCB[LUB$A_RBUF_ADR] = FOR$$GET_VM (.CCB[LUB$W_RBUF_SIZE]);
+;07200  2707	
+;07300  2708	    !+
+;07400  2709	    ! Allocate dynamic storage for the file name so the name can be
+;07500  2710	    ! used later on for error diagnostics.  Point the LUB to the new
+;07600  2711	    ! location.  (The size is already correct!)
+;07700  2712	    ! Indicate that the string name is now stored in virtual memory so
+;07800  2713	    ! it will be deallocated!
+;07900  2714	    !-
+;08000  2715	
+;08100  2716		BEGIN
+;08200  2717		LOCAL T;
+;08300  2718		T = FOR$$GET_VM (.CCB[LUB$B_RSL]);
+;08400  2719		CH$MOVE (.CCB[LUB$B_RSL], .CCB[LUB$A_RSN], .T);
+;08500  2720		CCB[LUB$A_RSN] = .T;
+;08600  2721		CCB[LUB$V_VIRT_RSN] = 1;
+;08700  2722		END;
+;08800  2723	
+;08900  2724	    !+
+;09000  2725	    ! Deallocate FAB if allocated by FDBSET or ASSIGN.
+;09100  2726	    ! Set LUB$A_FAB to zero to indicate FAB status info is meaningless.
+;09200  2727	    !-
+;09300  2728	
+;09400  2729	    IF .CCB[LUB$A_FAB] NEQA FAB_BLOCK
+;09500  2730	    THEN
+;09600  2731		FOR$$FREE_VM (FAB$C_BLN, .CCB[LUB$A_FAB]);
+;09700  2732	    CCB[LUB$A_FAB] = 0;
+;09800  2733	
+;09900  2734	    !+
+;10000  2735	    ! Set RAB fields that never change: UBF, USZ, and RSZ
+;10100  2736	    ! (RSZ never changes for fixed length records).
+;10200  2737	    !-
+;10300  2738	
+;10400  2739	    CCB[RAB$L_UBF] = .CCB[LUB$A_RBUF_ADR];
+;10500  2740	    CCB[RAB$W_USZ] = .CCB[LUB$W_RBUF_SIZE];
+;10600  2741	    CCB[RAB$W_RSZ] = .CCB[LUB$W_RBUF_SIZE];
+;10700  2742	
+;10800  2743	    !+
+;10900  2744	    ! Indicate that the file is now FORTRAN opened.
+;11000  2745	    !-
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-2
+;
+;11100  2746	
+;11200  2747	    CCB[LUB$V_OPENED] = 1;
+;11300  2748	
+;11400  2749	    !+
+;11500  2750	    ! Print output formals, implicit outputs and function value
+;11600  2751	    !-
+;11700  2752	
+;11800  2753	    OUTPUT_FORMALS ('OPEN_PROC');
+;11900  2754	    IMPLICIT_OUTPUT ('OPEN_PROC');
+;12000  2755	    FUNCTION_VALUE ('OPEN_PROC');
+;12100  2756	
+;12200  2757	    RETURN;		! Return from OPEN_PROC routine
+;12300  2758	    END;		! End of OPEN_PROC routine
+
+
+
+					      001AA	    .BLKB   2
+  54  41  44  2E  44  41  45  52  52  4F  46  001AC P.AAA:  .ASCII  \FORREAD.DAT\<0>					      ;
+					  00  001B7									      ;
+  00  00  3A  44  41  45  52  24  52  4F  46  001B8 P.AAB:  .ASCII  \FOR$READ:\<0><0><0>				      ;
+					  00  001C3									      ;
+  44  2E  54  50  45  43  43  41  52  4F  46  001C4 P.AAC:  .ASCII  \FORACCEPT.DAT\<0><0><0>				      ;
+			  00  00  00  54  41  001CF									      ;
+  3A  54  50  45  43  43  41  24  52  4F  46  001D4 P.AAD:  .ASCII  \FOR$ACCEPT:\<0>					      ;
+					  00  001DF									      ;
+  54  41  44  2E  45  50  59  54  52  4F  46  001E0 P.AAE:  .ASCII  \FORTYPE.DAT\<0>					      ;
+					  00  001EB									      ;
+  00  00  3A  45  50  59  54  24  52  4F  46  001EC P.AAF:  .ASCII  \FOR$TYPE:\<0><0><0>				      ;
+					  00  001F7									      ;
+  41  44  2E  54  4E  49  52  50  52  4F  46  001F8 P.AAG:  .ASCII  \FORPRINT.DAT\					      ;
+					  54  00203									      ;
+  00  3A  54  4E  49  52  50  24  52  4F  46  00204 P.AAH:  .ASCII  \FOR$PRINT:\<0><0>					      ;
+					  00  0020F									      ;
+
+							    .EXTRN  SYS$OPEN, SYS$CREATE, SYS$CONNECT
+
+					 07FC 00210 OPEN_PROC:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10			      ; 1883
+		         5E 	FEB8   CE  9E 00212 	    MOVAB   -328(SP), SP					      ;
+				  E8   AB  D5 00217 	    TSTL    -24(CCB)						      ; 1998
+				       06  13 0021A 	    BEQL    1$							      ;
+		         56 	  E8   AB  D0 0021C 	    MOVL    -24(CCB), FAB					      ; 2000
+				       17  11 00220 	    BRB     2$							      ; 1998
+	   00 	         6E 	       00  2C 00222 1$:     MOVC5   #0, (SP), #0, #80, FAB_BLOCK			      ; 2003
+		    A4   AD	0050   8F     00226									      ;
+		         56 	  A4   AD  9E 0022B 	    MOVAB   FAB_BLOCK, FAB					      ; 2004
+		    E8   AB	  A4   AD  9E 0022F 	    MOVAB   FAB_BLOCK, -24(CCB)					      ; 2005
+		         66 	5003   8F  B0 00234 	    MOVW    #20483, (FAB)					      ; 2006
+		    3C   AB	       56  D0 00239 2$:     MOVL    FAB, 60(CCB)					      ; 2010
+		         6E 	  04   A6  9E 0023D 	    MOVAB   4(FAB), (SP)					      ; 2011
+		    00   BE	       20  88 00241 	    BISB2   #32, @0(SP)						      ;
+		         52 	  30   A6  9E 00245 	    MOVAB   48(FAB), R2						      ; 2068
+		         53 	  35   A6  9E 00249 	    MOVAB   53(FAB), R3						      ; 2067
+	   03 	    FC   8F	  F6   AB  8F 0024D 	    CASEB   -10(CCB), #-4, #3					      ; 2031
+	 0087 	       0073 	     005F     00253 3$:     .WORD   5$-3$,-						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-3
+;
+				     009B     00259		    6$-3$,-						      ;
+								    7$-3$,-						      ;
+								    8$-3$						      ;
+		         63 	       0A  90 0025B 	    MOVB    #10, (R3)						      ; 2067
+		         62 	  F4   AD  9E 0025E 	    MOVAB   T_DFLT_FILE_NAM, (R2)				      ; 2068
+		    F4   AD 30524F46   8F  D0 00262 	    MOVL    #810700614, T_DFLT_FILE_NAM				      ; 2069
+		         50 	  F6   AB  98 0026A 	    CVTBL   -10(CCB), R0					      ; 2073
+		         50 	       0A  C6 0026E 	    DIVL2   #10, R0						      ;
+      F8   AD	         50 	       30  81 00271 	    ADDB3   #48, R0, T_DFLT_FILE_NAM+4				      ;
+		         50 	       0A  C4 00276 	    MULL2   #10, R0						      ; 2074
+		         51 	  F6   AB  98 00279 	    CVTBL   -10(CCB), R1					      ;
+		         50 	       51  C2 0027D 	    SUBL2   R1, R0						      ;
+      F9   AD	         30 	       50  83 00280 	    SUBB3   R0, #48, T_DFLT_FILE_NAM+5				      ;
+		    FA   AD 5441442E   8F  D0 00285 	    MOVL    #1413563438, T_DFLT_FILE_NAM+6			      ; 2075
+		         50 	  04   AC  D0 0028D 	    MOVL    OPEN_ADR, R0					      ; 2084
+				  38   A0  D5 00291 	    TSTL    56(R0)						      ;
+				       0C  13 00294 	    BEQL    4$							      ;
+				       56  DD 00296 	    PUSHL   FAB							      ; 2092
+				  38   A0  DD 00298 	    PUSHL   56(R0)						      ;
+		  0000V  CF	       02  FB 0029B 	    CALLS   #2, FOR$$OPEN_FNAME					      ;
+				       5E  11 002A0 	    BRB     9$							      ; 2084
+				  2C   A6  D5 002A2 4$:     TSTL    44(FAB)						      ; 2103
+				       59  12 002A5 	    BNEQ    9$							      ;
+      34   A6	         63 	       04  83 002A7 	    SUBB3   #4, (R3), 52(FAB)					      ; 2106
+		    2C   A6	       62  D0 002AC 	    MOVL    (R2), 44(FAB)					      ; 2107
+				       4E  11 002B0 	    BRB     9$							      ; 2031
+		         63 	       0B  90 002B2 5$:     MOVB    #11, (R3)						      ; 2035
+		         62 	FEF3   CF  9E 002B5 	    MOVAB   P.AAA, (R2)						      ; 2036
+		    34   A6	       09  90 002BA 	    MOVB    #9, 52(FAB)						      ; 2037
+		    2C   A6	FEF6   CF  9E 002BE 	    MOVAB   P.AAB, 44(FAB)					      ; 2038
+				       3A  11 002C4 	    BRB     9$							      ; 2031
+		         63 	       0D  90 002C6 6$:     MOVB    #13, (R3)						      ; 2043
+		         62 	FEF7   CF  9E 002C9 	    MOVAB   P.AAC, (R2)						      ; 2044
+		    34   A6	       0B  90 002CE 	    MOVB    #11, 52(FAB)					      ; 2045
+		    2C   A6	FEFE   CF  9E 002D2 	    MOVAB   P.AAD, 44(FAB)					      ; 2046
+				       26  11 002D8 	    BRB     9$							      ; 2031
+		         63 	       0B  90 002DA 7$:     MOVB    #11, (R3)						      ; 2051
+		         62 	FEFF   CF  9E 002DD 	    MOVAB   P.AAE, (R2)						      ; 2052
+		    34   A6	       09  90 002E2 	    MOVB    #9, 52(FAB)						      ; 2053
+		    2C   A6	FF02   CF  9E 002E6 	    MOVAB   P.AAF, 44(FAB)					      ; 2054
+				       12  11 002EC 	    BRB     9$							      ; 2031
+		         63 	       0C  90 002EE 8$:     MOVB    #12, (R3)						      ; 2059
+		         62 	FF03   CF  9E 002F1 	    MOVAB   P.AAG, (R2)						      ; 2060
+		    34   A6	       0A  90 002F6 	    MOVB    #10, 52(FAB)					      ; 2061
+		    2C   A6	FF06   CF  9E 002FA 	    MOVAB   P.AAH, 44(FAB)					      ; 2062
+		    04   AE	  F8   AB  9E 00300 9$:     MOVAB   -8(CCB), 4(SP)					      ; 2117
+		    04   BE	  2C   A6  D0 00305 	    MOVL    44(FAB), @4(SP)					      ;
+		    F7   AB	  34   A6  90 0030A 	    MOVB    52(FAB), -9(CCB)					      ; 2118
+		         57 	  04   AC  D0 0030F 	    MOVL    OPEN_ADR, R7					      ; 2128
+		         06 	  20   A7  E9 00313 	    BLBC    32(R7), 10$						      ;
+		    FC   AB	       04  88 00317 	    BISB2   #4, -4(CCB)						      ; 2131
+				       09  11 0031B 	    BRB     11$							      ; 2128
+				  16   A6  95 0031D 10$:    TSTB    22(FAB)						      ; 2134
+				       04  12 00320 	    BNEQ    11$							      ;
+		    16   A6	       1B  90 00322 	    MOVB    #27, 22(FAB)					      ; 2136
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-4
+;
+		    E0   AB	       01  D0 00326 11$:    MOVL    #1, -32(CCB)					      ; 2142
+		    00   BE	0400   8F  A8 0032A 	    BISW2   #1024, @0(SP)					      ; 2143
+	   03 	         00 	  10   A7  CF 00330 	    CASEL   16(R7), #0, #3					      ; 2145
+	 0023 	       0011 	     0023     00335 12$:    .WORD   14$-12$,-						      ;
+				     0028     0033B		    13$-12$,-						      ;
+								    14$-12$,-						      ;
+								    15$-12$						      ;
+				       30  DD 0033D 	    PUSHL   #48							      ; 2167
+		  0000G  CF	       01  FB 0033F 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       34  11 00344 	    BRB     17$							      ; 2145
+		    FC   AB	       10  88 00346 13$:    BISB2   #16, -4(CCB)					      ; 2149
+		    1E   AB	       01  90 0034A 	    MOVB    #1, 30(CCB)						      ; 2150
+		    30   AB	  E0   AB  9E 0034E 	    MOVAB   -32(CCB), 48(CCB)					      ; 2151
+				  34   AB  94 00353 	    CLRB    52(CCB)						      ; 2152
+				       22  11 00356 	    BRB     17$							      ; 2145
+				  1E   AB  94 00358 14$:    CLRB    30(CCB)						      ; 2155
+				       1D  11 0035B 	    BRB     17$							      ; 2145
+	   07 	    FC   AB	       02  E1 0035D 15$:    BBC     #2, -4(CCB), 16$					      ; 2158
+				       2E  DD 00362 	    PUSHL   #46							      ; 2160
+		  0000G  CF	       01  FB 00364 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    05   AB	       01  88 00369 16$:    BISB2   #1, 5(CCB)						      ; 2161
+		    FD   AB	       20  88 0036D 	    BISB2   #32, -3(CCB)					      ; 2162
+				  1E   AB  94 00371 	    CLRB    30(CCB)						      ; 2163
+		    00   BE	0400   8F  AA 00374 	    BICW2   #1024, @0(SP)					      ; 2164
+	   04 	         00 	  3C   A7  CF 0037A 17$:    CASEL   60(R7), #0, #4					      ; 2174
+	 0014 	       000E 	     0014     0037F 18$:    .WORD   20$-18$,-						      ;
+		       0047 	     002C     00385		    19$-18$,-						      ;
+								    20$-18$,-						      ;
+								    23$-18$,-						      ;
+								    26$-18$						      ;
+				       30  DD 00389 	    PUSHL   #48							      ; 2201
+				       17  11 0038B 	    BRB     22$							      ;
+		    FC   AB	       08  88 0038D 19$:    BISB2   #8, -4(CCB)						      ; 2177
+				       45  11 00391 	    BRB     28$							      ; 2174
+	   40 	    FC   AB	       03  E0 00393 20$:    BBS     #3, -4(CCB), 28$					      ; 2179
+	   05 	    FC   AB	       02  E0 00398 	    BBS     #2, -4(CCB), 21$					      ; 2182
+	   36 	    FD   AB	       05  E1 0039D 	    BBC     #5, -3(CCB), 28$					      ;
+				       2E  DD 003A2 21$:    PUSHL   #46							      ; 2184
+		  0000G  CF	       01  FB 003A4 22$:    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       2D  11 003A9 	    BRB     28$							      ; 2174
+	   05 	    FC   AB	       02  E0 003AB 23$:    BBS     #2, -4(CCB), 24$					      ; 2187
+	   07 	    FD   AB	       05  E1 003B0 	    BBC     #5, -3(CCB), 25$					      ;
+				       2E  DD 003B5 24$:    PUSHL   #46							      ; 2189
+		  0000G  CF	       01  FB 003B7 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    FC   AB	       20  88 003BC 25$:    BISB2   #32, -4(CCB)					      ; 2190
+		    00   BE	       10  88 003C0 	    BISB2   #16, @0(SP)						      ; 2191
+				       12  11 003C4 	    BRB     28$							      ; 2174
+	   07 	    FC   AB	       02  E1 003C6 26$:    BBC     #2, -4(CCB), 27$					      ; 2195
+				       2E  DD 003CB 	    PUSHL   #46							      ; 2197
+		  0000G  CF	       01  FB 003CD 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   01 	         19 	       01  F0 003D2 27$:    INSV    #1, #25, #1, @0(SP)					      ; 2198
+				  00   BE     003D6									      ;
+	   03 	         00 	  08   A7  CF 003D8 28$:    CASEL   8(R7), #0, #3					      ; 2210
+	 001A 	       000C 	     0050     003DD 29$:    .WORD   38$-29$,-						      ;
+				     002D     003E3		    30$-29$,-						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-5
+;
+								    32$-29$,-						      ;
+								    34$-29$						      ;
+				       30  DD 003E5 	    PUSHL   #48							      ; 2238
+				       07  11 003E7 	    BRB     31$							      ;
+	   3F 	    FC   AB	       05  E1 003E9 30$:    BBC     #5, -4(CCB), 38$					      ; 2214
+				       2E  DD 003EE 	    PUSHL   #46							      ; 2216
+		  0000G  CF	       01  FB 003F0 31$:    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       36  11 003F5 	    BRB     38$							      ; 2210
+	   07 	    FC   AB	       02  E1 003F7 32$:    BBC     #2, -4(CCB), 33$					      ; 2219
+				       2E  DD 003FC 	    PUSHL   #46							      ; 2221
+		  0000G  CF	       01  FB 003FE 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    FC   AB	  40   8F  88 00403 33$:    BISB2   #64, -4(CCB)					      ; 2222
+				       16  11 00408 	    BRB     37$							      ; 2223
+	   05 	    FC   AB	       02  E0 0040A 34$:    BBS     #2, -4(CCB), 35$					      ; 2229
+	   07 	    FC   AB	       05  E1 0040F 	    BBC     #5, -4(CCB), 36$					      ;
+				       2E  DD 00414 35$:    PUSHL   #46							      ; 2231
+		  0000G  CF	       01  FB 00416 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    FC   AB	  80   8F  88 0041B 36$:    BISB2   #128, -4(CCB)					      ; 2232
+	   05 00000000'  EF	       00  E2 00420 37$:    BBSS    #0, HANDLER_LOCK, 38$				      ; 2233
+		  0000V  CF	       00  FB 00428 	    CALLS   #0, DECL_EXIT_HAND					      ; 2235
+	   03 FFFFFFFF   8F	  14   A7  CF 0042D 38$:    CASEL   20(R7), #-1, #3					      ; 2245
+	 0016 	       0011 	     0020     00436 39$:    .WORD   43$-39$,-						      ;
+				     001C     0043C		    40$-39$,-						      ;
+								    41$-39$,-						      ;
+								    42$-39$						      ;
+				       30  DD 0043E 	    PUSHL   #48							      ; 2255
+		  0000G  CF	       01  FB 00440 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       0F  11 00445 	    BRB     43$							      ; 2245
+	   06 	    FC   AB	       04  E0 00447 40$:    BBS     #4, -4(CCB), 42$					      ; 2249
+		    FD   AB	       01  88 0044C 41$:    BISB2   #1, -3(CCB)						      ; 2251
+				       04  11 00450 	    BRB     43$							      ; 2245
+		    FD   AB	       02  88 00452 42$:    BISB2   #2, -3(CCB)						      ; 2253
+	   03 	         00 	  50   A7  CF 00456 43$:    CASEL   80(R7), #0, #3					      ; 2262
+	 003B 	       0031 	     0011     0045B 44$:    .WORD   45$-44$,-						      ;
+				     0041     00461		    49$-44$,-						      ;
+								    50$-44$,-						      ;
+								    51$-44$						      ;
+				       30  DD 00463 	    PUSHL   #48							      ; 2295
+		  0000G  CF	       01  FB 00465 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       48  11 0046A 	    BRB     54$							      ; 2262
+	   09 	    FC   AB	       04  E1 0046C 45$:    BBC     #4, -4(CCB), 46$					      ; 2265
+		    FD   AB	       04  88 00471 	    BISB2   #4, -3(CCB)						      ; 2268
+		         50 	       01  D0 00475 	    MOVL    #1, R0						      ; 2265
+				       0C  11 00478 	    BRB     48$							      ;
+	   04 	    FD   AB	       01  E1 0047A 46$:    BBC     #1, -3(CCB), 47$					      ; 2273
+		    FD   AB	       08  88 0047F 	    BISB2   #8, -3(CCB)						      ; 2275
+		         50 	       02  D0 00483 47$:    MOVL    #2, R0						      ; 2265
+		    1F   A6	       50  90 00486 48$:    MOVB    R0, 31(FAB)						      ;
+				       28  11 0048A 	    BRB     54$							      ; 2262
+		    FD   AB	       04  88 0048C 49$:    BISB2   #4, -3(CCB)						      ; 2281
+		    1F   A6	       01  90 00490 	    MOVB    #1, 31(FAB)						      ; 2282
+				       1E  11 00494 	    BRB     54$							      ; 2262
+		    1F   A6	       02  90 00496 50$:    MOVB    #2, 31(FAB)						      ; 2285
+				       18  11 0049A 	    BRB     54$							      ; 2262
+	   04 	    FC   AB	       04  E0 0049C 51$:    BBS     #4, -4(CCB), 52$					      ; 2288
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-6
+;
+		         07 	  FD   AB  E9 004A1 	    BLBC    -3(CCB), 53$					      ;
+				       2E  DD 004A5 52$:    PUSHL   #46							      ; 2290
+		  0000G  CF	       01  FB 004A7 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    1F   A6	       02  90 004AC 53$:    MOVB    #2, 31(FAB)						      ; 2291
+		    FD   AB	       08  88 004B0 	    BISB2   #8, -3(CCB)						      ; 2292
+	   03 	         00 	  1C   A7  CF 004B4 54$:    CASEL   28(R7), #0, #3					      ; 2302
+	 001B 	       0015 	     0011     004B9 55$:    .WORD   56$-55$,-						      ;
+				     001F     004BF		    57$-55$,-						      ;
+								    58$-55$,-						      ;
+								    59$-55$						      ;
+				       30  DD 004C1 	    PUSHL   #48							      ; 2312
+		  0000G  CF	       01  FB 004C3 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       0E  11 004C8 	    BRB     59$							      ; 2302
+		         0A 	  FD   AB  E9 004CA 56$:    BLBC    -3(CCB), 59$					      ; 2305
+		    1E   A6	       01  88 004CE 57$:    BISB2   #1, 30(FAB)						      ; 2307
+				       04  11 004D2 	    BRB     59$							      ; 2302
+		    1E   A6	       02  88 004D4 58$:    BISB2   #2, 30(FAB)						      ; 2309
+		         58 	  FC   AB  9E 004D8 59$:    MOVAB   -4(CCB), R8						      ; 2319
+		    01   A8	  40   8F  88 004DC 	    BISB2   #64, 1(R8)						      ;
+	   02 	         00 	  4C   A7  CF 004E1 	    CASEL   76(R7), #0, #2					      ; 2320
+	 0019 	       000F 	     000F     004E6 60$:    .WORD   61$-60$,-						      ;
+								    61$-60$,-						      ;
+								    62$-60$						      ;
+				       30  DD 004EC 	    PUSHL   #48							      ; 2330
+		  0000G  CF	       01  FB 004EE 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				       0E  11 004F3 	    BRB     63$							      ; 2320
+				  1D   A6  94 004F5 61$:    CLRB    29(FAB)						      ; 2324
+		    01   A8	  40   8F  8A 004F8 	    BICB2   #64, 1(R8)						      ; 2325
+				       04  11 004FD 	    BRB     63$							      ; 2320
+		    1D   A6	       10  90 004FF 62$:    MOVB    #16, 29(FAB)					      ; 2328
+		         0D 	  34   A7  E9 00503 63$:    BLBC    52(R7), 64$						      ; 2339
+		    17   A6	       0B  90 00507 	    MOVB    #11, 23(FAB)					      ; 2342
+	   05 	         68 	       0E  E0 0050B 	    BBS     #14, (R8), 64$					      ; 2343
+		    17   A6	  40   8F  88 0050F 	    BISB2   #64, 23(FAB)					      ; 2345
+				       5A  D4 00514 64$:    CLRL    V_DEFAULT_SIZE					      ; 2361
+		         52 	  18   A7  D0 00516 	    MOVL    24(R7), R2						      ; 2363
+				       26  12 0051A 	    BNEQ    68$							      ;
+				  DA   AB  B5 0051C 	    TSTW    -38(CCB)						      ; 2366
+				       6A  12 0051F 	    BNEQ    75$							      ;
+	   10 	         68 	       09  E1 00521 	    BBC     #9, (R8), 66$					      ; 2369
+	   06 	         68 	       0A  E1 00525 	    BBC     #10, (R8), 65$					      ; 2371
+		         50 	  80   8F  9A 00529 	    MOVZBL  #128, R0						      ;
+				       0A  11 0052D 	    BRB     67$							      ;
+		         50 	  7E   8F  9A 0052F 65$:    MOVZBL  #126, R0						      ;
+				       04  11 00533 	    BRB     67$							      ; 2369
+		         50 	  85   8F  9A 00535 66$:    MOVZBL  #133, R0						      ;
+		    DA   AB	       50  B0 00539 67$:    MOVW    R0, -38(CCB)					      ;
+		         5A 	       01  D0 0053D 	    MOVL    #1, V_DEFAULT_SIZE					      ; 2374
+				       49  11 00540 	    BRB     75$							      ; 2363
+		         01 	       52  D1 00542 68$:    CMPL    R2, #1						      ;
+				       3D  1F 00545 	    BLSSU   74$							      ;
+	      0000FFFF   8F	       52  D1 00547 	    CMPL    R2, #65535						      ;
+				       34  1A 0054E 	    BGTRU   74$							      ;
+	   05 	         68 	       09  E1 00550 	    BBC     #9, (R8), 69$					      ; 2382
+		         50 	       04  D0 00554 	    MOVL    #4, R0						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-7
+;
+				       03  11 00557 	    BRB     70$							      ;
+		         50 	       01  D0 00559 69$:    MOVL    #1, R0						      ;
+		         50 	       52  C4 0055C 70$:    MULL2   R2, R0						      ;
+	   05 	         68 	       0B  E1 0055F 	    BBC     #11, (R8), 71$					      ; 2383
+		         51 	       02  D0 00563 	    MOVL    #2, R1						      ;
+				       02  11 00566 	    BRB     72$							      ;
+				       51  D4 00568 71$:    CLRL    R1							      ;
+	   53 	         50 	       51  C1 0056A 72$:    ADDL3   R1, R0, T						      ;
+	      0000FFFF   8F	       53  D1 0056E 	    CMPL    T, #65535						      ; 2384
+				       07  1B 00575 	    BLEQU   73$							      ;
+				       2C  DD 00577 	    PUSHL   #44							      ; 2386
+		  0000G  CF	       01  FB 00579 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    DA   AB	       53  B0 0057E 73$:    MOVW    T, -38(CCB)						      ; 2387
+				       07  11 00582 	    BRB     75$							      ; 2363
+				       2C  DD 00584 74$:    PUSHL   #44							      ; 2391
+		  0000G  CF	       01  FB 00586 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   06 	         68 	       0A  E0 0058B 75$:    BBS     #10, (R8), 76$					      ; 2394
+		         10 	  1D   A6  91 0058F 	    CMPB    29(FAB), #16					      ;
+				       05  12 00593 	    BNEQ    77$							      ;
+		    36   A6	  DA   AB  B0 00595 76$:    MOVW    -38(CCB), 54(FAB)					      ; 2396
+				  28   A7  D5 0059A 77$:    TSTL    40(R7)						      ; 2403
+				       13  13 0059D 	    BEQL    79$							      ;
+		         50 	  28   A7  D0 0059F 	    MOVL    40(R7), R0						      ; 2406
+				       03  18 005A3 	    BGEQ    78$							      ;
+		         50 	       50  CE 005A5 	    MNEGL   R0, R0						      ;
+		    10   A6	       50  D0 005A8 78$:    MOVL    R0, 16(FAB)						      ;
+	   01 	         15 	       01  F0 005AC 	    INSV    #1, #21, #1, @0(SP)					      ; 2407
+				  00   BE     005B0									      ;
+				  2C   A7  D5 005B2 79$:    TSTL    44(R7)						      ; 2415
+				       1F  13 005B5 	    BEQL    82$							      ;
+		         50 	  2C   A7  D0 005B7 	    MOVL    44(R7), R0						      ; 2417
+				       03  18 005BB 	    BGEQ    80$							      ;
+		         50 	       50  CE 005BD 	    MNEGL   R0, R0						      ;
+	      00010000   8F	       50  D1 005C0 80$:    CMPL    R0, #65536						      ;
+				       06  1E 005C7 	    BGEQU   81$							      ;
+		    14   A6	       50  B0 005C9 	    MOVW    R0, 20(FAB)						      ; 2419
+				       07  11 005CD 	    BRB     82$							      ; 2417
+				       2D  DD 005CF 81$:    PUSHL   #45							      ; 2421
+		  0000G  CF	       01  FB 005D1 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   01 	         03 	  30   A7  F0 005D6 82$:    INSV    48(R7), #3, #1, 30(FAB)				      ; 2427
+				  1E   A6     005DB									      ;
+				  40   A7  D5 005DD 	    TSTL    64(R7)						      ; 2435
+				       05  13 005E0 	    BEQL    83$							      ;
+		    E4   AB	  40   A7  D0 005E2 	    MOVL    64(R7), -28(CCB)					      ; 2437
+		    38   A6	  E4   AB  D0 005E7 83$:    MOVL    -28(CCB), 56(FAB)					      ; 2438
+		         50 	  48   A7  D0 005EC 	    MOVL    72(R7), R0						      ; 2444
+	      0000FFFF   8F	       50  D1 005F0 	    CMPL    R0, #65535						      ;
+				       17  1A 005F7 	    BGTRU   84$							      ;
+		    3C   A6	       50  B0 005F9 	    MOVW    R0, 60(FAB)						      ; 2448
+		         51 	01FF   C0  9E 005FD 	    MOVAB   511(R0), R1						      ; 2449
+	   52 	         51 00000200   8F  C7 00602 	    DIVL3   #512, R1, R2					      ;
+		    37   AB	       52  90 0060A 	    MOVB    R2, 55(CCB)						      ;
+				       07  11 0060E 	    BRB     85$							      ; 2444
+				       2D  DD 00610 84$:    PUSHL   #45							      ; 2452
+		  0000G  CF	       01  FB 00612 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-8
+;
+		         50 	  24   A7  D0 00617 85$:    MOVL    36(R7), R0						      ; 2461
+				       1B  13 0061B 	    BEQL    87$							      ;
+		         01 	       50  D1 0061D 	    CMPL    R0, #1						      ;
+				       0F  1F 00620 	    BLSSU   86$							      ;
+	      0000007F   8F	       50  D1 00622 	    CMPL    R0, #127						      ;
+				       06  1A 00629 	    BGTRU   86$							      ;
+		    36   AB	       50  90 0062B 	    MOVB    R0, 54(CCB)						      ; 2465
+				       07  11 0062F 	    BRB     87$							      ; 2461
+				       2D  DD 00631 86$:    PUSHL   #45							      ; 2467
+		  0000G  CF	       01  FB 00633 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				  44   A7  D5 00638 87$:    TSTL    68(R7)						      ; 2474
+				       0C  13 0063B 	    BEQL    88$							      ;
+		    DC   AB	  44   A7  D0 0063D 	    MOVL    68(R7), -36(CCB)					      ; 2477
+		         04 	       67  E9 00642 	    BLBC    (R7), 88$						      ; 2478
+		    01   A8	       10  88 00645 	    BISB2   #16, 1(R8)						      ;
+	   00 	         6E 	       00  2C 00649 88$:    MOVC5   #0, (SP), #0, #56, NAM_BLOCK			      ; 2490
+		  FF6C   CD	       38     0064D									      ;
+		  FF6C   CD	3802   8F  B0 00651 	    MOVW    #14338, NAM_BLOCK					      ; 2491
+		         50 	  08   AE  9E 00658 	    MOVAB   RES_OR_EXP_NAME, R0					      ; 2493
+		  FF78   CD	       50  D0 0065C 	    MOVL    R0, NAM_BLOCK+12					      ;
+		  FF70   CD	       50  D0 00661 	    MOVL    R0, NAM_BLOCK+4					      ;
+		  FF76   CD	  80   8F  90 00666 	    MOVB    #-128, NAM_BLOCK+10					      ; 2494
+		  FF6E   CD	  80   8F  90 0066C 	    MOVB    #-128, NAM_BLOCK+2					      ;
+		    28   A6	FF6C   CD  9E 00672 	    MOVAB   NAM_BLOCK, 40(FAB)					      ; 2495
+	   00 	         6E 	       00  2C 00678 	    MOVC5   #0, (SP), #0, #44, XAB_BLOCK			      ; 2502
+		  0088   CE	       2C     0067C									      ;
+		  0088   CE	2C1D   8F  B0 00680 	    MOVW    #11293, XAB_BLOCK					      ; 2503
+		    24   A6	0088   CE  9E 00687 	    MOVAB   XAB_BLOCK, 36(FAB)					      ; 2505
+				  54   A7  D5 0068D 	    TSTL    84(R7)						      ; 2516
+				       0F  13 00690 	    BEQL    89$							      ;
+		    01   A8	  80   8F  88 00692 	    BISB2   #128, 1(R8)						      ; 2519
+				0840   8F  BB 00697 	    PUSHR   #^M<R6,R11>						      ; 2520
+		    54   B7	       02  FB 0069B 	    CALLS   #2, @84(R7)						      ;
+				       27  11 0069F 	    BRB     92$							      ;
+	   0B 	         68 	       03  E1 006A1 89$:    BBC     #3, (R8), 90$					      ; 2536
+				       56  DD 006A5 	    PUSHL   FAB							      ;
+	      00000000G  9F	       01  FB 006A7 	    CALLS   #1, @#SYS$OPEN					      ;
+				       09  11 006AE 	    BRB     91$							      ;
+				       56  DD 006B0 90$:    PUSHL   FAB							      ;
+	      00000000G  9F	       01  FB 006B2 	    CALLS   #1, @#SYS$CREATE					      ;
+		         59 	       50  D0 006B9 91$:    MOVL    R0, OPEN_STATUS					      ;
+		         0C 	       59  E9 006BC 	    BLBC    OPEN_STATUS, 93$					      ; 2542
+				       5B  DD 006BF 	    PUSHL   CCB							      ;
+	      00000000G  9F	       01  FB 006C1 	    CALLS   #1, @#SYS$CONNECT					      ;
+		         59 	       50  D0 006C8 92$:    MOVL    R0, OPEN_STATUS					      ;
+	   0D 	    00   BE	       19  E1 006CB 93$:    BBC     #25, @0(SP), 94$					      ; 2550
+	      00010619   8F	  08   A6  D1 006D0 	    CMPL    8(FAB), #67097					      ;
+				       03  13 006D8 	    BEQL    94$							      ;
+		         68 	       08  88 006DA 	    BISB2   #8, (R8)						      ; 2552
+      F0   AB	    96   AD	       06  28 006DD 94$:    MOVC3   #6, NAM_BLOCK+42, -16(CCB)				      ; 2559
+		    D8   AB	  02   A6  B0 006E3 	    MOVW    2(FAB), -40(CCB)					      ; 2560
+		         50 	FF6F   CD  9A 006E8 	    MOVZBL  NAM_BLOCK+3, R0					      ; 2568
+				       08  13 006ED 	    BEQL    95$							      ;
+		    04   BE	FF70   CD  D0 006EF 	    MOVL    NAM_BLOCK+4, @4(SP)					      ; 2571
+				       0D  11 006F5 	    BRB     96$							      ; 2572
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-9
+;
+		         50 	FF77   CD  9A 006F7 95$:    MOVZBL  NAM_BLOCK+11, R0					      ; 2575
+				       0A  13 006FC 	    BEQL    97$							      ;
+		    04   BE	FF78   CD  D0 006FE 	    MOVL    NAM_BLOCK+12, @4(SP)				      ; 2578
+		    F7   AB	       50  90 00704 96$:    MOVB    R0, -9(CCB)						      ; 2579
+		         32 	       59  E8 00708 97$:    BLBS    OPEN_STATUS, 102$					      ; 2591
+		         50 	  08   A6  D0 0070B 	    MOVL    8(FAB), R0						      ; 2593
+	      00018292   8F	       50  D1 0070F 	    CMPL    R0, #98962						      ;
+				       04  12 00716 	    BNEQ    98$							      ;
+				       1D  DD 00718 	    PUSHL   #29							      ;
+				       1C  11 0071A 	    BRB     101$						      ;
+	      000184C4   8F	       50  D1 0071C 98$:    CMPL    R0, #99524						      ;
+				       04  12 00723 	    BNEQ    99$							      ;
+				       2A  DD 00725 	    PUSHL   #42							      ;
+				       0F  11 00727 	    BRB     101$						      ;
+	      0001852C   8F	       50  D1 00729 99$:    CMPL    R0, #99628						      ;
+				       04  12 00730 	    BNEQ    100$						      ;
+				       2B  DD 00732 	    PUSHL   #43							      ;
+				       02  11 00734 	    BRB     101$						      ;
+				       1E  DD 00736 100$:   PUSHL   #30							      ;
+		  0000G  CF	       01  FB 00738 101$:   CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   03 	         68 	       03  E0 0073D 102$:   BBS     #3, (R8), 103$					      ; 2606
+				     00A4  31 00741 	    BRW     117$						      ;
+				  4C   A7  D5 00744 103$:   TSTL    76(R7)						      ; 2617
+				       0C  12 00747 	    BNEQ    104$						      ;
+				  1D   A6  95 00749 	    TSTB    29(FAB)						      ; 2620
+				       23  13 0074C 	    BEQL    107$						      ;
+		    01   A8	  40   8F  88 0074E 	    BISB2   #64, 1(R8)						      ; 2622
+				       1C  11 00753 	    BRB     107$						      ; 2617
+		         01 	  4C   A7  D1 00755 104$:   CMPL    76(R7), #1						      ; 2627
+				       04  12 00759 	    BNEQ    105$						      ;
+				       50  D4 0075B 	    CLRL    T							      ;
+				       03  11 0075D 	    BRB     106$						      ;
+		         50 	       10  D0 0075F 105$:   MOVL    #16, T						      ;
+      1D   A6	         08 	       00  ED 00762 106$:   CMPZV   #0, #8, 29(FAB), T					      ; 2632
+				       50     00767									      ;
+				       07  13 00768 	    BEQL    107$						      ;
+				       2E  DD 0076A 	    PUSHL   #46							      ; 2634
+		  0000G  CF	       01  FB 0076C 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+				  50   A7  D5 00771 107$:   TSTL    80(R7)						      ; 2643
+				       21  12 00774 	    BNEQ    110$						      ;
+		         01 	  1F   A6  91 00776 	    CMPB    31(FAB), #1						      ; 2647
+				       06  12 0077A 	    BNEQ    108$						      ;
+		    01   A8	       04  88 0077C 	    BISB2   #4, 1(R8)						      ; 2649
+				       30  11 00780 	    BRB     113$						      ; 2647
+	   07 	         68 	       04  E1 00782 108$:   BBC     #4, (R8), 109$					      ; 2652
+				       25  DD 00786 	    PUSHL   #37							      ; 2654
+		  0000G  CF	       01  FB 00788 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	   21 	         68 	       09  E1 0078D 109$:   BBC     #9, (R8), 113$					      ; 2655
+		    01   A8	       08  88 00791 	    BISB2   #8, 1(R8)						      ; 2657
+				       1B  11 00795 	    BRB     113$						      ; 2643
+	   0A 	         68 	       0A  E1 00797 110$:   BBC     #10, (R8), 111$					      ; 2663
+		         01 	  1F   A6  91 0079B 	    CMPB    31(FAB), #1						      ;
+				       0A  12 0079F 	    BNEQ    112$						      ;
+	   0D 	         68 	       0A  E0 007A1 	    BBS     #10, (R8), 113$					      ; 2664
+		         02 	  1F   A6  91 007A5 111$:   CMPB    31(FAB), #2						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 22-10
+;
+				       07  13 007A9 	    BEQL    113$						      ;
+				       25  DD 007AB 112$:   PUSHL   #37							      ; 2666
+		  0000G  CF	       01  FB 007AD 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		         13 	       5A  E8 007B2 113$:   BLBS    V_DEFAULT_SIZE, 114$				      ; 2676
+				  36   A6  B5 007B5 	    TSTW    54(FAB)						      ;
+				       0E  13 007B8 	    BEQL    114$						      ;
+		    36   A6	  DA   AB  B1 007BA 	    CMPW    -38(CCB), 54(FAB)					      ; 2678
+				       07  13 007BF 	    BEQL    114$						      ;
+				       25  DD 007C1 	    PUSHL   #37							      ; 2680
+		  0000G  CF	       01  FB 007C3 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		         50 	  DA   AB  3C 007C8 114$:   MOVZWL  -38(CCB), R0					      ; 2681
+		         50 	  36   A6  B1 007CC 	    CMPW    54(FAB), R0						      ;
+				       04  1B 007D0 	    BLEQU   115$						      ;
+		         50 	  36   A6  3C 007D2 	    MOVZWL  54(FAB), R0						      ;
+		         50 	0092   CE  B1 007D6 115$:   CMPW    XAB_BLOCK+10, R0					      ;
+				       05  1B 007DB 	    BLEQU   116$						      ;
+		         50 	0092   CE  3C 007DD 	    MOVZWL  XAB_BLOCK+10, R0					      ;
+		    DA   AB	       50  B0 007E2 116$:   MOVW    R0, -38(CCB)					      ;
+				       18  11 007E6 	    BRB     120$						      ; 2606
+		         11 	       5A  E9 007E8 117$:   BLBC    V_DEFAULT_SIZE, 119$				      ; 2695
+	   06 	         68 	       04  E0 007EB 	    BBS     #4, (R8), 118$					      ;
+		         10 	  1D   A6  91 007EF 	    CMPB    29(FAB), #16					      ;
+				       07  12 007F3 	    BNEQ    119$						      ;
+				       2C  DD 007F5 118$:   PUSHL   #44							      ; 2697
+		  0000G  CF	       01  FB 007F7 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		    01   A8	       20  8A 007FC 119$:   BICB2   #32, 1(R8)						      ; 2698
+		         7E 	  DA   AB  3C 00800 120$:   MOVZWL  -38(CCB), -(SP)					      ; 2706
+		  0000G  CF	       01  FB 00804 	    CALLS   #1, FOR$$GET_VM					      ;
+		    EC   AB	       50  D0 00809 	    MOVL    R0, -20(CCB)					      ;
+		         7E 	  F7   AB  9A 0080D 	    MOVZBL  -9(CCB), -(SP)					      ; 2718
+		  0000G  CF	       01  FB 00811 	    CALLS   #1, FOR$$GET_VM					      ;
+		         57 	       50  D0 00816 	    MOVL    R0, T						      ;
+		         50 	  F7   AB  9A 00819 	    MOVZBL  -9(CCB), R0						      ; 2719
+		         56 	  04   BE  D0 0081D 	    MOVL    @4(SP), R6						      ;
+	   67 	         66 	       50  28 00821 	    MOVC3   R0, (R6), (T)					      ;
+		    04   BE	       57  D0 00825 	    MOVL    T, @4(SP)						      ; 2720
+		    02   A8	       01  88 00829 	    BISB2   #1, 2(R8)						      ; 2721
+		         50 	  A4   AD  9E 0082D 	    MOVAB   FAB_BLOCK, R0					      ; 2729
+		         50 	  E8   AB  D1 00831 	    CMPL    -24(CCB), R0					      ;
+				       0C  13 00835 	    BEQL    121$						      ;
+				  E8   AB  DD 00837 	    PUSHL   -24(CCB)						      ; 2731
+		         7E 	  50   8F  9A 0083A 	    MOVZBL  #80, -(SP)						      ;
+		  0000G  CF	       02  FB 0083E 	    CALLS   #2, FOR$$FREE_VM					      ;
+				  E8   AB  D4 00843 121$:   CLRL    -24(CCB)						      ; 2732
+		    24   AB	  EC   AB  D0 00846 	    MOVL    -20(CCB), 36(CCB)					      ; 2739
+		    20   AB	  DA   AB  B0 0084B 	    MOVW    -38(CCB), 32(CCB)					      ; 2740
+		    22   AB	  DA   AB  B0 00850 	    MOVW    -38(CCB), 34(CCB)					      ; 2741
+		         68 	       01  88 00855 	    BISB2   #1, (R8)						      ; 2747
+					   04 00858 	    RET     							      ; 1883
+
+; Routine Size:  1609 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 23
+;
+;00100  2759	GLOBAL ROUTINE FOR$$OPEN_FNAME (	! Copy filename, strip out spaces
+;00200  2760		FNAME_DSC,			! Adr. of unedited file name descriptor
+;00300  2761		FAB)			! Adr. of current FAB
+;00400  2762		:NOVALUE =			! Value returned is RMS completion code
+;00500  2763	!++
+;00600  2764	! FUNCTIONAL DESCRIPTION:
+;00700  2765	!	Copies filename string suppressing leading, trailing and embedded blanks to current FAB.
+;00800  2766	!	Embedded blanks can occur if FORTRAN program concatenates strings together.
+;00900  2767	!	Allocates just enough storage for edited string and stores lenfth/address in FAB
+;01000  2768	!	Lower case letters are converted to uppercase since RMS logical names do not do that.
+;01100  2769	!
+;01200  2770	! FORMAL PARAMETERS:
+;01300  2771	!
+;01400  2772	!	FNAME_DSC.rt.ds		Adr. of filename descriptor
+;01500  2773	!	FAB.mz.r	Adr. of FAB
+;01600  2774	!
+;01700  2775	! IMPLICIT INPUTS:
+;01800  2776	!
+;01900  2777	!	NONE
+;02000  2778	!
+;02100  2779	! IMPLICIT OUTPUTS:
+;02200  2780	!
+;02300  2781	!	FAB$B_FNS	Size of string allocated
+;02400  2782	!	FAB$L_FNA	Adr. of string
+;02500  2783	!
+;02600  2784	! ROUTINE VALUE:
+;02700  2785	! COMPLETION CODES:
+;02800  2786	!
+;02900  2787	!	NONE
+;03000  2788	!
+;03100  2789	! SIDE EFFECTS:
+;03200  2790	!
+;03300  2791	!	Allocates storage for edited filename string.
+;03400  2792	!--
+;03500  2793	
+;03600  2794	    BEGIN
+;03700  2795	    MAP
+;03800  2796		FNAME_DSC: REF DSC$DESCRIPTOR,
+;03900  2797		FAB: REF BLOCK[FAB$C_BLN, BYTE];
+;04000  2798	    LOCAL
+;04100  2799		P,		! temporary source string pointer
+;04200  2800		Q,		! temporary destination string pointer
+;04300  2801		LENGTH;		! length of edited string
+;04400  2802	
+;04500  2803	    !+
+;04600  2804	    ! Count number of characters in string.  Set length in FAB.
+;04700  2805	    !-
+;04800  2806	
+;04900  2807	    P = .FNAME_DSC[DSC$A_POINTER];
+;05000  2808	    LENGTH = .FNAME_DSC[DSC$W_LENGTH];
+;05100  2809	    INCR I FROM 1 TO .LENGTH DO
+;05200  2810		IF RBYTE_A(P) EQLU %C' ' THEN LENGTH = .LENGTH - 1;
+;05300  2811	
+;05400  2812	    IF .LENGTH EQLU 0 THEN FOR$$SIGNAL_STO (FOR$K_FILNAMSPE);
+;05500  2813	    IF .LENGTH GTRU 255 THEN FOR$$SIGNAL_STO (FOR$K_INVARGFOR);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 23-1
+;
+;05600  2814	
+;05700  2815	    !+
+;05800  2816	    ! Allocate # of non-blank characters and save address and length in FAB
+;05900  2817	    !-
+;06000  2818	
+;06100  2819	    FAB[FAB$L_FNA] = FOR$$GET_VM (.LENGTH);
+;06200  2820	    FAB[FAB$B_FNS] = .LENGTH;
+;06300  2821	
+;06400  2822	    !+
+;06500  2823	    ! Copy string converting lower case to upper case and stripping out blanks
+;06600  2824	    !-
+;06700  2825	
+;06800  2826	    P = .FNAME_DSC[DSC$A_POINTER];
+;06900  2827	    Q = .FAB[FAB$L_FNA];
+;07000  2828	    INCR I FROM 1 TO .FNAME_DSC[DSC$W_LENGTH] DO
+;07100  2829		BEGIN
+;07200  2830		LOCAL T;
+;07300  2831		IF (T = RBYTE_A (P)) NEQU %C' '
+;07400  2832		THEN
+;07500  2833		    CH_WCHAR_A (Q) =
+;07600  2834			(IF .T GEQU %C'a' AND .T LEQU %C'z'
+;07700  2835			 THEN
+;07800  2836			    .T - (%C'a' - %C'A')
+;07900  2837			 ELSE
+;08000  2838			    .T)
+;08100  2839		END;
+;08200  2840	
+;08300  2841	    RETURN;
+;08400  2842	    END;
+
+
+
+
+
+					 007C 00859 	    .ENTRY  FOR$$OPEN_FNAME, Save R2,R3,R4,R5,R6		      ; 2759
+		         53 	  04   AC  D0 0085B 	    MOVL    FNAME_DSC, R3					      ; 2807
+		         55 	  04   A3  D0 0085F 	    MOVL    4(R3), P						      ;
+		         56 	       63  3C 00863 	    MOVZWL  (R3), R6						      ; 2808
+		         54 	       56  D0 00866 	    MOVL    R6, LENGTH						      ;
+		         51 	       54  D0 00869 	    MOVL    LENGTH, R1						      ; 2809
+				       50  D4 0086C 	    CLRL    I							      ;
+				       07  11 0086E 	    BRB     2$							      ;
+		         20 	       85  91 00870 1$:     CMPB    (P)+, #32						      ; 2810
+				       02  12 00873 	    BNEQ    2$							      ;
+				       54  D7 00875 	    DECL    LENGTH						      ;
+	   F5 	         50 	       51  F3 00877 2$:     AOBLEQ  R1, I, 1$						      ; 2809
+				       54  D5 0087B 	    TSTL    LENGTH						      ; 2812
+				       07  12 0087D 	    BNEQ    3$							      ;
+				       2B  DD 0087F 	    PUSHL   #43							      ;
+		  0000G  CF	       01  FB 00881 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+	      000000FF   8F	       54  D1 00886 3$:     CMPL    LENGTH, #255					      ; 2813
+				       07  1B 0088D 	    BLEQU   4$							      ;
+				       30  DD 0088F 	    PUSHL   #48							      ;
+		  0000G  CF	       01  FB 00891 	    CALLS   #1, FOR$$SIGNAL_STO					      ;
+		         52 	  08   AC  D0 00896 4$:     MOVL    FAB, R2						      ; 2819
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 23-2
+;
+				       54  DD 0089A 	    PUSHL   LENGTH						      ;
+		  0000G  CF	       01  FB 0089C 	    CALLS   #1, FOR$$GET_VM					      ;
+		    2C   A2	       50  D0 008A1 	    MOVL    R0, 44(R2)						      ;
+		    34   A2	       54  90 008A5 	    MOVB    LENGTH, 52(R2)					      ; 2820
+		         55 	  04   A3  D0 008A9 	    MOVL    4(R3), P						      ; 2826
+		         51 	  2C   A2  D0 008AD 	    MOVL    44(R2), Q						      ; 2827
+				       54  D4 008B1 	    CLRL    I							      ; 2828
+				       25  11 008B3 	    BRB     7$							      ;
+		         50 	       85  9A 008B5 5$:     MOVZBL  (P)+, T						      ; 2831
+		         20 	       50  D1 008B8 	    CMPL    T, #32						      ;
+				       1D  13 008BB 	    BEQL    7$							      ;
+		         52 	       51  D0 008BD 	    MOVL    Q, T						      ; 2833
+				       51  D6 008C0 	    INCL    Q							      ;
+	      00000061   8F	       50  D1 008C2 	    CMPL    T, #97						      ; 2834
+				       0C  1F 008C9 	    BLSSU   6$							      ;
+	      0000007A   8F	       50  D1 008CB 	    CMPL    T, #122						      ;
+				       03  1A 008D2 	    BGTRU   6$							      ;
+		         50 	       20  C2 008D4 	    SUBL2   #32, R0						      ; 2836
+		         62 	       50  90 008D7 6$:     MOVB    R0, (T)						      ; 2833
+	   D7 	         54 	       56  F3 008DA 7$:     AOBLEQ  R6, I, 5$						      ; 2828
+					   04 008DE 	    RET     							      ; 2759
+
+; Routine Size:  134 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 24
+;
+;00100  2843	ROUTINE DECL_EXIT_HAND 	! Declare VMS EXIT handler
+;00200  2844		:NOVALUE =			! 
+;00300  2845	!++
+;00400  2846	! FUNCTIONAL DESCRIPTION:
+;00500  2847	!
+;00600  2848	!	Declares VMS EXIT handler.
+;00700  2849	!
+;00800  2850	! CALLING SEQUENCE:
+;00900  2851	!
+;01000  2852	!	IF TESTBITSCS (HANDLER_LOCK) THEN DECL_EXIT_HAND ()
+;01100  2853	!
+;01200  2854	!
+;01300  2855	! FORMAL PARAMETERS:
+;01400  2856	!
+;01500  2857	!	none
+;01600  2858	!
+;01700  2859	! IMPLICIT INPUTS:
+;01800  2860	!
+;01900  2861	!	NONE
+;02000  2862	!
+;02100  2863	! IMPLICIT OUTPUTS:
+;02200  2864	!
+;02300  2865	!	NONE
+;02400  2866	!
+;02500  2867	! ROUTINE VALUE:
+;02600  2868	! COMPLETION CODES:
+;02700  2869	!
+;02800  2870	!	NONE
+;02900  2871	!
+;03000  2872	! SIDE EFFECTS:
+;03100  2873	!
+;03200  2874	!	Declares VMS EXIT handler.
+;03300  2875	!--
+;03400  2876	
+;03500  2877	    BEGIN
+;03600  2878	
+;03700  2879	    !+
+;03800  2880	    ! Initialize EXIT handler control block (must do at run time to be PIC)
+;03900  2881	    !-
+;04000  2882	
+;04100  2883	    EXIT_BLOCK[1] = EXIT_HANDLER;	! Adr. of EXIT handler to be called on EXIT
+;04200  2884	    EXIT_BLOCK[2] = 1;			! arg count 
+;04300  2885	    EXIT_BLOCK[3] = EXIT_REASON;	! adr. to store reason for EXIT
+;04400  2886	    IF NOT $DCLEXH (DESBLK=EXIT_BLOCK)
+;04500  2887	    THEN
+;04600  2888		FOR$$SIG_FATINT ();
+;04700  2889	    RETURN
+;04800  2890	    END;
+
+
+
+							    .EXTRN  SYS$DCLEXH
+
+					 0004 008DF DECL_EXIT_HAND:
+							    .WORD   Save R2						      ; 2843
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 24-1
+;
+		         52 00000000'  EF  9E 008E1 	    MOVAB   EXIT_BLOCK+4, R2					      ;
+		         62 	0000V  CF  9E 008E8 	    MOVAB   EXIT_HANDLER, EXIT_BLOCK+4				      ; 2883
+		    04   A2	       01  D0 008ED 	    MOVL    #1, EXIT_BLOCK+8					      ; 2884
+		    08   A2	  F8   A2  9E 008F1 	    MOVAB   EXIT_REASON, EXIT_BLOCK+12				      ; 2885
+				  FC   A2  9F 008F6 	    PUSHAB  EXIT_BLOCK						      ; 2886
+	      00000000G  9F	       01  FB 008F9 	    CALLS   #1, @#SYS$DCLEXH					      ;
+		         05 	       50  E8 00900 	    BLBS    R0, 1$						      ;
+		  0000G  CF	       00  FB 00903 	    CALLS   #0, FOR$$SIG_FATINT					      ; 2888
+					   04 00908 1$:     RET     							      ; 2843
+
+; Routine Size:  42 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 25
+;
+;00100  2891	ROUTINE EXIT_HANDLER (			! Exit Handler set up when
+;00200  2892						! a DISPOSE='PRINT' or 'DELETE'
+;00300  2893						! is done.
+;00400  2894		EXIT_REASON)
+;00500  2895		: NOVALUE =
+;00600  2896	
+;00700  2897	!++
+;00800  2898	! FUNCTIONAL DESCRIPTION:
+;00900  2899	!
+;01000  2900	!	Find every existing LUB (with a linear search through the LUB
+;01100  2901	!	table); for each LUB, if the file is open and a DISPOSE='PRINT' or
+;01200  2902	!	'DELETE' was specified for the file by an OPEN statement, then
+;01300  2903	!	close the file with FOR$$CLOSE_FILE, the internal file closer.
+;01400  2904	!	RMS will close all open files at image exit, but it doesn't know
+;01500  2905	!	about the above two DISPOSE conditions.  We couldn't set them at
+;01600  2906	!	OPEN time, since the user is allowed to specify a different
+;01700  2907	!	DISPOSE option at close time (with the CLOSE
+;01800  2908	!	statement).
+;01900  2909	!
+;02000  2910	! FORMAL PARAMETERS:
+;02100  2911	!
+;02200  2912	!	EXIT_REASON.rl.r	not used
+;02300  2913	!
+;02400  2914	!--
+;02500  2915	
+;02600  2916	    BEGIN
+;02700  2917	
+;02800  2918	    GLOBAL REGISTER
+;02900  2919		CCB = 11: REF BLOCK[, BYTE];
+;03000  2920	
+;03100  2921	    LOCAL
+;03200  2922		I;					! local temp
+;03300  2923	
+;03400  2924	    !+
+;03500  2925	    ! Look through the table of pointers to active LUBs.
+;03600  2926	    !-
+;03700  2927	
+;03800  2928	    INCR I FROM 0 TO OPEN$K_LUN_MAX - OPEN$K_DLUN_MIN
+;03900  2929	    DO
+;04000  2930		IF .OTS$$AA_LUB_TAB[.I] NEQA 0
+;04100  2931		THEN
+;04200  2932	
+;04300  2933		    !+
+;04400  2934		    ! The LUB is active.  If the associated file is open and PRINT
+;04500  2935		    ! or DELETE was specified by an OPEN statement, call TRY_TO_CLOSE
+;04600  2936		    ! to attempt to close the file.  It will ignore any errors
+;04700  2937		    ! returned by FOR$$CLOSE_FILE.
+;04800  2938		    !-
+;04900  2939	
+;05000  2940		    BEGIN
+;05100  2941		    CCB = .OTS$$AA_LUB_TAB[.I];
+;05200  2942		    IF .CCB[LUB$V_OPENED] AND (.CCB[LUB$V_DELETE] OR .CCB[LUB$V_PRINT])
+;05300  2943		    THEN
+;05400  2944			TRY_TO_CLOSE ();
+;05500  2945		    END;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 25-1
+;
+;05600  2946	
+;05700  2947	    RETURN;
+;05800  2948	END;
+
+
+
+
+
+					 0804 00909 EXIT_HANDLER:
+							    .WORD   Save R2,R11						      ; 2891
+				       52  D4 0090B 	    CLRL    I							      ; 2928
+		         50 00000000G0042  D0 0090D 1$:     MOVL    OTS$$AA_LUB_TAB[I], R0				      ; 2930
+				       16  13 00915 	    BEQL    3$							      ;
+		         5B 	       50  D0 00917 	    MOVL    R0, CCB						      ; 2941
+		         0F 	  FC   AB  E9 0091A 	    BLBC    -4(CCB), 3$						      ; 2942
+	   05 	    FC   AB	       06  E0 0091E 	    BBS     #6, -4(CCB), 2$					      ;
+	   05 	    FC   AB	       07  E1 00923 	    BBC     #7, -4(CCB), 3$					      ;
+		  0000V  CF	       00  FB 00928 2$:     CALLS   #0, TRY_TO_CLOSE					      ; 2944
+	   D8 	         52 00000067   8F  F3 0092D 3$:     AOBLEQ  #103, I, 1$						      ; 2928
+					   04 00935 	    RET     							      ; 2891
+
+; Routine Size:  45 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 26
+;
+;00100  2949	ROUTINE TRY_TO_CLOSE			! Call FOR$$CLOSE_FILE and ignore errors
+;00200  2950		: CALL_CCB NOVALUE =
+;00300  2951	
+;00400  2952	!++
+;00500  2953	! FUNCTIONAL DESCRIPTION:
+;00600  2954	!
+;00700  2955	!	Set up LIB$SIG_TO_RET to catch any signals from FOR$$CLOSE_FILE
+;00800  2956	!	and return the signal as routine value.  Since nobody looks at
+;00900  2957	!	the routine value, the signal vanishes!  CCB points to the control
+;01000  2958	!	block of the file to close.
+;01100  2959	!
+;01200  2960	!--
+;01300  2961	
+;01400  2962	
+;01500  2963	    BEGIN
+;01600  2964	
+;01700  2965	    EXTERNAL REGISTER
+;01800  2966		CCB: REF BLOCK[, BYTE];
+;01900  2967	
+;02000  2968	    ENABLE
+;02100  2969		LIB$SIG_TO_RET ();
+;02200  2970	
+;02300  2971	    FOR$$CLOSE_FILE ();
+;02400  2972	
+;02500  2973	    RETURN;
+;02600  2974	    END;
+
+
+
+
+
+					 0000 00936 TRY_TO_CLOSE:
+							    .WORD   Save nothing					      ; 2949
+		         6D 00000007   EF  DE 00938 	    MOVAL   1$, (FP)						      ; 2963
+		  0000G  CF	       00  FB 0093F 	    CALLS   #0, FOR$$CLOSE_FILE					      ; 2971
+					   04 00944 	    RET     							      ; 2949
+					 0000 00945 1$:     .WORD   Save nothing					      ; 2963
+				       7E  D4 00947 	    CLRL    -(SP)						      ;
+				       5E  DD 00949 	    PUSHL   SP							      ;
+		         7E 	  04   AC  7D 0094B 	    MOVQ    4(AP), -(SP)					      ;
+	      00000000G  00	       03  FB 0094F 	    CALLS   #3, LIB$SIG_TO_RET					      ;
+					   04 00956 	    RET     							      ;
+
+; Routine Size:  33 bytes
+
+
+;02700  2975	
+;02800  2976	
+;02900  2977	END			! End of FOR$OPEN module
+;03000  2978	ELUDOM
+
+
+
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 19:20:31	DBB3:[RTL.SRC]FOPEN.B32;4					Page 26-1
+;
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  FOR$DATA       	    24    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  FOR$CODE       	  2391  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        82         3       151
+
+
+
+
+
+; Size:		2289 code + 126 data bytes
+; Run Time:	01:08.3
+; Elapsed Time:	02:26.2
+; Memory Used:	644 pages
+; Compilation Complete

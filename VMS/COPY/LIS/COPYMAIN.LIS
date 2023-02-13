@@ -1,0 +1,3210 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE COPYMAIN (					! STARLET Native File Copy Utility
+;	0002			IDENT = 'X01.02',
+;	0003			MAIN = COPY$COPY
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!			  COPYRIGHT (c) 1978 BY
+;	0008	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0009	!
+;	0010	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0011	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0012	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0013	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0014	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0015	! TRANSFERRED.
+;	0016	!
+;	0017	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0018	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0019	! CORPORATION.
+;	0020	!
+;	0021	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0022	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0023	!
+;	0024	
+;	0025	!++
+;	0026	! FACILITY:  COPY
+;	0027	!
+;	0028	! ABSTRACT:
+;	0029	!
+;	0030	!	This utility program creates a copy of one or more user-specified
+;	0031	!	files.  Two or more files may optionally be concatenated to 
+;	0032	!	create a single output file.
+;	0033	!
+;	0034	! ENVIRONMENT:  
+;	0035	!
+;	0036	! AUTHOR:  Ward Clark,	CREATION DATE:  19 August 1977
+;	0037	!
+;	0038	! MODIFIED:	Carol Peters, 18 April 1978
+;	0039	!
+;	0040	! 01	18-04-78	C. Peters	Change INCLUDE file declarations to suit VMS native compiles.
+;	0041	!					Remove SHR$_HASHCONCAT, SHR$_INCOMPAT literals.
+;	0042	! 02	18-04-78	C. Peters	Change COPY to reflect modified behavior.
+;	0043	!	Include COPY.REQ. Delete LITERAL definitions for general use, status flags. Delete
+;	0044	!		macro definitions for commonly used status flags.
+;	0045	!	Rename COPY_STATUS to COPY$CLI_STATUS.
+;	0046	!	Don't include RMSMAC.L32, STARDE.L32. Include STARLET.L32 from SYS$LIBRARY.
+;	0047	!		Delete external literal declarations of RMS status codes. They are in STARLET.L32 too.
+;	0048	!	Delete GLOBAL variable COPY$CLI_STATUS. Put it in a new module, COPYGBL.B32.
+;	0049	!	Instead of calling GET_OUTFILE, call COPY$GET_OUTFIL, in COPYSPECS.
+;	0050	!	Delete GET_OUTFILE.
+;	0051	!	Instead of calling GET_INFILE, call COPY$GET_INFILE, in COPYSPECS.B32.
+;	0052	!	Delete GET_INFILE from this module.
+;	0053	!	Instead of calling OPEN_INFILE, call COPY$OPN_INFILE, in COPYSPECS.
+;	0054	!	Delete OPEN_INFILE.
+;	0055	!	Rename IN_OPEN_ERROR to COPY$INOPN_ERR; OUT_OPEN_ERROR to COPY$OUTOPN_ERR;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!		CLOSE_OUTFILE to COPY$CLOSE_OUTF.
+;	0057	!	Instead of calling OPEN_OUTFILE, call COPY$OPN_OUTFIL, in COPYSPECS.
+;	0058	!	Rename OUT_CLOSE_ERROR to COPY$OCLOSE_ERR.
+;	0059	!	Remove declaration for STS$K_INFO. Put this in COPY.REQ.
+;	0060	!	Remove declaration for VMSMAC.L32, put it in COPY.REQ.
+;	0061	!	Delete routine OPEN_OUTFILE. This routine is replaced by COPY$OPN_OUTFIL, in COPYSPECS.
+;	0062	!	Rename CALCULATE_ALQ to COPY$CALC_ALQ and make it a global routine.
+;	0063	!	Rename MESSAGE_NUMBER to COPY$MSG_NUMBER and make it a global routine.
+;	0064	!	Rename CLI_RESULT to COPY$CLI_RESULT. Declare it a global in COPYGBL.
+;	0065	!	In main routine, close output file is flag MULTIPLE_OUTPUT is set, instead of testing
+;	0066	!		for the CONCAT_FOLLOWS flag being not set.
+;	0067	!	Move setting of CONCAT_QUAL and NOCONCAT_QUAL into the routine GET_CMD_QUAL.
+;	0068	!	Move OUTFILE_OPEN and APPEND_COMMAND bits into COPY$SEM_STATUS from COPY$CLI_STATUS.
+;	0069	!	Remove RMS declarations for input file descriptions to file called FILINPUT.B32.
+;	0070	!	Remove RMS declarations for output file descriptions to file called FILOUTPUT.B32.
+;	0071	!	Rename PARSE_INFILE to COPY$PARS_INFIL.
+;	0072	!	Move PUT_MESSAGE and PUT_MESSAGEX macro definitions to include file COPYMSG.REQ.
+;	0073	!	Move routine COPY$MSG_NUMBER to new module, COPYMSG.B32.
+;	0074	!	In CALC_ALQ, if /TRUNCATE was specified without /ALLOCATION, calculate allocation
+;	0075	!		value based on actual EOF of input file.
+;	0076	!	Add a global variable COPY$B_INCOMPAT. If this variable is set, don't output
+;	0077	!		incompatible attributes message because it has already been output once
+;	0078	!		for this output file.
+;	0079	!	In RMS_SETUP, when setting the MBC and MBF fields for a record mode copy,
+;	0080	!		set the MBC field to the size of the input file only the size is less than or
+;	0081	!		equal to 127 blocks. Otherwise, MBC goes negative.
+;	0082	!	In RMS_SETUP, a record mode copy from disk or tape loads RAB$W_USZ from XAB$W_LRL if
+;	0083	!		non-zero; otherwise, FAB$W_BLS.
+;	0084	!
+;	0085	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 2
+; Digital Equipment Corporation
+;
+;	0086	!++
+;	0087	! DETAILED FUNCTIONAL DESCRIPTION:
+;	0088	!
+;	0089	!	This utility program creates a copy of one or more user-specified
+;	0090	!	files.  These files can be explicitly named or can be referred to
+;	0091	!	through use of RMS wildcard file naming.  Two or more files may
+;	0092	!	optionally be concatenated to create a single output file.
+;	0093	!
+;	0094	!	All file I/O is done using standard RMS facilities.  Therefore,
+;	0095	!	the input and output files can exist on any device supported by RMS,
+;	0096	!	including devices at remote network nodes.  If possible, file copying
+;	0097	!	is done using block I/O.  Record I/O is used only when an input or
+;	0098	!	output file is record oriented (e.g., terminal, unit record) or when
+;	0099	!	a concatenated file is being copied.
+;	0100	!
+;	0101	!	This utility is intended to interface directly with a Command Language
+;	0102	!	Interpreter (CLI) and cannot be directly invoked from Command Language
+;	0103	!	level or from an executing program.  Numerous command options
+;	0104	!	(i.e., qualifiers) are supported to allow the Command Language user
+;	0105	!	to (1) optionally specify the location and attributes of the input
+;	0106	!	and output files, and (2) control the reporting of each file copy.
+;	0107	!
+;	0108	!	If more than one copy operation is specified in a single COPY request,
+;	0109	!	each file copy is performed independent of the others.  Therefore,
+;	0110	!	the failure of one file copy operation (e.g., I/O error, input
+;	0111	!	file not found) does not affect the remaining copy requests.  The
+;	0112	!	single exception to this rule is that unprocessed concatenated input
+;	0113	!	files are bypassed in the event of a file copy failure.
+;	0114	!
+;	0115	!--
+;	0116	
+;	0117	!	NOTE:  This module contains some temporary code that (1) circumvents
+;	0118	!	a system problem or (2) cannot be implemented until an expected
+;	0119	!	system function is available.  In some cases, codes have been added;
+;	0120	!	in other cases, code has been "commented out".  In either case, each
+;	0121	!	statement affected includes a comment of the form "!#n", where "n" is
+;	0122	!	a number from the following table:
+;	0123	!
+;	0124	!		#1 - symbol not currently defined in STARLET.L32
+;	0125	!		#2 - I/O buffers cannot be locked in working set - known restriction
+;	0126	!		#3 - MODIFY does not accept FHC XAB - future feature
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 3
+; Digital Equipment Corporation
+;
+;	0127	!
+;	0128	! TABLE OF CONTENTS:
+;	0129	!
+;	0130	
+;	0131	FORWARD ROUTINE
+;	0132	    COPY$COPY,						! Main COPY control routine
+;	0133	    RMS_SETUP,						! RAB/buffer initialization
+;	0134	    COPY_FILE,						! Copies an input file to the output file
+;	0135	    CLOSE_INFILE :  NOVALUE,				! Closes the current input file
+;	0136	    COPY$CLOSE_OUTF :  NOVALUE,				! Closes the current output file
+;	0137	    RMS_CLEANUP :  NOVALUE,				! RAB/buffer cleanup
+;	0138	    BYPASS_CONCAT :  NOVALUE,				! Bypass concatenated input files after an error
+;	0139	    COPY$PARS_INFIL,					! Parse an input file-specification
+;	0140	    COPY$CALC_ALQ,					! Calculate the output file allocation quantity
+;	0141	    REPORT_NAMES :  NOVALUE,				! Report names of input and output files
+;	0142	    REPORT_BYPASS :  NOVALUE,				! Report name of file bypassed
+;	0143	    COPY$LOG_MSG :  NOVALUE,				! Informational message routine
+;	0144	    COPY$INOPN_ERR :  NOVALUE,				! Input open error routine
+;	0145	    IN_READ_ERROR :  NOVALUE,				! Input read error routine
+;	0146	    IN_CLOSE_ERROR :  NOVALUE,				! Input close error routine
+;	0147	    COPY$OUTOPN_ERR :  NOVALUE,				! Output open error routine
+;	0148	    OUT_WRITE_ERROR :  NOVALUE,				! Output write error routine
+;	0149	    COPY$OCLOSE_ERR :  NOVALUE;				! Output close error routine
+;	0150	
+;	0151	!
+;	0152	! INCLUDE FILES:
+;	0153	!
+;	0154	
+;	0155	LIBRARY 'SYS$LIBRARY:STARLET.L32';			! VAX/VMS common definitions
+;	0156	
+;	0157	LIBRARY	'SYS$LIBRARY:CLIMAC.L32';			! CLI macros
+;	0158	
+;	0159	REQUIRE	'SRC$:COPY.REQ';				! COPY literal definitions and macros
+;	0374	
+;	0375	REQUIRE 'SRC$:COPYMSG.REQ';				! Definition of macros to SIGNAL a message
+;	0423	
+;	0424	!
+;	0425	! MACROS:
+;	0426	!
+;	0427	
+;	0428	MACRO
+;	0429	    IN_NEQ_OUT[] =					! Compare input and output FHC XAB field
+;     M 0430		.INFILE_XABFHC[%REMAINING] NEQ .OUTFILE_XABFHC[%REMAINING] %,
+;	0431	
+;	0432	    NAM$B_DVILNG = $DEFINE_BYTE[NAM$T_DVI] %,
+;	0433	
+;	0434	    $DEFINE_BYTE( D, B, S, X ) = D, B, 8, 0 %;
+;	0435	
+;	0436	!
+;	0437	! EQUATED SYMBOLS:
+;	0438	!
+;	0439	
+;	0440	LITERAL
+;	0441	    RME$K_OVERLAY = 0;					!#1 ***** KLUDGE *****
+;	0442	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 3-1
+; Digital Equipment Corporation
+;
+;	0443	!
+;	0444	! OWN Storage:
+;	0445	!
+;	0446	
+;	0447	!
+;	0448	! Global variables
+;	0449	!
+;	0450	
+;	0451	GLOBAL
+;	0452	    OUTFILE_COUNT :  INITIAL (0),			! Number of output files created
+;	0453	
+;	0454	    BLOCK_COUNT,					! Number of input blocks copied (current file)
+;	0455	
+;	0456	    RECORD_COUNT,					! Number of input records copied (current file)
+;	0457	
+;	0458	    MOST_SEVERE_ERR :  BLOCK[4,BYTE]			! Most severe error encountered
+;	0459				INITIAL( SS$_NORMAL ),		!
+;	0460	
+;	0461	    IO_BUFFER_SIZE :  INITIAL(0),			! Maximum size of I/O buffer pool
+;	0462	
+;	0463	    IO_BUFFER_BASE,					! Address of I/O buffer pool
+;	0464	    IO_BUFFER_END :  INITIAL(0),			! Address of last byte of block I/O buffer
+;	0465	
+;	0466	    BLOCK_SIZE,						! Input file block size
+;	0467	    BLOCK_IO_LENGTH;					! Block I/O read length (may be multi-block)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 4
+; Digital Equipment Corporation
+;
+;	0468	!
+;	0469	! EXTERNAL REFERENCES:
+;	0470	!
+;	0471	
+;	0472	EXTERNAL
+;	0473	    alloc_value,					! Allocation value specified by user.
+;	0474	    copy$b_incompat	: BYTE,				! Incompatible attributes flag
+;	0475	
+;	0476	!
+;	0477	! CLI definitions
+;	0478	!
+;	0479	
+;	0480	    cleanup_desc	: BLOCK [, BYTE],		! CLI end of parameter work area
+;	0481	    cli_work_area	: BLOCK [, BYTE],		! CLI dynamic work area
+;	0482	    infile_desc		: BLOCK [, BYTE],		! CLI data block for input file
+;	0483	    initial_desc	: BLOCK [, BYTE],		! CLI data block for COPY and APPEND commands
+;	0484	    outfile_desc	: BLOCK [, BYTE],		! CLI data blick for output file
+;	0485	
+;	0486	!
+;	0487	! RMS definitions
+;	0488	!
+;	0489	
+;	0490	    infile_fab		: BLOCK [, BYTE],		! Input file FAB block
+;	0491	    infile_rab		: BLOCK [, BYTE],		! Input file RAB block
+;	0492	    infile_name		: VECTOR [, BYTE],		! Input file name after $OPEN
+;	0493	    infile_xname	: VECTOR [, BYTE],		! Input file name before $OPEN
+;	0494	    dummy_nam_blk	: BLOCK [, BYTE],		! Secondary input NAM block
+;	0495	    infile_nam_blk	: BLOCK [, BYTE],		! Primary input NAM block
+;	0496	    infile_xabfhc	: BLOCK [, BYTE],		! File header characteristics XAB block
+;	0497	    infile_xaball	: BLOCK [, BYTE],		! File allocation XAB block
+;	0498	    in_name_desc	: VECTOR,			! Input file name descriptor
+;	0499	    outfile_fab		: BLOCK [, BYTE],		! Output file FAB block
+;	0500	    outfile_rab		: BLOCK [, BYTE],		! Output file RAB block
+;	0501	    outfile_name	: VECTOR [, BYTE],		! Output file name after $OPEN
+;	0502	    outfile_xname	: VECTOR [, BYTE],		! Output file name before $OPEN
+;	0503	    outfile_nam_blk	: BLOCK [, BYTE],		! Output file NAM block
+;	0504	    outfile_xabrdt	: BLOCK [, BYTE],		! Output file revision date/time XAB block
+;	0505	    outfile_xabpro	: BLOCK [, BYTE],		! Output file protection XAB block
+;	0506	    outfile_xabdat	: BLOCK [, BYTE],		! Output file date XAB block
+;	0507	    outfile_xaball	: BLOCK [, BYTE],		! Output file allocation XAB block
+;	0508	    outfile_xabfhc	: BLOCK [, BYTE],		! Output file file header characteristics XAB block
+;	0509	    out_name_desc	: VECTOR;			! Output file name descriptor
+;	0510	
+;	0511	EXTERNAL ROUTINE
+;	0512	    COPY$GET_INFILE,					! Gets the name of the input file
+;	0513	    COPY$GET_OUTFIL,					! Gets the name of the output file
+;	0514	    COPY$OPN_INFILE,					! Opens the input file
+;	0515	    COPY$OPN_OUTFIL,					! Opens an output file
+;	0516	    GET_CMD_QUAL,					! Get command level qualifiers
+;	0517	    SYS$ADJWSL :  ADDRESSING_MODE(GENERAL),		! Adjust-working-set-limit system service
+;	0518	    SYS$LKWSET :  ADDRESSING_MODE(GENERAL),		! Lock-in-working-set system service
+;	0519	    SYS$ULWSET :  ADDRESSING_MODE(GENERAL),		! Unlock-from-working-set system service
+;	0520	    LIB$GET_VM;						! Virtual memory allocation
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5
+; Digital Equipment Corporation
+;
+;	0521	ROUTINE COPY$COPY =					! Primary COPY control routine
+;	0522	
+;	0523	!++
+;	0524	! FUNCTIONAL DESCRIPTION:
+;	0525	!
+;	0526	!	This routine is the primary control routine for the COPY utility.
+;	0527	!	It determines the basic logical flow and calls support routines
+;	0528	!	which perform each logical function.
+;	0529	!
+;	0530	! FORMAL PARAMETERS:
+;	0531	!
+;	0532	!	AP.rlu.va - Argument list passed from the Command Language Interpreter
+;	0533	!
+;	0534	! IMPLICIT INPUTS:
+;	0535	!
+;	0536	!	None
+;	0537	!
+;	0538	! IMPLICIT OUTPUTS:
+;	0539	!
+;	0540	!	None
+;	0541	!
+;	0542	! COMPLETION CODES:
+;	0543	!
+;	0544	!	Most severe error encountered during processing or SS$_NORMAL
+;	0545	!
+;	0546	! SIDE EFFECTS:
+;	0547	!
+;	0548	!	None
+;	0549	!
+;	0550	!--
+;	0551	
+;	0552	    BEGIN
+;	0553	
+;	0554	    BUILTIN
+;	0555		AP;						! Declare the name of the argument pointer.
+;	0556	
+;	0557	    BIND
+;	0558		ARGUMENT_LIST = AP :  REF BLOCK[,BYTE];		! Declare the form of the argument list.
+;	0559	
+;	0560	    LOCAL
+;	0561		STATUS;						! General routine return code
+;	0562	
+;	0563	!
+;	0564	! Initialization
+;	0565	!
+;	0566	
+;	0567	    COPY$CLI_RESULT = .ARGUMENT_LIST[CLI$A_UTILSERV];	! Save the address of the CLI result parse routine
+;	0568	
+;	0569	    CALL_CLI(						! Call the CLI with the following arguments:
+;	0570			INITIAL_DESC,				!    CLI initialization request descriptor address
+;	0571			CLI_WORK_AREA,				!    CLI work area address
+;	0572			COPY$CLI_STATUS );			!    COPY status bit vector address
+;	0573	
+;	0574	!
+;	0575	! Changed this to set CONCATINP bit instead of MOREINP bit, since having the /CONCATENATE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5-1
+; Digital Equipment Corporation
+;
+;	0576	! qualifier on by default makes all commas into plus signs.
+;	0577	!
+;	0578	
+;	0579	    INFILE_DESC [CLI$V_CONCATINP] = YES;		! Needed to allow a retrieve of
+;	0580								! the first input file-specification.
+;	0581	
+;	0582	!
+;	0583	! Get the command qualifiers from the Command Language Interpreter (CLI).
+;	0584	!
+;	0585	
+;	0586	    GET_CMD_QUAL();					! Get the command qualifiers.
+;	0587	
+;	0588	!
+;	0589	! Get the output file-specification and all qualifiers from the CLI.
+;	0590	!
+;	0591	
+;	0592	    IF NOT COPY$GET_OUTFIL (				! Get the output file spec from the CLI.
+;	0593	                            OUTFILE_FAB,		!    Specify the output FAB block address,
+;	0594	                            OUTFILE_NAM_BLK,		!    the output NAM block address,
+;	0595	                            OUTFILE_XABFHC)		!    and the output XABFHC block address.
+;	0596	    THEN
+;	0597	        RETURN .MOST_SEVERE_ERR;			!    On error, return to CLI.
+;	0598	
+;	0599	!
+;	0600	! The remainder of this routine is executed for each input
+;	0601	! file-specification supplied by the user.
+;	0602	!
+;	0603	
+;	0604	    WHILE 1 DO						! Beginning of repeat loop
+;	0605		BEGIN
+;	0606	
+;	0607	!
+;	0608	! Get the next input file-specification from the CLI.  This routine call is a
+;	0609	! NOP if a wildcard file-specification is currently being processed;
+;	0610	! that is, a wildcard specification is repeatedly used until no furthur
+;	0611	! match is found.
+;	0612	!
+;	0613	
+;	0614		STATUS = COPY$GET_INFILE (			! Get an input file-specification.
+;	0615	                                    INFILE_FAB,		!    Specify the address of the input FAB block,
+;	0616	                                    INFILE_NAM_BLK,	!    the address of the input NAM block,
+;	0617	                                    INFILE_XABALL);	!    and the address of the input XABALL block.
+;	0618	
+;	0619		IF .STATUS EQL NO_MORE_FILES			! If there are no more input file-specs,
+;	0620		THEN						!
+;	0621		    EXITLOOP;					! exit the input file-spec processing loop.
+;	0622	
+;	0623		IF .STATUS EQL OK				! If everything is OK so far,
+;	0624		THEN						!
+;	0625		    BEGIN					! begin normal input file processing.
+;	0626	
+;	0627	!
+;	0628	! Open the current input file.
+;	0629	!
+;	0630	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5-2
+; Digital Equipment Corporation
+;
+;	0631		    STATUS = COPY$OPN_INFILE (INFILE_FAB);	! Open the current input file.
+;	0632	
+;	0633	!
+;	0634	! Create (or simply open) the output file (if it is not already open due to
+;	0635	! input file concatenation) and then copy the entire input file to the
+;	0636	! output file.
+;	0637	!
+;	0638	
+;	0639		    IF .STATUS EQL OK				! If the input file was successfully opened,
+;	0640		    THEN					!
+;	0641			BEGIN					!
+;	0642			IF (STATUS = COPY$OPN_OUTFIL (		! create or open the output file unless it is
+;	0643	                                                OUTFILE_FAB,
+;	0644	                                                OUTFILE_RAB,
+;	0645	                                                INFILE_FAB,
+;	0646	                                                OUTFILE_COUNT))
+;	0647								! already open due to input concatenation.
+;	0648			THEN
+;	0649			    IF (STATUS = RMS_SETUP())		! Setup the input and output RABs and buffers.
+;	0650			    THEN
+;	0651				BEGIN
+;	0652				IF (STATUS = COPY_FILE())	! Copy the entire input file to the output file.
+;	0653				THEN
+;	0654				    REPORT_NAMES()		! Report the results if the copy was successful.
+;	0655	
+;	0656				ELSE				! Otherwise, report a partial copy.
+;	0657				    REPORT_BYPASS( MSG$_NOTCMPLT );
+;	0658	
+;	0659				RMS_CLEANUP();			! Perform any necessary RMS/buffer cleanup.
+;	0660				END
+;	0661			    ELSE
+;	0662			ELSE					! If the output file couldn't be opened,
+;	0663			    REPORT_BYPASS( MSG$_NOTCOPIED);	! indicate the input file wasn't copied.
+;	0664			END;
+;	0665	
+;	0666		    CLOSE_INFILE();				! Close the input file.
+;	0667	
+;	0668		    END;					! End of processing a single input file specification.
+;	0669	
+;	0670	!
+;	0671	! Bypass any concatenated input files if an error occurred during the file copy.
+;	0672	!
+;	0673	
+;	0674		IF NOT .STATUS					! If the input file was not successfully copied,
+;	0675		THEN						!
+;	0676		    BYPASS_CONCAT();				! bypass any concatenated input files.
+;	0677	
+;	0678	!
+;	0679	! Close the output file unless another input file is to be
+;	0680	! concatenated to the output file just written.
+;	0681	!
+;	0682	
+;	0683		IF .MULTIPLE_OUTPUT AND NOT .APPEND_COMMAND	! If multiple output files are being created,
+;	0684		THEN						!    and the command was not APPEND,
+;	0685	            BEGIN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5-3
+; Digital Equipment Corporation
+;
+;	0686		    COPY$CLOSE_OUTF();				! close the current output file, if any.
+;	0687	            OUTFILE_XABALL[XAB$L_NXT] = OUTFILE_XABDAT;	! Reinitialize XAB chain for new output file.
+;	0688	            OUTFILE_XABDAT[XAB$L_NXT] = OUTFILE_XABPRO;	!    This is due to possible XAB list alteration
+;	0689	            OUTFILE_XABPRO[XAB$L_NXT] = OUTFILE_XABRDT;	!    in routine SETUP_CONC_XAB in COPYSPECS.
+;	0690	            END;
+;	0691	
+;	0692		END;						! End of "WHILE 1 DO" input file-spec processing loop.
+;	0693	
+;	0694	!
+;	0695	! Perform any necessary cleanup before exiting.
+;	0696	!
+;	0697	
+;	0698	    CLOSE_INFILE();					! Close the current input file if it is open.
+;	0699	
+;	0700	    COPY$CLOSE_OUTF();					! Close the output file if it is open.
+;	0701	
+;	0702	    COPY$LOG_MSG( MSG$_NEWFILES );			! Report the number of files created.
+;	0703	
+;	0704	!
+;	0705	! Return to the caller.
+;	0706	!
+;	0707	
+;	0708	    RETURN .MOST_SEVERE_ERR;				! Use the most severe error encountered
+;	0709								! as the completion code from this routine.
+;	0710	
+;	0711	    END;
+
+
+							    .TITLE  COPYMAIN
+							    .IDENT  \X01.02\
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 OUTFILE_COUNT::
+							    .LONG   0							      ;
+					      00004 BLOCK_COUNT::
+							    .BLKB   4
+					      00008 RECORD_COUNT::
+							    .BLKB   4
+					      0000C MOST_SEVERE_ERR::
+							    .LONG   1							      ;
+					      00010 IO_BUFFER_SIZE::
+							    .LONG   0							      ;
+					      00014 IO_BUFFER_BASE::
+							    .BLKB   4
+					      00018 IO_BUFFER_END::
+							    .LONG   0							      ;
+					      0001C BLOCK_SIZE::
+							    .BLKB   4
+					      00020 BLOCK_IO_LENGTH::
+							    .BLKB   4
+
+							    .GLOBL  COPY$CLI_RESULT, COPY$CLI_STATUS, COPY$SEM_STATUS
+							    .GLOBL  COPY$MSG_NUMBER, ALLOC_VALUE, COPY$B_INCOMPAT
+							    .GLOBL  CLEANUP_DESC, CLI_WORK_AREA, INFILE_DESC, INITIAL_DESC
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5-4
+; Digital Equipment Corporation
+;
+							    .GLOBL  OUTFILE_DESC, INFILE_FAB, INFILE_RAB, INFILE_NAME
+							    .GLOBL  INFILE_XNAME, DUMMY_NAM_BLK, INFILE_NAM_BLK, INFILE_XABFHC
+							    .GLOBL  INFILE_XABALL, IN_NAME_DESC, OUTFILE_FAB, OUTFILE_RAB
+							    .GLOBL  OUTFILE_NAME, OUTFILE_XNAME, OUTFILE_NAM_BLK, OUTFILE_XABRDT
+							    .GLOBL  OUTFILE_XABPRO, OUTFILE_XABDAT, OUTFILE_XABALL
+							    .GLOBL  OUTFILE_XABFHC, OUT_NAME_DESC, COPY$GET_INFILE
+							    .GLOBL  COPY$GET_OUTFIL, COPY$OPN_INFILE, COPY$OPN_OUTFIL
+							    .GLOBL  GET_CMD_QUAL, SYS$ADJWSL, SYS$LKWSET, SYS$ULWSET
+							    .GLOBL  LIB$GET_VM
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0804 00000 COPY$COPY:
+							    .WORD   Save R2,R11						      ; 0521
+		         5B	0000G  CF  9E 00002 	    MOVAB   INFILE_FAB, R11					      ;
+		  0000G  CF	  08   AC  D0 00007 	    MOVL    8(ARGUMENT_LIST), COPY$CLI_RESULT			      ; 0567
+				0000G  CF  9F 0000D 	    PUSHAB  COPY$CLI_STATUS					      ; 0569
+				0000G  CF  9F 00011 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000G  CF  9F 00015 	    PUSHAB  INITIAL_DESC					      ;
+		  0000G  DF	       03  FB 00019 	    CALLS   #3, @COPY$CLI_RESULT				      ;
+		  0000G  CF	       02  88 0001E 	    BISB2   #2, INFILE_DESC+3					      ; 0579
+		  0000G  CF	       00  FB 00023 	    CALLS   #0, GET_CMD_QUAL					      ; 0586
+				0000G  CF  9F 00028 	    PUSHAB  OUTFILE_XABFHC					      ; 0592
+				0000G  CF  9F 0002C 	    PUSHAB  OUTFILE_NAM_BLK					      ;
+				0000G  CF  9F 00030 	    PUSHAB  OUTFILE_FAB						      ;
+		  0000G  CF	       03  FB 00034 	    CALLS   #3, COPY$GET_OUTFIL					      ;
+		         03	       50  E8 00039 	    BLBS    R0, 1$						      ;
+				     00C9  31 0003C 	    BRW     11$							      ;
+				0000G  CF  9F 0003F 1$:     PUSHAB  INFILE_XABALL					      ; 0614
+				0000G  CF  9F 00043 	    PUSHAB  INFILE_NAM_BLK					      ;
+				       5B  DD 00047 	    PUSHL   R11							      ;
+		  0000G  CF	       03  FB 00049 	    CALLS   #3, COPY$GET_INFILE					      ;
+		         52	       50  D0 0004E 	    MOVL    R0, STATUS						      ;
+		         03	       52  D1 00051 	    CMPL    STATUS, #3						      ; 0619
+				       03  12 00054 	    BNEQ    2$							      ;
+				     009B  31 00056 	    BRW     10$							      ;
+		         01	       52  D1 00059 2$:     CMPL    STATUS, #1						      ; 0623
+				       65  12 0005C 	    BNEQ    7$							      ;
+				       5B  DD 0005E 	    PUSHL   R11							      ; 0631
+		  0000G  CF	       01  FB 00060 	    CALLS   #1, COPY$OPN_INFILE					      ;
+		         52	       50  D0 00065 	    MOVL    R0, STATUS						      ;
+		         01	       52  D1 00068 	    CMPL    STATUS, #1						      ; 0639
+				       51  12 0006B 	    BNEQ    6$							      ;
+				0000'  CF  9F 0006D 	    PUSHAB  OUTFILE_COUNT					      ; 0642
+				       5B  DD 00071 	    PUSHL   R11							      ;
+				0000G  CF  9F 00073 	    PUSHAB  OUTFILE_RAB						      ;
+				0000G  CF  9F 00077 	    PUSHAB  OUTFILE_FAB						      ;
+		  0000G  CF	       04  FB 0007B 	    CALLS   #4, COPY$OPN_OUTFIL					      ;
+		         52	       50  D0 00080 	    MOVL    R0, STATUS						      ;
+		         2E	       52  E9 00083 	    BLBC    STATUS, 5$						      ;
+		  0000V  CF	       00  FB 00086 	    CALLS   #0, RMS_SETUP					      ; 0649
+		         52	       50  D0 0008B 	    MOVL    R0, STATUS						      ;
+		         2D	       52  E9 0008E 	    BLBC    STATUS, 6$						      ;
+		  0000V  CF	       00  FB 00091 	    CALLS   #0, COPY_FILE					      ; 0652
+		         52	       50  D0 00096 	    MOVL    R0, STATUS						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 5-5
+; Digital Equipment Corporation
+;
+		         07	       52  E9 00099 	    BLBC    STATUS, 3$						      ;
+		  0000V  CF	       00  FB 0009C 	    CALLS   #0, REPORT_NAMES					      ; 0654
+				       0A  11 000A1 	    BRB     4$							      ; 0652
+		         7E	11C0   8F  3C 000A3 3$:     MOVZWL  #4544, -(SP)					      ; 0657
+		  0000V  CF	       01  FB 000A8 	    CALLS   #1, REPORT_BYPASS					      ;
+		  0000V  CF	       00  FB 000AD 4$:     CALLS   #0, RMS_CLEANUP					      ; 0659
+				       0A  11 000B2 	    BRB     6$							      ; 0642
+		         7E	11B8   8F  3C 000B4 5$:     MOVZWL  #4536, -(SP)					      ; 0663
+		  0000V  CF	       01  FB 000B9 	    CALLS   #1, REPORT_BYPASS					      ;
+		  0000V  CF	       00  FB 000BE 6$:     CALLS   #0, CLOSE_INFILE					      ; 0666
+		         05	       52  E8 000C3 7$:     BLBS    STATUS, 8$						      ; 0674
+		  0000V  CF	       00  FB 000C6 	    CALLS   #0, BYPASS_CONCAT					      ; 0676
+	   20	  0000G  CF	       01  E1 000CB 8$:     BBC     #1, COPY$SEM_STATUS+1, 9$				      ; 0683
+	   1A	  0000G  CF	       04  E0 000D1 	    BBS     #4, COPY$SEM_STATUS+1, 9$				      ;
+		  0000V  CF	       00  FB 000D7 	    CALLS   #0, COPY$CLOSE_OUTF					      ; 0686
+		  0000G  CF	0000G  CF  9E 000DC 	    MOVAB   OUTFILE_XABDAT, OUTFILE_XABALL+4			      ; 0687
+		  0000G  CF	0000G  CF  9E 000E3 	    MOVAB   OUTFILE_XABPRO, OUTFILE_XABDAT+4			      ; 0688
+		  0000G  CF	0000G  CF  9E 000EA 	    MOVAB   OUTFILE_XABRDT, OUTFILE_XABPRO+4			      ; 0689
+				     FF4B  31 000F1 9$:     BRW     1$							      ; 0604
+		  0000V  CF	       00  FB 000F4 10$:    CALLS   #0, CLOSE_INFILE					      ; 0698
+		  0000V  CF	       00  FB 000F9 	    CALLS   #0, COPY$CLOSE_OUTF					      ; 0700
+		         7E	1091   8F  3C 000FE 	    MOVZWL  #4241, -(SP)					      ; 0702
+		  0000V  CF	       01  FB 00103 	    CALLS   #1, COPY$LOG_MSG					      ;
+		         50	0000'  CF  D0 00108 11$:    MOVL    MOST_SEVERE_ERR, R0					      ; 0708
+					   04 0010D 	    RET     							      ; 0521
+
+; Routine Size:  270 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6
+; Digital Equipment Corporation
+;
+;	0712	ROUTINE RMS_SETUP =					! RMS RAB setup routine
+;	0713	
+;	0714	!++
+;	0715	! FUNCTIONAL DESCRIPTION:
+;	0716	!
+;	0717	!	This routine performs all necessary setup of the input and output file RABs:
+;	0718	!
+;	0719	!		* determine if record-mode is required
+;	0720	!		* allocate I/O buffers
+;	0721	!		* lock block I/O buffers in working set
+;	0722	!		* connect the RABs to their respective FABs
+;	0723	!
+;	0724	! FORMAL PARAMETERS:
+;	0725	!
+;	0726	!	None
+;	0727	!
+;	0728	! IMPLICIT INPUTS:
+;	0729	!
+;	0730	!	EXTEND_OUTFILE - Indicates output file is being extended
+;	0731	!	IO_BUFFER_SIZE - Size of the dynamic I/O buffer
+;	0732	!	INFILE_FAB - Input file FAB
+;	0733	!	OUTFILE_FAB - Output file FAB
+;	0734	!	INFILE_XABs - Input file XABs
+;	0735	!
+;	0736	! IMPLICIT OUTPUTS:
+;	0737	!
+;	0738	!	INFILE_RAB - Input file RAB completed and connected
+;	0739	!	OUTFILE_RAB - Output file RAB completed and connected
+;	0740	!	IO_BUFFER_SIZE - Size of dynamic I/O buffer (1st call only)
+;	0741	!	IO_BUFFER_BASE - Address of dynamic I/O buffer (1st call only)
+;	0742	!	IO_BUFFER_END - Address of last byte of block I/O buffer
+;	0743	!	BLOCK_IO_SIZE - Length of block I/O operations
+;	0744	!
+;	0745	! COMPLETION CODES:
+;	0746	!
+;	0747	!	OK = normal completion
+;	0748	!	ERROR = RAB connect unsuccessful
+;	0749	!
+;	0750	! SIDE EFFECTS:
+;	0751	!
+;	0752	!	None
+;	0753	!
+;	0754	!--
+;	0755	
+;	0756	    BEGIN
+;	0757	
+;	0758	    LOCAL
+;	0759		IN_DEVICE :  BLOCK[1,BYTE],			! Selected input and output
+;	0760		OUT_DEVICE :  BLOCK[1,BYTE],			! device characteristics
+;	0761	
+;	0762		FORCE_REC_MODE,					! Temporary record-mode I/O indicator
+;	0763		WORK_SET_SIZE,					! Number of pages in the current working set
+;	0764		AMT_BUFFER_USED,				! Amount of the dynamic buffer allocated
+;	0765		STATUS,						! System service completion code
+;	0766		MAX_MBC,					! Temporary multi-block-count
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-1
+; Digital Equipment Corporation
+;
+;	0767		MBC,						! Temporary multi-block-count
+;	0768	        END_BLOCK_NO,					! Temporary count of blocks in file.
+;	0769		MBF;						! Temporary multi-buffer-count
+;	0770	
+;	0771	    MACRO						! IN_DEVICE and OUT_DEVICE bit definitions:
+;	0772		DISK = 0,0,1,0 %,				!    disk device
+;	0773		TAPE = 0,1,1,0 %;				!    tape device
+;	0774	
+;	0775	!
+;	0776	! Allocate a maximum size I/O buffer pool on the 1st call to this routine.
+;	0777	!
+;	0778	
+;	0779	    IF .IO_BUFFER_SIZE EQL 0				! If the buffer pool has not been allocated,
+;	0780	    THEN						! create one which is slightly smaller than the
+;	0781		BEGIN						! current working set limit.
+;	0782	
+;	0783		STATUS = SYS$ADJWSL( 0, WORK_SET_SIZE );	! Add zero pages to the working set in order
+;	0784								! to find out how large it actually is.
+;	0785	
+;	0786		IF NOT .STATUS					! If the adjustment fails,
+;	0787		THEN						!
+;	0788		    PUT_MESSAGE( MSG$_BADLOGIC, 0,		! die with a 3-line error message.
+;     P 0789				.STATUS, 0,			!
+;     P 0790				MSG$_ATPC, 1 );			!
+;	0791	
+;	0792		IO_BUFFER_SIZE = PAGE_SIZE *			! Calculate the size of the buffer pool.
+;	0793			(.WORK_SET_SIZE - FIXED_OVERHEAD);	!
+;	0794	
+;	0795		STATUS = LIB$GET_VM(				! Obtain a dynamic buffer pool
+;	0796			IO_BUFFER_SIZE,				! which is slightly smaller than the current working set.
+;	0797			IO_BUFFER_BASE );			! Save the address of the buffer pool.
+;	0798	
+;	0799		IF NOT .STATUS					! If the necessary area cannot be allocated,
+;	0800		THEN						!
+;	0801		    PUT_MESSAGE( MSG$_BADLOGIC, 0,		! die with a 3-line error message.
+;     P 0802				.STATUS, 0,			!
+;     P 0803				MSG$_ATPC, 1 );			!
+;	0804		END;
+;	0805	
+;	0806	!
+;	0807	! Extract some device information from the input and output file FABs.
+;	0808	!
+;	0809	
+;	0810	    IN_DEVICE = 0;					! Clear the input and output
+;	0811	    OUT_DEVICE = 0;					! device characteristics.
+;	0812	
+;	0813	    IN_DEVICE[DISK] =					! Turn on the input file disk indicator
+;	0814		.INFILE_FAB[$FAB_DEV(FOD)] AND			! if the input device is file-structured
+;	0815		NOT .INFILE_FAB[$FAB_DEV(SQD)];			! and it is not a tape device.
+;	0816	
+;	0817	    IN_DEVICE[TAPE] =					! Turn on the input file tape indicator
+;	0818		.INFILE_FAB[$FAB_DEV(SQD)];			! if the input device is a tape.
+;	0819	
+;	0820	    OUT_DEVICE[DISK] =					! Turn on the output file disk indicator
+;	0821		.OUTFILE_FAB[$FAB_DEV(FOD)] AND			! if the output device is file-structured
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-2
+; Digital Equipment Corporation
+;
+;	0822		NOT .OUTFILE_FAB[$FAB_DEV(SQD)];		! and it is not a tape device.
+;	0823	
+;	0824	    OUT_DEVICE[TAPE] =					! Turn on the output file tape indicator
+;	0825		.OUTFILE_FAB[$FAB_DEV(SQD)];			! if the output device is a tape.
+;	0826	
+;	0827	!
+;	0828	! Determine whether the input and output files have compatible attributes.
+;	0829	!
+;	0830	
+;	0831								! Compare the following input and output XAB fields:
+;	0832	    IF IN_NEQ_OUT(XAB$B_RFO) OR				!    record format and file organization
+;	0833		IN_NEQ_OUT(XAB$B_ATR) OR			!    record attributes
+;	0834		IN_NEQ_OUT(XAB$B_BKZ) OR			!    bucket size
+;	0835		IN_NEQ_OUT(XAB$B_HSZ) OR			!    fixed header size
+;	0836		(.OUTFILE_XABFHC[XAB$W_MRZ] NEQ 0 AND		!    maximum output record size (if any)
+;	0837		 .OUTFILE_XABFHC[XAB$W_MRZ] LSS			!       and longest input record
+;	0838			.INFILE_XABFHC[XAB$W_LRL])		!
+;	0839	    THEN
+;	0840		BEGIN						! If the input and output attributes are not identical,
+;	0841	        IF NOT .COPY$B_INCOMPAT				! and this message has not appeared yet
+;	0842	        THEN						! for this output file,
+;	0843	            BEGIN
+;	0844	            PUT_MESSAGE( MSG$_INCOMPAT, 2,		! send the user a warning message
+;     P 0845	                    IN_NAME_DESC, OUT_NAME_DESC );	!
+;	0846	            COPY$B_INCOMPAT = TRUE;			! Set flag saying that message is out.
+;	0847	            END;
+;	0848		FORCE_REC_MODE = YES;				! and force a record-mode copy.
+;	0849		END
+;	0850	    ELSE
+;	0851		FORCE_REC_MODE = NO;				! Otherwise, turn the record-mode indicator off.
+;	0852	
+;	0853	!
+;	0854	! Initialize the input and output RABs.
+;	0855	!
+;	0856	
+;	0857	    $RAB_INIT( RAB = INFILE_RAB,			! Setup the input file RAB as follows:
+;     P 0858			RAC = SEQ,				!    Sequential record access
+;     P 0859			ROP = <LOC,RAH,TMO>,			!    GET locate, read ahead, use timeout
+;     P 0860			FAB = INFILE_FAB,			!    Input file FAB address
+;     P 0861			TMO = TTY_TIMEOUT );			!    Terminal input timeout value
+;	0862	
+;	0863	    $RAB_INIT( RAB = OUTFILE_RAB,			! Setup the output file RAB as follows:
+;     P 0864			RAC = SEQ,				!    Sequential access
+;     P 0865			FAB = OUTFILE_FAB,			!    Output file FAB address
+;     P 0866			ROP = <TPT,WBH> );			!    Force EOF on every write or put,
+;	0867								!    and specify write behind for multi-buffering.
+;	0868	
+;	0869	!
+;	0870	! Determine whether record-mode I/O is required for this file copy operation.
+;	0871	!
+;	0872	
+;	0873								! Record mode I/O is required
+;	0874	    IF .FORCE_REC_MODE OR				! if the input and output attributes are incompatible,
+;	0875		.EXTEND_OUTFILE OR				! if the output file is being extended,
+;	0876		.IN_DEVICE NEQ .OUT_DEVICE OR			! if the input and output devices are not the same type,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-3
+; Digital Equipment Corporation
+;
+;	0877		.IN_DEVICE EQL 0 OR				! if both devices are record mode devices,
+;	0878		(.INFILE_FAB[$FAB_DEV(SQD)] AND			! or this is a tape-to-tape copy
+;	0879		    .INFILE_FAB[FAB$W_BLS] NEQ			! and the input and output blocksizes
+;	0880			.OUTFILE_FAB[FAB$W_BLS])		! are not the same.
+;	0881	
+;	0882	!
+;	0883	! Record mode I/O setup.
+;	0884	!
+;	0885	
+;	0886	    THEN
+;	0887		BEGIN
+;	0888		RECORD_MODE = YES;				! Indicate (1) that record mode is required,
+;	0889		INFILE_RAB[RAB$V_BIO] = NO;			! (2) that block I/O will not be used
+;	0890		OUTFILE_RAB[RAB$V_BIO] = NO;			! for this file,
+;	0891		INFILE_RAB[RAB$V_ASY] = NO;			! and (3) that both reading and writing
+;	0892		OUTFILE_RAB[RAB$V_ASY] = NO;			! will be synchronous.
+;	0893	
+;	0894		IF .IN_DEVICE[DISK] OR				! If the input device is a disk
+;	0895		    .IN_DEVICE[TAPE]				! or a tape,
+;	0896		THEN						! perform the following special setup.
+;	0897		    BEGIN
+;	0898		    INFILE_RAB[RAB$L_UBF] = .IO_BUFFER_BASE;	! Set the user buffer address.
+;	0899	
+;	0900		    IF .IN_DEVICE[TAPE]				! If the input is from tape,
+;	0901		    THEN					!
+;	0902			INFILE_RAB[RAB$W_USZ] =			! the user buffer must be as big as a tape block.
+;	0903				.INFILE_FAB[FAB$W_BLS]		!
+;	0904	
+;	0905		    ELSE					! If this input is from a disk file,
+;	0906	                BEGIN
+;	0907	                IF .INFILE_XABFHC[XAB$W_LRL] NEQ 0	! and the maximum record size is not zero,
+;	0908	                THEN
+;	0909	                    INFILE_RAB[RAB$W_USZ] =		! use the maximum record size as the buffer size.
+;	0910	                        .INFILE_XABFHC[XAB$W_LRL]	!
+;	0911	                ELSE
+;	0912	                    INFILE_RAB[RAB$W_USZ] =		! Otherwise, use the block size.
+;	0913	                        .INFILE_FAB[FAB$W_BLS];
+;	0914	                END;
+;	0915	
+;	0916		    AMT_BUFFER_USED = .INFILE_RAB[RAB$W_USZ];	! Save the amount of the buffer used so far.
+;	0917	
+;	0918		    IF .INFILE_FAB[FAB$B_RFM] EQL FAB$C_VFC	! If the input file has VFC format,
+;	0919		    THEN					!
+;	0920			BEGIN					!
+;	0921			INFILE_RAB[RAB$L_RHB] = .IO_BUFFER_BASE	! set the record header buffer address
+;	0922					+ .AMT_BUFFER_USED;	! in the input file RAB
+;	0923			OUTFILE_RAB[RAB$L_RHB] =		! and in the output file RAB.
+;	0924					.INFILE_RAB[RAB$L_RHB];	!
+;	0925	
+;	0926			AMT_BUFFER_USED = .AMT_BUFFER_USED +	! Then update the amount of the buffer used.
+;	0927				.INFILE_XABFHC[XAB$B_HSZ];	!
+;	0928			END;
+;	0929		    END
+;	0930	
+;	0931		ELSE						! If the input device is not a tape or a disk,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-4
+; Digital Equipment Corporation
+;
+;	0932		    BEGIN					! zero the following fields:
+;	0933		    INFILE_RAB[RAB$L_UBF] = 0;			!    user buffer address
+;	0934		    INFILE_RAB[RAB$W_USZ] = 0;			!    user buffer length
+;	0935		    INFILE_RAB[RAB$L_RHB] = 0;			!    input record header buffer address
+;	0936		    OUTFILE_RAB[RAB$L_RHB] = 0;			!    output record header buffer
+;	0937	
+;	0938		    AMT_BUFFER_USED = 0;			! Indicate no buffer pool space used.
+;	0939		    END;
+;	0940	
+;	0941		MAX_MBC = (.IO_BUFFER_SIZE - .AMT_BUFFER_USED)/	! Calculate the maximum RMS MBC
+;	0942			DISK_BLOCK_SIZE;			! for a single disk file.
+;	0943	
+;	0944		IF .IN_DEVICE[DISK] AND .OUT_DEVICE[DISK]	! If both the input and output devices are disks,
+;	0945		THEN						!
+;	0946		    BEGIN					! perform special disk-only MBC and MBF setup.
+;	0947	
+;	0948		    IF CH$EQL( .INFILE_NAM_BLK[NAM$B_DVILNG],	! If the same disk is used for both input and output
+;	0949				INFILE_NAM_BLK[NAM$T_DVI],	! (i.e., they have the same device identifier),
+;	0950				.INFILE_NAM_BLK[NAM$B_DVILNG],	!
+;	0951				OUTFILE_NAM_BLK[NAM$T_DVI] )	!
+;	0952		    THEN					!
+;	0953			BEGIN					!
+;	0954			MBF = SINGLE_BUFFER;			! setup for single buffering of both input and output
+;	0955			MBC = .MAX_MBC / (2 * SINGLE_BUFFER);	! and calculate the MBC for each file.
+;	0956			END
+;	0957		    ELSE					! If the input and output disks are different,
+;	0958			BEGIN					!
+;	0959			MBF = DOUBLE_BUFFER;			! setup for double buffering of both input and output
+;	0960			MBC = .MAX_MBC / (2 * DOUBLE_BUFFER);	! and calculate the MBC for each file.
+;	0961			END;
+;	0962		    END
+;	0963		ELSE						! If the input and/or output device is a
+;	0964		    BEGIN					! tape or a unit record device,
+;	0965								! perform special "unlike device" setup.
+;	0966	
+;	0967		    MBF = DOUBLE_BUFFER;			! Setup for double buffering of both input and output.
+;	0968	
+;	0969		    IF .INFILE_FAB[FAB$W_BLS] GTR		! If the input block size is greater than
+;	0970				.OUTFILE_FAB[FAB$W_BLS]		! the output block size,
+;	0971		    THEN					! (not tape out, anything in, not disk in and out)
+;	0972			MBC = (.MAX_MBC - (DOUBLE_BUFFER *	! calculate the maximum disk MBC.
+;	0973				((.INFILE_FAB[FAB$W_BLS] + 511) / DISK_BLOCK_SIZE))
+;	0974				/ DOUBLE_BUFFER)		!
+;	0975		    ELSE					! (maybe tape out, anything in, not disk in and out)
+;	0976			IF .OUTFILE_FAB[FAB$W_BLS] NEQ 0	! Otherwise, calculate the maximum disk MBC
+;	0977			THEN					! (definitely tape out)
+;	0978			    MBC = (.MAX_MBC - (DOUBLE_BUFFER *	! using the output block size (tape only)
+;	0979				    ((.OUTFILE_FAB[FAB$W_BLS] + 511) / DISK_BLOCK_SIZE))
+;	0980				    / DOUBLE_BUFFER);		!
+;	0981		    END;
+;	0982	
+;	0983		IF .MBC GTR MAX_IO_LENGTH / DISK_BLOCK_SIZE	! If the calculated MBC is greater
+;	0984		THEN						!  than the maximum value allowed,
+;	0985		    MBC = MAX_IO_LENGTH / DISK_BLOCK_SIZE;	! set the temporary MBC value to its maximum value.
+;	0986	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-5
+; Digital Equipment Corporation
+;
+;	0987		IF .IN_DEVICE[DISK] AND				! If the input device is a disk
+;	0988	            (.INFILE_XABFHC[XAB$L_EBK] LEQ		! and the file size is less than or equal
+;	0989	                MAX_IO_LENGTH / DISK_BLOCK_SIZE) AND	! MAX_IO_LENGTH,
+;	0990		    (.MBC * .MBF) GTR .INFILE_XABFHC[XAB$L_EBK]	! and the calculated buffer size is
+;	0991		THEN						! larger than the size of the input file,
+;	0992	            BEGIN
+;	0993	            MBF = 1;					! Don't double buffer. Just read in the input file
+;	0994	            MBC = .INFILE_XABFHC[XAB$L_EBK];		!    in a single QIO.
+;	0995	            END;
+;	0996	
+;	0997		INFILE_RAB[RAB$B_MBF] = .MBF;			! Setup the input and output MBF and MBC values.
+;	0998		INFILE_RAB[RAB$B_MBC] = .MBC;			!
+;	0999		OUTFILE_RAB[RAB$B_MBF] = .MBF;			! NOTE: The MBC values will be ignored by RMS
+;	1000		OUTFILE_RAB[RAB$B_MBC] = .MBC;			! for non-disk devices.
+;	1001		END
+;	1002	
+;	1003	!
+;	1004	! Block mode I/O setup.
+;	1005	!
+;	1006	
+;	1007	    ELSE
+;	1008		BEGIN
+;	1009		RECORD_MODE = NO;				! Indicate (1) that record mode is not desired,
+;	1010		INFILE_RAB[RAB$V_BIO] = YES;			! (2) that block I/O will be used
+;	1011		OUTFILE_RAB[RAB$V_BIO] = YES;			! for both input and output,
+;	1012		INFILE_RAB[RAB$V_ASY] = YES;			! and (3) that both reading and writing
+;	1013		OUTFILE_RAB[RAB$V_ASY] = YES;			! will be asynchronous.
+;	1014	
+;	1015		IF .IN_DEVICE[TAPE]				! If this is a tape copy,
+;	1016		THEN						!
+;	1017		    BEGIN					!
+;	1018		    BLOCK_SIZE = .INFILE_FAB[FAB$W_BLS];	! save the tape blocksize and
+;	1019		    BLOCK_IO_LENGTH = .INFILE_FAB[FAB$W_BLS];	! setup to read a block at a time.
+;	1020		    END
+;	1021		ELSE
+;	1022		    BEGIN					! If this is a disk file copy,
+;	1023		    MBC = (.IO_BUFFER_SIZE/DISK_BLOCK_SIZE)/2;	! calculate the number of blocks
+;	1024								! in each of 2 block I/O buffers.
+;	1025	
+;	1026		    IF .MBC GTR 65535 / DISK_BLOCK_SIZE		! If this calculated buffer size
+;	1027		    THEN					! is larger than the maximum I/O allowed,
+;	1028			MBC = 65535 / DISK_BLOCK_SIZE;		! reset the buffer size.
+;	1029	
+;	1030		    BLOCK_SIZE = DISK_BLOCK_SIZE;		! Save the disk block size.
+;	1031	
+;	1032		    IF (2*.MBC) GTR .INFILE_XABFHC[XAB$L_EBK]	! If the calculated buffer size
+;	1033		    THEN					! is larger than the size of the file,
+;	1034			BLOCK_IO_LENGTH =			! calculate a smaller block I/O size.
+;	1035			    ((.INFILE_XABFHC[XAB$L_EBK]+1) / 2)	!
+;	1036			    * DISK_BLOCK_SIZE			!
+;	1037		    ELSE
+;	1038			BLOCK_IO_LENGTH =			! Otherwise, calculate a maximum buffer size.
+;	1039				.MBC * DISK_BLOCK_SIZE;
+;	1040		    END;
+;	1041	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-6
+; Digital Equipment Corporation
+;
+;	1042		IO_BUFFER_END = .IO_BUFFER_BASE +		! Calculate the address of the last
+;	1043			(2 * .BLOCK_IO_LENGTH) - 1;		! byte of the 2nd I/O buffer.
+;	1044	
+;	1045								! Put the buffer info into the input and output RABs:
+;	1046		INFILE_RAB[RAB$L_UBF] = .IO_BUFFER_BASE;	!    1st input buffer address
+;	1047		INFILE_RAB[RAB$W_USZ] = .BLOCK_IO_LENGTH;	!       and buffer length
+;	1048		OUTFILE_RAB[RAB$L_RBF] =			!    alternate input buffer address
+;	1049			.IO_BUFFER_BASE + .BLOCK_IO_LENGTH;	!
+;	1050	
+;	1051	!#2	STATUS = SYS$LKWSET( IO_BUFFER_BASE, 0, 0 );	! Lock the buffers in the working set.
+;	1052	
+;	1053	!#2	IF NOT .STATUS					! If the buffer locking fails,
+;	1054	!#2	THEN						!
+;	1055	!#2	    PUT_MESSAGE( MSG$_BADLOGIC, 0,		! die with a 3-line error message.
+;	1056	!#2			.STATUS, 0,			!
+;	1057	!#2			MSG$_ATPC, 1 );			!
+;	1058		END;
+;	1059	
+;	1060	!
+;	1061	! Connect the input and output RABs to their respective FABs.
+;	1062	!
+;	1063	
+;	1064	    IF NOT $RMS_CONNECT( RAB = INFILE_RAB,		! Connect the input file RAB to the FAB,
+;     P 1065				 ERR = COPY$INOPN_ERR )		! specifying an error action routine.
+;	1066	
+;	1067	    THEN						! If the connect was not successful,
+;	1068		RETURN NO_FILE;					! return an error indication to the caller.
+;	1069	
+;	1070	    IF .EXTEND_OUTFILE					! If the output file is being extended,
+;	1071	    THEN						!
+;	1072		OUTFILE_RAB[RAB$V_EOF] = YES;			! force end-of-file positioning on the following CONNECT.
+;	1073	
+;	1074	    IF NOT $RMS_CONNECT( RAB = OUTFILE_RAB,		! Connect the output file RAB to the FAB,
+;     P 1075				 ERR = COPY$OUTOPN_ERR )	! specifying an error action routine.
+;	1076	
+;	1077	    THEN						! If the connect was not successful,
+;	1078		RETURN NO_FILE;					! return an error indication to the caller.
+;	1079	
+;	1080	!
+;	1081	! Return to the caller
+;	1082	!
+;	1083	
+;	1084	    RETURN OK;						! Return a success code to the caller.
+;	1085	    END;
+
+
+
+							    .GLOBL  SYS$CONNECT
+
+					 0FFC 0010E RMS_SETUP:
+							    .WORD   Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11		      ; 0712
+		         5A	0000'  CF  9E 00110 	    MOVAB   IO_BUFFER_SIZE, R10					      ;
+		         5B	0000G  CF  9E 00115 	    MOVAB   INFILE_RAB+32, R11					      ;
+		         5E	       04  C2 0011A 	    SUBL2   #4, SP						      ;
+				       6A  D5 0011D 	    TSTL    IO_BUFFER_SIZE					      ; 0779
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-7
+; Digital Equipment Corporation
+;
+				       69  12 0011F 	    BNEQ    2$							      ;
+				       5E  DD 00121 	    PUSHL   SP							      ; 0783
+				       7E  D4 00123 	    CLRL    -(SP)						      ;
+	      00000000G  00	       02  FB 00125 	    CALLS   #2, SYS$ADJWSL					      ;
+		         52	       50  D0 0012C 	    MOVL    R0, STATUS						      ;
+		         20	       52  E8 0012F 	    BLBS    STATUS, 1$						      ; 0786
+				       01  DD 00132 	    PUSHL   #1							      ; 0790
+		         7E	115A   8F  3C 00134 	    MOVZWL  #4442, -(SP)					      ;
+				       7E  D4 00139 	    CLRL    -(SP)						      ;
+				       52  DD 0013B 	    PUSHL   STATUS						      ;
+				       7E  D4 0013D 	    CLRL    -(SP)						      ;
+		         7E	1124   8F  3C 0013F 	    MOVZWL  #4388, -(SP)					      ;
+		  0000G  CF	       01  FB 00144 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00149 	    PUSHL   R0							      ;
+	      00000000G  00	       06  FB 0014B 	    CALLS   #6, LIB$STOP					      ;
+	   50	         6E	       20  C3 00152 1$:     SUBL3   #32, WORK_SET_SIZE, R0				      ; 0793
+	   6A	         50	       09  78 00156 	    ASHL    #9, R0, IO_BUFFER_SIZE				      ; 0792
+				  04   AA  9F 0015A 	    PUSHAB  IO_BUFFER_BASE					      ; 0795
+				       5A  DD 0015D 	    PUSHL   R10							      ;
+		  0000G  CF	       02  FB 0015F 	    CALLS   #2, LIB$GET_VM					      ;
+		         52	       50  D0 00164 	    MOVL    R0, STATUS						      ;
+		         20	       52  E8 00167 	    BLBS    STATUS, 2$						      ; 0799
+				       01  DD 0016A 	    PUSHL   #1							      ; 0803
+		         7E	115A   8F  3C 0016C 	    MOVZWL  #4442, -(SP)					      ;
+				       7E  D4 00171 	    CLRL    -(SP)						      ;
+				       52  DD 00173 	    PUSHL   STATUS						      ;
+				       7E  D4 00175 	    CLRL    -(SP)						      ;
+		         7E	1124   8F  3C 00177 	    MOVZWL  #4388, -(SP)					      ;
+		  0000G  CF	       01  FB 0017C 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00181 	    PUSHL   R0							      ;
+	      00000000G  00	       06  FB 00183 	    CALLS   #6, LIB$STOP					      ;
+				       57  7C 0018A 2$:     CLRQ    IN_DEVICE						      ; 0810
+    0000G  CF	         01	       06  EF 0018C 	    EXTZV   #6, #1, INFILE_FAB+65, R0				      ; 0814
+				       50     00192									      ;
+    0000G  CF	         01	       05  EF 00193 	    EXTZV   #5, #1, INFILE_FAB+64, R1				      ;
+				       51     00199									      ;
+		         50	       51  8A 0019A 	    BICB2   R1, R0						      ;
+	   01	         00	       50  F0 0019D 	    INSV    R0, #0, #1, IN_DEVICE				      ;
+				       57     001A1									      ;
+    0000G  CF	         01	       05  EF 001A2 	    EXTZV   #5, #1, INFILE_FAB+64, R0				      ; 0817
+				       50     001A8									      ;
+	   01	         01	       50  F0 001A9 	    INSV    R0, #1, #1, IN_DEVICE				      ;
+				       57     001AD									      ;
+    0000G  CF	         01	       06  EF 001AE 	    EXTZV   #6, #1, OUTFILE_FAB+65, R0				      ; 0821
+				       50     001B4									      ;
+    0000G  CF	         01	       05  EF 001B5 	    EXTZV   #5, #1, OUTFILE_FAB+64, R1				      ;
+				       51     001BB									      ;
+		         50	       51  8A 001BC 	    BICB2   R1, R0						      ;
+	   01	         00	       50  F0 001BF 	    INSV    R0, #0, #1, OUT_DEVICE				      ;
+				       58     001C3									      ;
+    0000G  CF	         01	       05  EF 001C4 	    EXTZV   #5, #1, OUTFILE_FAB+64, R0				      ; 0824
+				       50     001CA									      ;
+	   01	         01	       50  F0 001CB 	    INSV    R0, #1, #1, OUT_DEVICE				      ;
+				       58     001CF									      ;
+		  0000G  CF	0000G  CF  91 001D0 	    CMPB    INFILE_XABFHC+8, OUTFILE_XABFHC+8			      ; 0832
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-8
+; Digital Equipment Corporation
+;
+				       2B  12 001D7 	    BNEQ    3$							      ;
+		  0000G  CF	0000G  CF  91 001D9 	    CMPB    INFILE_XABFHC+9, OUTFILE_XABFHC+9			      ; 0833
+				       22  12 001E0 	    BNEQ    3$							      ;
+		  0000G  CF	0000G  CF  91 001E2 	    CMPB    INFILE_XABFHC+22, OUTFILE_XABFHC+22			      ; 0834
+				       19  12 001E9 	    BNEQ    3$							      ;
+		  0000G  CF	0000G  CF  91 001EB 	    CMPB    INFILE_XABFHC+23, OUTFILE_XABFHC+23			      ; 0835
+				       10  12 001F2 	    BNEQ    3$							      ;
+		         50	0000G  CF  3C 001F4 	    MOVZWL  OUTFILE_XABFHC+24, R0				      ; 0836
+				       35  13 001F9 	    BEQL    5$							      ;
+    0000G  CF	         10	       00  ED 001FB 	    CMPZV   #0, #16, INFILE_XABFHC+10, R0			      ; 0837
+				       50     00201									      ;
+				       2C  15 00202 	    BLEQ    5$							      ;
+		         22	0000G  CF  E8 00204 3$:     BLBS    COPY$B_INCOMPAT, 4$					      ; 0841
+				0000G  CF  9F 00209 	    PUSHAB  OUT_NAME_DESC					      ; 0845
+				0000G  CF  9F 0020D 	    PUSHAB  IN_NAME_DESC					      ;
+				       02  DD 00211 	    PUSHL   #2							      ;
+		         7E	11E0   8F  3C 00213 	    MOVZWL  #4576, -(SP)					      ;
+		  0000G  CF	       01  FB 00218 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0021D 	    PUSHL   R0							      ;
+	      00000000G  00	       04  FB 0021F 	    CALLS   #4, LIB$SIGNAL					      ;
+		  0000G  CF	       01  90 00226 	    MOVB    #1, COPY$B_INCOMPAT					      ; 0846
+		         59	       01  D0 0022B 4$:     MOVL    #1, FORCE_REC_MODE					      ; 0848
+				       02  11 0022E 	    BRB     6$							      ; 0832
+				       59  D4 00230 5$:     CLRL    FORCE_REC_MODE					      ; 0851
+		         56	  E0   AB  9E 00232 6$:     MOVAB   INFILE_RAB, $RMS_PTR				      ; 0861
+	   00	         6E	       00  2C 00236 	    MOVC5   #0, (SP), #0, #68, ($RMS_PTR)			      ;
+		         66	0044   8F     0023A									      ;
+		         66	4401   8F  B0 0023E 	    MOVW    #17409, ($RMS_PTR)					      ;
+		    04   A6 02010200   8F  D0 00243 	    MOVL    #33620480, 4($RMS_PTR)				      ;
+		    1E   A6	3C00   8F  B0 0024B 	    MOVW    #15360, 30($RMS_PTR)				      ;
+		    3C   A6	0000G  CF  9E 00251 	    MOVAB   INFILE_FAB, 60($RMS_PTR)				      ;
+		         56	0000G  CF  9E 00257 	    MOVAB   OUTFILE_RAB, $RMS_PTR				      ; 0866
+	   00	         6E	       00  2C 0025C 	    MOVC5   #0, (SP), #0, #68, ($RMS_PTR)			      ;
+		         66	0044   8F     00260									      ;
+		         66	4401   8F  B0 00264 	    MOVW    #17409, ($RMS_PTR)					      ;
+		    04   A6	0402   8F  3C 00269 	    MOVZWL  #1026, 4($RMS_PTR)					      ;
+				  1E   A6  94 0026F 	    CLRB    30($RMS_PTR)					      ;
+		    3C   A6	0000G  CF  9E 00272 	    MOVAB   OUTFILE_FAB, 60($RMS_PTR)				      ;
+		         21	       59  E8 00278 	    BLBS    FORCE_REC_MODE, 9$					      ; 0874
+	   1B	  0000G  CF	       02  E0 0027B 	    BBS     #2, COPY$CLI_STATUS+3, 9$				      ; 0875
+		         58	       57  D1 00281 	    CMPL    IN_DEVICE, OUT_DEVICE				      ; 0876
+				       16  12 00284 	    BNEQ    9$							      ;
+				       57  D5 00286 	    TSTL    IN_DEVICE						      ; 0877
+				       12  13 00288 	    BEQL    9$							      ;
+	   03	  0000G  CF	       05  E0 0028A 	    BBS     #5, INFILE_FAB+64, 8$				      ; 0878
+				     0121  31 00290 7$:     BRW     22$							      ;
+		  0000G  CF	0000G  CF  B1 00293 8$:     CMPW    INFILE_FAB+60, OUTFILE_FAB+60			      ; 0879
+				       F4  13 0029A 	    BEQL    7$							      ;
+		  0000G  CF	       02  88 0029C 9$:     BISB2   #2, COPY$CLI_STATUS+3				      ; 0888
+		    E5   AB	       08  8A 002A1 	    BICB2   #8, INFILE_RAB+5					      ; 0889
+		  0000G  CF	       08  8A 002A5 	    BICB2   #8, OUTFILE_RAB+5					      ; 0890
+		    E4   AB	       01  8A 002AA 	    BICB2   #1, INFILE_RAB+4					      ; 0891
+		  0000G  CF	       01  8A 002AE 	    BICB2   #1, OUTFILE_RAB+4					      ; 0892
+		         04	       57  E8 002B3 	    BLBS    IN_DEVICE, 10$					      ; 0894
+	   3B	         57	       01  E1 002B6 	    BBC     #1, IN_DEVICE, 13$					      ; 0895
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-9
+; Digital Equipment Corporation
+;
+		    04   AB	  04   AA  D0 002BA 10$:    MOVL    IO_BUFFER_BASE, INFILE_RAB+36			      ; 0898
+	   0D	         57	       01  E0 002BF 	    BBS     #1, IN_DEVICE, 11$					      ; 0900
+				0000G  CF  B5 002C3 	    TSTW    INFILE_XABFHC+10					      ; 0907
+				       07  13 002C7 	    BEQL    11$							      ;
+		         6B	0000G  CF  B0 002C9 	    MOVW    INFILE_XABFHC+10, INFILE_RAB+32			      ; 0909
+				       05  11 002CE 	    BRB     12$							      ; 0907
+		         6B	0000G  CF  B0 002D0 11$:    MOVW    INFILE_FAB+60, INFILE_RAB+32			      ; 0912
+		         50	       6B  3C 002D5 12$:    MOVZWL  INFILE_RAB+32, AMT_BUFFER_USED			      ; 0916
+		         03	0000G  CF  91 002D8 	    CMPB    INFILE_FAB+31, #3					      ; 0918
+				       24  12 002DD 	    BNEQ    14$							      ;
+      0C   AB	    04   AA	       50  C1 002DF 	    ADDL3   AMT_BUFFER_USED, IO_BUFFER_BASE, INFILE_RAB+44	      ; 0922
+		  0000G  CF	  0C   AB  D0 002E5 	    MOVL    INFILE_RAB+44, OUTFILE_RAB+44			      ; 0923
+		         51	0000G  CF  9A 002EB 	    MOVZBL  INFILE_XABFHC+23, R1				      ; 0926
+		         50	       51  C0 002F0 	    ADDL2   R1, AMT_BUFFER_USED					      ;
+				       0E  11 002F3 	    BRB     14$							      ; 0894
+				  04   AB  D4 002F5 13$:    CLRL    INFILE_RAB+36					      ; 0933
+				       6B  B4 002F8 	    CLRW    INFILE_RAB+32					      ; 0934
+				  0C   AB  D4 002FA 	    CLRL    INFILE_RAB+44					      ; 0935
+				0000G  CF  D4 002FD 	    CLRL    OUTFILE_RAB+44					      ; 0936
+				       50  D4 00301 	    CLRL    AMT_BUFFER_USED					      ; 0938
+	   50	         6A	       50  C3 00303 14$:    SUBL3   AMT_BUFFER_USED, IO_BUFFER_SIZE, R0			      ; 0941
+	   54	         50 00000200   8F  C7 00307 	    DIVL3   #512, R0, MAX_MBC					      ;
+		         2B	       57  E9 0030F 	    BLBC    IN_DEVICE, 16$					      ; 0944
+		         28	       58  E9 00312 	    BLBC    OUT_DEVICE, 16$					      ;
+		         51	0000G  CF  9A 00315 	    MOVZBL  INFILE_NAM_BLK+20, R1				      ; 0948
+		         50	0000G  CF  9A 0031A 	    MOVZBL  INFILE_NAM_BLK+20, R0				      ; 0950
+	   00	  0000G  CF	       51  2D 0031F 	    CMPC5   R1, INFILE_NAM_BLK+20, #0, R0, OUTFILE_NAM_BLK+20	      ; 0948
+		  0000G  CF	       50     00325									      ;
+				       09  12 00329 	    BNEQ    15$							      ;
+		         52	       01  D0 0032B 	    MOVL    #1, MBF						      ; 0954
+	   50	         54	       02  C7 0032E 	    DIVL3   #2, MAX_MBC, MBC					      ; 0955
+				       3D  11 00332 	    BRB     19$							      ; 0948
+		         52	       02  D0 00334 15$:    MOVL    #2, MBF						      ; 0959
+	   50	         54	       04  C7 00337 	    DIVL3   #4, MAX_MBC, MBC					      ; 0960
+				       34  11 0033B 	    BRB     19$							      ; 0944
+		         52	       02  D0 0033D 16$:    MOVL    #2, MBF						      ; 0967
+		  0000G  CF	0000G  CF  B1 00340 	    CMPW    INFILE_FAB+60, OUTFILE_FAB+60			      ; 0969
+				       07  1B 00347 	    BLEQU   17$							      ;
+		         51	0000G  CF  3C 00349 	    MOVZWL  INFILE_FAB+60, R1					      ; 0973
+				       0B  11 0034E 	    BRB     18$							      ;
+				0000G  CF  B5 00350 17$:    TSTW    OUTFILE_FAB+60					      ; 0976
+				       1B  13 00354 	    BEQL    19$							      ;
+		         51	0000G  CF  3C 00356 	    MOVZWL  OUTFILE_FAB+60, R1					      ; 0979
+		         51	01FF   C1  9E 0035B 18$:    MOVAB   511(R1), R1						      ;
+		         51 00000200   8F  C6 00360 	    DIVL2   #512, R1						      ;
+		         51	       02  C4 00367 	    MULL2   #2, R1						      ; 0978
+		         51	       02  C6 0036A 	    DIVL2   #2, R1						      ; 0980
+	   50	         54	       51  C3 0036D 	    SUBL3   R1, MAX_MBC, MBC					      ; 0978
+	      0000007F   8F	       50  D1 00371 19$:    CMPL    MBC, #127						      ; 0983
+				       04  15 00378 	    BLEQ    20$							      ;
+		         50	  7F   8F  9A 0037A 	    MOVZBL  #127, MBC						      ; 0985
+		         1E	       57  E9 0037E 20$:    BLBC    IN_DEVICE, 21$					      ; 0987
+	      0000007F   8F	0000G  CF  D1 00381 	    CMPL    INFILE_XABFHC+16, #127				      ; 0988
+				       13  14 0038A 	    BGTR    21$							      ;
+	   51	         50	       52  C5 0038C 	    MULL3   MBF, MBC, R1					      ; 0990
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-10
+; Digital Equipment Corporation
+;
+		  0000G  CF	       51  D1 00390 	    CMPL    R1, INFILE_XABFHC+16				      ;
+				       08  15 00395 	    BLEQ    21$							      ;
+		         52	       01  D0 00397 	    MOVL    #1, MBF						      ; 0993
+		         50	0000G  CF  D0 0039A 	    MOVL    INFILE_XABFHC+16, MBC				      ; 0994
+		    16   AB	       52  90 0039F 21$:    MOVB    MBF, INFILE_RAB+54					      ; 0997
+		    17   AB	       50  90 003A3 	    MOVB    MBC, INFILE_RAB+55					      ; 0998
+		  0000G  CF	       52  90 003A7 	    MOVB    MBF, OUTFILE_RAB+54					      ; 0999
+		  0000G  CF	       50  90 003AC 	    MOVB    MBC, OUTFILE_RAB+55					      ; 1000
+				     0082  31 003B1 	    BRW     27$							      ; 0874
+		  0000G  CF	       02  8A 003B4 22$:    BICB2   #2, COPY$CLI_STATUS+3				      ; 1009
+		    E5   AB	       08  88 003B9 	    BISB2   #8, INFILE_RAB+5					      ; 1010
+		  0000G  CF	       08  88 003BD 	    BISB2   #8, OUTFILE_RAB+5					      ; 1011
+		    E4   AB	       01  88 003C2 	    BISB2   #1, INFILE_RAB+4					      ; 1012
+		  0000G  CF	       01  88 003C6 	    BISB2   #1, OUTFILE_RAB+4					      ; 1013
+	   0E	         57	       01  E1 003CB 	    BBC     #1, IN_DEVICE, 23$					      ; 1015
+		    0C   AA	0000G  CF  3C 003CF 	    MOVZWL  INFILE_FAB+60, BLOCK_SIZE				      ; 1018
+		    10   AA	0000G  CF  3C 003D5 	    MOVZWL  INFILE_FAB+60, BLOCK_IO_LENGTH			      ; 1019
+				       3E  11 003DB 	    BRB     26$							      ; 1015
+	   50	         6A 00000200   8F  C7 003DD 23$:    DIVL3   #512, IO_BUFFER_SIZE, R0				      ; 1023
+		         50	       02  C6 003E5 	    DIVL2   #2, MBC						      ;
+	      0000007F   8F	       50  D1 003E8 	    CMPL    MBC, #127						      ; 1026
+				       04  15 003EF 	    BLEQ    24$							      ;
+		         50	  7F   8F  9A 003F1 	    MOVZBL  #127, MBC						      ; 1028
+		    0C   AA	0200   8F  3C 003F5 24$:    MOVZWL  #512, BLOCK_SIZE					      ; 1030
+	   51	         50	       01  78 003FB 	    ASHL    #1, MBC, R1						      ; 1032
+		  0000G  CF	       51  D1 003FF 	    CMPL    R1, INFILE_XABFHC+16				      ;
+				       10  15 00404 	    BLEQ    25$							      ;
+	   51	  0000G  CF	       01  C1 00406 	    ADDL3   #1, INFILE_XABFHC+16, R1				      ; 1035
+		         51	       02  C6 0040C 	    DIVL2   #2, R1						      ;
+      10   AA	         51	       09  78 0040F 	    ASHL    #9, R1, BLOCK_IO_LENGTH				      ; 1036
+				       05  11 00414 	    BRB     26$							      ; 1032
+      10   AA	         50	       09  78 00416 25$:    ASHL    #9, MBC, BLOCK_IO_LENGTH				      ; 1039
+		         51	  04   AA  D0 0041B 26$:    MOVL    IO_BUFFER_BASE, R1					      ; 1042
+		         50	  10   AA  D0 0041F 	    MOVL    BLOCK_IO_LENGTH, R0					      ; 1043
+		    08   AA	  FF A140  3E 00423 	    MOVAW   -1(R1)[R0], IO_BUFFER_END				      ;
+		    04   AB	       51  D0 00429 	    MOVL    R1, INFILE_RAB+36					      ; 1046
+		         6B	       50  B0 0042D 	    MOVW    R0, INFILE_RAB+32					      ; 1047
+    0000G  CF	         51	       50  C1 00430 	    ADDL3   R0, R1, OUTFILE_RAB+40				      ; 1049
+				0000V  CF  9F 00436 27$:    PUSHAB  COPY$INOPN_ERR					      ; 1065
+				  E0   AB  9F 0043A 	    PUSHAB  INFILE_RAB						      ;
+	      00000000G  9F	       02  FB 0043D 	    CALLS   #2, @#SYS$CONNECT					      ;
+		         21	       50  E9 00444 	    BLBC    R0, 29$						      ;
+	   05	  0000G  CF	       02  E1 00447 	    BBC     #2, COPY$CLI_STATUS+3, 28$				      ; 1070
+		  0000G  CF	       01  88 0044D 	    BISB2   #1, OUTFILE_RAB+5					      ; 1072
+				0000V  CF  9F 00452 28$:    PUSHAB  COPY$OUTOPN_ERR					      ; 1075
+				0000G  CF  9F 00456 	    PUSHAB  OUTFILE_RAB						      ;
+	      00000000G  9F	       02  FB 0045A 	    CALLS   #2, @#SYS$CONNECT					      ;
+		         04	       50  E9 00461 	    BLBC    R0, 29$						      ;
+		         50	       01  D0 00464 	    MOVL    #1, R0						      ; 1084
+					   04 00467 	    RET     							      ;
+				       50  D4 00468 29$:    CLRL    R0							      ; 0712
+					   04 0046A 	    RET     							      ;
+
+; Routine Size:  861 bytes
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 6-11
+; Digital Equipment Corporation
+;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 7
+; Digital Equipment Corporation
+;
+;	1086	PSECT CODE = COPY$COPY_FILE (ALIGN(9));			! Force page alignment for this routine.
+;	1087	
+;	1088	ROUTINE COPY_FILE =					! Copies an entire input file to the output file
+;	1089	
+;	1090	!++
+;	1091	! FUNCTIONAL DESCRIPTION:
+;	1092	!
+;	1093	!	This routine copies an entire input file into the output file,
+;	1094	!	using block mode I/O if possible.
+;	1095	!
+;	1096	!	This routine is page-aligned in order to minimize page faulting
+;	1097	!	due to executing the code which performs the actual file copying.
+;	1098	!
+;	1099	! FORMAL PARAMETERS:
+;	1100	!
+;	1101	!	None
+;	1102	!
+;	1103	! IMPLICIT INPUTS:
+;	1104	!
+;	1105	!	RECORD_MODE - Indicates whether record mode I/O is required
+;	1106	!	INFILE_FAB - Input file FAB
+;	1107	!	INFILE_RAB - Input file RAB
+;	1108	!
+;	1109	! IMPLICIT OUTPUTS:
+;	1110	!
+;	1111	!	RECORD_COUNT - Number of input file records copied
+;	1112	!	BLOCK_COUNT - Number of input file blocks copied
+;	1113	!
+;	1114	! COMPLETION CODES:
+;	1115	!
+;	1116	!	OK = successful copy
+;	1117	!	ERROR = I/O error during copy
+;	1118	!
+;	1119	! SIDE EFFECTS:
+;	1120	!
+;	1121	!	None
+;	1122	!
+;	1123	!--
+;	1124	
+;	1125	    BEGIN
+;	1126	
+;	1127	    LOCAL
+;	1128		NEXT_READ;					! Temporary buffer pointer
+;	1129	
+;	1130	!
+;	1131	! Initialization
+;	1132	!
+;	1133	
+;	1134	    RECORD_COUNT = 0;					! Zero the input file record
+;	1135	    BLOCK_COUNT = 0;					! and block counters.
+;	1136	
+;	1137	!
+;	1138	! If necessary, copy the input file to the output file one record at a time.
+;	1139	!
+;	1140	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 7-1
+; Digital Equipment Corporation
+;
+;	1141	    IF .RECORD_MODE					! Test the record mode I/O indicator.
+;	1142	    THEN
+;	1143		WHILE 1 DO					! Beginning of the record copying loop which
+;	1144		    BEGIN					! will be terminated by a RETURN in the event
+;	1145								! of an input end-of-file or any I/O error.
+;	1146	
+;	1147		    IF NOT $RMS_GET( RAB = INFILE_RAB )		! Get one record from the input file.
+;	1148	
+;	1149		    THEN					! If the get was not successful,
+;	1150			BEGIN					! begin error processing.
+;	1151								!
+;	1152			IF .INFILE_RAB[RAB$L_STS] EQL RMS$_EOF	! If the error was an input end-of-file,
+;	1153			THEN					!
+;	1154			    RETURN OK;				! return a success code to the caller.
+;	1155	
+;	1156			IN_READ_ERROR();			! Otherwise, send an error message to the user
+;	1157			RETURN ERROR;				! and return an error code to the caller.
+;	1158	
+;	1159			END;					! End of input error processing.
+;	1160	
+;	1161		    OUTFILE_RAB[RAB$L_RBF] =			! Copy the input record address
+;	1162				.INFILE_RAB[RAB$L_RBF];		! and record length
+;	1163		    OUTFILE_RAB[RAB$W_RSZ] =			! from the input file RAB
+;	1164				.INFILE_RAB[RAB$W_RSZ];		! to the output file RAB.
+;	1165	
+;	1166		    IF $RMS_PUT( RAB = OUTFILE_RAB )		! Write one record into the output file.
+;	1167	
+;	1168		    THEN					! If the put was successful,
+;	1169			RECORD_COUNT = .RECORD_COUNT + 1	! increment the record counter.
+;	1170		    ELSE
+;	1171			BEGIN					! Otherwise,
+;	1172			OUT_WRITE_ERROR();			! send an error message to the user
+;	1173			RETURN ERROR;				! and return to the caller.
+;	1174			END;
+;	1175	
+;	1176		    END						! End of record mode copy loop.
+;	1177	
+;	1178	!
+;	1179	! If possible, copy the input file to the output file a block at a time.
+;	1180	!
+;	1181	
+;	1182	    ELSE
+;	1183		WHILE 1 DO					! Beginning of the block copying loop which
+;	1184		    BEGIN					! will be terminated by a RETURN in the event
+;	1185								! of an input end-of-file or any I/O error.
+;	1186	
+;	1187		    $RMS_READ( RAB = INFILE_RAB );		! Begin an asynchronous read from the input file.
+;	1188	
+;	1189		    IF NOT $RMS_WAIT( RAB = OUTFILE_RAB )	! Wait for the previous write to complete.
+;	1190		    THEN
+;	1191			BEGIN					! If the write was not successful,
+;	1192			OUT_WRITE_ERROR();			! send the user an error message,
+;	1193			$RMS_WAIT( RAB = INFILE_RAB );		! wait for the previous read to complete,
+;	1194			RETURN ERROR;				! and then return an error code to the caller.
+;	1195			END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 7-2
+; Digital Equipment Corporation
+;
+;	1196	
+;	1197		    IF $RMS_WAIT( RAB = INFILE_RAB )		! Wait for the previous read to complete.
+;	1198		    THEN
+;	1199			BEGIN					! If the read was successful,
+;	1200			INFILE_RAB[RAB$L_UBF] =			! save the current output buffer address
+;	1201				.OUTFILE_RAB[RAB$L_RBF];	!
+;	1202			OUTFILE_RAB[RAB$L_RBF] =		! and copy the input block address and block size
+;	1203				.INFILE_RAB[RAB$L_RBF];		! from the input file RAB into the output RAB.
+;	1204			OUTFILE_RAB[RAB$W_RSZ] =		!
+;	1205				.INFILE_RAB[RAB$W_RSZ];		!
+;	1206	
+;	1207			$RMS_WRITE( RAB = OUTFILE_RAB );	! Initiate an asynchronous write.
+;	1208	
+;	1209			BLOCK_COUNT = .BLOCK_COUNT +		! Increment the count of blocks written.
+;	1210			    (.INFILE_RAB[RAB$W_RSZ] +		!
+;	1211			    .BLOCK_SIZE - 1) / .BLOCK_SIZE;	!
+;	1212			END
+;	1213		    ELSE					! If the read was unsuccessful,
+;	1214			BEGIN					! begin special input error processing.
+;	1215	
+;	1216			IF .INFILE_RAB[RAB$L_STS] EQL RMS$_EOF	! If the error was an input end-of-file,
+;	1217			THEN					!
+;	1218			    RETURN OK;				! return a success code to the caller.
+;	1219	
+;	1220			IN_READ_ERROR();			! Otherwise, send an error message to the user
+;	1221			RETURN ERROR;				! and then return an error code to the caller.
+;	1222			END;
+;	1223	
+;	1224		    END;					! End of block mode copy loop.
+;	1225	
+;	1226	    END;
+
+
+
+							    .GLOBL  SYS$GET, SYS$PUT, SYS$READ, SYS$WAIT, SYS$WRITE
+
+							    .PSECT  COPY$COPY_FILE,NOWRT,9
+
+					 0F00 00000 COPY_FILE:
+							    .WORD   Save R8,R9,R10,R11					      ; 1088
+		         58	0000'  CF  9E 00002 	    MOVAB   BLOCK_COUNT, R8					      ;
+		         59 00000000G  9F  9E 00007 	    MOVAB   @#SYS$WAIT, R9					      ;
+		         5A	0000G  CF  9E 0000E 	    MOVAB   OUTFILE_RAB+40, R10					      ;
+		         5B	0000G  CF  9E 00013 	    MOVAB   INFILE_RAB, R11					      ;
+				       68  7C 00018 	    CLRQ    BLOCK_COUNT						      ; 1135
+	   3B	  0000G  CF	       01  E1 0001A 	    BBC     #1, COPY$CLI_STATUS+3, 4$				      ; 1141
+				       5B  DD 00020 1$:     PUSHL   R11							      ; 1147
+	      00000000G  9F	       01  FB 00022 	    CALLS   #1, @#SYS$GET					      ;
+		         0D	       50  E8 00029 	    BLBS    R0, 2$						      ;
+	      0001827A   8F	  08   AB  D1 0002C 	    CMPL    INFILE_RAB+8, #98938				      ; 1152
+				       7F  13 00034 	    BEQL    7$							      ;
+				     0080  31 00036 	    BRW     8$							      ; 1156
+		         6A	  28   AB  D0 00039 2$:     MOVL    INFILE_RAB+40, OUTFILE_RAB+40			      ; 1161
+		    FA   AA	  22   AB  B0 0003D 	    MOVW    INFILE_RAB+34, OUTFILE_RAB+34			      ; 1163
+				  D8   AA  9F 00042 	    PUSHAB  OUTFILE_RAB						      ; 1166
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 7-3
+; Digital Equipment Corporation
+;
+	      00000000G  9F	       01  FB 00045 	    CALLS   #1, @#SYS$PUT					      ;
+		         05	       50  E9 0004C 	    BLBC    R0, 3$						      ;
+				  04   A8  D6 0004F 	    INCL    RECORD_COUNT					      ; 1169
+				       CC  11 00052 	    BRB     1$							      ; 1166
+		  0000V  CF	       00  FB 00054 3$:     CALLS   #0, OUT_WRITE_ERROR					      ; 1172
+				       63  11 00059 	    BRB     9$							      ; 1173
+				       5B  DD 0005B 4$:     PUSHL   R11							      ; 1187
+	      00000000G  9F	       01  FB 0005D 	    CALLS   #1, @#SYS$READ					      ;
+				  D8   AA  9F 00064 	    PUSHAB  OUTFILE_RAB						      ; 1189
+		         69	       01  FB 00067 	    CALLS   #1, SYS$WAIT					      ;
+		         0C	       50  E8 0006A 	    BLBS    R0, 5$						      ;
+		  0000V  CF	       00  FB 0006D 	    CALLS   #0, OUT_WRITE_ERROR					      ; 1192
+				       5B  DD 00072 	    PUSHL   R11							      ; 1193
+		         69	       01  FB 00074 	    CALLS   #1, SYS$WAIT					      ;
+				       45  11 00077 	    BRB     9$							      ; 1194
+				       5B  DD 00079 5$:     PUSHL   R11							      ; 1197
+		         69	       01  FB 0007B 	    CALLS   #1, SYS$WAIT					      ;
+		         2A	       50  E9 0007E 	    BLBC    R0, 6$						      ;
+		    24   AB	       6A  D0 00081 	    MOVL    OUTFILE_RAB+40, INFILE_RAB+36			      ; 1200
+		         6A	  28   AB  D0 00085 	    MOVL    INFILE_RAB+40, OUTFILE_RAB+40			      ; 1202
+		    FA   AA	  22   AB  B0 00089 	    MOVW    INFILE_RAB+34, OUTFILE_RAB+34			      ; 1204
+				  D8   AA  9F 0008E 	    PUSHAB  OUTFILE_RAB						      ; 1207
+	      00000000G  9F	       01  FB 00091 	    CALLS   #1, @#SYS$WRITE					      ;
+		         50	  22   AB  3C 00098 	    MOVZWL  INFILE_RAB+34, R0					      ; 1210
+		         50	  18   A8  C0 0009C 	    ADDL2   BLOCK_SIZE, R0					      ;
+				       50  D7 000A0 	    DECL    R0							      ;
+		         50	  18   A8  C6 000A2 	    DIVL2   BLOCK_SIZE, R0					      ; 1211
+		         68	       50  C0 000A6 	    ADDL2   R0, BLOCK_COUNT					      ; 1209
+				       B0  11 000A9 	    BRB     4$							      ; 1197
+	      0001827A   8F	  08   AB  D1 000AB 6$:     CMPL    INFILE_RAB+8, #98938				      ; 1216
+				       04  12 000B3 	    BNEQ    8$							      ;
+		         50	       01  D0 000B5 7$:     MOVL    #1, R0						      ; 1218
+					   04 000B8 	    RET     							      ;
+		  0000V  CF	       00  FB 000B9 8$:     CALLS   #0, IN_READ_ERROR					      ; 1220
+		         50	       02  D0 000BE 9$:     MOVL    #2, R0						      ; 1221
+					   04 000C1 	    RET     							      ; 1088
+
+; Routine Size:  194 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 8
+; Digital Equipment Corporation
+;
+;	1227	PSECT CODE = $CODE$;					! Resume the default PSECT (see previous routine).
+;	1228	
+;	1229	ROUTINE CLOSE_INFILE :  NOVALUE =			! Close the current input file
+;	1230	
+;	1231	!++
+;	1232	! FUNCTIONAL DESCRIPTION:
+;	1233	!
+;	1234	!	This routine closes the current input file.
+;	1235	!
+;	1236	! FORMAL PARAMETERS:
+;	1237	!
+;	1238	!	None
+;	1239	!
+;	1240	! IMPLICIT INPUTS:
+;	1241	!
+;	1242	!	INFILE_OPEN - Input file open indicator
+;	1243	!	INFILE_FAB - Input file FAB
+;	1244	!
+;	1245	! IMPLICIT OUTPUTS:
+;	1246	!
+;	1247	!	INFILE_OPEN - Set to indicate that the input file is not open
+;	1248	!	INFILE_FAB - Input file FAB closed
+;	1249	!
+;	1250	! ROUTINE VALUE:
+;	1251	!
+;	1252	!	None
+;	1253	!
+;	1254	! SIDE EFFECTS:
+;	1255	!
+;	1256	!	None
+;	1257	!
+;	1258	!--
+;	1259	
+;	1260	    BEGIN
+;	1261	
+;	1262	!
+;	1263	! Return to the caller if the input file is not open.
+;	1264	!
+;	1265	
+;	1266	    IF NOT .INFILE_OPEN					! If the input file is not open,
+;	1267	    THEN						!
+;	1268		RETURN;						! return to the caller.
+;	1269	
+;	1270	    INFILE_OPEN = NO;					! Otherwise, turn off the open indicator.
+;	1271	
+;	1272	!
+;	1273	! Close the input file.
+;	1274	!
+;	1275	
+;	1276	    $RMS_CLOSE( FAB = INFILE_FAB,			! Close the input file FAB,
+;     P 1277			 ERR = IN_CLOSE_ERROR );		! specifying an error action routine.
+;	1278	
+;	1279	!
+;	1280	! Return to the caller.
+;	1281	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 8-1
+; Digital Equipment Corporation
+;
+;	1282	
+;	1283	    RETURN;						! Return to the caller.
+;	1284	
+;	1285	    END;
+
+
+
+							    .GLOBL  SYS$CLOSE
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0000 0046B CLOSE_INFILE:
+							    .WORD   Save nothing					      ; 1229
+	   14	  0000G  CF	       03  E1 0046D 	    BBC     #3, COPY$CLI_STATUS+2, 1$				      ; 1266
+		  0000G  CF	       08  8A 00473 	    BICB2   #8, COPY$CLI_STATUS+2				      ; 1270
+				0000V  CF  9F 00478 	    PUSHAB  IN_CLOSE_ERROR					      ; 1277
+				0000G  CF  9F 0047C 	    PUSHAB  INFILE_FAB						      ;
+	      00000000G  9F	       02  FB 00480 	    CALLS   #2, @#SYS$CLOSE					      ;
+					   04 00487 1$:     RET     							      ; 1229
+
+; Routine Size:  29 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 9
+; Digital Equipment Corporation
+;
+;	1286	GLOBAL ROUTINE COPY$CLOSE_OUTF :  NOVALUE =		! Close the current output file
+;	1287	
+;	1288	!++
+;	1289	! FUNCTIONAL DESCRIPTION:
+;	1290	!
+;	1291	!	This routine closes the current output file.
+;	1292	!
+;	1293	! FORMAL PARAMETERS:
+;	1294	!
+;	1295	!	None
+;	1296	!
+;	1297	! IMPLICIT INPUTS:
+;	1298	!
+;	1299	!	OUTFILE_OPEN - Output file open indicator
+;	1300	!	OUTFILE_FAB - Output file FAB
+;	1301	!	TRUNCATE_BIT in COPY$CLI_STATUS if /TRUNCATE was specified.
+;	1302	!
+;	1303	! IMPLICIT OUTPUTS:
+;	1304	!
+;	1305	!	OUTFILE_OPEN - Set to indicate that the output file is not open
+;	1306	!	OUTFILE_FAB - Output file FAB closed
+;	1307	!
+;	1308	! ROUTINE VALUE:
+;	1309	!
+;	1310	!	None
+;	1311	!
+;	1312	! SIDE EFFECTS:
+;	1313	!
+;	1314	!	File is truncated if /TRUNCATE was specified.
+;	1315	!
+;	1316	!--
+;	1317	
+;	1318	    BEGIN
+;	1319	
+;	1320	!
+;	1321	! Return to the caller if the output file is not open.
+;	1322	!
+;	1323	
+;	1324	    IF NOT .OUTFILE_OPEN				! If the output file is not open,
+;	1325	    THEN						!
+;	1326		RETURN OK;					! return a success code to the caller.
+;	1327	
+;	1328	    OUTFILE_OPEN = NO;					! Otherwise, turn off the open indicator.
+;	1329	
+;	1330	!
+;	1331	! Close the output file.
+;	1332	!
+;	1333	
+;	1334	    $RMS_CLOSE( FAB = OUTFILE_FAB,			! Close the output file FAB,
+;     P 1335			 ERR = COPY$OCLOSE_ERR );		! specifying an error action routine.
+;	1336	
+;	1337	!
+;	1338	! Reset the incompatible messages flag to FALSE for the next output file. This message
+;	1339	! indicates whether an incompatible attributes has been output for an output file.
+;	1340	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 9-1
+; Digital Equipment Corporation
+;
+;	1341	
+;	1342	    COPY$B_INCOMPAT = FALSE;				! Reset incompatible flag
+;	1343	
+;	1344	!
+;	1345	! Return to the caller.
+;	1346	!
+;	1347	
+;	1348	    RETURN;						! Return to the caller.
+;	1349	
+;	1350	    END;
+
+
+
+
+
+					 0000 00488 	    .ENTRY  COPY$CLOSE_OUTF, Save nothing			      ; 1286
+	   18	  0000G  CF	       03  E1 0048A 	    BBC     #3, COPY$SEM_STATUS+1, 1$				      ; 1324
+		  0000G  CF	       08  8A 00490 	    BICB2   #8, COPY$SEM_STATUS+1				      ; 1328
+				0000V  CF  9F 00495 	    PUSHAB  COPY$OCLOSE_ERR					      ; 1335
+				0000G  CF  9F 00499 	    PUSHAB  OUTFILE_FAB						      ;
+	      00000000G  9F	       02  FB 0049D 	    CALLS   #2, @#SYS$CLOSE					      ;
+				0000G  CF  94 004A4 	    CLRB    COPY$B_INCOMPAT					      ; 1342
+					   04 004A8 1$:     RET     							      ; 1286
+
+; Routine Size:  33 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 10
+; Digital Equipment Corporation
+;
+;	1351	ROUTINE RMS_CLEANUP : NOVALUE =				! RMS cleanup routine
+;	1352	
+;	1353	!++
+;	1354	! FUNCTIONAL DESCRIPTION:
+;	1355	!
+;	1356	!	This routine performs any necessary RMS cleanup after a file copy:
+;	1357	!
+;	1358	!		* unlocks the block I/O buffers
+;	1359	!
+;	1360	! FORMAL PARAMETERS:
+;	1361	!
+;	1362	!	None
+;	1363	!
+;	1364	! IMPLICIT INPUTS:
+;	1365	!
+;	1366	!	IO_BUFFER_BASE - Address of the dynamic I/O buffer
+;	1367	!	IO_BUFFER_END - Address of the end of the buffer
+;	1368	!
+;	1369	! IMPLICIT OUTPUTS:
+;	1370	!
+;	1371	!	IO_BUFFER_END - End of buffer pointer zeroed
+;	1372	!
+;	1373	! ROUTINE VALUE:
+;	1374	!
+;	1375	!	None
+;	1376	!
+;	1377	! SIDE EFFECTS:
+;	1378	!
+;	1379	!	None
+;	1380	!
+;	1381	!--
+;	1382	
+;	1383	    BEGIN
+;	1384	
+;	1385	    LOCAL
+;	1386		STATUS;						! System service completion code
+;	1387	
+;	1388	!
+;	1389	! Unlock the block I/O buffers from the working set.
+;	1390	!
+;	1391	
+;	1392	    IF .IO_BUFFER_END NEQ 0				! If the block I/O buffers were allocated,
+;	1393	    THEN						!
+;	1394		BEGIN						!
+;	1395	!#2	STATUS = SYS$ULWSET( IO_BUFFER_BASE, 0, 0 );	! unlock them from the working set.
+;	1396	
+;	1397	!#2	IF NOT .STATUS					! If the buffer unlock fails,
+;	1398	!#2	THEN						!
+;	1399	!#2	    PUT_MESSAGE( MSG$_BADLOGIC, 0,		! die with a 3-line error message.
+;	1400	!#2			.STATUS, 0,			!
+;	1401	!#2			MSG$_ATPC, 1 );			!
+;	1402	
+;	1403		IO_BUFFER_END = 0;				! Clear the end of buffer pointer.
+;	1404		END;
+;	1405	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 10-1
+; Digital Equipment Corporation
+;
+;	1406	!
+;	1407	! Return to the caller.
+;	1408	!
+;	1409	
+;	1410	    RETURN;						! Return to the caller.
+;	1411	    END;
+
+
+
+
+
+					 0000 004A9 RMS_CLEANUP:
+							    .WORD   Save nothing					      ; 1351
+				0000'  CF  D5 004AB 	    TSTL    IO_BUFFER_END					      ; 1392
+				       04  13 004AF 	    BEQL    1$							      ;
+				0000'  CF  D4 004B1 	    CLRL    IO_BUFFER_END					      ; 1403
+					   04 004B5 1$:     RET     							      ; 1351
+
+; Routine Size:  13 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 11
+; Digital Equipment Corporation
+;
+;	1412	ROUTINE BYPASS_CONCAT					! Bypass concatenated input files
+;	1413			: NOVALUE =
+;	1414	
+;	1415	!++
+;	1416	! FUNCTIONAL DESCRIPTION:
+;	1417	!
+;	1418	!	This routine scans past concatenated input file-specifications.
+;	1419	!
+;	1420	! FORMAL PARAMETERS:
+;	1421	!
+;	1422	!	None
+;	1423	!
+;	1424	! IMPLICIT INPUTS:
+;	1425	!
+;	1426	!	Bits in the status words COPY$CLI_STATUS and COPY$SEM_STATUS:
+;	1427	!
+;	1428	!		APPEND_COMMAND	- APPEND command indicator
+;	1429	!		CONCAT_FOLLOWS	- concatentation is occurring
+;	1430	!
+;	1431	!	INFILE_DESC - Input file request descriptor
+;	1432	!	CLEANUP_DESC - Input file cleanup request descriptor
+;	1433	!
+;	1434	! IMPLICIT OUTPUTS:
+;	1435	!
+;	1436	!	CONCAT_FOLLOWS - Concatenation active indicator turned off
+;	1437	!	WILDCARD_ACTIVE - Wildcard active indicator turned off
+;	1438	!
+;	1439	! ROUTINE VALUE:
+;	1440	!
+;	1441	!	None
+;	1442	!
+;	1443	! SIDE EFFECTS:
+;	1444	!
+;	1445	!	INFILE_DESC - Input file request descriptor filled in by the CLI
+;	1446	!	CLEANUP_DESC - Input file cleanup request descriptor filled in by the CLI
+;	1447	!
+;	1448	!--
+;	1449	
+;	1450	    BEGIN
+;	1451	
+;	1452	!
+;	1453	! Return to the caller if input concatenation is not active.
+;	1454	!
+;	1455	
+;	1456	    IF NOT .APPEND_COMMAND AND				! If this is a COPY command
+;	1457		NOT .CONCAT_FOLLOWS				! and no input concatentation is active,
+;	1458	    THEN						!
+;	1459		RETURN						!    then return to the caller.
+;	1460	    ELSE
+;	1461		CONCAT_FOLLOWS = NO;				! Otherwise, turn off the concatenation indicator.
+;	1462	
+;	1463	!
+;	1464	! Report an wildcard specification which has not been completely processed.
+;	1465	!
+;	1466	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 11-1
+; Digital Equipment Corporation
+;
+;	1467	    IF .WILDCARD_ACTIVE					! If a wildcard spec is currently active,
+;	1468	    THEN						!
+;	1469		BEGIN						!
+;	1470		WILDCARD_ACTIVE = NO;				! turn off the wildcard indicator.
+;	1471	
+;	1472		IF .INFILE_NAM_BLK[NAM$B_RSL] NEQ 0		! If the wildcard spec is partially processed,
+;	1473		THEN						!
+;	1474		    BEGIN					!
+;	1475		    INFILE_NAM_BLK[NAM$B_RSL] = 0;		! discard the current resultant name string,
+;	1476		    REPORT_BYPASS( MSG$_NOTCMPLT );		! and report the bypass wildcard spec.
+;	1477		    END;
+;	1478		END;
+;	1479	
+;	1480	!
+;	1481	! Scan past any concatenated input file-specifications.
+;	1482	!
+;	1483	
+;	1484	    WHILE .INFILE_DESC[CLI$V_CONCATINP] DO		! Repeat the remainder of this routine until
+;	1485		BEGIN						!    all necessary input files have been bypassed.
+;	1486		CALL_CLI(					! Call the CLI with the following arguments:
+;	1487			INFILE_DESC,				!    Input file request descriptor address
+;	1488			CLI_WORK_AREA,				!    CLI work area address
+;	1489			COPY$CLI_STATUS );			!    COPY status bit vector address
+;	1490	
+;	1491		IF COPY$PARS_INFIL()				! Parse the input file-specification.
+;	1492		THEN
+;	1493		    REPORT_BYPASS( MSG$_NOTCOPIED );		! Report that the file was not processed.
+;	1494	
+;	1495		IF NOT .INFILE_DESC[CLI$V_CONCATINP]		! If no concatenated file-specification follows,
+;	1496		THEN						!
+;	1497		    CALL_CLI(					! call the CLI with the following arguments:
+;	1498				CLEANUP_DESC,			!    Parameter cleanup request descriptor
+;	1499				CLI_WORK_AREA,			!    CLI work area address
+;	1500				COPY$CLI_STATUS );		!    COPY status bit vector address
+;	1501		END;
+;	1502	
+;	1503	!
+;	1504	! Return to the caller.
+;	1505	!
+;	1506	
+;	1507	    RETURN;						! Return to the caller.
+;	1508	
+;	1509	    END;
+
+
+
+
+
+					 0800 004B6 BYPASS_CONCAT:
+							    .WORD   Save R11						      ; 1412
+		         5B	0000G  CF  9E 004B8 	    MOVAB   COPY$CLI_STATUS, R11				      ;
+	   05	  0000G  CF	       04  E0 004BD 	    BBS     #4, COPY$SEM_STATUS+1, 1$				      ; 1456
+	   60	    02   AB	       05  E1 004C3 	    BBC     #5, COPY$CLI_STATUS+2, 5$				      ; 1457
+		    02   AB	       20  8A 004C8 1$:     BICB2   #32, COPY$CLI_STATUS+2				      ; 1461
+	   19	    02   AB	       06  E1 004CC 	    BBC     #6, COPY$CLI_STATUS+2, 2$				      ; 1467
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 11-2
+; Digital Equipment Corporation
+;
+		    02   AB	  40   8F  8A 004D1 	    BICB2   #64, COPY$CLI_STATUS+2				      ; 1470
+				0000G  CF  95 004D6 	    TSTB    INFILE_NAM_BLK+3					      ; 1472
+				       0E  13 004DA 	    BEQL    2$							      ;
+				0000G  CF  94 004DC 	    CLRB    INFILE_NAM_BLK+3					      ; 1475
+		         7E	11C0   8F  3C 004E0 	    MOVZWL  #4544, -(SP)					      ; 1476
+		  0000V  CF	       01  FB 004E5 	    CALLS   #1, REPORT_BYPASS					      ;
+	   38	  0000G  CF	       01  E1 004EA 2$:     BBC     #1, INFILE_DESC+3, 5$				      ; 1484
+				       5B  DD 004F0 3$:     PUSHL   R11							      ; 1486
+				0000G  CF  9F 004F2 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000G  CF  9F 004F6 	    PUSHAB  INFILE_DESC						      ;
+		  0000G  DF	       03  FB 004FA 	    CALLS   #3, @COPY$CLI_RESULT				      ;
+		  0000V  CF	       00  FB 004FF 	    CALLS   #0, COPY$PARS_INFIL					      ; 1491
+		         0A	       50  E9 00504 	    BLBC    R0, 4$						      ;
+		         7E	11B8   8F  3C 00507 	    MOVZWL  #4536, -(SP)					      ; 1493
+		  0000V  CF	       01  FB 0050C 	    CALLS   #1, REPORT_BYPASS					      ;
+	   D9	  0000G  CF	       01  E0 00511 4$:     BBS     #1, INFILE_DESC+3, 3$				      ; 1495
+				       5B  DD 00517 	    PUSHL   R11							      ; 1497
+				0000G  CF  9F 00519 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000G  CF  9F 0051D 	    PUSHAB  CLEANUP_DESC					      ;
+		  0000G  DF	       03  FB 00521 	    CALLS   #3, @COPY$CLI_RESULT				      ;
+				       C2  11 00526 	    BRB     2$							      ; 1484
+					   04 00528 5$:     RET     							      ; 1412
+
+; Routine Size:  115 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 12
+; Digital Equipment Corporation
+;
+;	1510	GLOBAL ROUTINE COPY$PARS_INFIL : =			! Input file-spec parse routine
+;	1511	
+;	1512	!++
+;	1513	! FUNCTIONAL DESCRIPTION:
+;	1514	!
+;	1515	!	This routine calls RMS to parse an input file-specification.
+;	1516	!
+;	1517	! FORMAL PARAMETERS:
+;	1518	!
+;	1519	!	None
+;	1520	!
+;	1521	! IMPLICIT INPUTS:
+;	1522	!
+;	1523	!	INFILE_DESC - Input file CLI request descriptor
+;	1524	!	INFILE_FAB - Input file FAB
+;	1525	!	INFILE_NAM_BLK - Input file name block
+;	1526	!	DUMMY_NAM_BLK - Dummy name block for input "stickiness"
+;	1527	!
+;	1528	! IMPLICIT OUTPUTS:
+;	1529	!
+;	1530	!	INFILE_NAM_BLK - Filled in by RMS
+;	1531	!	DUMMY_NAM_BLK - Updated to reflect last input file-specification
+;	1532	!
+;	1533	! COMPLETION CODES:
+;	1534	!
+;	1535	!	OK = Successful parse
+;	1536	!	ERROR = Error from RMS parse
+;	1537	!
+;	1538	! SIDE EFFECTS:
+;	1539	!
+;	1540	!	None
+;	1541	!
+;	1542	!--
+;	1543	
+;	1544	    BEGIN
+;	1545	
+;	1546	!
+;	1547	! Call RMS to parse the input file-specification to resolve a logical name (if any).
+;	1548	!
+;	1549	
+;	1550	    INFILE_FAB[FAB$L_FNA] = .INFILE_DESC[CLI$A_RQADDR];	! Move the file name address
+;	1551	    INFILE_FAB[FAB$B_FNS] = .INFILE_DESC[CLI$W_RQSIZE];	! and length into the input file FAB.
+;	1552	
+;	1553	    INFILE_NAM_BLK[NAM$B_ESL] = 0;			! Zero the expanded string length so that
+;	1554								! COPY$INOPN_ERR can determine if an expanded
+;	1555								! string was created by RMS.
+;	1556	
+;	1557	    IF $RMS_PARSE( FAB = INFILE_FAB,			! Call the RMS file-spec parsing routine,
+;     P 1558			ERR = COPY$INOPN_ERR )			! specifying an error action routine.
+;	1559	    THEN
+;	1560		BEGIN						! If the parse was successful,
+;	1561		DUMMY_NAM_BLK[NAM$B_RSL] =			! setup the dummy name block to point
+;	1562			.INFILE_NAM_BLK[NAM$B_ESL];		! to the current expanded file name.
+;	1563								!
+;	1564		RETURN OK;					! Return a success code to the caller.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 12-1
+; Digital Equipment Corporation
+;
+;	1565		END
+;	1566	    ELSE
+;	1567		RETURN ERROR;					! Otherwise, return an error to the caller.
+;	1568	    END;
+
+
+
+							    .GLOBL  SYS$PARSE
+
+					 0000 00529 	    .ENTRY  COPY$PARS_INFIL, Save nothing			      ; 1510
+		  0000G  CF	0000G  CF  D0 0052B 	    MOVL    INFILE_DESC+12, INFILE_FAB+44			      ; 1550
+		  0000G  CF	0000G  CF  90 00532 	    MOVB    INFILE_DESC+8, INFILE_FAB+52			      ; 1551
+				0000G  CF  94 00539 	    CLRB    INFILE_NAM_BLK+11					      ; 1553
+				0000V  CF  9F 0053D 	    PUSHAB  COPY$INOPN_ERR					      ; 1558
+				0000G  CF  9F 00541 	    PUSHAB  INFILE_FAB						      ;
+	      00000000G  9F	       02  FB 00545 	    CALLS   #2, @#SYS$PARSE					      ;
+		         0B	       50  E9 0054C 	    BLBC    R0, 1$						      ;
+		  0000G  CF	0000G  CF  90 0054F 	    MOVB    INFILE_NAM_BLK+11, DUMMY_NAM_BLK+3			      ; 1561
+		         50	       01  D0 00556 	    MOVL    #1, R0						      ; 1564
+					   04 00559 	    RET     							      ;
+		         50	       02  D0 0055A 1$:     MOVL    #2, R0						      ; 1567
+					   04 0055D 	    RET     							      ; 1510
+
+; Routine Size:  53 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 13
+; Digital Equipment Corporation
+;
+;	1569	GLOBAL ROUTINE COPY$CALC_ALQ =				! Allocation quantity calculation routine
+;	1570	
+;	1571	!++
+;	1572	! FUNCTIONAL DESCRIPTION:
+;	1573	!
+;	1574	!	This routine determines the output file allocation/extension quantity.
+;	1575	!
+;	1576	! FORMAL PARAMETERS:
+;	1577	!
+;	1578	!	None
+;	1579	!
+;	1580	! IMPLICIT INPUTS:
+;	1581	!
+;	1582	!	EXTEND_OUTFILE	- Output file extension indicator
+;	1583	!	INFILE_FAB	- Input file FAB
+;	1584	!	INFILE_XABALL	- Input file allocation XAB
+;	1585	!	INFILE_XABFHC	- Input file header characteristics XAB
+;	1586	!	COPY$CLI_STATUS bit TRUNCATE_BIT
+;	1587	!		means /TRUNCATE was specified
+;	1588	!	ALLOC_VALUE	- contains a value if /ALLOCATION was specified.
+;	1589	!
+;	1590	! IMPLICIT OUTPUTS:
+;	1591	!
+;	1592	!	None
+;	1593	!
+;	1594	! ROUTINE VALUE:
+;	1595	!
+;	1596	!	Size of the input file (i.e., number of blocks)
+;	1597	!
+;	1598	! SIDE EFFECTS:
+;	1599	!
+;	1600	!	None
+;	1601	!
+;	1602	!--
+;	1603	
+;	1604	    BEGIN
+;	1605	
+;	1606	    LOCAL
+;	1607		ALQ;						! Temporary allocation quantity
+;	1608	
+;	1609	!
+;	1610	! Return a zero allocation size if the output file is not a disk and it is being extended.
+;	1611	!
+;	1612	
+;	1613	    IF .EXTEND_OUTFILE AND				! If the output file is being extended
+;	1614		(NOT .OUTFILE_FAB[$FAB_DEV(FOD)] OR		! and it is not a file structured device
+;	1615		 .OUTFILE_FAB[$FAB_DEV(SQD)])			! or it is a magnetic tape,
+;	1616	    THEN						!
+;	1617		RETURN 0;					! return a zero allocation size to the caller.
+;	1618	
+;	1619	!
+;	1620	! Determine the output file allocation size from the size and organization of the input file.
+;	1621	!
+;	1622	
+;	1623	    IF NOT .INFILE_FAB[$FAB_DEV(FOD)] OR		! If the input device is not file structured
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 13-1
+; Digital Equipment Corporation
+;
+;	1624		.INFILE_FAB[$FAB_DEV(SQD)]			! or if it is a magnetic tape,
+;	1625	    THEN						!
+;	1626		ALQ = DEFAULT_ALLOC				! assume a default input file size.
+;	1627	    ELSE
+;	1628		BEGIN
+;	1629		IF (.INFILE_FAB[FAB$B_ORG] EQL FAB$C_SEQ AND	! If the input is a sequential file which is not contiguous
+;	1630		    ( NOT .INFILE_XABALL[XAB$V_CTG] OR		!
+;	1631			    .EXTEND_OUTFILE )) OR		! or if the input file is being appended to an existing file,
+;	1632	            (.COPY$CLI_STATUS [TRUNCATE_BIT] AND .ALLOC_VALUE EQL 0)
+;	1633								! or if /TRUNCATE and no /ALLOCATION was given,
+;	1634		THEN						!
+;	1635		    IF .INFILE_XABFHC[XAB$W_FFB] EQL 0		! calculate only enough space to hold the actual
+;	1636		    THEN					! data in the input file.  Note that this calculation
+;	1637			ALQ = .INFILE_XABFHC[XAB$L_EBK] - 1	! includes the final block only if it actually
+;	1638		    ELSE					! contains some data.
+;	1639			ALQ = .INFILE_XABFHC[XAB$L_EBK]		!
+;	1640		ELSE
+;	1641		    ALQ = .INFILE_XABFHC[XAB$L_HBK];		! Otherwise, pickup the actual size of the input file.
+;	1642		END;
+;	1643	
+;	1644	    IF .EXTEND_OUTFILE					! If the output file is being extended,
+;	1645	    THEN						!
+;	1646		ALQ = .OUTFILE_XABFHC[XAB$L_EBK] + .ALQ -	! subtract the remaining output file space
+;	1647			.OUTFILE_XABFHC[XAB$L_HBK];		! from the calculated extension quantity.
+;	1648	
+;	1649	!
+;	1650	! Return the calculated allocation (or extension) quantity to the caller.
+;	1651	!
+;	1652	
+;	1653	    IF .ALQ GEQ 0					! If the calculated allocation/extension quantity
+;	1654	    THEN						! is greater than or equal to zero,
+;	1655		RETURN .ALQ					! return that value to the caller.
+;	1656	    ELSE
+;	1657		RETURN 0;					! Otherwise, return a zero value to the caller.
+;	1658	
+;	1659	    END;
+
+
+
+
+
+					 0800 0055E 	    .ENTRY  COPY$CALC_ALQ, Save R11				      ; 1569
+		         5B	0000G  CF  9E 00560 	    MOVAB   INFILE_XABFHC+16, R11				      ;
+	   0C	  0000G  CF	       02  E1 00565 	    BBC     #2, COPY$CLI_STATUS+3, 1$				      ; 1613
+	   62	  0000G  CF	       06  E1 0056B 	    BBC     #6, OUTFILE_FAB+65, 10$				      ; 1614
+	   5C	  0000G  CF	       05  E0 00571 	    BBS     #5, OUTFILE_FAB+64, 10$				      ; 1615
+	   06	  0000G  CF	       06  E1 00577 1$:     BBC     #6, INFILE_FAB+65, 2$				      ; 1623
+	   04	  0000G  CF	       05  E1 0057D 	    BBC     #5, INFILE_FAB+64, 3$				      ; 1624
+				       51  D4 00583 2$:     CLRL    ALQ							      ; 1626
+				       32  11 00585 	    BRB     8$							      ; 1623
+				0000G  CF  95 00587 3$:     TSTB    INFILE_FAB+29					      ; 1629
+				       0C  12 0058B 	    BNEQ    4$							      ;
+	   12	  0000G  CF	       07  E1 0058D 	    BBC     #7, INFILE_XABALL+8, 5$				      ; 1630
+	   0C	  0000G  CF	       02  E0 00593 	    BBS     #2, COPY$CLI_STATUS+3, 5$				      ; 1631
+	   16	  0000G  CF	       02  E1 00599 4$:     BBC     #2, COPY$CLI_STATUS+1, 7$				      ; 1632
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 13-2
+; Digital Equipment Corporation
+;
+				0000G  CF  D5 0059F 	    TSTL    ALLOC_VALUE						      ;
+				       10  12 005A3 	    BNEQ    7$							      ;
+				  04   AB  B5 005A5 5$:     TSTW    INFILE_XABFHC+20					      ; 1635
+				       06  12 005A8 	    BNEQ    6$							      ;
+	   51	         6B	       01  C3 005AA 	    SUBL3   #1, INFILE_XABFHC+16, ALQ				      ; 1637
+				       09  11 005AE 	    BRB     8$							      ; 1635
+		         51	       6B  D0 005B0 6$:     MOVL    INFILE_XABFHC+16, ALQ				      ; 1639
+				       04  11 005B3 	    BRB     8$							      ; 1629
+		         51	  FC   AB  D0 005B5 7$:     MOVL    INFILE_XABFHC+12, ALQ				      ; 1641
+	   0C	  0000G  CF	       02  E1 005B9 8$:     BBC     #2, COPY$CLI_STATUS+3, 9$				      ; 1644
+	   50	  0000G  CF	       51  C1 005BF 	    ADDL3   ALQ, OUTFILE_XABFHC+16, R0				      ; 1646
+	   51	         50	0000G  CF  C3 005C5 	    SUBL3   OUTFILE_XABFHC+12, R0, ALQ				      ;
+				       51  D5 005CB 9$:     TSTL    ALQ							      ; 1653
+				       04  19 005CD 	    BLSS    10$							      ;
+		         50	       51  D0 005CF 	    MOVL    ALQ, R0						      ; 1655
+					   04 005D2 	    RET     							      ;
+				       50  D4 005D3 10$:    CLRL    R0							      ; 1569
+					   04 005D5 	    RET     							      ;
+
+; Routine Size:  120 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 14
+; Digital Equipment Corporation
+;
+;	1660	ROUTINE REPORT_NAMES					! Report the results of a file copy
+;	1661			: NOVALUE =
+;	1662	
+;	1663	!++
+;	1664	! FUNCTIONAL DESCRIPTION:
+;	1665	!
+;	1666	!	This routine reports the results of copying a single input file
+;	1667	!	to the output file.
+;	1668	!
+;	1669	! FORMAL PARAMETERS:
+;	1670	!
+;	1671	!	None
+;	1672	!
+;	1673	! IMPLICIT INPUTS:
+;	1674	!
+;	1675	!	LOG - Indicator tested to see if activity reporting desired
+;	1676	!	EXTEND_OUTFILE - Indicator tested to see if input concatenation is active.
+;	1677	!	IN_NAME_DESC - Input file name descriptor
+;	1678	!	OUT_NAME_DESC - Output file name descriptor
+;	1679	!	BLOCK_COUNT - Number of input file blocks copied
+;	1680	!	RECORD_COUNT - Number of input file records copied
+;	1681	!
+;	1682	! IMPLICIT OUTPUTS:
+;	1683	!
+;	1684	!	None
+;	1685	!
+;	1686	! ROUTINE VALUE:
+;	1687	!
+;	1688	!	None
+;	1689	!
+;	1690	! SIDE EFFECTS:
+;	1691	!
+;	1692	!	None
+;	1693	!
+;	1694	!--
+;	1695	
+;	1696	    BEGIN
+;	1697	
+;	1698	!
+;	1699	! Determine which message, if any, is needed.
+;	1700	!
+;	1701	
+;	1702	    IF NOT .LOG_MSG					! If activity reporting is not requested,
+;	1703	    THEN						!
+;	1704		RETURN;						! return to the caller.
+;	1705	
+;	1706	    IF NOT .EXTEND_OUTFILE				! Test the record mode indicator to see
+;	1707								! if this is the primary input file or a
+;	1708								! concatenated input file.
+;	1709	
+;	1710	!
+;	1711	! Create a "copied" message if the input file just copied was
+;	1712	! the first file copied into the output file.
+;	1713	!
+;	1714	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 14-1
+; Digital Equipment Corporation
+;
+;	1715	    THEN						!
+;	1716		IF .BLOCK_COUNT NEQ 0				! If the input file was copied in block mode,
+;	1717		THEN						!
+;	1718		    PUT_MESSAGE( MSG$_COPIEDB,			! signal "file copied" with the following arguments:
+;     P 1719			    3,					!    Number of message arguments
+;     P 1720			    IN_NAME_DESC,			!    Address of input file name descriptor
+;     P 1721			    OUT_NAME_DESC,			!    Address of output file name descriptor
+;     P 1722			    .BLOCK_COUNT )			!    Number of blocks copied
+;	1723	
+;	1724		ELSE						! Otherwise,
+;	1725		    PUT_MESSAGE( MSG$_COPIEDR,			! signal "file copied" with the following arguments:
+;     P 1726			    3,					!    Number of message arguments
+;     P 1727			    IN_NAME_DESC,			!    Address of input file name descriptor
+;     P 1728			    OUT_NAME_DESC,			!    Address of output file name descriptor
+;     P 1729			    .RECORD_COUNT )			!    Number of records copied
+;	1730	
+;	1731	!
+;	1732	! Create an "appended" message if the input file just copied was
+;	1733	! appended to an existing output file.
+;	1734	!
+;	1735	
+;	1736	    ELSE						!
+;	1737		IF .BLOCK_COUNT NEQ 0				! If the input file was copied in block mode,
+;	1738		THEN						!
+;	1739		    PUT_MESSAGE( MSG$_APPENDEDB,		! signal "file appended" with the following arguments:
+;     P 1740			    3,					!    Number of message arguments
+;     P 1741			    IN_NAME_DESC,			!    Address of input file name descriptor
+;     P 1742			    OUT_NAME_DESC,			!    Address of output file name descriptor
+;     P 1743			    .BLOCK_COUNT )			!    Number of blocks copied
+;	1744	
+;	1745		ELSE						! Otherwise,
+;	1746		    PUT_MESSAGE( MSG$_APPENDEDR,		! signal "file appended" with the following arguments:
+;     P 1747			    3,					!    Number of message arguments
+;     P 1748			    IN_NAME_DESC,			!    Address of input file name descriptor
+;     P 1749			    OUT_NAME_DESC,			!    Address of output file name descriptor
+;     P 1750			    .RECORD_COUNT );			!    Number of records copied
+;	1751	
+;	1752	!
+;	1753	! Return to the caller.
+;	1754	!
+;	1755	
+;	1756	    RETURN;						! Return to the caller.
+;	1757	
+;	1758	    END;
+
+
+
+
+
+					 0C00 005D6 REPORT_NAMES:
+							    .WORD   Save R10,R11					      ; 1660
+		         5A	0000G  CF  9E 005D8 	    MOVAB   IN_NAME_DESC, R10					      ;
+		         5B	0000G  CF  9E 005DD 	    MOVAB   OUT_NAME_DESC, R11					      ;
+	   5D	  0000G  CF	       01  E1 005E2 	    BBC     #1, COPY$CLI_STATUS, 5$				      ; 1702
+		         50	0000'  CF  D0 005E8 	    MOVL    BLOCK_COUNT, R0					      ; 1716
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 14-2
+; Digital Equipment Corporation
+;
+	   22	  0000G  CF	       02  E0 005ED 	    BBS     #2, COPY$CLI_STATUS+3, 2$				      ; 1706
+				       0F  13 005F3 	    BEQL    1$							      ; 1716
+				       50  DD 005F5 	    PUSHL   R0							      ; 1722
+				0C00   8F  BB 005F7 	    PUSHR   #^M<R10,R11>					      ;
+				       03  DD 005FB 	    PUSHL   #3							      ;
+		         7E	1061   8F  3C 005FD 	    MOVZWL  #4193, -(SP)					      ;
+				       33  11 00602 	    BRB     4$							      ;
+				0000'  CF  DD 00604 1$:     PUSHL   RECORD_COUNT					      ; 1729
+				0C00   8F  BB 00608 	    PUSHR   #^M<R10,R11>					      ;
+				       03  DD 0060C 	    PUSHL   #3							      ;
+		         7E	1069   8F  3C 0060E 	    MOVZWL  #4201, -(SP)					      ;
+				       22  11 00613 	    BRB     4$							      ;
+				       50  D5 00615 2$:     TSTL    R0							      ; 1737
+				       0F  13 00617 	    BEQL    3$							      ;
+				       50  DD 00619 	    PUSHL   R0							      ; 1743
+				0C00   8F  BB 0061B 	    PUSHR   #^M<R10,R11>					      ;
+				       03  DD 0061F 	    PUSHL   #3							      ;
+		         7E	1001   8F  3C 00621 	    MOVZWL  #4097, -(SP)					      ;
+				       0F  11 00626 	    BRB     4$							      ;
+				0000'  CF  DD 00628 3$:     PUSHL   RECORD_COUNT					      ; 1750
+				0C00   8F  BB 0062C 	    PUSHR   #^M<R10,R11>					      ;
+				       03  DD 00630 	    PUSHL   #3							      ;
+		         7E	1009   8F  3C 00632 	    MOVZWL  #4105, -(SP)					      ;
+		  0000G  CF	       01  FB 00637 4$:     CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0063C 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 0063E 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 00645 5$:     RET     							      ; 1660
+
+; Routine Size:  112 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 15
+; Digital Equipment Corporation
+;
+;	1759	ROUTINE REPORT_BYPASS (					! Report the bypassing of an input file
+;	1760				NUMBER )			! Error number
+;	1761			: NOVALUE =
+;	1762	
+;	1763	!++
+;	1764	! FUNCTIONAL DESCRIPTION:
+;	1765	!
+;	1766	!	This routine reports the name of an input file which has been bypassed.
+;	1767	!
+;	1768	! FORMAL PARAMETERS:
+;	1769	!
+;	1770	!	NUMBER.rlu.v - Error number
+;	1771	!
+;	1772	! IMPLICIT INPUTS:
+;	1773	!
+;	1774	!	INFILE_NAM_BLK - Input file name block
+;	1775	!	INFILE_NAME - Input file resultant name
+;	1776	!	INFILE_XNAME - Input file expanded name
+;	1777	!
+;	1778	! IMPLICIT OUTPUTS:
+;	1779	!
+;	1780	!	None
+;	1781	!
+;	1782	! ROUTINE VALUE:
+;	1783	!
+;	1784	!	None
+;	1785	!
+;	1786	! SIDE EFFECTS:
+;	1787	!
+;	1788	!	None
+;	1789	!
+;	1790	!--
+;	1791	
+;	1792	    BEGIN
+;	1793	
+;	1794	    LOCAL
+;	1795		NAME_DESC :  VECTOR[2];				! Input file name descriptor
+;	1796	
+;	1797	!
+;	1798	! Setup the input file name descriptor.
+;	1799	!
+;	1800	
+;	1801	    IF .INFILE_NAM_BLK[NAM$B_RSL] NEQ 0			! If RMS has setup a resultant name string,
+;	1802	    THEN						!
+;	1803		BEGIN						!
+;	1804		NAME_DESC[0] = .INFILE_NAM_BLK[NAM$B_RSL];	! setup the name descriptor to use
+;	1805		NAME_DESC[1] = INFILE_NAME;			! the resultant name string.
+;	1806		END
+;	1807	    ELSE
+;	1808		BEGIN						!
+;	1809		NAME_DESC[0] = .INFILE_NAM_BLK[NAM$B_ESL];	! Otherwise, use the expanded name string.
+;	1810		NAME_DESC[1] = INFILE_XNAME;			!
+;	1811		END;
+;	1812	
+;	1813	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 15-1
+; Digital Equipment Corporation
+;
+;	1814	! Report the name of the input file which is being bypassed.
+;	1815	!
+;	1816	
+;	1817	    PUT_MESSAGEX( .NUMBER, 1, NAME_DESC );		! Report the name of the input file.
+;	1818	
+;	1819	!
+;	1820	! Return to the caller.
+;	1821	!
+;	1822	
+;	1823	    RETURN;						! Return to the caller.
+;	1824	
+;	1825	    END;
+
+
+
+
+
+					 0800 00646 REPORT_BYPASS:
+							    .WORD   Save R11						      ; 1759
+		         5B	0000G  CF  9E 00648 	    MOVAB   COPY$MSG_NUMBER, R11				      ;
+		         5E	       08  C2 0064D 	    SUBL2   #8, SP						      ;
+				0000G  CF  95 00650 	    TSTB    INFILE_NAM_BLK+3					      ; 1801
+				       0D  13 00654 	    BEQL    1$							      ;
+		         6E	0000G  CF  9A 00656 	    MOVZBL  INFILE_NAM_BLK+3, NAME_DESC				      ; 1804
+		    04   AE	0000G  CF  9E 0065B 	    MOVAB   INFILE_NAME, NAME_DESC+4				      ; 1805
+				       0B  11 00661 	    BRB     2$							      ; 1801
+		         6E	0000G  CF  9A 00663 1$:     MOVZBL  INFILE_NAM_BLK+11, NAME_DESC			      ; 1809
+		    04   AE	0000G  CF  9E 00668 	    MOVAB   INFILE_XNAME, NAME_DESC+4				      ; 1810
+				  04   AC  DD 0066E 2$:     PUSHL   NUMBER						      ; 1817
+		         6B	       01  FB 00671 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+	   00	         50	       01  7A 00674 	    EMUL    #1, R0, #0, -(SP)					      ;
+				       7E     00678									      ;
+	   50	         8E	       08  7B 00679 	    EDIV    #8, (SP)+, R0, R0					      ;
+				       50     0067D									      ;
+		         04	       50  D1 0067E 	    CMPL    R0, #4						      ;
+				       14  13 00681 	    BEQL    3$							      ;
+				       5E  DD 00683 	    PUSHL   SP							      ;
+				       01  DD 00685 	    PUSHL   #1							      ;
+				  04   AC  DD 00687 	    PUSHL   NUMBER						      ;
+		         6B	       01  FB 0068A 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0068D 	    PUSHL   R0							      ;
+	      00000000G  00	       03  FB 0068F 	    CALLS   #3, LIB$SIGNAL					      ;
+					   04 00696 	    RET     							      ;
+				       5E  DD 00697 3$:     PUSHL   SP							      ;
+				       01  DD 00699 	    PUSHL   #1							      ;
+				  04   AC  DD 0069B 	    PUSHL   NUMBER						      ;
+		         6B	       01  FB 0069E 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 006A1 	    PUSHL   R0							      ;
+	      00000000G  00	       03  FB 006A3 	    CALLS   #3, LIB$STOP					      ;
+					   04 006AA 	    RET     							      ; 1759
+
+; Routine Size:  101 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 16
+; Digital Equipment Corporation
+;
+;	1826	GLOBAL ROUTINE COPY$LOG_MSG (				! Signal a COPY message
+;	1827			NUMBER )				! Error number
+;	1828			: NOVALUE =
+;	1829	
+;	1830	!++
+;	1831	! FUNCTIONAL DESCRIPTION:
+;	1832	!
+;	1833	!	This routine sends an informational message to the user if
+;	1834	!	activity reporting has been requested.
+;	1835	!
+;	1836	! FORMAL PARAMETERS:
+;	1837	!
+;	1838	!	NUMBER.rlu.v - error number
+;	1839	!
+;	1840	! IMPLICIT INPUTS:
+;	1841	!
+;	1842	!	LOG_MSG - Activity reporting indicator
+;	1843	!	OUTFILE_COUNT - Number of output files created
+;	1844	!	OUT_NAME_DESC - Output file name descriptor
+;	1845	!
+;	1846	! IMPLICIT OUTPUTS:
+;	1847	!
+;	1848	!	None
+;	1849	!
+;	1850	! ROUTINE VALUE:
+;	1851	!
+;	1852	!	None
+;	1853	!
+;	1854	! SIDE EFFECTS:
+;	1855	!
+;	1856	!	None
+;	1857	!
+;	1858	!--
+;	1859	
+;	1860	    BEGIN
+;	1861	
+;	1862	!
+;	1863	! Return to the caller if activity reporting has not been requested.
+;	1864	!
+;	1865	
+;	1866	    IF NOT .LOG_MSG					! If activity reporting is not requested,
+;	1867	    THEN						!
+;	1868		RETURN;						! return to the caller.
+;	1869	
+;	1870	!
+;	1871	! Call FAO to format the error message in the message buffer.
+;	1872	!
+;	1873	
+;	1874	    SELECTONE .NUMBER OF				! Select error message processing based
+;	1875		SET						! on the actual error number.
+;	1876	
+;	1877		[MSG$_NEWFILES]:
+;	1878		    IF .OUTFILE_COUNT NEQ 0			! If at least 1 files was created,
+;	1879		    THEN					!
+;	1880			PUT_MESSAGE( MSG$_NEWFILES,		! signal "<number> files created" with the following args:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 16-1
+; Digital Equipment Corporation
+;
+;     P 1881				1,				!    number of message arguments
+;     P 1882				.OUTFILE_COUNT );		!    number of output files created
+;	1883	
+;	1884		[MSG$_REPLACED, MSG$_OVERLAY, MSG$_CREATED]:
+;	1885		    PUT_MESSAGEX( .NUMBER,			! signal the message with the following arguments:
+;     P 1886				1,				!    number of message arguments
+;     P 1887				OUT_NAME_DESC );		!    address of the output name descriptor
+;	1888	
+;	1889		[OTHERWISE]:
+;	1890		    PUT_MESSAGEX( .NUMBER );			! Signal the appropriate message.
+;	1891		TES;
+;	1892	
+;	1893	!
+;	1894	! Return to the caller.
+;	1895	!
+;	1896	
+;	1897	    RETURN;						! Return to the caller.
+;	1898	
+;	1899	    END;
+
+
+
+
+
+					 0E04 006AB 	    .ENTRY  COPY$LOG_MSG, Save R2,R9,R10,R11			      ; 1826
+		         59 00000000G  00  9E 006AD 	    MOVAB   LIB$STOP, R9					      ;
+		         5A 00000000G  00  9E 006B4 	    MOVAB   LIB$SIGNAL, R10					      ;
+		         5B	0000G  CF  9E 006BB 	    MOVAB   COPY$MSG_NUMBER, R11				      ;
+	   01	  0000G  CF	       01  E0 006C0 	    BBS     #1, COPY$CLI_STATUS, 1$				      ; 1866
+					   04 006C6 	    RET     							      ;
+		         52	  04   AC  D0 006C7 1$:     MOVL    NUMBER, R2						      ; 1874
+	      00001091   8F	       52  D1 006CB 	    CMPL    R2, #4241						      ;
+				       13  12 006D2 	    BNEQ    3$							      ;
+		         50	0000'  CF  D0 006D4 	    MOVL    OUTFILE_COUNT, R0					      ; 1878
+				       01  12 006D9 	    BNEQ    2$							      ;
+					   04 006DB 	    RET     							      ;
+				       50  DD 006DC 2$:     PUSHL   R0							      ; 1882
+				       01  DD 006DE 	    PUSHL   #1							      ;
+		         7E	1091   8F  3C 006E0 	    MOVZWL  #4241, -(SP)					      ;
+				       37  11 006E5 	    BRB     5$							      ;
+	      00001073   8F	       52  D1 006E7 3$:     CMPL    R2, #4211						      ; 1874
+				       12  13 006EE 	    BEQL    4$							      ;
+	      000010AB   8F	       52  D1 006F0 	    CMPL    R2, #4267						      ;
+				       09  13 006F7 	    BEQL    4$							      ;
+	      000010BB   8F	       52  D1 006F9 	    CMPL    R2, #4283						      ;
+				       36  12 00700 	    BNEQ    7$							      ;
+				       52  DD 00702 4$:     PUSHL   R2							      ; 1887
+		         6B	       01  FB 00704 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+	   00	         50	       01  7A 00707 	    EMUL    #1, R0, #0, -(SP)					      ;
+				       7E     0070B									      ;
+	   50	         8E	       08  7B 0070C 	    EDIV    #8, (SP)+, R0, R0					      ;
+				       50     00710									      ;
+		         04	       50  D1 00711 	    CMPL    R0, #4						      ;
+				       11  13 00714 	    BEQL    6$							      ;
+				0000G  CF  9F 00716 	    PUSHAB  OUT_NAME_DESC					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 16-2
+; Digital Equipment Corporation
+;
+				       01  DD 0071A 	    PUSHL   #1							      ;
+				       52  DD 0071C 	    PUSHL   R2							      ;
+		         6B	       01  FB 0071E 5$:     CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00721 	    PUSHL   R0							      ;
+		         6A	       03  FB 00723 	    CALLS   #3, LIB$SIGNAL					      ;
+					   04 00726 	    RET     							      ;
+				0000G  CF  9F 00727 6$:     PUSHAB  OUT_NAME_DESC					      ;
+				       01  DD 0072B 	    PUSHL   #1							      ;
+				       52  DD 0072D 	    PUSHL   R2							      ;
+		         6B	       01  FB 0072F 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00732 	    PUSHL   R0							      ;
+		         69	       03  FB 00734 	    CALLS   #3, LIB$STOP					      ;
+					   04 00737 	    RET     							      ; 1874
+				       52  DD 00738 7$:     PUSHL   R2							      ; 1890
+		         6B	       01  FB 0073A 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+	   00	         50	       01  7A 0073D 	    EMUL    #1, R0, #0, -(SP)					      ;
+				       7E     00741									      ;
+	   50	         8E	       08  7B 00742 	    EDIV    #8, (SP)+, R0, R0					      ;
+				       50     00746									      ;
+		         04	       50  D1 00747 	    CMPL    R0, #4						      ;
+				       0B  13 0074A 	    BEQL    8$							      ;
+				       52  DD 0074C 	    PUSHL   R2							      ;
+		         6B	       01  FB 0074E 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00751 	    PUSHL   R0							      ;
+		         6A	       01  FB 00753 	    CALLS   #1, LIB$SIGNAL					      ;
+					   04 00756 	    RET     							      ;
+				       52  DD 00757 8$:     PUSHL   R2							      ;
+		         6B	       01  FB 00759 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0075C 	    PUSHL   R0							      ;
+		         69	       01  FB 0075E 	    CALLS   #1, LIB$STOP					      ;
+					   04 00761 9$:     RET     							      ; 1826
+
+; Routine Size:  183 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 17
+; Digital Equipment Corporation
+;
+;	1900	GLOBAL ROUTINE COPY$INOPN_ERR (				! RMS input open error action routine
+;	1901			FAB_RAB_ADDRESS )			! Address of associated FAB or RAB
+;	1902			: NOVALUE =
+;	1903	
+;	1904	!++
+;	1905	! FUNCTIONAL DESCRIPTION:
+;	1906	!
+;	1907	!	This RMS error action routine sends an input open error message to the user.
+;	1908	!
+;	1909	! FORMAL PARAMETERS:
+;	1910	!
+;	1911	!	FAB_RAB_ADDRESS.ra.v - Address of the associated FAB or RAB
+;	1912	!
+;	1913	! IMPLICIT INPUTS:
+;	1914	!
+;	1915	!	INFILE_NAM_BLK - Input file name block
+;	1916	!	INFILE_NAME - Input file name after open
+;	1917	!	INFILE_XNAME - Input file name before open
+;	1918	!	INFILE_DESC - Input file request descriptor
+;	1919	!
+;	1920	! IMPLICIT OUTPUTS:
+;	1921	!
+;	1922	!	None
+;	1923	!
+;	1924	! ROUTINE VALUE:
+;	1925	!
+;	1926	!	None
+;	1927	!
+;	1928	! SIDE EFFECTS:
+;	1929	!
+;	1930	!	None
+;	1931	!
+;	1932	!--
+;	1933	
+;	1934	    BEGIN
+;	1935	
+;	1936	    BIND
+;	1937		FAB_RAB = .FAB_RAB_ADDRESS :  BLOCK[,BYTE];	! Redefine routine parameter.
+;	1938	
+;	1939	    LOCAL
+;	1940		MESSAGE_ID,					! Local message identifier
+;	1941		NAME_DESC :  VECTOR[2];				! Input file name descriptor
+;	1942	
+;	1943	!
+;	1944	! Fillin the file name descriptor with the most complete name possible.
+;	1945	!
+;	1946	
+;	1947	    IF .INFILE_NAM_BLK[NAM$B_RSL] NEQ 0			! If a resultant name string exists,
+;	1948	    THEN						!
+;	1949		BEGIN						!
+;	1950		MESSAGE_ID = MSG$_OPENIN;			! indicate an open error
+;	1951		NAME_DESC[0] = .INFILE_NAM_BLK[NAM$B_RSL];	! and fillin the resultant name length
+;	1952		NAME_DESC[1] = INFILE_NAME;			! and address.
+;	1953		END
+;	1954	    ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 17-1
+; Digital Equipment Corporation
+;
+;	1955		IF .INFILE_NAM_BLK[NAM$B_ESL] NEQ 0		! If RMS created an expanded string
+;	1956		THEN						! but coundn't open the file,
+;	1957		    BEGIN					!
+;	1958		    MESSAGE_ID = MSG$_OPENIN;			! indicate an open error
+;	1959		    NAME_DESC[0] = .INFILE_NAM_BLK[NAM$B_ESL];	! and fillin the expanded name length
+;	1960		    NAME_DESC[1] = INFILE_XNAME;		! and address.
+;	1961		    END
+;	1962		ELSE
+;	1963		    BEGIN
+;	1964		    MESSAGE_ID = MSG$_OPENINX;			! Otherwise, indicate a fatal open error
+;	1965		    NAME_DESC[0] = .INFILE_DESC[CLI$W_RQSIZE];	! and use the file name length
+;	1966		    NAME_DESC[1] = .INFILE_DESC[CLI$A_RQADDR];	! and length passed by the CLI.
+;	1967		    END;
+;	1968	
+;	1969	!
+;	1970	! Signal the error condition.
+;	1971	!
+;	1972	
+;	1973	    PUT_MESSAGEX( .MESSAGE_ID,				! Signal "input open error" with the following arguments:
+;     P 1974			1,					!    Number of message arguments
+;     P 1975			NAME_DESC,				!    Address of input name descriptor
+;     P 1976			.FAB_RAB[FAB$L_STS],			!    Primary RMS completion code
+;     P 1977			.FAB_RAB[FAB$L_STV] );			!    Secondary RMS completion code
+;	1978	
+;	1979	!
+;	1980	! Return to the caller.
+;	1981	!
+;	1982	
+;	1983	    RETURN;						! Return to the caller.
+;	1984	
+;	1985	    END;
+
+
+
+
+
+					 0C0C 00762 	    .ENTRY  COPY$INOPN_ERR, Save R2,R3,R10,R11			      ; 1900
+		         5A	0000G  CF  9E 00764 	    MOVAB   COPY$MSG_NUMBER, R10				      ;
+		         5B	0000G  CF  9E 00769 	    MOVAB   INFILE_NAM_BLK+3, R11				      ;
+		         5E	       08  C2 0076E 	    SUBL2   #8, SP						      ;
+		         52	  04   AC  D0 00771 	    MOVL    FAB_RAB_ADDRESS, R2					      ; 1934
+				       6B  95 00775 	    TSTB    INFILE_NAM_BLK+3					      ; 1947
+				       10  13 00777 	    BEQL    1$							      ;
+		         53	109A   8F  3C 00779 	    MOVZWL  #4250, MESSAGE_ID					      ; 1950
+		         6E	       6B  9A 0077E 	    MOVZBL  INFILE_NAM_BLK+3, NAME_DESC				      ; 1951
+		    04   AE	0000G  CF  9E 00781 	    MOVAB   INFILE_NAME, NAME_DESC+4				      ; 1952
+				       26  11 00787 	    BRB     3$							      ; 1947
+				  08   AB  95 00789 1$:     TSTB    INFILE_NAM_BLK+11					      ; 1955
+				       11  13 0078C 	    BEQL    2$							      ;
+		         53	109A   8F  3C 0078E 	    MOVZWL  #4250, MESSAGE_ID					      ; 1958
+		         6E	  08   AB  9A 00793 	    MOVZBL  INFILE_NAM_BLK+11, NAME_DESC			      ; 1959
+		    04   AE	0000G  CF  9E 00797 	    MOVAB   INFILE_XNAME, NAME_DESC+4				      ; 1960
+				       10  11 0079D 	    BRB     3$							      ; 1955
+		         53	109C   8F  3C 0079F 2$:     MOVZWL  #4252, MESSAGE_ID					      ; 1964
+		         6E	0000G  CF  3C 007A4 	    MOVZWL  INFILE_DESC+8, NAME_DESC				      ; 1965
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 17-2
+; Digital Equipment Corporation
+;
+		    04   AE	0000G  CF  D0 007A9 	    MOVL    INFILE_DESC+12, NAME_DESC+4				      ; 1966
+				       53  DD 007AF 3$:     PUSHL   MESSAGE_ID						      ; 1977
+		         6A	       01  FB 007B1 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+	   00	         50	       01  7A 007B4 	    EMUL    #1, R0, #0, -(SP)					      ;
+				       7E     007B8									      ;
+	   50	         8E	       08  7B 007B9 	    EDIV    #8, (SP)+, R0, R0					      ;
+				       50     007BD									      ;
+		         04	       50  D1 007BE 	    CMPL    R0, #4						      ;
+				       18  13 007C1 	    BEQL    4$							      ;
+		         7E	  08   A2  7D 007C3 	    MOVQ    8(R2), -(SP)					      ;
+				  08   AE  9F 007C7 	    PUSHAB  NAME_DESC						      ;
+				       01  DD 007CA 	    PUSHL   #1							      ;
+				       53  DD 007CC 	    PUSHL   MESSAGE_ID						      ;
+		         6A	       01  FB 007CE 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 007D1 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 007D3 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 007DA 	    RET     							      ;
+		         7E	  08   A2  7D 007DB 4$:     MOVQ    8(R2), -(SP)					      ;
+				  08   AE  9F 007DF 	    PUSHAB  NAME_DESC						      ;
+				       01  DD 007E2 	    PUSHL   #1							      ;
+				       53  DD 007E4 	    PUSHL   MESSAGE_ID						      ;
+		         6A	       01  FB 007E6 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 007E9 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 007EB 	    CALLS   #5, LIB$STOP					      ;
+					   04 007F2 	    RET     							      ; 1900
+
+; Routine Size:  145 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 18
+; Digital Equipment Corporation
+;
+;	1986	ROUTINE IN_READ_ERROR : NOVALUE =			! RMS input read error action routine
+;	1987	
+;	1988	!++
+;	1989	! FUNCTIONAL DESCRIPTION:
+;	1990	!
+;	1991	!	This RMS error action routine sends an input read error message to the user.
+;	1992	!
+;	1993	! FORMAL PARAMETERS:
+;	1994	!
+;	1995	!	None
+;	1996	!
+;	1997	! IMPLICIT INPUTS:
+;	1998	!
+;	1999	!	INFILE_RAB - Input file RAB
+;	2000	!	IN_NAME_DESC - Input file name descriptor
+;	2001	!
+;	2002	! IMPLICIT OUTPUTS:
+;	2003	!
+;	2004	!	None
+;	2005	!
+;	2006	! ROUTINE VALUE:
+;	2007	!
+;	2008	!	None
+;	2009	!
+;	2010	! SIDE EFFECTS:
+;	2011	!
+;	2012	!	None
+;	2013	!
+;	2014	!--
+;	2015	
+;	2016	    BEGIN
+;	2017	
+;	2018	!
+;	2019	! Signal the input read error.
+;	2020	!
+;	2021	
+;	2022	    PUT_MESSAGE( MSG$_READERR,				! Signal a "read error" with the following arguments:
+;     P 2023			1,					!    Number of message arguments
+;     P 2024			IN_NAME_DESC,				!    Address of input file name descriptor
+;     P 2025			.INFILE_RAB[RAB$L_STS],			!    Primary RMS completion code
+;     P 2026			.INFILE_RAB[RAB$L_STV] );		!    Secondary RMS completion code
+;	2027	
+;	2028	!
+;	2029	! Return to the caller.
+;	2030	!
+;	2031	
+;	2032	    RETURN;						! Return to the caller.
+;	2033	
+;	2034	    END;
+
+
+
+
+
+					 0000 007F3 IN_READ_ERROR:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 18-1
+; Digital Equipment Corporation
+;
+							    .WORD   Save nothing					      ; 1986
+		         7E	0000G  CF  7D 007F5 	    MOVQ    INFILE_RAB+8, -(SP)					      ; 2026
+				0000G  CF  9F 007FA 	    PUSHAB  IN_NAME_DESC					      ;
+				       01  DD 007FE 	    PUSHL   #1							      ;
+		         7E	10B2   8F  3C 00800 	    MOVZWL  #4274, -(SP)					      ;
+		  0000G  CF	       01  FB 00805 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0080A 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 0080C 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 00813 	    RET     							      ; 1986
+
+; Routine Size:  33 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 19
+; Digital Equipment Corporation
+;
+;	2035	ROUTINE IN_CLOSE_ERROR (				! RMS input close error action routine
+;	2036			FAB_RAB_ADDRESS )			! Address of associated FAB or RAB
+;	2037			: NOVALUE =
+;	2038	
+;	2039	!++
+;	2040	! FUNCTIONAL DESCRIPTION:
+;	2041	!
+;	2042	!	This RMS error action routine sends an input close error message to the user.
+;	2043	!
+;	2044	! FORMAL PARAMETERS:
+;	2045	!
+;	2046	!	FAB_RAB_ADDRESS.ra.v - Address of the associated FAB or RAB
+;	2047	!
+;	2048	! IMPLICIT INPUTS:
+;	2049	!
+;	2050	!	IN_NAME_DESC - Input file name descriptor
+;	2051	!
+;	2052	! IMPLICIT OUTPUTS:
+;	2053	!
+;	2054	!	None
+;	2055	!
+;	2056	! ROUTINE VALUE:
+;	2057	!
+;	2058	!	None
+;	2059	!
+;	2060	! SIDE EFFECTS:
+;	2061	!
+;	2062	!	None
+;	2063	!
+;	2064	!--
+;	2065	
+;	2066	    BEGIN
+;	2067	
+;	2068	    BIND
+;	2069		FAB_RAB = .FAB_RAB_ADDRESS :  BLOCK[,BYTE];	! Redefine routine parameter.
+;	2070	
+;	2071	!
+;	2072	! Signal an input close error.
+;	2073	!
+;	2074	
+;	2075	    PUT_MESSAGE( MSG$_CLOSEIN,				! Signal a "close error" with the following arguments:
+;     P 2076			1,					!    Number of message arguments
+;     P 2077			IN_NAME_DESC,				!    Address of input file name descriptor
+;     P 2078			.FAB_RAB[FAB$L_STS],			!    Primary RMS completion code
+;     P 2079			.FAB_RAB[FAB$L_STV] );			!    Secondary RMS completion code
+;	2080	
+;	2081	!
+;	2082	! Return to the caller.
+;	2083	!
+;	2084	
+;	2085	    RETURN;						! Return to the caller.
+;	2086	
+;	2087	    END;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 19-1
+; Digital Equipment Corporation
+;
+
+
+
+					 0000 00814 IN_CLOSE_ERROR:
+							    .WORD   Save nothing					      ; 2035
+		         50	  04   AC  D0 00816 	    MOVL    FAB_RAB_ADDRESS, R0					      ; 2066
+		         7E	  08   A0  7D 0081A 	    MOVQ    8(R0), -(SP)					      ; 2079
+				0000G  CF  9F 0081E 	    PUSHAB  IN_NAME_DESC					      ;
+				       01  DD 00822 	    PUSHL   #1							      ;
+		         7E	1052   8F  3C 00824 	    MOVZWL  #4178, -(SP)					      ;
+		  0000G  CF	       01  FB 00829 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 0082E 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 00830 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 00837 	    RET     							      ; 2035
+
+; Routine Size:  36 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 20
+; Digital Equipment Corporation
+;
+;	2088	GLOBAL ROUTINE COPY$OUTOPN_ERR (			! RMS output open error action routine
+;	2089			FAB_RAB_ADDRESS )			! Address of associated FAB or RAB
+;	2090			: NOVALUE =
+;	2091	
+;	2092	!++
+;	2093	! FUNCTIONAL DESCRIPTION:
+;	2094	!
+;	2095	!	This RMS error action routine sends an output open error message to the user.
+;	2096	!
+;	2097	! FORMAL PARAMETERS:
+;	2098	!
+;	2099	!	FAB_RAB_ADDRESS.ra.v - Address of the associated FAB or RAB
+;	2100	!
+;	2101	! IMPLICIT INPUTS:
+;	2102	!
+;	2103	!	OUTFILE_NAM_BLK - Output file name block
+;	2104	!	OUTFILE_NAME - Output file name after open
+;	2105	!	OUTFILE_XNAME - Output file name before open
+;	2106	!	OUTFILE_DESC - Output file request descriptor
+;	2107	!
+;	2108	! IMPLICIT OUTPUTS:
+;	2109	!
+;	2110	!	None
+;	2111	!
+;	2112	! ROUTINE VALUE:
+;	2113	!
+;	2114	!	None
+;	2115	!
+;	2116	! SIDE EFFECTS:
+;	2117	!
+;	2118	!	None
+;	2119	!
+;	2120	!--
+;	2121	
+;	2122	    BEGIN
+;	2123	
+;	2124	    BIND
+;	2125		FAB_RAB = .FAB_RAB_ADDRESS :  BLOCK[,BYTE];	! Redefine routine parameter.
+;	2126	
+;	2127	    LOCAL
+;	2128		MESSAGE_ID,					! Local message identifier
+;	2129		NAME_DESC :  VECTOR[2];				! Output file name descriptor
+;	2130	
+;	2131	!
+;	2132	! Fillin the file name descriptor with the most complete name possible.
+;	2133	!
+;	2134	
+;	2135	    IF .OUTFILE_NAM_BLK[NAM$B_RSL] NEQ 0		! If a resultant name string exists,
+;	2136	    THEN						!
+;	2137		BEGIN						!
+;	2138		MESSAGE_ID = MSG$_OPENOUT;			! indicate an open error
+;	2139		NAME_DESC[0] = .OUTFILE_NAM_BLK[NAM$B_RSL];	! and fillin the resultant name length
+;	2140		NAME_DESC[1] = OUTFILE_NAME;			! and address.
+;	2141		END
+;	2142	    ELSE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 20-1
+; Digital Equipment Corporation
+;
+;	2143		IF .OUTFILE_NAM_BLK[NAM$B_ESL] NEQ 0		! If RMS created an expanded string but couldn't open
+;	2144		THEN						!
+;	2145		    BEGIN					!
+;	2146		    MESSAGE_ID = MSG$_OPENOUT;			! indicate an open error
+;	2147		    NAME_DESC[0] = .OUTFILE_NAM_BLK[NAM$B_ESL];	! and fillin the expanded name length
+;	2148		    NAME_DESC[1] = OUTFILE_XNAME;		! and address.
+;	2149		    END
+;	2150		ELSE
+;	2151		    BEGIN
+;	2152		    MESSAGE_ID = MSG$_OPENOUTX;			! Otherwise, indicate a fatal open error
+;	2153		    NAME_DESC[0] = .OUTFILE_DESC[CLI$W_RQSIZE];	! and use the file name length
+;	2154		    NAME_DESC[1] = .OUTFILE_DESC[CLI$A_RQADDR];	! and length passed by the CLI.
+;	2155		    END;
+;	2156	
+;	2157	!
+;	2158	! Signal the error condition.
+;	2159	!
+;	2160	
+;	2161	    PUT_MESSAGEX( .MESSAGE_ID,				! Signal "output open error" with the following arguments:
+;     P 2162			1,					!    Number of message arguments
+;     P 2163			NAME_DESC,				!    Address of output name descriptor
+;     P 2164			.FAB_RAB[FAB$L_STS],			!    Primary RMS completion code
+;     P 2165			.FAB_RAB[FAB$L_STV] );			!    Secondary RMS completion code
+;	2166	
+;	2167	!
+;	2168	! Return to the caller.
+;	2169	!
+;	2170	
+;	2171	    RETURN;						! Return to the caller.
+;	2172	
+;	2173	    END;
+
+
+
+
+
+					 0C0C 00838 	    .ENTRY  COPY$OUTOPN_ERR, Save R2,R3,R10,R11			      ; 2088
+		         5A	0000G  CF  9E 0083A 	    MOVAB   COPY$MSG_NUMBER, R10				      ;
+		         5B	0000G  CF  9E 0083F 	    MOVAB   OUTFILE_NAM_BLK+3, R11				      ;
+		         5E	       08  C2 00844 	    SUBL2   #8, SP						      ;
+		         52	  04   AC  D0 00847 	    MOVL    FAB_RAB_ADDRESS, R2					      ; 2122
+				       6B  95 0084B 	    TSTB    OUTFILE_NAM_BLK+3					      ; 2135
+				       10  13 0084D 	    BEQL    1$							      ;
+		         53	10A2   8F  3C 0084F 	    MOVZWL  #4258, MESSAGE_ID					      ; 2138
+		         6E	       6B  9A 00854 	    MOVZBL  OUTFILE_NAM_BLK+3, NAME_DESC			      ; 2139
+		    04   AE	0000G  CF  9E 00857 	    MOVAB   OUTFILE_NAME, NAME_DESC+4				      ; 2140
+				       26  11 0085D 	    BRB     3$							      ; 2135
+				  08   AB  95 0085F 1$:     TSTB    OUTFILE_NAM_BLK+11					      ; 2143
+				       11  13 00862 	    BEQL    2$							      ;
+		         53	10A2   8F  3C 00864 	    MOVZWL  #4258, MESSAGE_ID					      ; 2146
+		         6E	  08   AB  9A 00869 	    MOVZBL  OUTFILE_NAM_BLK+11, NAME_DESC			      ; 2147
+		    04   AE	0000G  CF  9E 0086D 	    MOVAB   OUTFILE_XNAME, NAME_DESC+4				      ; 2148
+				       10  11 00873 	    BRB     3$							      ; 2143
+		         53	10A4   8F  3C 00875 2$:     MOVZWL  #4260, MESSAGE_ID					      ; 2152
+		         6E	0000G  CF  3C 0087A 	    MOVZWL  OUTFILE_DESC+8, NAME_DESC				      ; 2153
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 20-2
+; Digital Equipment Corporation
+;
+		    04   AE	0000G  CF  D0 0087F 	    MOVL    OUTFILE_DESC+12, NAME_DESC+4			      ; 2154
+				       53  DD 00885 3$:     PUSHL   MESSAGE_ID						      ; 2165
+		         6A	       01  FB 00887 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+	   00	         50	       01  7A 0088A 	    EMUL    #1, R0, #0, -(SP)					      ;
+				       7E     0088E									      ;
+	   50	         8E	       08  7B 0088F 	    EDIV    #8, (SP)+, R0, R0					      ;
+				       50     00893									      ;
+		         04	       50  D1 00894 	    CMPL    R0, #4						      ;
+				       18  13 00897 	    BEQL    4$							      ;
+		         7E	  08   A2  7D 00899 	    MOVQ    8(R2), -(SP)					      ;
+				  08   AE  9F 0089D 	    PUSHAB  NAME_DESC						      ;
+				       01  DD 008A0 	    PUSHL   #1							      ;
+				       53  DD 008A2 	    PUSHL   MESSAGE_ID						      ;
+		         6A	       01  FB 008A4 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 008A7 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 008A9 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 008B0 	    RET     							      ;
+		         7E	  08   A2  7D 008B1 4$:     MOVQ    8(R2), -(SP)					      ;
+				  08   AE  9F 008B5 	    PUSHAB  NAME_DESC						      ;
+				       01  DD 008B8 	    PUSHL   #1							      ;
+				       53  DD 008BA 	    PUSHL   MESSAGE_ID						      ;
+		         6A	       01  FB 008BC 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 008BF 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 008C1 	    CALLS   #5, LIB$STOP					      ;
+					   04 008C8 	    RET     							      ; 2088
+
+; Routine Size:  145 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 21
+; Digital Equipment Corporation
+;
+;	2174	ROUTINE OUT_WRITE_ERROR : NOVALUE =			! RMS output write error action routine
+;	2175	
+;	2176	!++
+;	2177	! FUNCTIONAL DESCRIPTION:
+;	2178	!
+;	2179	!	This RMS error action routine sends an output read error message to the user.
+;	2180	!
+;	2181	! FORMAL PARAMETERS:
+;	2182	!
+;	2183	!	None
+;	2184	!
+;	2185	! IMPLICIT INPUTS:
+;	2186	!
+;	2187	!	OUTFILE_RAB - Output file RAB
+;	2188	!	OUT_NAME_DESC - Output file name descriptor
+;	2189	!
+;	2190	! IMPLICIT OUTPUTS:
+;	2191	!
+;	2192	!	None
+;	2193	!
+;	2194	! ROUTINE VALUE:
+;	2195	!
+;	2196	!	None
+;	2197	!
+;	2198	! SIDE EFFECTS:
+;	2199	!
+;	2200	!	None
+;	2201	!
+;	2202	!--
+;	2203	
+;	2204	    BEGIN
+;	2205	
+;	2206	!
+;	2207	! Signal the output write error.
+;	2208	!
+;	2209	
+;	2210	    PUT_MESSAGE( MSG$_WRITEERR,				! Signal a "write error" with the following arguments:
+;     P 2211			1,					!    Number of message arguments
+;     P 2212			OUT_NAME_DESC,				!    Address of output file name descriptor
+;     P 2213			.OUTFILE_RAB[RAB$L_STS],		!    Primary RMS completion code
+;     P 2214			.OUTFILE_RAB[RAB$L_STV] );		!    Secondary RMS completion code
+;	2215	
+;	2216	!
+;	2217	! Return to the caller.
+;	2218	!
+;	2219	
+;	2220	    RETURN;						! Return to the caller.
+;	2221	
+;	2222	    END;
+
+
+
+
+
+					 0000 008C9 OUT_WRITE_ERROR:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 21-1
+; Digital Equipment Corporation
+;
+							    .WORD   Save nothing					      ; 2174
+		         7E	0000G  CF  7D 008CB 	    MOVQ    OUTFILE_RAB+8, -(SP)				      ; 2214
+				0000G  CF  9F 008D0 	    PUSHAB  OUT_NAME_DESC					      ;
+				       01  DD 008D4 	    PUSHL   #1							      ;
+		         7E	10D2   8F  3C 008D6 	    MOVZWL  #4306, -(SP)					      ;
+		  0000G  CF	       01  FB 008DB 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 008E0 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 008E2 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 008E9 	    RET     							      ; 2174
+
+; Routine Size:  33 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 22
+; Digital Equipment Corporation
+;
+;	2223	GLOBAL ROUTINE COPY$OCLOSE_ERR (			! RMS output close error action routine
+;	2224			FAB_RAB_ADDRESS )			! Address of associated FAB or RAB
+;	2225			: NOVALUE =
+;	2226	
+;	2227	!++
+;	2228	! FUNCTIONAL DESCRIPTION:
+;	2229	!
+;	2230	!	This RMS error action routine sends an output close error message to the user.
+;	2231	!
+;	2232	! FORMAL PARAMETERS:
+;	2233	!
+;	2234	!	FAB_RAB_ADDRESS.ra.v - Address of the associated FAB or RAB
+;	2235	!
+;	2236	! IMPLICIT INPUTS:
+;	2237	!
+;	2238	!	OUT_NAME_DESC - Output file name descriptor
+;	2239	!
+;	2240	! IMPLICIT OUTPUTS:
+;	2241	!
+;	2242	!	None
+;	2243	!
+;	2244	! ROUTINE VALUE:
+;	2245	!
+;	2246	!	None
+;	2247	!
+;	2248	! SIDE EFFECTS:
+;	2249	!
+;	2250	!	None
+;	2251	!
+;	2252	!--
+;	2253	
+;	2254	    BEGIN
+;	2255	
+;	2256	    BIND
+;	2257		FAB_RAB = .FAB_RAB_ADDRESS :  BLOCK[,BYTE];	! Redefine routine parameter.
+;	2258	
+;	2259	!
+;	2260	! Signal an output close error.
+;	2261	!
+;	2262	
+;	2263	    PUT_MESSAGE( MSG$_CLOSEOUT,				! Signal a "close error" with the following arguments:
+;     P 2264			1,					!    Number of message arguments
+;     P 2265			OUT_NAME_DESC,				!    Address of output file name descriptor
+;     P 2266			.FAB_RAB[FAB$L_STS],			!    Primary RMS completion code
+;     P 2267			.FAB_RAB[FAB$L_STV] );			!    Secondary RMS completion code
+;	2268	
+;	2269	!
+;	2270	! Return to the caller.
+;	2271	!
+;	2272	
+;	2273	    RETURN;						! Return to the caller.
+;	2274	
+;	2275	    END;
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 22-1
+; Digital Equipment Corporation
+;
+
+
+
+					 0000 008EA 	    .ENTRY  COPY$OCLOSE_ERR, Save nothing			      ; 2223
+		         50	  04   AC  D0 008EC 	    MOVL    FAB_RAB_ADDRESS, R0					      ; 2254
+		         7E	  08   A0  7D 008F0 	    MOVQ    8(R0), -(SP)					      ; 2267
+				0000G  CF  9F 008F4 	    PUSHAB  OUT_NAME_DESC					      ;
+				       01  DD 008F8 	    PUSHL   #1							      ;
+		         7E	105A   8F  3C 008FA 	    MOVZWL  #4186, -(SP)					      ;
+		  0000G  CF	       01  FB 008FF 	    CALLS   #1, COPY$MSG_NUMBER					      ;
+				       50  DD 00904 	    PUSHL   R0							      ;
+	      00000000G  00	       05  FB 00906 	    CALLS   #5, LIB$SIGNAL					      ;
+					   04 0090D 	    RET     							      ; 2223
+
+; Routine Size:  36 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:44:57	DBB3:[COPY.SRC]COPYMAIN.B32;22					Page 23
+; Digital Equipment Corporation
+;
+;	2276	END
+;	2277	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL, LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	    36    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	  2318  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  COPY$COPY_FILE 	   194  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(9)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688       115         4       176
+;  DBA4:[SYSLIB]CLIMAC.L32;1		        14         0         0         3
+;  DBB3:[COPY.SRC]VMSMAC.L32;1		         6         5        83         4
+
+
+
+
+
+; Size:		2512 code + 36 data bytes
+; Run Time:	01:20.1
+; Elapsed Time:	02:39.4
+; Memory Used:	386 pages
+; Compilation Complete

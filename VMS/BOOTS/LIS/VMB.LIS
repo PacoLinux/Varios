@@ -1,0 +1,1027 @@
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)    8800  Primary Bootstrap Main Routine
+   (1)   28000  Locate and Test Memory
+   (1)   48500  READFILE - Routine to read large pieces of boot
+   (1)   51600  Unexpected Machine Check Handler
+   (1)   55600  Error message subroutine
+   (1)   58200  SYS$ASSIGN - Dummy assign device system service
+   (1)   60400  Miscellaneous constants and temps
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   1
+01                                                                                                                               (1)
+
+                                     0000   100 	.TITLE	VMB - VMS Primary Bootstrap Routine
+                                     0000   200 	.IDENT	/01/
+                                     0000   300 ;
+                                     0000   400 ; COPYRIGHT (C) 1978
+                                     0000   500 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000   600 ;
+                                     0000   700 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000   800 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000   900 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000  1000 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000  1100 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000  1200 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000  1300 ; REMAIN IN DEC.
+                                     0000  1400 ;
+                                     0000  1500 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000  1600 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000  1700 ; CORPORATION.
+                                     0000  1800 ;
+                                     0000  1900 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000  2000 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000  2100 
+                                     0000  2200 ;++
+                                     0000  2300 ;
+                                     0000  2400 ; Facility:  System bootstrapping and initialization
+                                     0000  2500 ;
+                                     0000  2600 ; Abstract: Boot is the primary bootstrap which reads the boot block
+                                     0000  2700 ;	    from the specified boot device, locates the system image
+                                     0000  2800 ;	    and loads it into working, available memory.  The I/O routines
+                                     0000  2900 ;	    for the primary bootstrap are available for use by functions such as
+                                     0000  3000 ;	    secondary bootstraps and crash dump writing.
+                                     0000  3100 ;
+                                     0000  3200 ;
+                                     0000  3300 ; Environment:
+                                     0000  3400 ;	Mode=Kernel ,  Memory Management OFF
+                                     0000  3500 ;	IS=1 ,  IPL=31
+                                     0000  3600 ;
+                                     0000  3700 ; Author:  RICHARD I. HUSTVEDT, Creation date:  18-OCT-1977
+                                     0000  3800 ;
+                                     0000  3900 ; Modified by:
+                                     0000  4000 ;
+                                     0000  4100 ;  , Version  ,
+                                     0000  4200 ; 01	- 
+                                     0000  4300 ;--
+                                     0000  4400 
+                                     0000  4500 ;
+                                     0000  4600 ; Include files:
+                                     0000  4700 ;
+                                     0000  4800 	$IHDDEF				; Define Image Header offsets
+                                     0000  4900 	$IODEF				; Define I/O function code values
+                                     0000  5000 	$MBADEF				; Define MBA register offsets
+                                     0000  5100 	$PRDEF				; Define process register numbers
+                                     0000  5200 	$RPBDEF				; Define restart parameter block offsets
+                                     0000  5300 	$SSDEF				; Define status code values
+                                     0000  5400 	$UBADEF				; Define UBA register offsets
+                                     0000  5500 	$VADEF				; Define fields in virtual address
+                                     0000  5600 
+                                     0000  5700 ;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   2
+01                                                                                                                               (1)
+
+                                     0000  5800 ; Macros:
+                                     0000  5900 ;
+                                     0000  6000 	.MACRO	ERROR,STR		; 
+                                     0000  6100 	BSBW	ERROUT			; Output error string
+                                     0000  6200 	.ASCIZ	STR			;
+                                     0000  6300 	.ENDM	ERROR			;
+                                     0000  6400 
+                                     0000  6500 ;
+                                     0000  6600 ; Equated Symbols:
+                                     0000  6700 ;
+                                     0000  6800 ;
+                           0000007F  0000  6900 	IOSIZE = 127			; Do I/O in very large chunks
+                           00004000  0000  7000 	MAXPGS = 16384			; Allow for 8Mb of memory
+                           00000001  0000  7100 	DEBUG  = 1			; Assemble DEBUG code
+                           0000000D  0000  7200 	CR     = 13			; Character code for carriage return
+                           0000000A  0000  7300 	LF     = 10			; Character code for line feed
+                                     0000  7400 
+                                     0000  7500 
+                                     0000  7600 
+                                     0000  7700  
+                                     0000  7800 ;
+                                     0000  7900 ; Own Storage:
+                                     0000  8000 ;
+                                 00000000  8100 	.PSECT	Z99BOOT,PAGE		; PSECT to mark end of bootstrap
+                                     0000  8200 BOOTHIGH:				;
+                                     0000  8300 	.IF	DF,DEBUG		;
+                           00000004  0000  8400 EXE$MCHKVEC==BOOTHIGH+4			; Symbol used by XDELTA to locate SCB
+                                     0000  8500 	.ENDC				;
+                                 00000000  8600 	.PSECT	$$$$00BOOT,LONG		;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   3
+01              Primary Bootstrap Main Routine                                                                                   (1)
+
+                                     0000  8800 	.SBTTL	Primary Bootstrap Main Routine
+                                     0000  8900 ;++
+                                     0000  9000 ;
+                                     0000  9100 ; Functional Description:
+                                     0000  9200 ;	The primary bootstrap is loaded into main memory from the console floppy.
+                                     0000  9300 ;	This normally is initiated by one of the bootstrap indirect command files
+                                     0000  9400 ;	also contained on the console floppy.  First all memory controllers are
+                                     0000  9500 ;	located and a bitmap representing each page in the first 8Mb of memory
+                                     0000  9600 ;	is constructed.  Each page is normally tested before being marked
+                                     0000  9700 ;	as available in this bitmap, but this can be inhibited by setting the
+                                     0000  9800 ;	NOTEST option flag in R5.  Based on the setting of the various option
+                                     0000  9900 ;	bits in R5 a bootblock will be read and given control, a file named
+                                     0000 10000 ;	[SYSEXE]SYSBOOT.EXE, a file named [SYSMAINT]DIAG.EXE or a file specified
+                                     0000 10100 ;	by a file name input from the console will be read and given control.
+                                     0000 10200 ;	The results of the primary bootstrap processing are passed to subsequent
+                                     0000 10300 ;	steps through the Restart Parameter Block(RPB) located via a pointer
+                                     0000 10400 ;	passed to the booted code in R11.  The I/O driver code is a generalized
+                                     0000 10500 ;	subroutine capable of reading and writing all bootstrap devices(disks)
+                                     0000 10600 ;	and is available to the secondary bootstrap (through the RPB) so that
+                                     0000 10700 ;	only the primary bootstrap has any device dependencies.
+                                     0000 10800 ;
+                                     0000 10900 ; Calling Sequence:
+                                     0000 11000 ;	NONE
+                                     0000 11100 ;
+                                     0000 11200 ; Input Parameters:
+                                     0000 11300 ;	R0  -  <31:4>=MBZ; <3:0>=Device Type Code
+                                     0000 11400 ;			0 => Disk Pack		(RM03/RP04/RP05/RP06/RP07)
+                                     0000 11500 ;			1 => Cartridge Disk	(RK06/RK07)
+                                     0000 11600 ;			4 => Magnetic Tape	(TE16/TU77)
+                                     0000 11700 ;
+                                     0000 11800 ;	R1  -  <31:4>=MBZ; <3:0>=System Bus Address("TR" Number)
+                                     0000 11900 ;	R2  -  For UBA:
+                                     0000 12000 ;			<31:18>=MBZ; <17:3>=UNIBUS Address of Control Register;
+                                     0000 12100 ;			<2:0>=MBZ
+                                     0000 12200 ;	       FOR MBA:
+                                     0000 12300 ;			<31:4>=MBZ; <3:0>=Controller/Formatter Number
+                                     0000 12400 ;	R3  -  <31:4>=MBZ; <3:0>=Unit Number
+                                     0000 12500 ;	R4  -  <31:0>=Logical Block Number to read as boot block
+                                     0000 12600 ;	R5  -  <31:0>=Software Boot Control flags
+                                     0000 12700 ;		Bit	Meaning
+                                     0000 12800 ;		---	-------
+                                     0000 12900 ;		 0	Conversational boot. At various points in the system
+                                     0000 13000 ;			boot procedure, parameter and other input will be
+                                     0000 13100 ;			solicited from the console.
+                                     0000 13200 ;
+                                     0000 13300 ;		 1	Debug.  This flag is passed through to VMS and causes
+                                     0000 13400 ;			the code for the exec debugger to be included in
+                                     0000 13500 ;			the running system.
+                                     0000 13600 ;
+                                     0000 13700 ;		 2	Initial breakpoint. If this flag is set, and the exec
+                                     0000 13800 ;			debugger code is included (flag bit 1) then a breakpoint
+                                     0000 13900 ;			will occur immediately after the exec enables mapping.
+                                     0000 14000 ;
+                                     0000 14100 ;		 3	Boot block.  If this flag is set then the boot block
+                                     0000 14200 ;			will be read and control transfered to it.
+                                     0000 14300 ;
+                                     0000 14400 ;		 4	Diagnostic boot.  This flag causes a boot by file
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   4
+01              Primary Bootstrap Main Routine                                                                                   (1)
+
+                                     0000 14500 ;			name for the diagnostic supervisor.
+                                     0000 14600 ;
+                                     0000 14700 ;		 5	Bootstrap breakpoint. This flag causes the bootstrap
+                                     0000 14800 ;			to stop a breakpoint after performing necessary init-
+                                     0000 14900 ;			ialization if it has been built with debug code.
+                                     0000 15000 ;
+                                     0000 15100 ;		 6	Image header. If this flag is set the transfer address
+                                     0000 15200 ;			from the image header of the boot file will be used.
+                                     0000 15300 ;			Otherwise control will transfer to the first byt of the
+                                     0000 15400 ;			boot file.
+                                     0000 15500 ;
+                                     0000 15600 ;		 7	Memory test inhibit. This flag inhibits the testing
+                                     0000 15700 ;			of memory during bootstrapping.
+                                     0000 15800 ;
+                                     0000 15900 ;		 8	File name. Causes the bootstrap to solicit the name 
+                                     0000 16000 ;			of the boot file.
+                                     0000 16100 ;
+                                     0000 16200 ;		 9	Halt before transfer.  Causes a HALT instruction
+                                     0000 16300 ;			to be executed prior to the transfer to the bootfile.
+                                     0000 16400 ;			This option is useful for debugging purposes.
+                                     0000 16500 ;
+                                     0000 16600 ;		10	No PFN deletion.  A flag passed through to the bootfile
+                                     0000 16700 ;			that prevents specified pages from being permanently
+                                     0000 16800 ;			removed from the pool of available pages.
+                                     0000 16900 ;
+                                     0000 17000 ;	R10 -  Halt PC
+                                     0000 17100 ;	R11 -  Halt PSL
+                                     0000 17200 ;	AP  -  Halt CODE
+                                     0000 17300 ;	SP  -  ADDRESS+(^X200) of first working 64Kb memory region
+                                     0000 17400 ;	       usable as both stack pointer and pointer to good memory.
+                                     0000 17500 ;
+                                     0000 17600 ; Implicit Inputs:
+                                     0000 17700 ;	NONE
+                                     0000 17800 ;
+                                     0000 17900 ; Output Parameters:
+                                     0000 18000 ;	R10	-	Base address of region containing secondary bootstrap
+                                     0000 18100 ;	R11	-	Pointer to Restart Parameter Block (RPB)
+                                     0000 18200 ;	SP	-	Stack pointer
+                                     0000 18300 ;	PR$_SCBB - 	System Control Block base register
+                                     0000 18400 ;
+                                     0000 18500 ;	Memory layout at start of secondary bootstrap:
+                                     0000 18600 ;
+                                     0000 18700 ;	+-----------------------------------------+ :BASE
+                                     0000 18800 ;	!					  !
+                                     0000 18900 ;	!	Restart Parameter Block (RPB)	  !
+                                     0000 19000 ;	!					  !
+                                     0000 19100 ;	+-----------------------------------------+ :BASE+^X200
+                                     0000 19200 ;	!					  !
+                                     0000 19300 ;	!	Primary Bootstrap Code		  !
+                                     0000 19400 ;	!					  !
+                                     0000 19500 ;	!					  !
+                                     0000 19600 ;	+-----------------------------------------+ :PR$_SCBB
+                                     0000 19700 ;	!					  !
+                                     0000 19800 ;	!	   System Control Block		  !
+                                     0000 19900 ;	!					  !
+                                     0000 20000 ;	+-----------------------------------------+ :PFNMAP
+                                     0000 20100 ;	!					  !
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   5
+01              Primary Bootstrap Main Routine                                                                                   (1)
+
+                                     0000 20200 ;	!		PFN Bitmap		  !
+                                     0000 20300 ;	!					  !
+                                     0000 20400 ;	+-----------------------------------------+ :PFNMAP+^X800
+                                     0000 20500 ;	!					  !
+                                     0000 20600 ;	!	     Bootstrap Stack		  !
+                                     0000 20700 ;	!					  !
+                                     0000 20800 ;	+-----------------------------------------+ :(SP)
+                                     0000 20900 ;	!					  !
+                                     0000 21000 ;	!	 Secondary Bootstrap Code	  !
+                                     0000 21100 ;	!					  !
+                                     0000 21200 ;	+-----------------------------------------+
+                                     0000 21300 ;
+                                     0000 21400 ; Implicit Outputs:
+                                     0000 21500 ;	NONE
+                                     0000 21600 ;
+                                     0000 21700 ; Side Effects:
+                                     0000 21800 ;	NONE
+                                     0000 21900 ;
+                                     0000 22000 ;--
+                                     0000 22100 	.LIST	MEB			; Show macro expansions
+                                     0000 22200 
+                                     0000 22300 START_BOOT:				; Bootstrap start address
+            57       FE00 CE     9E  0000 22400 	MOVAB	-^X200(SP),R7		; Establish base address of good memory
+       03F0'CF            57     D0  0005 22500 	MOVL	R7,W^RPBBASE		; Save base address of RPB for callback
+            67            57     D0  000A 22600 	MOVL	R7,RPB$L_BASE(R7)	; Save base address of 64Kb area
+         1C A7            50     7D  000D 22700 	MOVQ	R0,RPB$L_BOOTR0(R7)	; Save boot R0,R1
+         24 A7            52     7D  0011 22800 	MOVQ	R2,RPB$L_BOOTR2(R7)	; Save boot R2,R3
+         2C A7            54     7D  0015 22900 	MOVQ	R4,RPB$L_BOOTR4(R7)	; Save boot R4,R5
+         10 A7            5A     7D  0019 23000 	MOVQ	R10,RPB$L_HALTPC(R7)	; Save PC,PSL from halt
+         34 A7       0000'CF     DE  001D 23100 	MOVAL	W^BOO$AL_VECTOR,RPB$L_IOVEC(R7)	; Save address of Bootdriver vector
+         38 A7       0000'8F     3C  0023 23200 	MOVZWL	#BOO$C_DRVRSIZ,RPB$L_IOVECSZ(R7);  and size of driver routine
+         18 A7            5C     D0  0029 23300 	MOVL	AP,RPB$L_HALTCODE(R7)	; Save halt code
+            5B            57     D0  002D 23400 	MOVL	R7,R11			; Save base of RPB
+                                     0030 23500 ;
+                                     0030 23600 ; Now initialize the data base for the bootstrap I/O driver.  The
+                                     0030 23700 ; TR number and Unibus CSR address are converted to the correct SBI
+                                     0030 23800 ; physical addresses and saved in the Restart Parameter Block.
+                                     0030 23900 ;
+         64 AB            53     B0  0030 24000 	MOVW	R3,RPB$W_UNIT(R11)	; Set unit number
+         66 AB            50     B0  0034 24100 	MOVW	R0,RPB$B_DEVTYP(R11)	; and device type
+            51            0D     9C  0038 24200 	ROTL	#13,R1,R1		; Convert TR number to
+                          51         003B       
+            51   20000000 8F     C0  003C 24300 	ADDL	#^X20000000,R1		; Physical address of configuration register
+         5C AB            51     D0  0043 24400 	MOVL	R1,RPB$L_ADPPHY(R11)	; And set in data base
+            52   20130000 8F     C9  0047 24500 	BISL3	#^X20130000,R2,RPB$L_CSRPHY(R11)	; Form and save physical csr address
+                       54 AB         004E       
+                                     0050 24600 BOOT_RESTART:				; Bootstrap restart point
+            5A       0200'CF     DE  0050 24700 	MOVAL	W^BOOTHIGH+512,R10	; Set base of available memory after boot
+            59         48 A7     9E  0055 24800 	MOVAB	RPB$Q_PFNMAP+4(R7),R9	; Point to address part of descriptor
+            69            5A     D0  0059 24900 	MOVL	R10,(R9)		; Set address as first free memory
+            5A       0800 CA     9E  005C 25000 	MOVAB	<MAXPGS/8>(R10),R10	; Allocate space for PFN bitmap
+            5A            69     C3  0061 25100 	SUBL3	(R9),R10,-(R9)		; Store size of bitmap
+                          79         0064       
+            56       0315'CF     DE  0065 25200 	MOVAL	W^BOOT_FAULT+1,R6	; Unexpected fault handler vector
+            58       0200'CF     DE  006A 25300 	MOVAL	W^BOOTHIGH+512,R8	; Address of SCB while booting
+                                     006F 25400 					; (Page aligned)
+            78            56     D0  006F 25500 10$:	MOVL	R6,-(R8)		; Store a vector
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   6
+01              Primary Bootstrap Main Routine                                                                                   (1)
+
+            58       01FF 8F     B3  0072 25600 	BITW	#^X1FF,R8		; Check for page boundary
+                          F6     12  0077 25700 	BNEQ	10$			; Need another vector
+                                     0079 25800 ;
+                                     0079 25900 ; A system control block suitable for use during the bootstrap
+                                     0079 26000 ; execution has been built, now the system control block base
+                                     0079 26100 ; register is loaded with its address.
+                                     0079 26200 ;
+            11            58     DA  0079 26300 	MTPR	R8,#PR$_SCBB		; Set base address for SCB
+            5E       0600 CA     9E  007C 26400 	MOVAB	<3*512>(R10),SP		; Set SP to allow generous stack
+            5A            5E     D0  0081 26500 	MOVL	SP,R10			; Note extension in effective size
+                                     0084 26600 ;
+                                     0084 26700 ; If debug code is included, connect debugger to BPT and TBIT exception
+                                     0084 26800 ; vectors, then execute a BPT instruction to give control to the debugger.
+                                     0084 26900 ;
+                                     0084 27000 	.IF	DF,DEBUG		;
+         2C A8       0000'CF     9E  0084 27100 	MOVAB	W^XDELBPT,^X2C(R8)	; Set BPT exception vector to debugger
+         28 A8       0000'CF     9E  008A 27200 	MOVAB	W^XDELTBIT,^X28(R8)	;  and TBIT vector also
+       0000'CF         9B'AF     9E  0090 27300 	MOVAB	B^INI$BRK,W^XDELIBRK	; Make correct break address in brk table
+         30 AB            05     E1  0096 27400 	BBC	#RPB$V_BOOBPT,RPB$L_BOOTR5(R11),NOBRK	; Check for bootstrap BPT
+                          01         009A       
+                                     009B 27500 INI$BRK::				;
+                                 03  009B 27600 	BPT				; Breakpoint initially, changed to NOP
+                                     009C 27700 NOBRK:					; No bootstrap break point
+                                     009C 27800 	.ENDC				;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   7
+01              Locate and Test Memory                                                                                           (1)
+
+                                     009C 28000 	.SBTTL	Locate and Test Memory
+                                     009C 28100 ;
+                                     009C 28200 ; The amount and pattern of available memory will now be determined.
+                                     009C 28300 ; A bit map representing available good physical pages will be constructed.
+                                     009C 28400 ; Unless inhibited by a software boot control flag, each page outside of
+                                     009C 28500 ; the good 64Kb block found by the ROM boot will be tested for gross
+                                     009C 28600 ; uncorrectable parity errors.
+                                     009C 28700 ;
+                                     009C 28800 ; A scan is made to locate all memory controllers and for each one found its
+                                     009C 28900 ; starting address and size are used to establish the range to be tested.
+                                     009C 29000 ; An important by-product of this outer controller scan loop is a list of
+                                     009C 29100 ; the types of all I/O adapters and memory controllers in RPB$B_CONFREG, 
+                                     009C 29200 ; a table of 16 bytes indexed by TR number.
+                                     009C 29300 ;
+            57         48 AB     D0  009C 29400 	MOVL	RPB$Q_PFNMAP+4(R11),R7	; Set base address of PFN bitmap
+            67            00     2C  00A0 29500 	MOVC5	#0,(R7),#0,RPB$Q_PFNMAP(R11),(R7); Initialize bitmap to zero   
+         44 AB            00         00A3       
+                          67         00A6       
+            15            09     EF  00A7 29600 	EXTZV	#VA$V_VPN,#VA$S_VPN,RPB$L_BASE(R11),R0	; Get starting good page number
+            50            6B         00AA       
+                                     00AC 29700 ;
+                                     00AC 29800 ; The good memory located by the ROM bootstrap is marked as present and
+                                     00AC 29900 ; tested to avoid inadvertent overwriting during the testing of memory.
+                                     00AC 30000 ;
+         4C AB         80 8F     9A  00AC 30050 	MOVZBL	#128,RPB$L_PFNCNT(R11)	; Set count for good 64Kb (128 pages)
+            51            00     D2  00B1 30100 	MCOML	#0,R1			; Initialize source of ones
+            52            04     9A  00B4 30200 	MOVZBL	#<<64*2>/32>,R2		; Setup loop counter
+            50            51     F0  00B7 30300 20$:	INSV	R1,R0,#32,(R7)		; Mark 32 pages available and tested
+            67            20         00BA       
+            50            20     C0  00BC 30400 	ADDL	#32,R0			; Advance page pointer
+            F5            52     F5  00BF 30500 	SOBGTR	R2,20$			; Mark entire 64Kb (128 pages) available
+            5C            10     D0  00C2 30600 	MOVL	#16,AP			; Scan for 16 TR numbers
+            01            1D     9C  00C5 30700 	ROTL	#29,#1,R4		; Set base address = ^X20000000
+                          54         00C8       
+            55       0090 CB     9E  00C9 30800 	MOVAB	RPB$B_CONFREG(R11),R5	; Point to base of configuration reg table
+            5D            5E     D0  00CE 30900 	MOVL	SP,FP			;  and remember correct stack pointer
+                                     00D1 31000 ;
+                                     00D1 31100 ; During the testing of memory, the following register conventions are
+                                     00D1 31200 ; observed:
+                                     00D1 31300 ;	R0	-	Scratch
+                                     00D1 31400 ;	R1	-	Scratch
+                                     00D1 31500 ;	R2	-	Scratch
+                                     00D1 31600 ;	R4	-	Physical address of current configuration register
+                                     00D1 31700 ;	R5	-	Address of next byte in controller type table
+                                     00D1 31800 ;	R6	-	Size of current memory in pages
+                                     00D1 31900 ;	R7	-	Base address of PFN bitmap
+                                     00D1 32000 ;	R8	-	Base address of SCB
+                                     00D1 32100 ;	R9	-	Starting or current page number
+                                     00D1 32200 ;	R10	-	Base address of available memory beyond primary boot
+                                     00D1 32300 ;	R11	-	Base address of Restart Parameter Block (RPB)
+                                     00D1 32400 ;	AP	-	TR number of current controller
+                                     00D1 32500 ;	FP	-	SP value with stack empty (to reset SP)
+                                     00D1 32600 ;
+                                     00D1 32700 CONT_LOOP:				; Controller scan loop
+                          85     94  00D1 32800 	CLRB	(R5)+			; Assume its not there
+         04 A8       015C'CF     9E  00D3 32900 	MOVAB	W^SKIPCONT,4(R8)	; Set machine check to skip controller
+            52            64     D0  00D9 33000 	MOVL	(R4),R2			; Read controller type
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   8
+01              Locate and Test Memory                                                                                           (1)
+
+         FF A5            52     90  00DC 33100 	MOVB	R2,-1(R5)		; Store it in table
+       0004'8F            52     3A  00E0 33200 	LOCC	R2,#MEMTYPCNT,B^MEMTYP	; Is this a memory controller
+                       53'AF         00E5       
+                          68     13  00E7 33300 	BEQL	MEM_DONE		; No, try another
+            50         04 A4     D0  00E9 33400 	MOVL	4(R4),R0		; Acquire starting address register
+            0D            0F     EF  00ED 33500 	EXTZV	#15,#13,R0,R9		; Starting page number/128
+            59            50         00F0       
+            59            07     9C  00F2 33600 	ROTL	#7,R9,R9		; Multiply by 128 to get page number
+                          59         00F5       
+   00004000 8F            59     D1  00F6 33700 	CMPL	R9,#MAXPGS		; Check against maximum page number
+                          52     18  00FD 33800 	BGEQ	MEM_DONE		; Done if beyond limit
+            06            09     EF  00FF 33900 	EXTZV	#9,#6,R2,R6		; Get size in 128 page units
+            56            52         0102       
+                          56     D6  0104 34000 	INCL	R6			; Convert size-1 to size
+            56            07     9C  0106 34100 	ROTL	#7,R6,R6		; Multiply by 128 to get pages
+                          56         0109       
+            03            52     E9  010A 34200 	BLBC	R2,10$			; Branch if no interleaving
+            56            56     C0  010D 34300 	ADDL	R6,R6			; Double size if interleaving
+            56            59     C0  0110 34400 10$:	ADDL	R9,R6			; Compute ending page number+1
+                          56     D7  0113 34450 	DECL	R6			; Convert to correct ending page
+         04 A8         45'AF     9E  0115 34500 	MOVAB	B^SKIP_PAGE+1,4(R8)	; Set machine check address to skip page
+                                     011A 34600 ;
+                                     011A 34700 ; All untested pages in a memory controller will be tested for gross errors
+                                     011A 34800 ; unless inhibited by the flag, RPB$V_NOTEST.  Each page yielding any uncorrected
+                                     011A 34900 ; errors will not be marked as available in the PFN bit map.
+                                     011A 35000 ;
+                                     011A 35100 ;	R6 - Ending page number
+                                     011A 35200 ;	R7 - Base of PFN bitmap
+                                     011A 35300 ;	R9 - Starting page number
+                                     011A 35400 ;
+                                     011A 35500 MEM_LOOP:				; Main page loop
+            20            59     EB  011A 35600 	FFC	R9,#32,(R7),R9		; Find an untested page
+            59            67         011D       
+                          2B     13  011F 35700 	BEQL	NEXT_PAGE		; None in this longword
+         30 AB            07     E0  0121 35800 	BBS	#RPB$V_NOTEST,RPB$L_BOOTR5(R11),GOOD_PAGE ; Skip if no testing
+                          14         0125       
+            59            09     78  0126 35900 	ASHL	#9,R9,R0		; Convert page number to physical address
+                          50         0129       
+            51   00000040 8F     D0  012A 36000 	MOVL	#<512/8>,R1		; 64 quadwords in a page
+            36            50     DA  0131 36100 10$:	MTPR	R0,#PR$_SBIQC		; Clear a quadword
+            80            80     D1  0134 36200 	CMPL	(R0)+,(R0)+		; Test and advance
+            F7            51     F5  0137 36300 	SOBGTR	R1,10$			; Test entire page
+                                     013A 36400 GOOD_PAGE:				; Declare page good
+                       4C AB     D6  013A 36450 	INCL	RPB$L_PFNCNT(R11)	; Count another good page
+            67            59     E2  013D 36500 	BBSS	R9,(R7),NEXT_PAGE	; Advance to next page
+                          0B         0140       
+                          09     11  0141 36600 	BRB	NEXT_PAGE		;
+                                     0143 36700 	.ALIGN	LONG			; Exception handler must be longword aligned
+                                     0144 36800 SKIP_PAGE:				; Skip current page
+            30            00     DA  0144 36900 	MTPR	#0,#PR$_SBIFS		; Clear double fault indicator
+            5E            5D     D0  0147 37000 	MOVL	FP,SP			; Reset stack pointer 
+                          59     D6  014A 37100 	INCL	R9			; Advance to next page
+                                     014C 37200 NEXT_PAGE:				;
+            56            59     D1  014C 37300 	CMPL	R9,R6			; Check for end of test range
+                          C9     19  014F 37400 	BLSS	MEM_LOOP		; No, try another page
+                                     0151 37500 MEM_DONE:				;
+                          09     11  0151 37600 	BRB	SKIPCONT		; Try for another controller
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page   9
+01              Locate and Test Memory                                                                                           (1)
+
+                                 08  0153 37700 MEMTYP:	.BYTE	8			; 4K - Not interleaved
+                                 09  0154 37800 	.BYTE	9			; 4K - Interleaved
+                                 10  0155 37900 	.BYTE	16			; 16K - Not interleaved
+                                 11  0156 38000 	.BYTE	17			; 16K - Interleaved
+                           00000004  0157 38100 MEMTYPCNT=.-MEMTYP			; Number of memory controller types
+                          FF77   31  0157 38200 NXTCONT:BRW	CONT_LOOP		;
+                                     015A 38300 	.ALIGN	LONG			; Exception handlers must be longword aligned
+                                     015C 38400 SKIPCONT:				; Machine check handler to skip controller
+            5E            5D     D0  015C 38500 	MOVL	FP,SP			; Reset stack pointer
+            30            00     DA  015F 38600 	MTPR	#0,#PR$_SBIFS		;  and allow more faults
+            54       2000 C4     9E  0162 38700 	MOVAB	^X2000(R4),R4		; Advance configuration register address
+            ED            5C     F5  0167 38800 	SOBGTR	AP,NXTCONT		; Continue for 16 TR numbers
+         04 A8       0334'CF     9E  016A 38900 	MOVAB	W^UNEXP_MCHK,4(R8)	; Set address of unexpected machine check
+                                     0170 39000 ;
+                                     0170 39100 ; Initialize the I/O adapter to be used for bootstrapping.
+                                     0170 39200 ;
+                                     0170 39300 ADPINIT:				;
+            50         5C AB     D0  0170 39400 	MOVL	RPB$L_ADPPHY(R11),R0	; Get physical address of adapter
+            51            60     D0  0174 39500 	MOVL	(R0),R1			; Read configuration register 0
+         04 A0            01     D0  0177 39600 	MOVL	#MBA$M_CR_INIT,MBA$L_CR(R0)	; Initialize adapter
+            51            03     CB  017B 39650 	BICL3	#3,R1,R2		; Clear UBA number to get canonical type
+                          52         017E       
+            52            28     91  017F 39700 	CMPB	#^X28,R2		; Is this a UNIBUS adapter?
+                          0F     12  0182 39800 	BNEQ	MBABOOT			; Br if not, no need to wait
+            60   00010000 8F     D3  0184 39900 10$:	BITL	#UBA$M_CSR_UBIC,UBA$L_CSR(R0)	; Wait for UBA init to complete
+                          F7     13  018B 40000 	BEQL	10$			; Br if not yet complete
+            12            51     F0  018D 40050 	INSV	R1,#18,#2,RPB$L_CSRPHY(R11)	; Set adapter number into CSR
+         54 AB            02         0190       
+                                     0193 40100 MBABOOT:				;
+                                     0193 40200 ;
+                                     0193 40300 ; Check for use of boot block. If so then make the transfer address offset
+                                     0193 40400 ; equal to 2 and merge with the code to read the portion of a bootfile
+                                     0193 40500 ; following the image header. The logical block number to locate the boot
+                                     0193 40600 ; block is provided as input in R4.
+                                     0193 40700 ;
+         30 AB            03     E1  0193 40800 	BBC	#RPB$V_BBLOCK,RPB$L_BOOTR5(R11),10$	; Check for boot block boot
+                          10         0197       
+            56            5A     D0  0198 40900 	MOVL	R10,R6			; Set buffer address
+            55            02     D0  019B 41000 	MOVL	#2,R5			;  and transfer address
+            58         2C AB     D0  019E 41100 	MOVL	RPB$L_BOOTR4(R11),R8	; Get Block number of boot block
+            59            01     D0  01A2 41200 	MOVL	#1,R9			; Set size to one block
+                          00D0   31  01A5 41300 	BRW	NOHEAD			; Continue as if no header
+         30 AB            08     E1  01A8 41400 10$:	BBC	#RPB$V_SOLICT,RPB$L_BOOTR5(R11),NOSOLICIT ; BR if no file.
+                          10         01AC       
+                                     01AD 41500 FILEPROMPT:				;
+                                     01AD 41600 ;
+                                     01AD 41700 ; The name of the boot file must be solicited from the console.  First
+                                     01AD 41800 ; a prompt string is written to the console, then the file name is read.
+                                     01AD 41900 ; Any device specification will be ignored since the actual device is
+                                     01AD 42000 ; specified by the boot parameters.  However any device specified will
+                                     01AD 42100 ; be passed to the bootfile as part of the file name string.
+                                     01AD 42200 ;
+                       68 AB     9F  01AD 42300 	PUSHAB	RPB$T_FILE(R11)		; Set address of input buffer
+                          27     DD  01B0 42400 	PUSHL	#39			; Set maximum read count
+                     03C7'CF     9F  01B2 42500 	PUSHAB	W^NAMEPROMPT		; Set address of prompt string
+       0000'CF            03     FB  01B6 42600 	CALLS	#3,W^BOO$READPROMPT	; Prompt and read string
+                          14     11  01BB 42700 	BRB	FILEBOOT		;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  10
+01              Locate and Test Memory                                                                                           (1)
+
+                                     01BD 42800 NOSOLICIT:				; Don't solicit boot file name
+            57       039C'CF     9E  01BD 42900 	MOVAB	W^VMSFILE,R7		; Assume VMS boot
+         30 AB            04     E1  01C2 43000 	BBC	#RPB$V_DIAG,RPB$L_BOOTR5(R11),10$; BR if not diagnostic boot
+                          05         01C6       
+            57       03B0'CF     9E  01C7 43100 	MOVAB	W^DIAGFILE,R7		; Set for diagnostic boot
+                                     01CC 43200 10$:					;
+            67            28     28  01CC 43300 	MOVC3	#40,(R7),RPB$T_FILE(R11); Copy file name to parameter block
+                       68 AB         01CF       
+                                     01D1 43400 FILEBOOT:				;
+                                     01D1 43500 ;
+                                     01D1 43600 ;	R7 - Address of file name string
+                                     01D1 43700 ;	R10 - Address of first free memory after bootstrap
+                                     01D1 43800 ;	R11 - Address of Restart Parameter Block (RPB)
+                                     01D1 43900 ;
+                       69 AB     9F  01D1 44000 	PUSHAB	RPB$T_FILE+1(R11)	; Address of file name string
+            7E         68 AB     9A  01D4 44100 	MOVZBL	RPB$T_FILE(R11),-(SP)	; Count for string
+            56            7E     DE  01D8 44200 	MOVAL	-(SP),R6		; Save pointer to file name descriptor
+                       3C AB     DF  01DB 44300 	PUSHAL	RPB$L_FILLBN(R11)	; Address of file statistics block
+                          6A     DF  01DE 44400 	PUSHAL	(R10)			; File header buffer
+                     0200 CA     DF  01E0 44500 	PUSHAL	512(R10)		; Index file header buffer
+                       04 A6     DF  01E4 44600 	PUSHAL	4(R6)			; Address of file name descriptor
+                          66     DF  01E7 44700 	PUSHAL	(R6)			; Address of phony channel
+       0000'CF            07     FB  01E9 44800 	CALLS	#7,W^FIL$OPENFILE	; Call FILEREAD to locate file
+            30            50     E8  01EE 44900 	BLBS	R0,10$			; Continue if successful open
+            50       0908 8F     B1  01F1 45000 	CMPW	#SS$_NOSUCHDEV,R0	; Check for nonexistent device
+                          03     12  01F6 45100 	BNEQ	5$			; Br if not
+                          009C   31  01F8 45200 	BRW	NOSUCHDEV		;
+                                     01FB 45300 5$:	ERROR	</%BOOT-F-Unable to locate BOOT file/>	; Report error
+                          015F   30  01FB       	BSBW	ERROUT			; Output error string
+62 61 6E 55 2D 46 2D 54 4F 4F 42 25  01FE       	.ASCIZ	/%BOOT-F-Unable to locate BOOT file/			;
+65 74 61 63 6F 6C 20 6F 74 20 65 6C  020A       
+   00 65 6C 69 66 20 54 4F 4F 42 20  0216       
+                                     0221 45400 	ASSUME	RPB$L_FILSIZ EQ RPB$L_FILLBN+4	;
+            58         3C AB     7D  0221 45500 10$:	MOVQ	RPB$L_FILLBN(R11),R8	; Get file statistics, LBN/Size in blocks
+                          58     D5  0225 45600 	TSTL	R8			; Check for contiguous
+                          23     12  0227 45700 	BNEQ	20$			; Yes, continue
+                                     0229 45800 	ERROR	</%BOOT-F-Bootfile not contiguous/>	; Give error
+                          0131   30  0229       	BSBW	ERROUT			; Output error string
+74 6F 6F 42 2D 46 2D 54 4F 4F 42 25  022C       	.ASCIZ	/%BOOT-F-Bootfile not contiguous/			;
+6E 6F 63 20 74 6F 6E 20 65 6C 69 66  0238       
+            00 73 75 6F 75 67 69 74  0244       
+            56            5A     D0  024C 45900 20$:	MOVL	R10,R6			; Set buffer to start of free memory
+                          55     D4  024F 46000 	CLRL	R5			; Assume no header transfer address
+         30 AB            06     E1  0251 46100 	BBC	#RPB$V_HEADER,RPB$L_BOOTR5(R11),NOHEAD	; Branch if no header
+                          22         0255       
+            59            01     D0  0256 46200 	MOVL	#1,R9			; Set size to read header
+                          59     10  0259 46300 	BSBB	READFILE		; Read image header
+            56            5A     D0  025B 46400 	MOVL	R10,R6			; Reset buffer pointer
+            59         40 AB     D0  025E 46500 	MOVL	RPB$L_FILSIZ(R11),R9	;  and restore correct file size
+            50         10 AA     9A  0262 46600 	MOVZBL	IHD$B_HDRBLKCNT(R10),R0	; Get count of header blocks
+       00A0 CB            50     D0  0266 46650 	MOVL	R0,RPB$B_HDRPGCNT(R11)	; Save count
+            59            50     C2  026B 46700 	SUBL	R0,R9			;  and update file size
+            51         02 AA     3C  026E 46800 	MOVZWL	IHD$W_ACTIVOFF(R10),R1	; Get offset to activation information
+            51            5A     C0  0272 46900 	ADDL	R10,R1			; Form address of transfer vector
+            55            61     D0  0275 47000 	MOVL	(R1),R5			; Get transfer address
+                                     0278 47100 NOHEAD:					;
+            5A            17     9C  0278 47200 	ROTL	#<32-9>,R10,R0		; Compute number of pages in use
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  11
+01              Locate and Test Memory                                                                                           (1)
+
+                          50         027B       
+   00000080 8F            50     C3  027C 47300 	SUBL3	R0,#128,R0		;  and convert to number of free pages
+                          50         0283       
+            59            50     D1  0284 47400 	CMPL	R0,R9			; Check for image fit
+                          03     15  0287 47500 	BLEQ	10$			; Yes it does.
+            59            50     D0  0289 47600 	MOVL	R0,R9			; Else limit read to tested memory
+                          26     10  028C 47700 10$:	BSBB	READFILE		; Read image of secondary bootstrap
+         30 AB            09     E1  028E 47800 	BBC	#RPB$V_HALT,RPB$L_BOOTR5(R11),20$ ; Check for halt before transfer
+                          01         0292       
+                                 00  0293 47900 	HALT				; Yes
+                          654A   17  0294 48000 20$:	JMP	(R5)[R10]		; Transfer control to Secondary bootstrap
+                                     0297 48100 
+                                     0297 48200 NOSUCHDEV:				; Nonexistent drive error
+                                     0297 48300 	ERROR	</%BOOT-F-Nonexistent drive/>
+                          00C3   30  0297       	BSBW	ERROUT			; Output error string
+65 6E 6F 4E 2D 46 2D 54 4F 4F 42 25  029A       	.ASCIZ	/%BOOT-F-Nonexistent drive/			;
+76 69 72 64 20 74 6E 65 74 73 69 78  02A6       
+                              00 65  02B2       
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  12
+01              READFILE - Routine to read large pieces of boot                                                                  (1)
+
+                                     02B4 48500 	.SBTTL	READFILE - Routine to read large pieces of bootfile
+                                     02B4 48600 ;
+                                     02B4 48700 ;	R5 - Preserved
+                                     02B4 48800 ;	R6 - Buffer address (Updated)
+                                     02B4 48900 ;	R7 - Volatile
+                                     02B4 49000 ;	R8 - Logical block number (Updated)
+                                     02B4 49100 ;	R9 - Blocks in file (Updated)
+                                     02B4 49200 ;
+                                     02B4 49300 READFILE:				;
+            57         7F 8F     9A  02B4 49400 20$:	MOVZBL	#IOSIZE,R7		; Assume maximum transfer
+            59            57     D1  02B8 49500 	CMPL	R7,R9			; Minimize with file size
+                          03     15  02BB 49600 	BLEQ	30$			; Smaller than remaining file size
+            57            59     D0  02BD 49700 	MOVL	R9,R7			; Set to remaining file size
+                          5B     DD  02C0 49800 30$:	PUSHL	R11			; Base of RPB
+                          00     DD  02C2 49900 	PUSHL	#0			; Set mode to physical
+                          21     DD  02C4 50000 	PUSHL	#IO$_READLBLK		; Set function to read
+                          58     DD  02C6 50100 	PUSHL	R8			; Set Logical Block Number
+            57            09     9C  02C8 50200 	ROTL	#9,R7,-(SP)		; Set transfer size in bytes
+                          7E         02CB       
+                          56     DD  02CC 50300 	PUSHL	R6			; Set buffer address
+            56         04 AE     C0  02CE 50400 	ADDL	4(SP),R6		; Update buffer address
+            58            57     C0  02D2 50500 	ADDL	R7,R8			;  and block number
+       0000'CF            06     FB  02D5 50600 	CALLS	#6,W^BOO$QIO		; Perform read
+            2E            50     E8  02DA 50700 	BLBS	R0,40$			; Continue if no error
+            50       0908 8F     B1  02DD 50800 	CMPW	#SS$_NOSUCHDEV,R0	; Check for nonexistent device
+                          B3     13  02E2 50900 	BEQL	NOSUCHDEV		; Br if yes
+                                     02E4 51000 	ERROR	<\%BOOT-F-I/O error reading boot file\>
+                          0076   30  02E4       	BSBW	ERROUT			; Output error string
+20 4F 2F 49 2D 46 2D 54 4F 4F 42 25  02E7       	.ASCIZ	\%BOOT-F-I/O error reading boot file\			;
+6E 69 64 61 65 72 20 72 6F 72 72 65  02F3       
+00 65 6C 69 66 20 74 6F 6F 62 20 67  02FF       
+            59            57     C2  030B 51100 40$:	SUBL	R7,R9			; Decrement blocks remaining
+                          A4     14  030E 51200 	BGTR	20$			; Another transfer if not done
+                                 05  0310 51300 	RSB				; Return
+                                     0311 51400 
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  13
+01              Unexpected Machine Check Handler                                                                                 (1)
+
+                                     0311 51600 	.SBTTL	Unexpected Machine Check Handler
+                                     0311 51700 ;
+                                     0311 51800 ;	Unexpected Machine Check Handler
+                                     0311 51900 ;
+                                     0311 52000 	.ALIGN	LONG			; Exception handlers must be longword aligned
+                                     0314 52100 	.IF	DF,DEBUG		;
+                                     0314 52200 EXE$ACVIOLAT::				; Access violation vector 
+                                     0314 52300 EXE$BREAK::				; Breakpoint vector
+                                     0314 52400 EXE$ROPRAND::				; Reserved operand vector
+                                     0314 52500 EXE$TBIT::				; TBIT vector
+                                     0314 52600 MMG$PAGEFAULT::				; Pagefault exception vector
+                                     0314 52700 	.ENDC				;
+                                     0314 52800 BOOT_FAULT:				;
+                                     0314 52900 	ERROR	</%BOOT-F-Unexpected Exception/>; Output error message
+                          0046   30  0314       	BSBW	ERROUT			; Output error string
+78 65 6E 55 2D 46 2D 54 4F 4F 42 25  0317       	.ASCIZ	/%BOOT-F-Unexpected Exception/			;
+70 65 63 78 45 20 64 65 74 63 65 70  0323       
+                     00 6E 6F 69 74  032F       
+                                     0334 53000 
+                                     0334 53100 	.ALIGN	LONG			;
+                                     0334 53200 UNEXP_MCHK:				;
+                                     0334 53300 	ERROR	</%BOOT-F-Unexpected Machine Check/>; Output error message
+                          0026   30  0334       	BSBW	ERROUT			; Output error string
+78 65 6E 55 2D 46 2D 54 4F 4F 42 25  0337       	.ASCIZ	/%BOOT-F-Unexpected Machine Check/			;
+69 68 63 61 4D 20 64 65 74 63 65 70  0343       
+         00 6B 63 65 68 43 20 65 6E  034F       
+                                     0358 53400 
+                                     0358 53500 	.IF	DF,DEBUG		;
+                                     0358 53600 INI$RDONLY::				; Dummy change protection routines
+                                     0358 53700 INI$WRITABLE::				;
+                                 05  0358 53800 	RSB				;
+                                     0359 53900 EXE$GL_FLAGS::				; Dummy flags longword
+                           00000000  0359 54000 EXE$V_SIMULATOR==0			; Simulator flag bit definition
+                                     0359 54100 PFN$AB_STATE::				;
+                                     0359 54200 PFN$AB_TYPE::				;
+                                     0359 54300 PFN$AL_BAK::				;
+                                     0359 54400 PFN$AL_PTE::				;
+                                     0359 54500 PFN$AW_BLINK::				;
+                                     0359 54600 PFN$AW_FLINK::				;
+                                     0359 54700 PFN$AW_REFCNT::				;
+                                     0359 54800 PFN$AW_SWPVBN::				;
+                                     0359 54900 SYS$IOBASE::				;
+                                     0359 55000 SCH$GL_CURPCB::				;
+                                     0359 55100 SCH$GL_PCBVEC::				;
+                                     0359 55200 XDS$INIT::				;
+                           00000000  0359 55300 	.LONG	0			;
+                                     035D 55400 	.ENDC				;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  14
+01              Error message subroutine                                                                                         (1)
+
+                                     035D 55600 	.SBTTL	Error message subroutine
+                                     035D 55700 ;+
+                                     035D 55800 ; Functional Description:
+                                     035D 55900 ;	ERROUT outputs a descriptive error message to the console.
+                                     035D 56000 ;
+                                     035D 56100 ; Calling Sequence:
+                                     035D 56200 ;	BSBW	ERROUT
+                                     035D 56300 ;	.ASCIZ	/message/
+                                     035D 56400 ;
+                                     035D 56500 ;-
+            58            8E     D0  035D 56600 ERROUT:	MOVL	(SP)+,R8		; Get pointer to message text
+                          7E     7C  0360 56700 	CLRQ	-(SP)			; Null size and buffer arguments
+                          58     DD  0362 56800 	PUSHL	R8			; Address of prompt string
+       0000'CF            03     FB  0364 56900 	CALLS	#3,W^BOO$READPROMPT	; Write error message
+            5B       03F0'CF     D0  0369 57000 	MOVL	W^RPBBASE,R11		; Re-establish RPB pointer
+            5E            6B     D0  036E 57100 	MOVL	RPB$L_BASE(R11),SP	; Rcalculate stack pointer
+            5E       0200 CE     9E  0371 57200 	MOVAB	512(SP),SP		;
+            50         1C AB     7D  0376 57300 	MOVQ	RPB$L_BOOTR0(R11),R0	; Restore R0,R1
+            52         24 AB     7D  037A 57400 	MOVQ	RPB$L_BOOTR2(R11),R2	; Restore R2,R3
+            54         2C AB     7D  037E 57500 	MOVQ	RPB$L_BOOTR4(R11),R4	; Restore R4,R5
+            5A         10 AB     7D  0382 57600 	MOVQ	RPB$L_HALTPC(R11),R10	; Restore R10,R11
+            5C         18 AB     D0  0386 57700 	MOVL	RPB$L_HALTCODE(R11),AP	; Restore Halt code
+                                 00  038A 57800 	HALT				; Halt with registers restored
+                          FC72   31  038B 57900 	BRW	START_BOOT		;  and retry if started
+                                     038E 58000 
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  15
+01              SYS$ASSIGN - Dummy assign device system service                                                                  (1)
+
+                                     038E 58200 	.SBTTL	SYS$ASSIGN - Dummy assign device system service
+                                     038E 58300 ;
+                                     038E 58400 ; Functional Description:
+                                     038E 58500 ;	SYS$ASSIGN is a dummy routine to satisfy the requirements of
+                                     038E 58600 ;	FIL$OPENFILE.
+                                     038E 58700 ;
+                                     038E 58800 ; Input Parameters:
+                                     038E 58900 ;	CHAN(AP) - Address at which to return channnel (RPB base address)
+                           00000008  038E 59000 	CHAN	 = 8
+                                     038E 59100 ;
+                                     038E 59200 ; Output Parameters:
+                                     038E 59300 ;	R0 - Completion status code
+                                     038E 59400 ;
+                                     038E 59500 ; Completion Codes:
+                                     038E 59600 ;	SS$_NORMAL - Normal successful completion
+                                     038E 59700 ;
+                                     038E 59800 ;--
+                               0000  038E 59900 SYS$ASSIGN::	.WORD	0		; Null entry mask
+         08 BC   000003F0'EF     D0  0390 60000 	MOVL	RPBBASE,@CHAN(AP)	; Store RPB address as channel
+            50            01     3C  0398 60100 	MOVZWL	#1,R0			; Return success
+                                 04  039B 60200 	RET				;
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  16
+01              Miscellaneous constants and temps                                                                                (1)
+
+                                     039C 60400 	.SBTTL	Miscellaneous constants and temps
+                                     039C 60500 VMSFILE:				; VMS file name 
+53 59 53 5D 45 58 45 53 59 53 5B 00' 039C 60600 	.ASCIC	/[SYSEXE]SYSBOOT.EXE/	;
+            45 58 45 2E 54 4F 4F 42  03A8       
+                                 13  039C       
+                                     03B0 60700 
+                                     03B0 60800 DIAGFILE:				; Diagnostic name string
+44 5D 54 4E 49 41 4D 53 59 53 5B 00' 03B0 60900 	.ASCIC	/[SYSMAINT]DIAGBOOT.EXE/; Assumed name of diagnostic file
+   45 58 45 2E 54 4F 4F 42 47 41 49  03BC       
+                                 16  03B0       
+                                     03C7 61000 NAMEPROMPT:				; Prompt string for boot file name
+65 6D 61 6E 20 72 65 74 6E 45 0A 0D  03C7 61100 	.ASCIZ	<CR><LF>/Enter name of bootfile:/
+65 6C 69 66 74 6F 6F 62 20 66 6F 20  03D3       
+                              00 3A  03DF       
+                                     03E1 61200 FIL$GT_DDDEV::				; Default device string
+                  3A 56 45 44 44 00' 03E1 61300 	.ASCIC	/DDEV:/			;
+                                 05  03E1       
+                                     03E7 61400 FIL$GT_DDSTRING::			; Default directory string
+         5D 45 58 45 53 59 53 5B 00' 03E7 61500 	.ASCIC	/[SYSEXE]/		;
+                                 08  03E7       
+                                     03F0 61600 
+                           00000000  03F0 61700 RPBBASE:.LONG	0			; Base address of RPB
+                                     03F4 61800 
+                                     03F4 61900 	.IF	DF,DEBUG		;
+                                     03F4 62000 	.ALIGN	LONG			;
+                                     03F4 62200 	.ENDC				;
+                                     03F4 62300 
+                                     03F4 62400 	.END				; 
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  17
+SYMBOL TABLE                                                                                                                     (1)
+
+ADPINIT          00000170 R     04   IHD$W_PATCHOFF   00000008            IO$V_DELETE    = 00000008            
+BIT...         = 00000020            IHD$W_SIZE       00000000            IO$V_DMOUNT    = 0000000A            
+BOO$AL_VECTOR    ********   X   04   IHD$W_SYMDBGOFF  00000004            IO$V_DSABLMBX  = 0000000A            
+BOO$C_DRVRSIZ    ********   X   04   INI$BRK          0000009B RG    04   IO$V_ENABLMBX  = 00000007            
+BOO$QIO          ********   X   04   INI$RDONLY       00000358 RG    04   IO$V_FCODE     = 00000000            
+BOO$READPROMPT   ********   X   04   INI$WRITABLE     00000358 RG    04   IO$V_HANGUP    = 00000009            
+BOOTHIGH         00000000 R     03   IO$M_ABORT     = 00000100            IO$V_INHERLOG  = 0000000B            
+BOOT_FAULT       00000314 R     04   IO$M_ACCESS    = 00000040            IO$V_INHEXTGAP = 0000000C            
+BOOT_RESTART     00000050 R     04   IO$M_ATTNAST   = 00000100            IO$V_INHRETRY  = 0000000F            
+CHAN           = 00000008            IO$M_BINARY    = 00000040            IO$V_INHSEEK   = 0000000C            
+CONT_LOOP        000000D1 R     04   IO$M_CANCTRLO  = 00000040            IO$V_INTERRUPT = 00000006            
+CR             = 0000000D            IO$M_COMMOD    = 00000040            IO$V_INTSKIP   = 00000008            
+DEBUG          = 00000001            IO$M_CREATE    = 00000080            IO$V_MOUNT     = 00000009            
+DIAGFILE         000003B0 R     04   IO$M_CTRLCAST  = 00000100            IO$V_NOECHO    = 00000006            
+ERROUT           0000035D R     04   IO$M_CTRLYAST  = 00000080            IO$V_NOFILTR   = 00000009            
+EXE$ACVIOLAT     00000314 RG    04   IO$M_CVTLOW    = 00000100            IO$V_NOFORMAT  = 00000008            
+EXE$BREAK        00000314 RG    04   IO$M_DATACHECK = 00004000            IO$V_NOW       = 00000006            
+EXE$GL_FLAGS     00000359 RG    04   IO$M_DELETE    = 00000100            IO$V_NOWAIT    = 00000007            
+EXE$MCHKVEC    = 00000004 RG    03   IO$M_DMOUNT    = 00000400            IO$V_PACKED    = 00000007            
+EXE$ROPRAND      00000314 RG    04   IO$M_DSABLMBX  = 00000400            IO$V_PURGE     = 0000000B            
+EXE$TBIT         00000314 RG    04   IO$M_ENABLMBX  = 00000080            IO$V_READATTN  = 00000007            
+EXE$V_SIMULATOR= 00000000  G         IO$M_FCODE     = 0000003F            IO$V_REVERSE   = 00000006            
+FIL$GT_DDDEV     000003E1 RG    04   IO$M_HANGUP    = 00000200            IO$V_SHUTDOWN  = 00000007            
+FIL$GT_DDSTRING  000003E7 RG    04   IO$M_INHERLOG  = 00000800            IO$V_STARTUP   = 00000006            
+FIL$OPENFILE     ********   X   04   IO$M_INHEXTGAP = 00001000            IO$V_SYNCH     = 00000009            
+FILEBOOT         000001D1 R     04   IO$M_INHRETRY  = 00008000            IO$V_TIMED     = 00000007            
+FILEPROMPT       000001AD R     04   IO$M_INHSEEK   = 00001000            IO$V_TRMNOECHO = 0000000C            
+GBL...         = 00000000            IO$M_INTERRUPT = 00000040            IO$V_WRTATTN   = 00000008            
+GOOD_PAGE        0000013A R     04   IO$M_INTSKIP   = 00000100            IO$_ACCESS     = 00000032            
+IHD$B_HDRBLKCNT  00000010            IO$M_MOUNT     = 00000200            IO$_ACPCONTROL = 00000038            
+IHD$B_IMGTYPE    00000011            IO$M_NOECHO    = 00000040            IO$_CREATE     = 00000033            
+IHD$C_LENGTH     00000028            IO$M_NOFILTR   = 00000200            IO$_DEACCESS   = 00000034            
+IHD$K_EXE      = 00000001            IO$M_NOFORMAT  = 00000100            IO$_DELETE     = 00000035            
+IHD$K_LENGTH     00000028            IO$M_NOW       = 00000040            IO$_DIAGNOSE   = 0000001D            
+IHD$K_LIM      = 00000002            IO$M_NOWAIT    = 00000080            IO$_DRVCLR     = 00000004            
+IHD$K_MAJORID  = 00003230            IO$M_PACKED    = 00000080            IO$_ERASETAPE  = 00000006            
+IHD$K_MINORID  = 00003130            IO$M_PURGE     = 00000800            IO$_LOGICAL    = 0000002F            
+IHD$L_IDENT      00000024            IO$M_READATTN  = 00000080            IO$_MODIFY     = 00000036            
+IHD$L_LNKFLAGS   00000020            IO$M_REVERSE   = 00000040            IO$_MOUNT      = 00000039            
+IHD$M_LNKDEBUG = 00000001            IO$M_SHUTDOWN  = 00000080            IO$_NOP        = 00000000            
+IHD$M_LNKNOTFR = 00000002            IO$M_STARTUP   = 00000040            IO$_OFFSET     = 00000006            
+IHD$M_MATCHCTL = 07000000            IO$M_SYNCH     = 00000200            IO$_PACKACK    = 00000008            
+IHD$M_NOP0BUFS = 00000004            IO$M_TIMED     = 00000080            IO$_PHYSICAL   = 0000001F            
+IHD$M_PICIMG   = 00000008            IO$M_TRMNOECHO = 00001000            IO$_READHEAD   = 0000000E            
+IHD$Q_PRIVREQS   00000014            IO$M_WRTATTN   = 00000100            IO$_READLBLK   = 00000021            
+IHD$S_MATCHCTL = 00000003            IO$S_FCODE     = 00000006            IO$_READPBLK   = 0000000C            
+IHD$V_LNKDEBUG = 00000000            IO$V_ABORT     = 00000008            IO$_READPRESET = 00000019            
+IHD$V_LNKNOTFR = 00000001            IO$V_ACCESS    = 00000006            IO$_READPROMPT = 00000037            
+IHD$V_MATCHCTL = 00000018            IO$V_ATTNAST   = 00000008            IO$_READTRACKD = 00000010            
+IHD$V_NOP0BUFS = 00000002            IO$V_BINARY    = 00000006            IO$_READVBLK   = 00000031            
+IHD$V_PICIMG   = 00000003            IO$V_CANCTRLO  = 00000006            IO$_RECAL      = 00000003            
+IHD$W_ACTIVOFF   00000002            IO$V_COMMOD    = 00000006            IO$_RELEASE    = 00000005            
+IHD$W_IMGIDOFF   00000006            IO$V_CREATE    = 00000007            IO$_RETCENTER  = 00000007            
+IHD$W_IMGIOCNT   0000001E            IO$V_CTRLCAST  = 00000008            IO$_REWIND     = 00000024            
+IHD$W_IOCHANCNT  0000001C            IO$V_CTRLYAST  = 00000007            IO$_REWINDOFF  = 00000022            
+IHD$W_MAJORID    0000000C            IO$V_CVTLOW    = 00000008            IO$_SEARCH     = 00000009            
+IHD$W_MINORID    0000000E            IO$V_DATACHECK = 0000000E            IO$_SEEK       = 00000002            
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  18
+SYMBOL TABLE                                                                                                                     (1)
+
+IO$_SENSECHAR  = 0000001B            MBA$M_SR_NED   = 00040000            PFN$AB_TYPE      00000359 RG    04   
+IO$_SENSEMODE  = 00000027            MBA$M_SR_NRCONF= 40000000            PFN$AL_BAK       00000359 RG    04   
+IO$_SETCHAR    = 0000001A            MBA$M_SR_PGE   = 00080000            PFN$AL_PTE       00000359 RG    04   
+IO$_SETMODE    = 00000023            MBA$M_SR_RDS   = 00000004            PFN$AW_BLINK     00000359 RG    04   
+IO$_SKIPFILE   = 00000025            MBA$M_SR_RDTO  = 00000001            PFN$AW_FLINK     00000359 RG    04   
+IO$_SKIPRECORD = 00000026            MBA$M_SR_WCKLWR= 00000200            PFN$AW_REFCNT    00000359 RG    04   
+IO$_SPACEFILE  = 00000002            MBA$M_SR_WCKUPR= 00000400            PFN$AW_SWPVBN    00000359 RG    04   
+IO$_SPACERECORD= 00000009            MBA$S_CSR_ADCOD= 00000008            PR$_ACCR       = 00000029            
+IO$_STARTSPNDL = 00000019            MBA$S_ERB_UNIT = 00000003            PR$_ACCS       = 00000028            
+IO$_UNLOAD     = 00000001            MBA$V_CR_ABORT = 00000001            PR$_ASTLVL     = 00000013            
+IO$_VIRTUAL    = 0000003F            MBA$V_CR_IE    = 00000002            PR$_ESP        = 00000001            
+IO$_WRITECHECK = 0000000A            MBA$V_CR_INIT  = 00000000            PR$_ICCS       = 00000018            
+IO$_WRITECHECKH= 00000018            MBA$V_CSR_ADCOD= 00000000            PR$_ICR        = 0000001A            
+IO$_WRITEHEAD  = 0000000D            MBA$V_CSR_MT   = 0000001B            PR$_IPL        = 00000012            
+IO$_WRITELBLK  = 00000020            MBA$V_CSR_OT   = 00000015            PR$_ISP        = 00000004            
+IO$_WRITEMARK  = 0000001C            MBA$V_CSR_PD   = 00000017            PR$_KSP        = 00000000            
+IO$_WRITEOF    = 00000028            MBA$V_CSR_PE   = 0000001F            PR$_MAPEN      = 00000038            
+IO$_WRITEPBLK  = 0000000B            MBA$V_CSR_PU   = 00000016            PR$_NICR       = 00000019            
+IO$_WRITETRACKD= 0000000F            MBA$V_CSR_URD  = 0000001D            PR$_P0BR       = 00000008            
+IO$_WRITEVBLK  = 00000030            MBA$V_CSR_WS   = 0000001E            PR$_P0LR       = 00000009            
+IOSIZE         = 0000007F            MBA$V_CSR_XMFLT= 0000001A            PR$_P1BR       = 0000000A            
+LF             = 0000000A            MBA$V_ERB_UNIT = 00000007            PR$_P1LR       = 0000000B            
+MAXPGS         = 00004000            MBA$V_SR_ATTN  = 00000010            PR$_PCBB       = 00000010            
+MBA$L_AS         00000410            MBA$V_SR_CRD   = 0000001D            PR$_PME        = 0000003D            
+MBA$L_BCR        00000010            MBA$V_SR_DLT   = 0000000B            PR$_RXCS       = 00000020            
+MBA$L_CR         00000004            MBA$V_SR_DTABT = 0000000C            PR$_RXDB       = 00000021            
+MBA$L_CSR        00000000            MBA$V_SR_DTBUSY= 0000001F            PR$_SBIER      = 00000034            
+MBA$L_ERB        00000400            MBA$V_SR_DTCOMP= 0000000D            PR$_SBIFS      = 00000030            
+MBA$L_MAP        00000800            MBA$V_SR_ERCONF= 00000003            PR$_SBIMT      = 00000033            
+MBA$L_SR         00000008            MBA$V_SR_INVMAP= 00000004            PR$_SBIQC      = 00000036            
+MBA$L_VAR        0000000C            MBA$V_SR_ISTO  = 00000001            PR$_SBIS       = 00000031            
+MBA$M_CR_ABORT = 00000002            MBA$V_SR_MAPPE = 00000005            PR$_SBISC      = 00000032            
+MBA$M_CR_IE    = 00000004            MBA$V_SR_MBEXC = 00000007            PR$_SBITA      = 00000035            
+MBA$M_CR_INIT  = 00000001            MBA$V_SR_MCPE  = 00000011            PR$_SBR        = 0000000C            
+MBA$M_CSR_MT   = 08000000            MBA$V_SR_MDPE  = 00000006            PR$_SCBB       = 00000011            
+MBA$M_CSR_OT   = 00200000            MBA$V_SR_MXF   = 00000008            PR$_SID        = 0000003E            
+MBA$M_CSR_PD   = 00800000            MBA$V_SR_NED   = 00000012            PR$_SIRR       = 00000014            
+MBA$M_CSR_PE   = 80000000            MBA$V_SR_NRCONF= 0000001E            PR$_SISR       = 00000015            
+MBA$M_CSR_PU   = 00400000            MBA$V_SR_PGE   = 00000013            PR$_SLR        = 0000000D            
+MBA$M_CSR_URD  = 20000000            MBA$V_SR_RDS   = 00000002            PR$_SSP        = 00000002            
+MBA$M_CSR_WS   = 40000000            MBA$V_SR_RDTO  = 00000000            PR$_TBIA       = 00000039            
+MBA$M_CSR_XMFLT= 04000000            MBA$V_SR_WCKLWR= 00000009            PR$_TBIS       = 0000003A            
+MBA$M_ERROR    = 000E1FFF            MBA$V_SR_WCKUPR= 0000000A            PR$_TODR       = 0000001B            
+MBA$M_SR_ATTN  = 00010000            MBABOOT          00000193 R     04   PR$_TXCS       = 00000022            
+MBA$M_SR_CRD   = 20000000            MEMTYP           00000153 R     04   PR$_TXDB       = 00000023            
+MBA$M_SR_DLT   = 00000800            MEMTYPCNT      = 00000004            PR$_USP        = 00000003            
+MBA$M_SR_DTABT = 00001000            MEM_DONE         00000151 R     04   PR$_WCSA       = 0000002C            
+MBA$M_SR_DTBUSY= 80000000            MEM_LOOP         0000011A R     04   PR$_WCSD       = 0000002D            
+MBA$M_SR_DTCOMP= 00002000            MMG$PAGEFAULT    00000314 RG    04   READFILE         000002B4 R     04   
+MBA$M_SR_ERCONF= 00000008            NAMEPROMPT       000003C7 R     04   RPB$B_CONFREG    00000090            
+MBA$M_SR_INVMAP= 00000010            NEXT_PAGE        0000014C R     04   RPB$B_DEVTYP     00000066            
+MBA$M_SR_ISTO  = 00000002            NOBRK            0000009C R     04   RPB$B_HDRPGCNT   000000A0            
+MBA$M_SR_MAPPE = 00000020            NOHEAD           00000278 R     04   RPB$B_SLAVE      00000067            
+MBA$M_SR_MBEXC = 00000080            NOSOLICIT        000001BD R     04   RPB$C_LENGTH     000000BC            
+MBA$M_SR_MCPE  = 00020000            NOSUCHDEV        00000297 R     04   RPB$K_LENGTH     000000BC            
+MBA$M_SR_MDPE  = 00000040            NXTCONT          00000157 R     04   RPB$L_ADPPHY     0000005C            
+MBA$M_SR_MXF   = 00000100            PFN$AB_STATE     00000359 RG    04   RPB$L_ADPVIR     00000060            
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  19
+SYMBOL TABLE                                                                                                                     (1)
+
+RPB$L_BASE       00000000            SS$_BADFILEVER = 00000820            SS$_FILESTRUCT = 000008C0            
+RPB$L_BOOTR0     0000001C            SS$_BADIMGHDR  = 00000044            SS$_FILNOTACC  = 000000AC            
+RPB$L_BOOTR1     00000020            SS$_BADIRECTORY= 00000828            SS$_FILNOTCNTG = 000002AC            
+RPB$L_BOOTR2     00000024            SS$_BADPARAM   = 00000014            SS$_FILNOTEXP  = 000000B4            
+RPB$L_BOOTR3     00000028            SS$_BADSTACK   = 000002B4            SS$_FLTDIV     = 00000494            
+RPB$L_BOOTR4     0000002C            SS$_BEGOFFILE  = 00000938            SS$_FLTOVF     = 0000048C            
+RPB$L_BOOTR5     00000030            SS$_BLOCKCNTERR= 00000940            SS$_FLTUND     = 0000049C            
+RPB$L_CHKSUM     00000008            SS$_BREAK      = 00000414            SS$_FORMAT     = 000000BC            
+RPB$L_CSRPHY     00000054            SS$_BUFBYTALI  = 0000030C            SS$_GPTFULL    = 000000C4            
+RPB$L_CSRVIR     00000058            SS$_BUFFEROVF  = 00000601            SS$_GSDFULL    = 000000CC            
+RPB$L_FILLBN     0000003C            SS$_BUGCHECK   = 000002A4            SS$_HANGUP     = 000002CC            
+RPB$L_FILSIZ     00000040            SS$_CANCEL     = 00000830            SS$_HEADERFULL = 000008C8            
+RPB$L_HALTCODE   00000018            SS$_CHANINTLK  = 0000004C            SS$_IDXFILEFULL= 000008D0            
+RPB$L_HALTPC     00000010            SS$_CLIFRCEXT  = 00000980            SS$_ILLBLKNUM  = 000000DC            
+RPB$L_HALTPSL    00000014            SS$_CMODSUPR   = 0000041C            SS$_ILLCNTRFUNC= 000000E4            
+RPB$L_IOVEC      00000034            SS$_CMODUSER   = 00000424            SS$_ILLEFC     = 000000EC            
+RPB$L_IOVECSZ    00000038            SS$_COMPAT     = 0000042C            SS$_ILLIOFUNC  = 000000F4            
+RPB$L_ISP        000000A4            SS$_CONTINUE   = 00000001            SS$_ILLLBLAST  = 00000968            
+RPB$L_PCBB       000000A8            SS$_CONTROLC   = 00000651            SS$_ILLPAGCNT  = 000000FC            
+RPB$L_PFNCNT     0000004C            SS$_CONTROLO   = 00000609            SS$_ILLSEQOP   = 000002DC            
+RPB$L_RESTART    00000004            SS$_CONTROLY   = 00000611            SS$_ILLSER     = 00000104            
+RPB$L_RSTRTFLG   0000000C            SS$_CREATED    = 00000619            SS$_ILLUSRLBLRD= 00000958            
+RPB$L_SBR        000000AC            SS$_CTRLERR    = 00000054            SS$_ILLUSRLBLWT= 00000960            
+RPB$L_SCBB       000000B0            SS$_DATACHECK  = 0000005C            SS$_INCVOLLABEL= 0000010C            
+RPB$L_SISR       000000B4            SS$_DATAOVERUN = 00000838            SS$_INSFARG    = 00000114            
+RPB$L_SLR        000000B8            SS$_DEBUG      = 0000046C            SS$_INSFMEM    = 00000124            
+RPB$L_SVASPT     00000050            SS$_DECOVF     = 000004A4            SS$_INSFRAME   = 0000012C            
+RPB$Q_PFNMAP     00000044            SS$_DEVACTIVE  = 000002C4            SS$_INSFWSL    = 0000011C            
+RPB$T_FILE       00000068            SS$_DEVALLOC   = 00000840            SS$_INTDIV     = 00000484            
+RPB$V_BBLOCK   = 00000003            SS$_DEVALRALLOC= 00000641            SS$_INTOVF     = 0000047C            
+RPB$V_BOOBPT   = 00000005            SS$_DEVASSIGN  = 00000848            SS$_IVADDR     = 00000134            
+RPB$V_CONV     = 00000000            SS$_DEVFOREIGN = 00000064            SS$_IVCHAN     = 0000013C            
+RPB$V_DEBUG    = 00000001            SS$_DEVICEFULL = 00000850            SS$_IVCHNLSEC  = 0000026C            
+RPB$V_DIAG     = 00000004            SS$_DEVMOUNT   = 0000006C            SS$_IVDEVNAM   = 00000144            
+RPB$V_HALT     = 00000009            SS$_DEVNOTALLOC= 00000858            SS$_IVGSDNAM   = 0000014C            
+RPB$V_HEADER   = 00000006            SS$_DEVNOTMBX  = 00000074            SS$_IVLOGNAM   = 00000154            
+RPB$V_INIBPT   = 00000002            SS$_DEVNOTMOUNT= 0000007C            SS$_IVLOGTAB   = 0000015C            
+RPB$V_NOPFND   = 0000000A            SS$_DEVOFFLINE = 00000084            SS$_IVPROTECT  = 000002F4            
+RPB$V_NOTEST   = 00000007            SS$_DIRFULL    = 00000860            SS$_IVQUOTAL   = 00000164            
+RPB$V_SOLICT   = 00000008            SS$_DRVERR     = 0000008C            SS$_IVSECFLG   = 0000016C            
+RPB$W_UNIT       00000064            SS$_DUPFILENAME= 00000868            SS$_IVSECIDCTL = 000002E4            
+RPBBASE          000003F0 R     04   SS$_DUPLNAM    = 00000094            SS$_IVSSRQ     = 00000174            
+SCH$GL_CURPCB    00000359 RG    04   SS$_ENDOFFILE  = 00000870            SS$_IVSTSFLG   = 0000017C            
+SCH$GL_PCBVEC    00000359 RG    04   SS$_ENDOFTAPE  = 00000878            SS$_IVTIME     = 00000184            
+SKIPCONT         0000015C R     04   SS$_ENDOFUSRLBL= 00000970            SS$_LCKPAGFUL  = 000000D4            
+SKIP_PAGE        00000144 R     04   SS$_EXQUOTA    = 0000001C            SS$_LENVIO     = 0000018C            
+SS$_ABORT      = 0000002C            SS$_EXTIDXFILE = 00000880            SS$_LKWSETFUL  = 00000194            
+SS$_ACCONFLICT = 00000800            SS$_FCPREADERR = 00000888            SS$_MBFULL     = 000008D8            
+SS$_ACCVIO     = 0000000C            SS$_FCPREPSTN  = 00000988            SS$_MBTOOSML   = 0000019C            
+SS$_ACPVAFUL   = 000002FC            SS$_FCPREWNDERR= 00000890            SS$_MCHECK     = 000002BC            
+SS$_ARTRES     = 00000474            SS$_FCPSPACERR = 00000898            SS$_MEDOFL     = 000001A4            
+SS$_ASTFLT     = 0000040C            SS$_FCPWRITERR = 000008A0            SS$_MSGNOTFND  = 00000621            
+SS$_BADATTRIB  = 00000034            SS$_FILACCERR  = 0000009C            SS$_MTLBLLONG  = 00000304            
+SS$_BADCHKSUM  = 00000808            SS$_FILALRACC  = 000000A4            SS$_MUSTCLOSEFL= 00000948            
+SS$_BADESCAPE  = 0000003C            SS$_FILELOCKED = 000008A8            SS$_NOAQB      = 00000314            
+SS$_BADFILEHDR = 00000810            SS$_FILENUMCHK = 000008B0            SS$_NODATA     = 000001AC            
+SS$_BADFILENAME= 00000818            SS$_FILESEQCHK = 000008B8            SS$_NOHANDLER  = 000008F8            
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  20
+SYMBOL TABLE                                                                                                                     (1)
+
+SS$_NOHOMEBLK  = 000008E0            SS$_WAITUSRLBL = 00000950            UBA$M_SR_SSYNC = 00000001            
+SS$_NOIOCHAN   = 000001B4            SS$_WASCLR     = 00000001            UBA$M_SR_UBIFS = 40000000            
+SS$_NOLINKS    = 0000027C            SS$_WASECC     = 00000639            UBA$M_SR_UBSTO = 00000002            
+SS$_NOLOGNAM   = 000001BC            SS$_WASSET     = 00000009            UBA$S_BRRVR_IVA= 00000010            
+SS$_NOMBX      = 00000274            SS$_WRITLCK    = 0000025C            UBA$S_CR_ARLVL = 00000002            
+SS$_NOMOREFILES= 00000930            SS$_WRONGACP   = 0000031C            UBA$S_CR_MRDSB = 00000005            
+SS$_NONEXDRV   = 000001C4            START_BOOT       00000000 R     04   UBA$S_CSR_ADCOD= 00000008            
+SS$_NONEXPR    = 000008E8            SYS$ASSIGN       0000038E RG    04   UBA$S_DPR_ADDR = 00000010            
+SS$_NONLOCAL   = 000008F0            SYS$IOBASE       00000359 RG    04   UBA$S_DPR_STATE= 00000008            
+SS$_NOPRIV     = 00000024            UBA$L_BRRVR      00000030            UBA$S_FMER_MRN = 00000009            
+SS$_NORMAL     = 00000001            UBA$L_BRSVR      00000020            UBA$S_FUBAR_ADR= 00000012            
+SS$_NOSIGNAL   = 00000900            UBA$L_CR         00000004            UBA$S_MAP_ADDR = 00000015            
+SS$_NOSOLICIT  = 00000284            UBA$L_CSR        00000000            UBA$S_MAP_DPD  = 00000004            
+SS$_NOSUCHDEV  = 00000908            UBA$L_DCR        0000000C            UBA$S_SR_BRRVF = 00000004            
+SS$_NOSUCHFILE = 00000910            UBA$L_DPR        00000040            UBA$V_BRRVR_AIR= 0000001F            
+SS$_NOSUCHNODE = 0000028C            UBA$L_FMER       00000010            UBA$V_BRRVR_IVA= 00000000            
+SS$_NOSUCHSEC  = 00000978            UBA$L_FUBAR      00000014            UBA$V_CR_ARLVL = 00000007            
+SS$_NOTAPEOP   = 00000264            UBA$L_MAP        00000800            UBA$V_CR_BRIE  = 00000005            
+SS$_NOTFILEDEV = 000001CC            UBA$L_SR         00000008            UBA$V_CR_CNFIE = 00000002            
+SS$_NOTINTBLSZ = 000001D4            UBA$M_BRRVR_AIR= 80000000            UBA$V_CR_IFSIE = 00000006            
+SS$_NOTLABELMT = 000001DC            UBA$M_CR_ARLVL = 00000180            UBA$V_CR_INIT  = 00000000            
+SS$_NOTMODIFIED= 00000659            UBA$M_CR_BRIE  = 00000020            UBA$V_CR_MRDSB = 0000001A            
+SS$_NOTNETDEV  = 000002EC            UBA$M_CR_CNFIE = 00000004            UBA$V_CR_SUEFIE= 00000003            
+SS$_NOTRAN     = 00000629            UBA$M_CR_IFSIE = 00000040            UBA$V_CR_UBPF  = 00000001            
+SS$_NOTSQDEV   = 000001E4            UBA$M_CR_INIT  = 00000001            UBA$V_CR_USEFIE= 00000004            
+SS$_OPCCUS     = 00000434            UBA$M_CR_SUEFIE= 00000008            UBA$V_CSR_ADCOD= 00000000            
+SS$_OPCDEC     = 0000043C            UBA$M_CR_UBPF  = 00000002            UBA$V_CSR_IS   = 0000001C            
+SS$_OPINCOMPL  = 000002D4            UBA$M_CR_USEFIE= 00000010            UBA$V_CSR_MT   = 0000001B            
+SS$_PAGOWNVIO  = 000001EC            UBA$M_CSR_IS   = 10000000            UBA$V_CSR_OT   = 00000015            
+SS$_PAGRDERR   = 00000444            UBA$M_CSR_MT   = 08000000            UBA$V_CSR_PD   = 00000017            
+SS$_PARITY     = 000001F4            UBA$M_CSR_OT   = 00200000            UBA$V_CSR_PE   = 0000001F            
+SS$_PARTESCAPE = 000001FC            UBA$M_CSR_PD   = 00800000            UBA$V_CSR_PU   = 00000016            
+SS$_PFMBSY     = 00000204            UBA$M_CSR_PE   = 80000000            UBA$V_CSR_UBIC = 00000010            
+SS$_PLHLDR     = 00000404            UBA$M_CSR_PU   = 00400000            UBA$V_CSR_UBIIP= 00000012            
+SS$_PSTFULL    = 0000020C            UBA$M_CSR_UBIC = 00010000            UBA$V_CSR_UBPDN= 00000011            
+SS$_RADRMOD    = 0000044C            UBA$M_CSR_UBIIP= 00040000            UBA$V_CSR_URD  = 0000001D            
+SS$_REJECT     = 00000294            UBA$M_CSR_UBPDN= 00020000            UBA$V_CSR_WS   = 0000001E            
+SS$_REMOTE     = 00000649            UBA$M_CSR_URD  = 20000000            UBA$V_CSR_XMFLT= 0000001A            
+SS$_RESIGNAL   = 00000918            UBA$M_CSR_WS   = 40000000            UBA$V_DPR_ADDR = 00000000            
+SS$_RESULTOVF  = 00000214            UBA$M_CSR_XMFLT= 04000000            UBA$V_DPR_BNE  = 0000001F            
+SS$_ROPRAND    = 00000454            UBA$M_DPR_BNE  = 80000000            UBA$V_DPR_DPF  = 0000001D            
+SS$_SECTBLFUL  = 0000021C            UBA$M_DPR_DPF  = 20000000            UBA$V_DPR_STATE= 00000010            
+SS$_SSFAIL     = 0000045C            UBA$M_DPR_XMTER= 40000000            UBA$V_DPR_XMTER= 0000001E            
+SS$_SUBRNG     = 000004AC            UBA$M_MAP_BO   = 02000000            UBA$V_FMER_MRN = 00000000            
+SS$_SUPERSEDE  = 00000631            UBA$M_MAP_VALID= 80000000            UBA$V_FUBAR_ADR= 00000000            
+SS$_TAPEPOSLOST= 00000224            UBA$M_SR_BRID  = 00000800            UBA$V_MAP_ADDR = 00000000            
+SS$_TBIT       = 00000464            UBA$M_SR_BRSVF = 10000000            UBA$V_MAP_BO   = 00000019            
+SS$_TIMEOUT    = 0000022C            UBA$M_SR_CRD   = 00000100            UBA$V_MAP_DPD  = 00000015            
+SS$_TOOMANYVER = 00000990            UBA$M_SR_CXTER = 00000080            UBA$V_MAP_VALID= 0000001F            
+SS$_TOOMUCHDATA= 0000029C            UBA$M_SR_CXTMO = 00000040            UBA$V_SR_BRID  = 0000000B            
+SS$_UNASEFC    = 00000234            UBA$M_SR_DPPE  = 00000020            UBA$V_SR_BRRVF = 00000018            
+SS$_UNSAFE     = 0000023C            UBA$M_SR_IVMR  = 00000010            UBA$V_SR_BRSVF = 0000001C            
+SS$_UNWIND     = 00000920            UBA$M_SR_LER   = 00000004            UBA$V_SR_CRD   = 00000008            
+SS$_UNWINDING  = 00000928            UBA$M_SR_MRPE  = 00000008            UBA$V_SR_CXTER = 00000007            
+SS$_VASFULL    = 00000244            UBA$M_SR_RDS   = 00000200            UBA$V_SR_CXTMO = 00000006            
+SS$_VECINUSE   = 0000024C            UBA$M_SR_RDTO  = 00000400            UBA$V_SR_DPPE  = 00000005            
+SS$_VOLINV     = 00000254            UBA$M_SR_RIE   = 20000000            UBA$V_SR_IVMR  = 00000004            
+VMB             - VMS Primary Bootstrap Routine                  21-AUG-1978 22:34:05   VAX-11 MACRO X0.3-11               Page  21
+SYMBOL TABLE                                                                                                                     (1)
+
+UBA$V_SR_LER   = 00000002            
+UBA$V_SR_MRPE  = 00000003            
+UBA$V_SR_RDS   = 00000009            
+UBA$V_SR_RDTO  = 0000000A            
+UBA$V_SR_RIE   = 0000001D            
+UBA$V_SR_SSYNC = 00000000            
+UBA$V_SR_UBIFS = 0000001E            
+UBA$V_SR_UBSTO = 00000001            
+UNEXP_MCHK       00000334 R     04   
+VA$M_BYTE      = 000001FF            
+VA$M_P1        = 40000000            
+VA$M_SYSTEM    = 80000000            
+VA$M_VPG       = FFFFFE00            
+VA$M_VPN       = 3FFFFE00            
+VA$S_BYTE      = 00000009            
+VA$S_VPG       = 00000017            
+VA$S_VPN       = 00000015            
+VA$V_BYTE      = 00000000            
+VA$V_P1        = 0000001E            
+VA$V_SYSTEM    = 0000001F            
+VA$V_VPG       = 00000009            
+VA$V_VPN       = 00000009            
+VMSFILE          0000039C R     04   
+XDELBPT          ********   X   04   
+XDELIBRK         ********   X   04   
+XDELTBIT         ********   X   04   
+XDS$INIT         00000359 RG    04   
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            00000FC0      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+Z99BOOT          00000000      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT PAGE  
+$$$$00BOOT       000003F4      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT LONG  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+9094. BYTES LEFT IN FREE MEMORY POOL.
+1312. BYTES OF RECLAIMED MEMORY.
+OBJ$:VMB,LIS$:VMB/-SP=EXECML$/ML,SRC$:VMB
+7 MLB DIR RDS - 880 GETS TO DEFINE 18 MACROS. 89 INTER. FILE WRITES. 

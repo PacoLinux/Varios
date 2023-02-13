@@ -1,0 +1,904 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE TBKSSV (	IDENT = '000011' ) =
+;	0002	BEGIN
+;	0003	
+;	0004	! Copyright (C) 1978
+;	0005	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0006	!
+;	0007	! This software is furnished under a license for use only on a
+;	0008	! single computer system and may be copied only with the inclusion
+;	0009	! of the above copyright notice. This software, or any
+;	0010	! other copies thereof, may not be provided or otherwise made
+;	0011	! available to any other person except for use on such system
+;	0012	! and to one who agrees to these license terms. Title to and
+;	0013	! ownership of the software shall at all times remain in DEC.
+;	0014	!
+;	0015	! The information in this software is subject to change without
+;	0016	! notice and should not be construed as a commitment by Digital
+;	0017	! Equipment Corporation.
+;	0018	!
+;	0019	! DEC assumes no responsibility for the use or reliability of
+;	0020	! its software on equipment which is not supplied by DEC.
+;	0021	!
+;	0022	! FACILITY:
+;	0023	!	TRACEBACK
+;	0024	!
+;	0025	!++
+;	0026	! Abstract:
+;	0027	!	FAO formatting routine and output
+;	0028	!
+;	0029	! Version:	11
+;	0030	!
+;	0031	! History:
+;	0032	!	Author:
+;	0033	!		Carol Peters, 11 January 1978 : Version 01
+;	0034	!
+;	0035	!	Modified by:
+;	0036	!		Dale Roedger, 14 August 1978: Version 11
+;	0037	!
+;	0038	! Revision history:
+;	0039	!
+;	0040	!	02	18-jan-78	KGP	-Added a modified version of
+;	0041	!					 DBGEXC's dbg$report_msg
+;	0042	!	03	24-feb-78	KGP	-Threw away REPORT_MSG as we now
+;	0043	!					 use a system call for this.
+;	0044	!	04	28-fev-78	KGP	-New routine TBK$IO_SETUP to allow us
+;	0045	!					 to do I/O as SYS$PUTMSG does it.
+;	0046	!	05	01-mar-78	KGP	-New I/O scheme more like DEBUG's.  i.e.
+;	0047	!					 we always 'encode' into an output buffer
+;	0048	!					 and then only do 1 $PUT
+;	0049	!					-IO_SETUP now works from LOCALs to do
+;	0050	!					 the PUTMSG logical name translation.
+;	0051	!					-TBK$OUT_PUT now $PUTs to both
+;	0052	!					 SYS$OUTPUT and SYS$ERROR if the two
+;	0053	!					 are not the same.
+;	0054	!	06	7-mar-78	KGP	-New routine  TBK$PUTMSG which writes
+;	0055	!					 out messages (via SYS$PUTMSG)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!	07	8-mar-78	KGP	-Changed all REQUIRE file names so
+;	0057	!					 that TRACE is now separate from DEBUG.
+;	0058	!	08	27-mar-78	KGP	-Renamed TBK$PUTMSG to TBK$FAKE_MSG
+;	0059	!					-Added TBK$PUT_MSG which is almost
+;	0060	!					 excatly like DEBUG's new (5X33) DBG$PUTMSG.
+;	0061	!					 This routine sorts out the problem of
+;	0062	!					 software- vs hardware-generated SIGNALs.
+;	0063	!	09	26-APR-78	DAR	Modified require and library directives
+;	0064	!					for native build.
+;	0065	!	10	15-JUN-78	DAR	Changed all DBG$ symbols to TBK$.
+;	0066	!					TBK$FAO_OUT checks for stream active and
+;	0067	!					retries $PUT.
+;	0068	!	11	14-AUG-78	DAR	In TBK$PUTMSG we should subtract 2 from
+;	0069	!					SIG_ARG_LIST count if the exception code
+;	0070	!					is not found in the table of hardware
+;	0071	!					exceptions.
+;	0072	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0073	! Table of contents:
+;	0074	!
+;	0075	FORWARD ROUTINE
+;	0076		TBK$FAKE_MSG : NOVALUE,		! Write out fake traceback messages.
+;	0077		tbk$put_msg,			! Write out system-generated SIGNAL messages.
+;	0078		tbk$fao_put : novalue,		! Format into an output buffer.
+;	0079		TBK$IO_SETUP : NOVALUE,		! Init I/O to SYS$OUTPUT and SYS$ERROR.
+;	0080		tbk$out_put : novalue,
+;	0081		TBK$FAO_OUT : NOVALUE;		! Formatted output routine.
+;	0082	
+;	0083	!
+;	0084	! Include files:
+;	0085	!
+;	0086	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0087	
+;	0088	REQUIRE 'SRC$:TBKPCT.REQ';
+;	0100	REQUIRE 'SRC$:TBKGEN.REQ';
+;	0167	REQUIRE 'LIB$:TRACEMSG.REQ';
+;	0345	
+;	0346	!
+;	0347	! External symbols:
+;	0348	!
+;	0349	EXTERNAL ROUTINE
+;	0350		sys$putmsg: ADDRESSING_MODE (GENERAL),	! write out messages.
+;	0351		sys$trnlog: ADDRESSING_MODE (GENERAL),	! translate logical names
+;	0352		sys$faol: ADDRESSING_MODE (GENERAL);	! Format an ASCII string
+;	0353	
+;	0354	EXTERNAL
+;	0355		tbk$cp_out_str : REF VECTOR[, BYTE],		! POINTS INTO CURRENT OUTPUT BUFFER.
+;	0356		tbk$gl_buf_siz,				! holds current character count in output buffer
+;	0357		tbk$output_buf : VECTOR[,byte],
+;	0358		tbk$gl_outprab: BLOCK [, BYTE], 	! RAB for 'SYS$OUTPUT'
+;	0359		tbk$gl_errrab: BLOCK [, BYTE];	 	! RAB for 'SYS$ERROR'
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	0360	GLOBAL ROUTINE tbk$fao_out (string, arguments) : NOVALUE =
+;	0361	!++
+;	0362	! Functional description:
+;	0363	!	Sets up input and output string descriptors. Then calls
+;	0364	!	FAO to format the string. Then sends the formatted string to
+;	0365	!	SYS$OUTPUT, and then to SYS$ERROR as the two are not
+;	0366	!	the same.
+;	0367	!
+;	0368	! Formal parameters:
+;	0369	!	string		- the address of a counted control string to FAO
+;	0370	!	arguments	- may be absent. arguments to be applied to the
+;	0371	!			  FAO control string.
+;	0372	!
+;	0373	! Implicit inputs:
+;	0374	!	The RABs have been set up in TBK$IO_SETUP.
+;	0375	!
+;	0376	! Output parameters:
+;	0377	!	none
+;	0378	!
+;	0379	! Implicit outputs:
+;	0380	!	none.
+;	0381	!
+;	0382	! Routine value:
+;	0383	!	novalue
+;	0384	!
+;	0385	! Side effects:
+;	0386	!	If either $PUT fails we cause an $EXIT
+;	0387	!	with the associated status code.
+;	0388	!--
+;	0389	
+;	0390	BEGIN
+;	0391		
+;	0392		MAP
+;	0393			string		: REF VECTOR [, BYTE];
+;	0394	
+;	0395		LOCAL
+;	0396			out_buf		: VECTOR [tty_out_width, BYTE],
+;	0397			inp_desc	: VECTOR [2],
+;	0398			out_desc	: VECTOR [2],
+;	0399			status;
+;	0400	
+;	0401		! Set up the needed string descriptors
+;	0402		! and do the formatting.
+;	0403	
+;	0404		inp_desc [0] = .string [0];
+;	0405		inp_desc [1] = string [1];
+;	0406		out_desc [0] = tty_out_width;
+;	0407		out_desc [1] = out_buf;
+;	0408		sys$faol (inp_desc, tbk$gl_outprab [rab$w_rsz], out_desc, arguments);
+;	0409	
+;	0410		! Output always goes to SYS$OUTPUT.
+;	0411	
+;	0412		tbk$gl_outprab [rab$l_rbf] = out_buf;
+;	0413		status = $PUT (RAB = tbk$gl_outprab);
+;	0414	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+;	0415		IF .status EQL RMS$_RSA			! Record stream active error
+;	0416		THEN
+;	0417		    BEGIN
+;	0418		    $WAIT (RAB = tbk$gl_outprab);
+;	0419		    status = $PUT (RAB = tbk$gl_outprab);
+;	0420		    END;
+;	0421		IF NOT .status
+;	0422		THEN
+;	0423		    $exit (code = .status);
+;	0424		!+
+;	0425		! Output only goes to SYS$ERROR if its ISI
+;	0426		! number is different from SYS$OUTPUT's.
+;	0427		!-
+;	0428		IF( .TBK$GL_OUTPRAB[ RAB$W_ISI ] NEQ .TBK$GL_ERRRAB[ RAB$W_ISI ] )
+;	0429		THEN
+;	0430			BEGIN
+;	0431			tbk$gl_errrab [ rab$w_rsz ] = .tbk$gl_outprab[ rab$w_rsz ];
+;	0432			tbk$gl_errrab [rab$l_rbf] = out_buf;
+;	0433			status = $PUT (RAB = tbk$gl_errrab);
+;	0434			IF .status EQL RMS$_RSA		! Record stream active error
+;	0435			THEN
+;	0436			    BEGIN
+;	0437			    $WAIT (RAB = tbk$gl_errrab);
+;	0438			    status = $PUT (RAB = tbk$gl_errrab);
+;	0439			    END;
+;	0440			IF NOT .status
+;	0441			THEN
+;	0442			    $exit (code = .status);
+;	0443			END;
+;	0444	
+;	0445	END;
+
+
+							    .TITLE  TBKSSV
+							    .IDENT  \000011\
+
+							    .GLOBL  SYS$PUTMSG, SYS$TRNLOG, SYS$FAOL, TBK$CP_OUT_STR
+							    .GLOBL  TBK$GL_BUF_SIZ, TBK$OUTPUT_BUF, TBK$GL_OUTPRAB
+							    .GLOBL  TBK$GL_ERRRAB, SYS$PUT, SYS$WAIT, SYS$EXIT
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 0F84 00000 	    .ENTRY  TBK$FAO_OUT, Save R2,R7,R8,R9,R10,R11		      ; 0360
+		         57 00000000G  9F  9E 00002 	    MOVAB   @#SYS$EXIT, R7					      ;
+		         58 00000000G  9F  9E 00009 	    MOVAB   @#SYS$WAIT, R8					      ;
+		         59	0000G  CF  9E 00010 	    MOVAB   TBK$GL_ERRRAB, R9					      ;
+		         5A	0000G  CF  9E 00015 	    MOVAB   TBK$GL_OUTPRAB, R10					      ;
+		         5B 00000000G  9F  9E 0001A 	    MOVAB   @#SYS$PUT, R11					      ;
+		         5E	FF70   CE  9E 00021 	    MOVAB   -144(SP), SP					      ;
+		    04   AE	  04   BC  9A 00026 	    MOVZBL  @STRING, INP_DESC					      ; 0404
+      08   AE	    04   AC	       01  C1 0002B 	    ADDL3   #1, STRING, INP_DESC+4				      ; 0405
+		         7E	  84   8F  9A 00031 	    MOVZBL  #132, OUT_DESC					      ; 0406
+		    04   AE	  10   AE  9E 00035 	    MOVAB   OUT_BUF, OUT_DESC+4					      ; 0407
+				  08   AC  9F 0003A 	    PUSHAB  ARGUMENTS						      ; 0408
+				  04   AE  9F 0003D 	    PUSHAB  OUT_DESC						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+				  22   AA  9F 00040 	    PUSHAB  TBK$GL_OUTPRAB+34					      ;
+				  14   AE  9F 00043 	    PUSHAB  INP_DESC						      ;
+	      00000000G  00	       04  FB 00046 	    CALLS   #4, SYS$FAOL					      ;
+		    28   AA	  10   AE  9E 0004D 	    MOVAB   OUT_BUF, TBK$GL_OUTPRAB+40				      ; 0412
+				       5A  DD 00052 	    PUSHL   R10							      ; 0413
+		         6B	       01  FB 00054 	    CALLS   #1, SYS$PUT						      ;
+		         52	       50  D0 00057 	    MOVL    R0, STATUS						      ;
+	      000182DA   8F	       52  D1 0005A 	    CMPL    STATUS, #99034					      ; 0415
+				       0D  12 00061 	    BNEQ    1$							      ;
+				       5A  DD 00063 	    PUSHL   R10							      ; 0418
+		         68	       01  FB 00065 	    CALLS   #1, SYS$WAIT					      ;
+				       5A  DD 00068 	    PUSHL   R10							      ; 0419
+		         6B	       01  FB 0006A 	    CALLS   #1, SYS$PUT						      ;
+		         52	       50  D0 0006D 	    MOVL    R0, STATUS						      ;
+		         05	       52  E8 00070 1$:     BLBS    STATUS, 2$						      ; 0421
+				       52  DD 00073 	    PUSHL   STATUS						      ; 0423
+		         67	       01  FB 00075 	    CALLS   #1, SYS$EXIT					      ;
+		    02   A9	  02   AA  B1 00078 2$:     CMPW    TBK$GL_OUTPRAB+2, TBK$GL_ERRRAB+2			      ; 0428
+				       30  13 0007D 	    BEQL    4$							      ;
+		    22   A9	  22   AA  B0 0007F 	    MOVW    TBK$GL_OUTPRAB+34, TBK$GL_ERRRAB+34			      ; 0431
+		    28   A9	  10   AE  9E 00084 	    MOVAB   OUT_BUF, TBK$GL_ERRRAB+40				      ; 0432
+				       59  DD 00089 	    PUSHL   R9							      ; 0433
+		         6B	       01  FB 0008B 	    CALLS   #1, SYS$PUT						      ;
+		         52	       50  D0 0008E 	    MOVL    R0, STATUS						      ;
+	      000182DA   8F	       52  D1 00091 	    CMPL    STATUS, #99034					      ; 0434
+				       0D  12 00098 	    BNEQ    3$							      ;
+				       59  DD 0009A 	    PUSHL   R9							      ; 0437
+		         68	       01  FB 0009C 	    CALLS   #1, SYS$WAIT					      ;
+				       59  DD 0009F 	    PUSHL   R9							      ; 0438
+		         6B	       01  FB 000A1 	    CALLS   #1, SYS$PUT						      ;
+		         52	       50  D0 000A4 	    MOVL    R0, STATUS						      ;
+		         05	       52  E8 000A7 3$:     BLBS    STATUS, 4$						      ; 0440
+				       52  DD 000AA 	    PUSHL   STATUS						      ; 0442
+		         67	       01  FB 000AC 	    CALLS   #1, SYS$EXIT					      ;
+					   04 000AF 4$:     RET     							      ; 0360
+
+; Routine Size:  176 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	0446	GLOBAL ROUTINE TBK$OUT_PUT  : NOVALUE =
+;	0447	!++
+;	0448	! Functional Description:
+;	0449	!	Cause the current output buffer to be output
+;	0450	!	to SYS$OUTPUT [and to SYS$ERROR if the latter is
+;	0451	!	different from the former].
+;	0452	!
+;	0453	!	Also do the needed initialization so that a subsequent
+;	0454	!	call to TBK$FAO_PUT will go as expected.
+;	0455	!
+;	0456	! Calling Sequence:
+;	0457	!	TBK$OUT_PUT ()
+;	0458	!
+;	0459	! Inputs:
+;	0460	!	none.
+;	0461	!
+;	0462	! Implicit Inputs:
+;	0463	!	TBK$OUTPUT_BUF	- is a pointer to the beginning of the current
+;	0464	!			output buffer.  This is supposed to be a counted
+;	0465	!			string except that no one has supplied the count yet.
+;	0466	!			i.e. we expect that the actual string to be printed
+;	0467	!			starts in byte TBK$OUTPUT_BUF+1.
+;	0468	!	tbk$cp_out_str - points into this output buffer at the first
+;	0469	!			 place in the buffer which is NOT to be printed.
+;	0470	!	tbk$gl_buf_siz - holds count of characters in buffer
+;	0471	!
+;	0472	! Outputs:
+;	0473	!	Except for the leading <cr><lf> (by definition of SYS$OUTPUT),
+;	0474	!	the string is printed, exactly as it is in the
+;	0475	!	buffer - ie, it should contain whatever carriage control 
+;	0476	!	you want.
+;	0477	!
+;	0478	! Implicit Outputs:
+;	0479	!	A setup is done for subsequent I/O.
+;	0480	!
+;	0481	! Routine Value:
+;	0482	!	NOVALUE.
+;	0483	!
+;	0484	! Side Effects.
+;	0485	!	1 or 2 lines of output are $PUT.
+;	0486	!--
+;	0487	
+;	0488		BEGIN
+;	0489	
+;	0490		! Fill in the count, and pass it to QIO.
+;	0491	
+;	0492		tbk$output_buf [0] = .tbk$gl_buf_siz;
+;	0493		tbk$fao_out( uplit( %ascic '!AC'), tbk$output_buf );
+;	0494	
+;	0495		tbk$cp_out_str = tbk$output_buf +1;
+;	0496		tbk$gl_buf_siz = 0;
+;	0497		END;
+
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+							    .PSECT  TBK$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .ASCII  <3>\!AC\						      ;
+
+
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 0000 000B0 	    .ENTRY  TBK$OUT_PUT, Save nothing				      ; 0446
+		  0000G  CF	0000G  CF  90 000B2 	    MOVB    TBK$GL_BUF_SIZ, TBK$OUTPUT_BUF			      ; 0492
+				0000G  CF  9F 000B9 	    PUSHAB  TBK$OUTPUT_BUF					      ; 0493
+				0000'  CF  9F 000BD 	    PUSHAB  P.AAA						      ;
+		  FF3A   CF	       02  FB 000C1 	    CALLS   #2, TBK$FAO_OUT					      ;
+		  0000G  CF	0000G  CF  9E 000C6 	    MOVAB   TBK$OUTPUT_BUF+1, TBK$CP_OUT_STR			      ; 0495
+				0000G  CF  D4 000CD 	    CLRL    TBK$GL_BUF_SIZ					      ; 0496
+					   04 000D1 	    RET     							      ; 0446
+
+; Routine Size:  34 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	0498	GLOBAL ROUTINE tbk$fake_msg( exception_name, parameter ) : novalue =
+;	0499	!++
+;	0500	! Functional Description:
+;	0501	!
+;	0502	!	Put out TRACE 'error' messages via SYS$PUTMSG.
+;	0503	!
+;	0504	!	The reason we specify that this is via SYS$PUTMSG is that
+;	0505	!	we want IT to decide where the output should go to.
+;	0506	!	The reason we can't use PUTMSG directly is that it
+;	0507	!	wants the argument of a signal array as its parameter
+;	0508	!	when we simply have a message number and must therefore
+;	0509	!	fake the signal.
+;	0510	!	The reason we can't use LIB$SIGNAL to put out the
+;	0511	!	message is 1) we don't want a signal to be generated
+;	0512	!			on top of the signal we are already handling,
+;	0513	!	and
+;	0514	!		   2) LIB$SIGNAL's signal leaves it up to someone else
+;	0515	!			(namely CLI's default frame or last chance handler)
+;	0516	!			to decide where the output goes to, and we
+;	0517	!			don't want to loose control of this, and
+;	0518	!			more importantly, this someone else takes it
+;	0519	!			upon itself to decide whether to give us
+;	0520	!			back control again - we ALWAYS want control back
+;	0521	!			when we do TBK$PUTMSG.
+;	0522	!
+;	0523	! Formal Parameters:
+;	0524	!
+;	0525	!	exception_name	-The error message longword
+;	0526	!	parameter	-If non-zero, this parameter is passed on
+;	0527	!			 to PUTMSG in the signal arg list.
+;	0528	!
+;	0529	! Implicit Inputs:
+;	0530	!
+;	0531	!	At most 1 parameter will be passed along with the
+;	0532	!	signal array list.
+;	0533	!
+;	0534	! Side Effects:
+;	0535	!
+;	0536	!	The message gets put out to the same place that all TRACE's
+;	0537	!	other stuff goes to.
+;	0538	!
+;	0539	!	The usual action taken on messages, based on their severity
+;	0540	!	level, is overridden here - we always get control back
+;	0541	!	and continue TRACEback.
+;	0542	!
+;	0543	!--
+;	0544	
+;	0545	BEGIN
+;	0546		LOCAL
+;	0547					! 'FAKE' signal array to build
+;	0548					! args to SYS$PUTMSG in.
+;	0549			SIGNAL_ARRAY : VECTOR[6,LONG];
+;	0550	
+;	0551		! There must be atleast 2 entries in the
+;	0552		! signal array.  The 0th element is the
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 5-1
+; Digital Equipment Corporation
+;
+;	0553		! count of the rest, the next is always the
+;	0554		! exception name. Subsequent ones are
+;	0555		! supposed parameters to the error message
+;	0556		! along with their FAO arg count.
+;	0557		! We only support having 0 or 1 associated
+;	0558		! parameters becasue that's all we need.
+;	0559	
+;	0560		signal_array[0] = 1;
+;	0561		signal_array[1] = .exception_name;
+;	0562	
+;	0563		! If we got an arg, we pass it on.
+;	0564	
+;	0565		IF( .PARAMETER NEQ 0 )
+;	0566		THEN
+;	0567			BEGIN
+;	0568	
+;	0569			! Adding 1 arg means upping the total arg count
+;	0570			! by two because we stuff in the new arg, and
+;	0571			! its count (1), too.
+;	0572	
+;	0573			SIGNAL_ARRAY[0] = .SIGNAL_ARRAY[0] + 2;
+;	0574			signal_array[2] = 1;
+;	0575			SIGNAL_ARRAY[3] = .PARAMETER;
+;	0576			END;
+;	0577	
+;	0578		! Now we can just let the system routine
+;	0579		! take care of formatting and writing out
+;	0580		! the message.
+;	0581	
+;	0582		SYS$PUTMSG( signal_array, 0, 0);
+;	0583	END;
+
+
+
+
+
+					 0000 000D2 	    .ENTRY  TBK$FAKE_MSG, Save nothing				      ; 0498
+		         5E	       14  C2 000D4 	    SUBL2   #20, SP						      ;
+				       01  DD 000D7 	    PUSHL   #1							      ; 0560
+		    04   AE	  04   AC  D0 000D9 	    MOVL    EXCEPTION_NAME, SIGNAL_ARRAY+4			      ; 0561
+				  08   AC  D5 000DE 	    TSTL    PARAMETER						      ; 0565
+				       0C  13 000E1 	    BEQL    1$							      ;
+		         6E	       02  C0 000E3 	    ADDL2   #2, SIGNAL_ARRAY					      ; 0573
+		    08   AE	       01  D0 000E6 	    MOVL    #1, SIGNAL_ARRAY+8					      ; 0574
+		    0C   AE	  08   AC  D0 000EA 	    MOVL    PARAMETER, SIGNAL_ARRAY+12				      ; 0575
+				       7E  7C 000EF 1$:     CLRQ    -(SP)						      ; 0582
+				  08   AE  9F 000F1 	    PUSHAB  SIGNAL_ARRAY					      ;
+	      00000000G  00	       03  FB 000F4 	    CALLS   #3, SYS$PUTMSG					      ;
+					   04 000FB 	    RET     							      ; 0498
+
+; Routine Size:  42 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 6
+; Digital Equipment Corporation
+;
+;	0584	GLOBAL ROUTINE TBK$PUT_MSG (sig_arg_list) =
+;	0585	!++
+;	0586	! Functional description:
+;	0587	!	Reports a system-generated message by calling SYS$PUTMSG.
+;	0588	!	This routine checks the exception name to see if the exception is not
+;	0589	!	a hardware exception.  If it is not a hardware exception 2 is subtracted
+;	0590	!	from the signal argument list count before calling SYS$PUTMSG.
+;	0591	!	After SYS$PUTMSG returns the original count is restored.
+;	0592	!
+;	0593	! Inputs:
+;	0594	!	sig_arg_list	- the address of the signal argument list.
+;	0595	!
+;	0596	! Implicit inputs:
+;	0597	!	None
+;	0598	!
+;	0599	! Outputs:
+;	0600	!	none
+;	0601	!
+;	0602	! Implicit outputs:
+;	0603	!	none
+;	0604	!
+;	0605	! Routine value:
+;	0606	!	The status value returned by SYS$PUTMSG.
+;	0607	!
+;	0608	! Side effects:
+;	0609	!	SYS$PUTMSG is called - this defines the process
+;	0610	!	logical name upon which TBK$IO_SETUP depends.
+;	0611	!
+;	0612	!	The message is output.
+;	0613	!--
+;	0614	
+;	0615	BEGIN
+;	0616	
+;	0617		LOCAL
+;	0618			status,
+;	0619			orig_arg_count,
+;	0620			index,
+;	0621			excep_name : BLOCK [%UPVAL, BYTE],
+;	0622			table_value : BLOCK [%UPVAL, BYTE];
+;	0623	
+;	0624		MAP
+;	0625			sig_arg_list : REF VECTOR;
+;	0626	
+;	0627		BIND
+;	0628			hardware_excep = UPLIT WORD (ss$_accvio, ss$_artres, ss$_intovf,
+;	0629					ss$_intdiv, ss$_fltovf, ss$_fltdiv, ss$_fltund,
+;	0630					ss$_decovf, ss$_subrng, ss$_astflt, ss$_break,
+;	0631					ss$_cmodsupr, ss$_cmoduser, ss$_compat,
+;	0632					ss$_debug, ss$_opccus, ss$_opcdec, ss$_pagrderr,
+;	0633					ss$_radrmod, ss$_roprand, ss$_ssfail, ss$_tbit,
+;	0634					0) : VECTOR [, WORD];
+;	0635	
+;	0636		orig_arg_count = .sig_arg_list[0];		! Get orignial arg. count
+;	0637		excep_name = .sig_arg_list[1];			! Get exception name
+;	0638		IF (.excep_name[STS$V_FAC_NO] NEQ 0)		! Not SYSTEM facility
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 6-1
+; Digital Equipment Corporation
+;
+;	0639		THEN
+;	0640			BEGIN
+;	0641			sig_arg_list[0] = .sig_arg_list[0] - 2;	! update argument count
+;	0642			END
+;	0643		ELSE
+;	0644			BEGIN
+;	0645			index = 0;
+;	0646			!+
+;	0647			! This loop will exit with -1 if the exception name is not found.
+;	0648			! In that case we must subtract 2 from the signal argument list
+;	0649			! argument count before calling SYS$PUTMSG.
+;	0650			!-
+;	0651			IF (WHILE (.hardware_excep[.index] NEQ 0)
+;	0652			    DO
+;	0653			    BEGIN
+;	0654			    table_value = .hardware_excep[.index]; ! pick up next value
+;	0655			    IF (.excep_name[STS$V_CODE] EQL .table_value[STS$V_CODE])
+;	0656			    THEN
+;	0657				EXITLOOP 0;
+;	0658	
+;	0659			    index = .index + 1;
+;	0660			    END)
+;	0661			THEN
+;	0662			    sig_arg_list[0] = .sig_arg_list[0] - 2;
+;	0663			END;
+;	0664	
+;	0665		! Now, finally, output the message.
+;	0666	
+;	0667		status = SYS$PUTMSG (.sig_arg_list, 0, 0);
+;	0668		sig_arg_list[0] = .orig_arg_count;
+;	0669	
+;	0670		! Return the status which PUTMSG returned.
+;	0671	
+;	0672		RETURN(.STATUS);
+;	0673	
+;	0674	END;
+
+
+
+							    .PSECT  TBK$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00004 P.AAB:  .WORD   12, 1140, 1148, 1156, 1164, 1172, 1180, 1188, 1196, -     ;
+								    1036, 1044, 1052, 1060, 1068, 1132, 1076, 1084, 1092, -   ;
+								    1100, 1108, 1116, 1124, 0				      ;
+					      00032	    .BLKB   2
+
+						    HARDWARE_EXCEP=	P.AAB
+
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 003C 000FC 	    .ENTRY  TBK$PUT_MSG, Save R2,R3,R4,R5			      ; 0584
+		         52	  04   AC  D0 000FE 	    MOVL    SIG_ARG_LIST, R2					      ; 0636
+		         54	       62  D0 00102 	    MOVL    (R2), ORIG_ARG_COUNT				      ;
+		         51	  04   A2  D0 00105 	    MOVL    4(R2), EXCEP_NAME					      ; 0637
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 6-2
+; Digital Equipment Corporation
+;
+	   51	         0C	       10  ED 00109 	    CMPZV   #16, #12, EXCEP_NAME, #0				      ; 0638
+				       00     0010D									      ;
+				       1F  12 0010E 	    BNEQ    2$							      ;
+				       50  D4 00110 	    CLRL    INDEX						      ; 0645
+				0000'CF40  B5 00112 1$:     TSTW    HARDWARE_EXCEP[INDEX]				      ; 0651
+				       16  13 00117 	    BEQL    2$							      ;
+		         53	0000'CF40  3C 00119 	    MOVZWL  HARDWARE_EXCEP[INDEX], TABLE_VALUE			      ; 0654
+	   53	         0C	       03  EF 0011F 	    EXTZV   #3, #12, TABLE_VALUE, R5				      ; 0655
+				       55     00123									      ;
+	   51	         0C	       03  ED 00124 	    CMPZV   #3, #12, EXCEP_NAME, R5				      ;
+				       55     00128									      ;
+				       07  13 00129 	    BEQL    3$							      ;
+				       50  D6 0012B 	    INCL    INDEX						      ; 0659
+				       E3  11 0012D 	    BRB     1$							      ; 0651
+		         62	       02  C2 0012F 2$:     SUBL2   #2, (R2)						      ; 0662
+				       7E  7C 00132 3$:     CLRQ    -(SP)						      ; 0667
+				       52  DD 00134 	    PUSHL   R2							      ;
+	      00000000G  00	       03  FB 00136 	    CALLS   #3, SYS$PUTMSG					      ;
+		         62	       54  D0 0013D 	    MOVL    ORIG_ARG_COUNT, (R2)				      ; 0668
+					   04 00140 	    RET     							      ; 0584
+
+; Routine Size:  69 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 7
+; Digital Equipment Corporation
+;
+;	0675	GLOBAL ROUTINE tbk$fao_put( STRING, ARGUMENTS ) : NOVALUE =
+;	0676	!++
+;	0677	! FUNCTIONAL DESCRIPTION
+;	0678	!	DO JUST WHAT $FAO DOES, ONLY HERE WE WORK IN
+;	0679	!	CO-OPERATION WITH A GLOBAL CHARACTER BUFFER INTO
+;	0680	!	WHICH WE ARE ENCODING ARBITRARY LINES OF OUTPUT.
+;	0681	!
+;	0682	!	All output done within TRACE should use this
+;	0683	!	routine to build output lines.  Then, once the buffer
+;	0684	!	has been filled, a call to TBK$OUT_PUT should be
+;	0685	!	made to cause the $PUT.
+;	0686	!
+;	0687	! FORMAL PARAMETERS:
+;	0688	!	STRING	  - A COUNTED STRING WHICH CONTAINS THE DIRECTIVES FOR $FAO.
+;	0689	!	ARGUMENTS - THE ARGS FOR $FAO.
+;	0690	!
+;	0691	! IMPLICIT INPUTS:
+;	0692	!	tbk$cp_out_str	- POINTER TO WHERE WE ARE IN THE
+;	0693	!			CURRENT OUTPUT BUFFER.
+;	0694	!	tbk$gl_buf_siz	- count of characters in output buffer.
+;	0695	!
+;	0696	! OUTPUTS:
+;	0697	!	THE $FAO OUTPUT IS PUT INTO THE OUTPUT BUFFER.
+;	0698	!
+;	0699	! IMPLICIT OUTPUTS:
+;	0700	!	THE GLOBAL CHARACTER POINTER IS INCREMENTED SO THAT IT
+;	0701	!	POINTS (AS ALWAYS) TO THE NEXT AVAILABLE PLACE IN THE
+;	0702	!	OUTPUT BUFFER. The buffer count variable is incremented
+;	0703	!	by the size of this string.
+;	0704	!
+;	0705	! ROUTINE VALUE:
+;	0706	!	NONE.
+;	0707	!
+;	0708	! SIDE EFFECTS:
+;	0709	!	NONE.
+;	0710	!--
+;	0711	
+;	0712		BEGIN
+;	0713		MAP
+;	0714			STRING : REF VECTOR[,BYTE];
+;	0715		LOCAL
+;	0716			INP_DESC : VECTOR[2],		! INPUT DESC FOR $FAO.
+;	0717			OUT_DESC : VECTOR[2],		! OUTPUT DESC FOR $FAO.
+;	0718			STR_SIZE : WORD;		! $FAO RETURNS OUTPUT SIZE HERE.
+;	0719		!+
+;	0720		! BUILD THE DESCRIPTORS THAT $FAO WANTS, ASK IT TO DO
+;	0721		! THE ENCODING, COPYING THE OUTPUT INTO OUR GLOBAL
+;	0722		! OUTPUT BUFFER, AND FINALLY UPDATE THE GLOBAL POINTER
+;	0723		! TO THE NEXT FREE CHARACTER POSITION IN THE BUFFER.
+;	0724		!-
+;	0725	
+;	0726		INP_DESC[0] = .STRING[0];
+;	0727		INP_DESC[1] = STRING[1];
+;	0728		OUT_DESC [0] = TTY_OUT_WIDTH - 1 - .tbk$gl_buf_siz;
+;	0729		OUT_DESC[1] = .tbk$cp_out_str;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 7-1
+; Digital Equipment Corporation
+;
+;	0730		SYS$FAOL( INP_DESC, STR_SIZE, OUT_DESC, ARGUMENTS );
+;	0731		tbk$cp_out_str = .tbk$cp_out_str + .STR_SIZE;
+;	0732		tbk$gl_buf_siz = .tbk$gl_buf_siz + .STR_SIZE;
+;	0733		END;
+
+
+
+
+
+					 0000 00141 	    .ENTRY  TBK$FAO_PUT, Save nothing				      ; 0675
+		         5E	       14  C2 00143 	    SUBL2   #20, SP						      ;
+		    0C   AE	  04   BC  9A 00146 	    MOVZBL  @STRING, INP_DESC					      ; 0726
+      10   AE	    04   AC	       01  C1 0014B 	    ADDL3   #1, STRING, INP_DESC+4				      ; 0727
+      04   AE 00000083   8F	0000G  CF  C3 00151 	    SUBL3   TBK$GL_BUF_SIZ, #131, OUT_DESC			      ; 0728
+		    08   AE	0000G  CF  D0 0015C 	    MOVL    TBK$CP_OUT_STR, OUT_DESC+4				      ; 0729
+				  08   AC  9F 00162 	    PUSHAB  ARGUMENTS						      ; 0730
+				  08   AE  9F 00165 	    PUSHAB  OUT_DESC						      ;
+				  08   AE  9F 00168 	    PUSHAB  STR_SIZE						      ;
+				  18   AE  9F 0016B 	    PUSHAB  INP_DESC						      ;
+	      00000000G  00	       04  FB 0016E 	    CALLS   #4, SYS$FAOL					      ;
+		         50	       6E  3C 00175 	    MOVZWL  STR_SIZE, R0					      ; 0731
+		  0000G  CF	       50  C0 00178 	    ADDL2   R0, TBK$CP_OUT_STR					      ;
+		         50	       6E  3C 0017D 	    MOVZWL  STR_SIZE, R0					      ; 0732
+		  0000G  CF	       50  C0 00180 	    ADDL2   R0, TBK$GL_BUF_SIZ					      ;
+					   04 00185 	    RET     							      ; 0675
+
+; Routine Size:  69 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 8
+; Digital Equipment Corporation
+;
+;	0734	GLOBAL ROUTINE TBK$IO_SETUP : NOVALUE =
+;	0735	!++
+;	0736	! Functional Description:
+;	0737	!
+;	0738	!	Set up the output FABs so that TRACE can
+;	0739	!	output without opening or connecting to SYS$OUTPUT
+;	0740	!	and/or SYS$ERROR.
+;	0741	!
+;	0742	!	This is done by assuning that SYS$PUTMSG has already
+;	0743	!	done this AND that it has created a process logical
+;	0744	!	name (SYS$PUTMSG) to allow us to 'steal' the ISI
+;	0745	!	numbers we need to properly initialize the RABs.
+;	0746	!
+;	0747	! Implicit Inputs:
+;	0748	!
+;	0749	!	The equivalence name for SYS$PUTMSG has the following
+;	0750	!	format:
+;	0751	!
+;	0752	!		|  2 bytes    |  2 bytes     |  2 bytes   |
+;	0753	!		|-----|-------|------|-------|-----|------|
+;	0754	!		|  ERROR_ISI  |  OUTPUT_ISI  |   ^x11B    |
+;	0755	!		|-----|-------|------|-------|-----|------|
+;	0756	!
+;	0757	!	The ^X11B is simply a prefix made up in the SYS$PUTMSG
+;	0758	!	creation-of-logical-name code to ensure that if
+;	0759	!	we get a TRNLOG here we get what we expect.  If this
+;	0760	!	prefix is NOT there we punt.
+;	0761	
+;	0762	! Side Effects:
+;	0763	!
+;	0764	!	The equivalence string for SYS$PUTMSG is requested
+;	0765	!	from the 'process' logical name table.  From this 'fake'
+;	0766	!	string is extracted the ISI numbers for SYS$ERROR and
+;	0767	!	SYS$OUTPUT.  These ISIs are stuffed into the
+;	0768	!	2 RABs we use for $PUTting.
+;	0769	!--
+;	0770	
+;	0771	BEGIN
+;	0772		LOCAL
+;	0773			dummy,		! TRNLOG passes back info we don't want.
+;	0774	
+;	0775					! Character string descriptor for 
+;	0776					! SYS$PUTMSG logical name
+;	0777			putmsg_desc : vector[2,long],
+;	0778	
+;	0779					! Character string descriptor for resultant
+;	0780					! equivalent string (from TRNLOG)
+;	0781			equiv_desc : vector[2,long],
+;	0782	
+;	0783					! Equivalence name has a supposed
+;	0784					! fixed format.  (See above).
+;	0785			equiv_string : vector[3,word],
+;	0786	
+;	0787			status;
+;	0788	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 8-1
+; Digital Equipment Corporation
+;
+;	0789		! Set up a descriptor for the logical name
+;	0790		! SYS$PUTMSG and for the equivalence name
+;	0791		! we assume SYS$PUTMSG has created, and then
+;	0792		! translate this name to its 'equivalence' string.
+;	0793	
+;	0794		PUTMSG_DESC[0] = %CHARCOUNT (%ASCII 'SYS$PUTMSG' );
+;	0795		PUTMSG_DESC[1] = UPLIT BYTE (%ASCII 'SYS$PUTMSG' );
+;	0796		equiv_desc[0] = 6;	! Special name fits into 3 words.
+;	0797		equiv_desc[1] = EQUIV_STRING;
+;	0798	
+;	0799		STATUS = SYS$TRNLOG(	PUTMSG_DESC,
+;	0800					dummy,		! throw away resultant length.
+;	0801					equiv_desc,	! resultant string descriptor.
+;	0802					dummy,		! throw away 'found' table.
+;	0803					dummy,		! throw away access mode
+;	0804					3		! look in 'process' table only
+;	0805				   );
+;	0806		IF( NOT .STATUS EQL SS$_NORMAL )
+;	0807		THEN
+;	0808			$EXIT( code = .STATUS );
+;	0809			! no return
+;	0810	
+;	0811		! Check for the special identifying word
+;	0812		! in the equivalence string.
+;	0813	
+;	0814		IF( .EQUIV_STRING[0] NEQ %X'11B' )
+;	0815		THEN
+;	0816			$EXIT( code = TBK$_NOIOCHAN );
+;	0817	
+;	0818		! Initialize what is needed by the rest of
+;	0819		! TRACE's output routines. i.e. The output buffer
+;	0820		! pointers, and the ISI numbers we stuff
+;	0821		! into the RABs we use for SYS$ERROR and SYS$OUTPUT.
+;	0822	
+;	0823		tbk$gl_outprab[ RAB$W_ISI ] = .EQUIV_STRING[1];
+;	0824		tbk$gl_errrab[ RAB$W_ISI ] = .EQUIV_STRING[2];
+;	0825	
+;	0826		tbk$cp_out_str = tbk$output_buf +1;
+;	0827		tbk$gl_buf_siz = 0;
+;	0828	END;
+
+
+
+							    .PSECT  TBK$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00034 P.AAC:  .ASCII  \SYS$PUTMSG\					      ;
+					      0003E	    .BLKB   2
+
+
+
+							    .PSECT  TBK$CODE,NOWRT,  SHR,  PIC,0
+
+					 0800 00186 	    .ENTRY  TBK$IO_SETUP, Save R11				      ; 0734
+		         5B 00000000G  9F  9E 00188 	    MOVAB   @#SYS$EXIT, R11					      ;
+		         5E	       1C  C2 0018F 	    SUBL2   #28, SP						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 8-2
+; Digital Equipment Corporation
+;
+		    14   AE	       0A  D0 00192 	    MOVL    #10, PUTMSG_DESC					      ; 0794
+		    18   AE	0000'  CF  9E 00196 	    MOVAB   P.AAC, PUTMSG_DESC+4				      ; 0795
+		    0C   AE	       06  D0 0019C 	    MOVL    #6, EQUIV_DESC					      ; 0796
+		    10   AE	  04   AE  9E 001A0 	    MOVAB   EQUIV_STRING, EQUIV_DESC+4				      ; 0797
+				       03  DD 001A5 	    PUSHL   #3							      ; 0799
+				  04   AE  9F 001A7 	    PUSHAB  DUMMY						      ;
+				  08   AE  9F 001AA 	    PUSHAB  DUMMY						      ;
+				  18   AE  9F 001AD 	    PUSHAB  EQUIV_DESC						      ;
+				  10   AE  9F 001B0 	    PUSHAB  DUMMY						      ;
+				  28   AE  9F 001B3 	    PUSHAB  PUTMSG_DESC						      ;
+	      00000000G  00	       06  FB 001B6 	    CALLS   #6, SYS$TRNLOG					      ;
+		         01	       50  D1 001BD 	    CMPL    STATUS, #1						      ; 0806
+				       05  13 001C0 	    BEQL    1$							      ;
+				       50  DD 001C2 	    PUSHL   STATUS						      ; 0808
+		         6B	       01  FB 001C4 	    CALLS   #1, SYS$EXIT					      ;
+		  011B   8F	  04   AE  B1 001C7 1$:     CMPW    EQUIV_STRING, #283					      ; 0814
+				       09  13 001CD 	    BEQL    2$							      ;
+			    000984B4   8F  DD 001CF 	    PUSHL   #623796						      ; 0816
+		         6B	       01  FB 001D5 	    CALLS   #1, SYS$EXIT					      ;
+		  0000G  CF	  06   AE  B0 001D8 2$:     MOVW    EQUIV_STRING+2, TBK$GL_OUTPRAB+2			      ; 0823
+		  0000G  CF	  08   AE  B0 001DE 	    MOVW    EQUIV_STRING+4, TBK$GL_ERRRAB+2			      ; 0824
+		  0000G  CF	0000G  CF  9E 001E4 	    MOVAB   TBK$OUTPUT_BUF+1, TBK$CP_OUT_STR			      ; 0826
+				0000G  CF  D4 001EB 	    CLRL    TBK$GL_BUF_SIZ					      ; 0827
+					   04 001EF 	    RET     							      ; 0734
+
+; Routine Size:  106 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:39:14	DBB3:[TRACE.SRC]TBKSSV.B32;5					Page 9
+; Digital Equipment Corporation
+;
+;	0829	END
+;	0830	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  TBK$CODE       	   496  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  TBK$PLIT       	    64  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        36         1       119
+
+
+
+
+
+; Size:		496 code + 64 data bytes
+; Run Time:	00:15.2
+; Elapsed Time:	00:17.7
+; Memory Used:	171 pages
+; Compilation Complete

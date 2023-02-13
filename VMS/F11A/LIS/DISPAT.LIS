@@ -1,0 +1,545 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 1
+;
+;	0001	MODULE DISPAT (
+;	0002			LANGUAGE (BLISS32),
+;	0003			MAIN  = STARTUP,
+;	0004			IDENT = 'A0014'
+;	0005			) =
+;	0006	BEGIN
+;	0007	
+;	0008	!
+;	0009	! Copyright (c) 1977
+;	0010	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0011	!
+;	0012	! This software is furnished  under a license for use only on a single
+;	0013	! computer  system and  may be  copied only with  the inclusion of the
+;	0014	! above copyright notice.  This software, or any other copies thereof,
+;	0015	! may not be provided or  otherwise made available to any other person
+;	0016	! except for use on such system and to one who agrees to these license
+;	0017	! terms.  Title to and  ownership of the  software  shall at all times
+;	0018	! remain in DEC.
+;	0019	!
+;	0020	! The information in this software is subject to change without notice
+;	0021	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0022	! Corporation.
+;	0023	!
+;	0024	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0025	! software on equipment which is not supplied by DEC.
+;	0026	
+;	0027	!++
+;	0028	!
+;	0029	! FACILITY:  F11ACP Structure Level 1
+;	0030	!
+;	0031	! ABSTRACT:
+;	0032	!
+;	0033	!	This module is the main routine of FCP. It dequeues a request,
+;	0034	!	executes it, and signals completion to the user.
+;	0035	!
+;	0036	! ENVIRONMENT:
+;	0037	!
+;	0038	!	STARLET operating system, including privileged system services
+;	0039	!	and internal exec routines.
+;	0040	!
+;	0041	!--
+;	0042	!
+;	0043	!
+;	0044	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  20-Dec-1976  14:33
+;	0045	!
+;	0046	! REVISION HISTORY:
+;	0047	!
+;	0048	!   Andrew C. Goldstein, 16-Feb-1977  14:46
+;	0049	!   X0002 - Add error exit condition handler
+;	0050	!
+;	0051	!   Andrew C. Goldstein, 3-Mar-1977  13:25
+;	0052	!   X0003 - Move READ_WRITEVB and CLEANUP out of kernel mode
+;	0053	!
+;	0054	!   Andrew C. Goldstein, 3-Mar-1977  14:45
+;	0055	!   X0004 - Modify for new I/O function format
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 1-1
+;
+;	0056	!
+;	0057	!   Andrew C. Goldstein, 16-Mar-1977  11:28
+;	0058	!   X0005 - Fix bugs in condition handler
+;	0059	!
+;	0060	!   Andrew C. Goldstein, 23-Mar-1977  14:38
+;	0061	!   X0006 - Rework error cleanup sequence
+;	0062	!
+;	0063	!   Andrew C. Goldstein, 29-Apr-1977  17:54
+;	0064	!   X0007 - Generalize function dispatch, add dismount function
+;	0065	!
+;	0066	!   Andrew C. Goldstein, 12-Aug-1977  11:14
+;	0067	!   X0008 - New read/write virtual handling
+;	0068	!
+;	0069	!   Andrew C. Goldstein, 26-Aug-1977  10:26
+;	0070	!   X0009 - Add performance metering
+;	0071	!
+;	0072	!   Andrew C. Goldstein, 17-Feb-1978  14:07
+;	0073	!   X0011 - Use new bug check
+;	0074	!
+;	0075	!   Andrew C. Goldstein, 9-May-78  22:52
+;	0076	!   A0012 - Remove call to LOCK_DOWN
+;	0077	!
+;	0078	!   Andrew C. Goldstein, 10-May-78  14:22
+;	0079	!   A0013 - Add MOUNT function
+;	0080	!
+;	0081	!   Andrew C. Goldstein, 6-Jun-78  14:50
+;	0082	!   A0014 - Do full cleanup after read/write virtual failure
+;	0083	!
+;	0084	!**
+;	0085	
+;	0086	
+;	0087	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0088	REQUIRE 'SRC$:FCPDEF.B32';
+;	0407	
+;	0408	!
+;	0409	! Establish the max and min function codes for the function dispatch.
+;	0410	!
+;	0411	
+;	0412	LITERAL
+;	0413		LOW_FUNCTION	= MINU (
+;	0414			IO$_ACCESS,
+;	0415			IO$_CREATE,
+;	0416			IO$_DEACCESS,
+;	0417			IO$_DELETE,
+;	0418			IO$_MODIFY,
+;	0419			IO$_ACPCONTROL,
+;	0420			IO$_MOUNT
+;	0421			),
+;	0422	
+;	0423		HIGH_FUNCTION	= MAXU (
+;	0424			IO$_ACCESS,
+;	0425			IO$_CREATE,
+;	0426			IO$_DEACCESS,
+;	0427			IO$_DELETE,
+;	0428			IO$_MODIFY,
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 1-2
+;
+;	0429			IO$_ACPCONTROL,
+;	0430			IO$_MOUNT
+;	0431			);
+;	0432	
+;	0433	FORWARD ROUTINE
+;	0434		STARTUP		: NOVALUE,
+;	0435		DISPATCHER	: NOVALUE,
+;	0436		MAIN_HANDLER	: NOVALUE;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 2
+;
+;	0437	GLOBAL ROUTINE STARTUP : NOVALUE =
+;	0438	
+;	0439	!++
+;	0440	!
+;	0441	! FUNCTIONAL DESCRIPTION:
+;	0442	!
+;	0443	!	This routine is the startup point for FCP. It locks all of FCP
+;	0444	!	into memory and then calls the dispatcher loop in exec mode.
+;	0445	!
+;	0446	! CALLING SEQUENCE:
+;	0447	!	UNDEFINED
+;	0448	!
+;	0449	! INPUT PARAMETERS:
+;	0450	!	NONE
+;	0451	!
+;	0452	! IMPLICIT INPUTS:
+;	0453	!	NONE
+;	0454	!
+;	0455	! OUTPUT PARAMETERS:
+;	0456	!	NONE
+;	0457	!
+;	0458	! IMPLICIT OUTPUTS:
+;	0459	!	NONE
+;	0460	!
+;	0461	! ROUTINE VALUE:
+;	0462	!	NONE
+;	0463	!
+;	0464	! SIDE EFFECTS:
+;	0465	!	FCP locked into memory, dispatcher started.
+;	0466	!
+;	0467	!--
+;	0468	
+;	0469	BEGIN
+;	0470	
+;	0471	
+;	0472	EXEC_CALL (DISPATCHER);
+;	0473	
+;	0474	END;					! end of routine STARTUP
+
+
+							    .TITLE  DISPAT
+							    .IDENT  \A0014\
+
+							    .EXTRN  SYS$CMEXEC
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0000 00000 	    .ENTRY  STARTUP, Save nothing				      ; 0437
+				       7E  D4 00002 	    CLRL    -(SP)						      ; 0472
+				       5E  DD 00004 	    PUSHL   SP							      ;
+				0000V  CF  9F 00006 	    PUSHAB  DISPATCHER						      ;
+	      00000000G  9F	       03  FB 0000A 	    CALLS   #3, @#SYS$CMEXEC					      ;
+					   04 00011 	    RET     							      ; 0437
+
+; Routine Size:  18 bytes
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 2-1
+;
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 3
+;
+;	0475	GLOBAL ROUTINE DISPATCHER : NOVALUE =
+;	0476	
+;	0477	!++
+;	0478	!
+;	0479	! FUNCTIONAL DESCRIPTION:
+;	0480	!
+;	0481	!	This routine is the main routine of FCP. It dequeues a request,
+;	0482	!	executes it, and signals completion to the user.
+;	0483	!
+;	0484	! CALLING SEQUENCE:
+;	0485	!	DISPATCHER ()
+;	0486	!
+;	0487	! INPUT PARAMETERS:
+;	0488	!	NONE
+;	0489	!
+;	0490	! IMPLICIT INPUTS:
+;	0491	!	NONE
+;	0492	!
+;	0493	! OUTPUT PARAMETERS:
+;	0494	!	NONE
+;	0495	!
+;	0496	! IMPLICIT OUTPUTS:
+;	0497	!	NONE
+;	0498	!
+;	0499	! ROUTINE VALUE:
+;	0500	!	NONE
+;	0501	!
+;	0502	! SIDE EFFECTS:
+;	0503	!	FCP functions executed
+;	0504	!
+;	0505	!--
+;	0506	
+;	0507	BEGIN
+;	0508	
+;	0509	LOCAL
+;	0510		FUNCTION;			! function being executed
+;	0511	
+;	0512	EXTERNAL
+;	0513		IO_PACKET	: REF BBLOCK;	! current I/O packet
+;	0514	
+;	0515	EXTERNAL ROUTINE
+;	0516		INIT_FCP,			! one time initialization
+;	0517		INIT_COMMON,			! per call initialization
+;	0518		PMS_START,			! start performance metering
+;	0519		PMS_END,			! end performance metering
+;	0520		GET_REQUEST,			! get next I/O request
+;	0521		READ_WRITEVB,			! process read/write virtual
+;	0522		ACCESS,				! ACCESS function routine
+;	0523		CREATE,				! CREATE function routine
+;	0524		DEACCESS,			! DEACCESS function routine
+;	0525		DELETE,				! DELETE function routine
+;	0526		MODIFY,				! MODIFY function routine
+;	0527		MOUNT,				! MOUNT function routine
+;	0528		ERR_CLEANUP,			! error cleanup routine
+;	0529		CLEANUP,			! general cleanup routine
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 3-1
+;
+;	0530		IO_DONE;			! I/O completion processing
+;	0531	
+;	0532	
+;	0533	! Do the one time initialization. Then for each request, do the per
+;	0534	! request initialization, get the next request, and process it. If
+;	0535	! the request fails, call the error cleanup before returning
+;	0536	! completion.
+;	0537	!
+;	0538	
+;	0539	!	ENABLE MAIN_HANDLER;
+;	0540	BEGIN
+;	0541	BUILTIN FP;
+;	0542	.FP = MAIN_HANDLER;
+;	0543	END;
+;	0544	KERNEL_CALL (INIT_FCP);
+;	0545	
+;	0546	WHILE 1 DO
+;	0547	    BEGIN
+;	0548	    PMS_START ();
+;	0549	    INIT_COMMON ();
+;	0550	    IO_PACKET = KERNEL_CALL (GET_REQUEST);
+;	0551	    FUNCTION = .IO_PACKET[IRP$V_FCODE];
+;	0552	
+;	0553	    IF .FUNCTION EQL IO$_READPBLK
+;	0554	    OR .FUNCTION EQL IO$_WRITEPBLK
+;	0555	    THEN
+;	0556		BEGIN
+;	0557		IF NOT READ_WRITEVB ()
+;	0558		THEN
+;	0559		    BEGIN
+;	0560		    IF ERR_CLEANUP () THEN CLEANUP () ELSE (ERR_CLEANUP (); CLEANUP ());
+;	0561		    PMS_END ();
+;	0562		    KERNEL_CALL (IO_DONE, .IO_PACKET);
+;	0563		    END;
+;	0564		END
+;	0565	    ELSE
+;	0566		BEGIN
+;	0567	
+;	0568		IF
+;	0569		    (
+;	0570		    CASE .FUNCTION FROM LOW_FUNCTION TO HIGH_FUNCTION OF
+;	0571			SET
+;	0572			[IO$_ACCESS]:	ACCESS ();
+;	0573			[IO$_CREATE]:	CREATE ();
+;	0574			[IO$_DEACCESS]:	DEACCESS ();
+;	0575			[IO$_DELETE]:	DELETE ();
+;	0576			[IO$_MODIFY]:	MODIFY ();
+;	0577			[IO$_ACPCONTROL]: 1;
+;	0578			[IO$_MOUNT]:	MOUNT ();
+;	0579			[INRANGE]:	(ERR_STATUS (SS$_ILLIOFUNC); 0);
+;	0580			[OUTRANGE]:	(ERR_STATUS (SS$_ILLIOFUNC); 0);
+;	0581			TES
+;	0582		    )
+;	0583		THEN				! successful completion
+;	0584		    BEGIN
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 3-2
+;
+;	0585		    IF NOT CLEANUP () THEN (ERR_CLEANUP (); CLEANUP ());
+;	0586		    END
+;	0587		ELSE				! error completion
+;	0588		    BEGIN
+;	0589		    IF ERR_CLEANUP () THEN CLEANUP () ELSE (ERR_CLEANUP (); CLEANUP ());
+;	0590		    END;
+;	0591	
+;	0592		PMS_END ();
+;	0593		KERNEL_CALL (IO_DONE, .IO_PACKET);
+;	0594		END
+;	0595	    END;
+;	0596	
+;	0597	END;					! end of routine DISPATCHER
+
+
+
+							    .EXTRN  IO_PACKET, INIT_FCP, INIT_COMMON, PMS_START, PMS_END
+							    .EXTRN  GET_REQUEST, READ_WRITEVB, ACCESS, CREATE, DEACCESS
+							    .EXTRN  DELETE, MODIFY, MOUNT, ERR_CLEANUP, CLEANUP, IO_DONE
+							    .EXTRN  SYS$CMKRNL, USER_STATUS
+
+					 000C 00012 	    .ENTRY  DISPATCHER, Save R2,R3				      ; 0475
+		         53 00000000G  9F  9E 00014 	    MOVAB   @#SYS$CMKRNL, R3					      ;
+		         6D 	0000V  CF  9E 0001B 	    MOVAB   MAIN_HANDLER, (FP)					      ; 0542
+				       7E  D4 00020 	    CLRL    -(SP)						      ; 0544
+				       5E  DD 00022 	    PUSHL   SP							      ;
+				0000G  CF  9F 00024 	    PUSHAB  INIT_FCP						      ;
+		         63 	       03  FB 00028 	    CALLS   #3, SYS$CMKRNL					      ;
+		  0000G  CF	       00  FB 0002B 1$:     CALLS   #0, PMS_START					      ; 0548
+		  0000G  CF	       00  FB 00030 	    CALLS   #0, INIT_COMMON					      ; 0549
+				       7E  D4 00035 	    CLRL    -(SP)						      ; 0550
+				       5E  DD 00037 	    PUSHL   SP							      ;
+				0000G  CF  9F 00039 	    PUSHAB  GET_REQUEST						      ;
+		         63 	       03  FB 0003D 	    CALLS   #3, SYS$CMKRNL					      ;
+		  0000G  CF	       50  D0 00040 	    MOVL    R0, IO_PACKET					      ;
+      20   A0	         06 	       00  EF 00045 	    EXTZV   #0, #6, 32(R0), FUNCTION				      ; 0551
+				       52     0004A									      ;
+		         0C 	       52  D1 0004B 	    CMPL    FUNCTION, #12					      ; 0553
+				       05  13 0004E 	    BEQL    2$							      ;
+		         0B 	       52  D1 00050 	    CMPL    FUNCTION, #11					      ; 0554
+				       0A  12 00053 	    BNEQ    3$							      ;
+		  0000G  CF	       00  FB 00055 2$:     CALLS   #0, READ_WRITEVB					      ; 0557
+		         CE 	       50  E8 0005A 	    BLBS    R0, 1$						      ;
+				       55  11 0005D 	    BRB     14$							      ; 0560
+	   07 	         32 	       52  CF 0005F 3$:     CASEL   FUNCTION, #50, #7					      ; 0569
+	 0020 	       0019 	     0012     00063 4$:     .WORD   5$-4$,-						      ;
+	 003F 	       002E 	     0027     00069		    6$-4$,-						      ;
+		       0035 	     0047     0006F		    7$-4$,-						      ;
+								    8$-4$,-						      ;
+								    9$-4$,-						      ;
+								    12$-4$,-						      ;
+								    13$-4$,-						      ;
+								    10$-4$						      ;
+				       2D  11 00073 	    BRB     12$							      ; 0580
+		  0000G  CF	       00  FB 00075 5$:     CALLS   #0, ACCESS						      ; 0572
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 3-3
+;
+				       21  11 0007A 	    BRB     11$							      ;
+		  0000G  CF	       00  FB 0007C 6$:     CALLS   #0, CREATE						      ; 0573
+				       1A  11 00081 	    BRB     11$							      ;
+		  0000G  CF	       00  FB 00083 7$:     CALLS   #0, DEACCESS					      ; 0574
+				       13  11 00088 	    BRB     11$							      ;
+		  0000G  CF	       00  FB 0008A 8$:     CALLS   #0, DELETE						      ; 0575
+				       0C  11 0008F 	    BRB     11$							      ;
+		  0000G  CF	       00  FB 00091 9$:     CALLS   #0, MODIFY						      ; 0576
+				       05  11 00096 	    BRB     11$							      ;
+		  0000G  CF	       00  FB 00098 10$:    CALLS   #0, MOUNT						      ; 0578
+		         14 	       50  E9 0009D 11$:    BLBC    R0, 14$						      ;
+				       08  11 000A0 	    BRB     13$							      ;
+		  0000G  CF	  F4   8F  9B 000A2 12$:    MOVZBW  #244, USER_STATUS					      ; 0579
+				       0A  11 000A8 	    BRB     14$							      ;
+		  0000G  CF	       00  FB 000AA 13$:    CALLS   #0, CLEANUP						      ; 0585
+		         14 	       50  E8 000AF 	    BLBS    R0, 17$						      ;
+				       08  11 000B2 	    BRB     15$							      ;
+		  0000G  CF	       00  FB 000B4 14$:    CALLS   #0, ERR_CLEANUP					      ; 0589
+		         05 	       50  E8 000B9 	    BLBS    R0, 16$						      ;
+		  0000G  CF	       00  FB 000BC 15$:    CALLS   #0, ERR_CLEANUP					      ;
+		  0000G  CF	       00  FB 000C1 16$:    CALLS   #0, CLEANUP						      ;
+		  0000G  CF	       00  FB 000C6 17$:    CALLS   #0, PMS_END						      ; 0592
+				0000G  CF  DD 000CB 	    PUSHL   IO_PACKET						      ; 0593
+				       01  DD 000CF 	    PUSHL   #1							      ;
+				       5E  DD 000D1 	    PUSHL   SP							      ;
+				0000G  CF  9F 000D3 	    PUSHAB  IO_DONE						      ;
+		         63 	       04  FB 000D7 	    CALLS   #4, SYS$CMKRNL					      ;
+				     FF4E  31 000DA 	    BRW     1$							      ; 0546
+
+; Routine Size:  203 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 4
+;
+;	0598	GLOBAL ROUTINE MAIN_HANDLER (SIGNAL, MECHANISM) : NOVALUE =
+;	0599	
+;	0600	!++
+;	0601	!
+;	0602	! FUNCTIONAL DESCRIPTION:
+;	0603	!
+;	0604	!	This routine is the main level condition handler. It stores the
+;	0605	!	condition value (FCP error code) in the user status block, unwinds
+;	0606	!	and returns from the function that was executing.
+;	0607	!
+;	0608	! CALLING SEQUENCE:
+;	0609	!	MAIN_HANDLER (ARG1, ARG2)
+;	0610	!
+;	0611	! INPUT PARAMETERS:
+;	0612	!	ARG1: address of signal array
+;	0613	!	ARG2: address of mechanism array
+;	0614	!
+;	0615	! IMPLICIT INPUTS:
+;	0616	!	NONE
+;	0617	!
+;	0618	! OUTPUT PARAMETERS:
+;	0619	!	NONE
+;	0620	!
+;	0621	! IMPLICIT OUTPUTS:
+;	0622	!	USER_STATUS: receives signal code
+;	0623	!
+;	0624	! ROUTINE VALUE:
+;	0625	!	NONE
+;	0626	!
+;	0627	! SIDE EFFECTS:
+;	0628	!	stack unwound to main level to return to dispatcher
+;	0629	!
+;	0630	!--
+;	0631	
+;	0632	BEGIN
+;	0633	
+;	0634	MAP
+;	0635		SIGNAL		: REF BBLOCK,	! signal array arg
+;	0636		MECHANISM	: REF BBLOCK;	! mechanism array arg
+;	0637	
+;	0638	EXTERNAL
+;	0639		USER_STATUS	: WORD;		! I/O status to user
+;	0640	
+;	0641	EXTERNAL ROUTINE
+;	0642		SYS$UNWIND	: ADDRESSING_MODE (ABSOLUTE);
+;	0643	
+;	0644	
+;	0645	! Check the signal code. The only permissible ones are SS$_UNWIND, which
+;	0646	! is ignored, and SS$_CMODUSER. The error status is the 16 bit CHMU code.
+;	0647	! If the error value is non-zero, store it in the user status (zero
+;	0648	! means just exit). Set up a return value of 0, unwind to the current
+;	0649	! depth, and return, causing the invoked function to return with failure
+;	0650	! to the dispatcher.
+;	0651	!
+;	0652	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 4-1
+;
+;	0653	IF .SIGNAL[CHF$L_SIG_NAME] EQL SS$_UNWIND THEN RETURN;
+;	0654	IF .SIGNAL[CHF$L_SIG_NAME] NEQ SS$_CMODUSER
+;	0655	THEN BUG_CHECK (UNXSIGNAL, FATAL, 'Unexpected signal name in ACP');
+;	0656	
+;	0657	IF .SIGNAL[CHF$L_SIG_ARG1] NEQ 0
+;	0658	THEN USER_STATUS = .SIGNAL[CHF$L_SIG_ARG1];
+;	0659	
+;	0660	MECHANISM[CHF$L_MCH_SAVR0] = 0;
+;	0661	
+;	0662	SYS$UNWIND (MECHANISM[CHF$L_MCH_DEPTH], 0);
+;	0663	
+;	0664	RETURN;
+;	0665	
+;	0666	END;					! end of routine MAIN_HANDLER
+
+
+
+							    .PSECT  $LOCKEDC2$,NOWRT,2
+
+				  FEFF  0000  00000 P.AAA:  .WORD   0, -257						      ;
+					0000* 00004 	    .WORD   <BUG$_UNXSIGNAL!4>					      ;
+					      00006	    .BLKB   2
+
+							    .EXTRN  SYS$UNWIND, BUG$_UNXSIGNAL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0004 000DD 	    .ENTRY  MAIN_HANDLER, Save R2				      ; 0598
+		         52 	  04   AC  D0 000DF 	    MOVL    SIGNAL, R2						      ; 0653
+	      00000920   8F	  04   A2  D1 000E3 	    CMPL    4(R2), #2336					      ;
+				       2D  13 000EB 	    BEQL    3$							      ;
+	      00000424   8F	  04   A2  D1 000ED 	    CMPL    4(R2), #1060					      ; 0654
+				       05  13 000F5 	    BEQL    1$							      ;
+		  0000'  CF	       00  FB 000F7 	    CALLS   #0, P.AAA						      ; 0655
+				  08   A2  D5 000FC 1$:     TSTL    8(R2)						      ; 0657
+				       06  13 000FF 	    BEQL    2$							      ;
+		  0000G  CF	  08   A2  B0 00101 	    MOVW    8(R2), USER_STATUS					      ; 0658
+		         50 	  08   AC  D0 00107 2$:     MOVL    MECHANISM, R0					      ; 0660
+				  0C   A0  D4 0010B 	    CLRL    12(R0)						      ;
+				       7E  D4 0010E 	    CLRL    -(SP)						      ; 0662
+				  08   A0  9F 00110 	    PUSHAB  8(R0)						      ;
+	      00000000G  9F	       02  FB 00113 	    CALLS   #2, @#SYS$UNWIND					      ;
+					   04 0011A 3$:     RET     							      ; 0598
+
+; Routine Size:  62 bytes
+
+
+;	0667	
+;	0668	END
+;	0669	ELUDOM
+
+
+
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:48:21	DBB3:[F11A.SRC]DISPAT.B32;12					Page 4-2
+;
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   283  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDC2$     	     8  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        18         0       229
+
+
+
+
+
+; Size:		283 code + 8 data bytes
+; Run Time:	00:08.0
+; Elapsed Time:	00:18.3
+; Memory Used:	289 pages
+; Compilation Complete

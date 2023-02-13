@@ -1,0 +1,1944 @@
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)      49  DECLARATIONS
+   (1)     127  CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD
+   (1)     347  OPENFILE - RETURN FILE HEADER AND STATISTICS BL
+   (1)     515  GET DIRECTORY STRING
+   (1)     608  MOUNT - MOUNT THE VOLUME, INIT FOR FILE LOOKUP
+   (1)     719  FINDFILID - FIND FILE ID FOR SPECIFIED FILE
+   (1)     818  FIND FILE ID - STRUCTURE LEVEL 2
+   (1)     918  FIND FILE ID - STRUCTURE LEVEL 1
+   (1)    1004  RDCHKFILHDR - READ AND CHECK FILE HEADER
+   (1)    1109  READVBN, WRITEVBN - READ/WRITE VIRTUAL BLOCK
+   (1)    1201  INIRTRVPTRSCAN, GETRTRVPTR
+   (1)    1316  STATBLK - GET FILE STATISTICS BLOCK
+   (1)    1394  CHKFILHDR - CHECK FILE HEADER VALIDITY
+   (1)    1464  CHECKSUM - VALIDATE A CHECKSUM
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   1
+0302                                                                                                                             (1)
+
+                                     0000     1 	.TITLE	FILEREAD - FILES11 LEVEL 1 & 2 FILE READING ROUTINES
+                                     0000     2 	.IDENT	/0302/
+                                     0000     3 ;
+                                     0000     4 ; COPYRIGHT (C) 1978
+                                     0000     5 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     6 ;
+                                     0000     7 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000     8 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000     9 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    10 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    11 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    12 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    13 ; REMAIN IN DEC.
+                                     0000    14 ;
+                                     0000    15 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    16 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    17 ; CORPORATION.
+                                     0000    18 ;
+                                     0000    19 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    20 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    21 
+                                     0000    22 ;++
+                                     0000    23 ; FACILITY:	USER CALLABLE PROCEDURES
+                                     0000    24 ;
+                                     0000    25 ; ABSTRACT:
+                                     0000    26 ;
+                                     0000    27 ;	THIS SET OF ROUTINES PROVIDES THE CAPABILITY OF "OPENING" AND
+                                     0000    28 ; READING FILES BY FILE NAME FROM A FILES11 STRUCTURE LEVEL 1 OR 2 VOLUME.
+                                     0000    29 ; THERE IS NO MULTI-VOLUME SUPPORT, AND MULTI-HEADER SUPPORT IS LIMITED
+                                     0000    30 ; TO RETURNING THE CORRECT FILE SIZE IN THE STATBLK.
+                                     0000    31 ;
+                                     0000    32 ; ENVIRONMENT:	USER MODE
+                                     0000    33 ;
+                                     0000    34 ; AUTHOR: PETER H. LIPMAN	, CREATION DATE: 14-DEC-76
+                                     0000    35 ;
+                                     0000    36 ; MODIFIED BY:
+                                     0000    37 ;
+                                     0000    38 ;	W. H. BROWN	13-JAN-77
+                                     0000    39 ;  , VERSION X01001 , SEPARATED I/O ROUTINE INTO SEPARATE FILE
+                                     0000    40 ;	P. H. LIPMAN	27-MAY-77
+                                     0000    41 ;		VERSION X0200, REWRITE TO SCAN DIRECTORIES
+                                     0000    42 ;	P. H. LIPMAN	21-JAN-78
+                                     0000    43 ;		VERSION X0300, ADD FILES 11 STRUCTURE LEVEL 2
+                                     0000    44 ;	P. H. LIPMAN	20-FEB-78
+                                     0000    45 ;		VERSION X0301, RETURN CORRECT FILE SIZE FOR MULTI-HEADER FILES.
+                                     0000    46 ;	STILL NO SUPPORT FOR MULTI-HEADER READ/WRITE VBN.
+                                     0000    47 ;--
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   2
+0302            DECLARATIONS                                                                                                     (1)
+
+                                     0000    49 	.SBTTL	DECLARATIONS
+                                     0000    50 ;
+                                     0000    51 ; INCLUDE FILES:
+                                     0000    52 ;
+                                     0000    53 	$DIRDEF				;DIRECTORY ENTRY OFFSET DEFINITIONS
+                                     0000    54 	$FATDEF				;RECORD ATTRIBUTE AREA DEFINITIONS
+                                     0000    55 	$FH1DEF				;FILE HEADER DEFINITIONS, LEVEL 1
+                                     0000    56 	$FH2DEF				;FILE HEADER DEFINITIONS, LEVEL 2
+                                     0000    57 	$FM1DEF				;	MAP AREA, LEVEL 1
+                                     0000    58 	$FM2DEF				;	MAP AREA, LEVEL 2
+                                     0000    59 	$FIDDEF				;FILE ID OFFSET DEFINITIONS
+                                     0000    60 	$HM1DEF				;HOME BLOCK DEFINITIONS, LEVEL 1
+                                     0000    61 	$HM2DEF				;HOME BLOCK DEFINITIONS, LEVEL 2
+                                     0000    62 	$IODEF				;I/O DEFINITIONS
+                                     0000    63 	$SSDEF				;SYSTEM SERVICE DEFINITIONS
+                                     0000    64 ;
+                                     0000    65 ; MACROS:
+                                     0000    66 ;
+                                     0000    67 	.MACRO	READVBN	CHAN,VBN,BUFADR,HDRADR
+                                     0000    68 	.LIST	MEB
+                                     0000    69 		PUSHAL	HDRADR
+                                     0000    70 		PUSHAL	BUFADR
+                                     0000    71 		PUSHL	VBN
+                                     0000    72 		PUSHL	CHAN
+                                     0000    73 		CALLS	#4,W^FIL$READVBN
+                                     0000    74 	.NLIST	MEB
+                                     0000    75 	.ENDM	READVBN
+                                     0000    76 
+                                     0000    77 	.MACRO	READLBN	CHAN,VBN,BUFADR
+                                     0000    78 	.LIST	MEB
+                                     0000    79 		MOVZWL	#IO$_READLBLK,-(SP)
+                                     0000    80 		PUSHAL	BUFADR
+                                     0000    81 		PUSHL	VBN
+                                     0000    82 		PUSHL	CHAN
+                                     0000    83 		CALLS	#4,W^FIL$RDWRTLBN
+                                     0000    84 	.NLIST	MEB
+                                     0000    85 	.ENDM	READLBN
+                                     0000    86 
+                                     0000    87 ;
+                                     0000    88 ; EQUATED SYMBOLS:
+                                     0000    89 ;
+                                     0000    90 	ASSUME	FH1$B_MPOFFSET EQ FH2$B_MPOFFSET
+                                     0000    91 	ASSUME	FH1$W_STRUCLEV EQ FH2$W_STRUCLEV
+                                     0000    92 	ASSUME	FH1$W_CHECKSUM EQ FH2$W_CHECKSUM
+                                     0000    93 	ASSUME	HM1$W_STRUCLEV EQ HM2$W_STRUCLEV
+                                     0000    94 	ASSUME	HM1$W_CHECKSUM1 EQ HM2$W_CHECKSUM1
+                                     0000    95 	ASSUME	HM1$W_CHECKSUM2 EQ HM2$W_CHECKSUM2
+                                     0000    96 	ASSUME	FH1$W_CHECKSUM EQ HM1$W_CHECKSUM2
+                                     0000    97 	ASSUME	FH1$V_CONTIG EQ FH2$V_CONTIG
+                                     0000    98 
+                           000001FE  0000    99 	FH1$W_VBNOFFSET = FH1$W_CHECKSUM ;SAVE INDEX FILE VBN OFFSET
+                                     0000   100 					;IN THIS PLACE IN INDEX FILE HEADER
+                                     0000   101 
+                                     0000   102 	ASSUME	FH1$C_LEVEL1@-8 EQ 1
+                           00000008  0000   103 	FH1$V_LEVEL1 = 8
+                                     0000   104 
+                                     0000   105 	ASSUME	FH2$C_LEVEL2@-8 EQ 2
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   3
+0302            DECLARATIONS                                                                                                     (1)
+
+                           00000009  0000   106 	FH2$V_LEVEL2 = 9
+                           0000000A  0000   107 	FH2$V_BIGFILNUM = 10		;IF SET USE HIGH 8 BITS OF FILE ID RVN
+                                     0000   108 					;FIELD AS FILE NUMBER EXTENSION
+                                     0000   109 					;BIT IS PLACED IN FH2$W_STRUCLEV
+                                     0000   110 					;BY THE FIL$MOUNT CODE
+                                     0000   111 ;
+                                     0000   112 ; CHARACTER DEFINITIONS
+                                     0000   113 ;
+                           00000061  0000   114 	LCA	=	^O141		;LOWER CASE A
+                           0000007A  0000   115 	LCZ	=	^O172		;LOWER CASE Z
+                           00000041  0000   116 	UCA	=	^O101		;UPPER CASE A
+                           0000005A  0000   117 	UCZ	=	^O132		;UPPER CASE Z
+                           00000030  0000   118 	ZERO	=	^O60		;ASCII ZERO
+                           00000039  0000   119 	NINE	=	^O71		;ASCII NINE
+                           0000002E  0000   120 	DOT	=	^O56		;ASCII PERIOD
+                           0000003B  0000   121 	SEMI	=	^O73		;ASCII SEMICOLON
+                                     0000   122 ;
+                                     0000   123 ; OWN STORAGE:
+                                     0000   124 ;
+                                     0000   125 
+                                 00000000   126 	.PSECT	YFILEREAD,BYTE,EXE
+                                     0000   127 	.SBTTL	CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD50
+                                     0000   128 ;++
+                                     0000   129 ; FUNCTIONAL DESCRIPTION:
+                                     0000   130 ;
+                                     0000   131 ;	THIS ROUTINE CONVERTS THE ASCII FILE NAME (NAME, TYPE, VERSION)
+                                     0000   132 ; TO THE FILE NAME BLOCK FORM OF 3 WORDS RAD50 NAME, 1 WORD OF TYPE
+                                     0000   133 ; AND 1 WORD OF VERSION.
+                                     0000   134 ;
+                                     0000   135 ; CALLING SEQUENCE:
+                                     0000   136 ;
+                                     0000   137 ;	CALLG	ARGLIST,FIL$CVTFILNAM
+                                     0000   138 ;
+                                     0000   139 ; INPUT PARAMETERS:
+                                     0000   140 ;
+                                     0000   141 ;	FILNAM(AP)	=		;STRING DESCRIPTOR OF FILE NAME STRING
+                                     0000   142 ;	FILNAMBLK(AP)	=		;ADDRESS OF 5 WORD BLOCK
+                                     0000   143 ;						3 WORD RAD50 FILE NAME
+                                     0000   144 ;						1 WORD RAD50 FILE TYPE
+                                     0000   145 ;						1 WORD BINARY VERSION
+                                     0000   146 ;
+                                     0000   147 ; IMPLICIT INPUTS:
+                                     0000   148 ;
+                                     0000   149 ;	NONE
+                                     0000   150 ;
+                                     0000   151 ; OUTPUT PARAMETERS:
+                                     0000   152 ;
+                                     0000   153 ;	R0 = SYSTEM STATUS CODE
+                                     0000   154 ;	FILNAME BLOCK FILLED IN
+                                     0000   155 ;
+                                     0000   156 ; IMPLICIT OUTPUTS:
+                                     0000   157 ;
+                                     0000   158 ;	NONE
+                                     0000   159 ;
+                                     0000   160 ; COMPLETION CODES:
+                                     0000   161 ;
+                                     0000   162 ;	SS$_NORMAL			SUCCESSFUL COMPLETION
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   4
+0302            CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD                                                                  (1)
+
+                                     0000   163 ;	SS$_BADFILENAME			SYNTAX ERROR IN FILE NAME
+                                     0000   164 ;
+                                     0000   165 ; SIDE EFFECTS:
+                                     0000   166 ;
+                                     0000   167 ;	NONE
+                                     0000   168 ;
+                                     0000   169 ; EQUATED SYMBOLS:
+                                     0000   170 ;
+                                     0000   171 ;    OFFSETS FROM AP
+                                     0000   172 ;
+                           00000004  0000   173 	FILNAM		=	4	;DESCRIPTOR OF ASCII FILE NAME STRING
+                           00000008  0000   174 	FILNAMBLK	=	8	;ADDRESS OF 5 WORD FILE NAME BLOCK
+                                     0000   175 ;
+                                     0000   176 ;    OFFSETS FROM FP
+                                     0000   177 ;
+                           FFFFFFFD  0000   178 	TYPE		=	-3	;BEGINNING OF TYPE FIELD
+                           FFFFFFF4  0000   179 	NAME		=	-12	;BEGINNING OF NAME FIELD
+                                     0000   180 ;
+                                     0000   181 ;--
+                                     0000   182 
+                                     0000   183 FIL$CVTFILNAM::
+                               007C  0000   184 	.WORD	^M<R2,R3,R4,R5,R6>
+                          7E     7C  0002   185 	CLRQ	-(SP)			;RESERVE AND ZERO A
+                          7E     D4  0004   186 	CLRL	-(SP)			;12 BYTE NAME STRING
+            55         04 BC     7D  0006   187 	MOVQ	@FILNAM(AP),R5		;R5 = SIZE, R6 = ADR OF STRING
+            54         F4 AD     9E  000A   188 	MOVAB	NAME(FP),R4		;ADDRESS TO STORE NAME
+            53            09     D0  000E   189 	MOVL	#9,R3			;UP TO 9 CHARACTERS
+                          0F     11  0011   190 	BRB	40$
+                                     0013   191 ;
+                                     0013   192 ; STORE UP TO 9 CHARACTERS OF RAD50 IN THE BYTE ARRAY ADDRESSED BY R4
+                                     0013   193 ; IN PREPARATION FOR CONVERTING INTO THE PACKED RAD50 FORMAT
+                                     0013   194 ;
+                                     0013   195 20$:
+            50            86     90  0013   196 	MOVB	(R6)+,R0		;GET THE NEXT CHARACTER
+            50            2E     91  0016   197 	CMPB	#DOT,R0			;IS IT A DOT?
+                          0C     13  0019   198 	BEQL	FILETYPE		;BRANCH IF YES
+            50            3B     91  001B   199 	CMPB	#SEMI,R0		;IS IT A SEMICOLON
+                          24     13  001E   200 	BEQL	VERSION			;BRANCH IF YES
+                          59     10  0020   201 	BSBB	STORER50BYTE		;CONVERT AND STORE THE CHARACTER
+                                     0022   202 40$:
+            EE            55     F4  0022   203 	SOBGEQ	R5,20$			;COUNT THE CHARACTERS IN THE STRING
+                          2F     11  0025   204 	BRB	BUILDFNB		;END OF STRING, NO TYPE, NO VERSION
+                                     0027   205 ;
+                                     0027   206 ; NOW SET UP THE 3 BYTE ARRAY OF FILE TYPE
+                                     0027   207 ;
+                                     0027   208 FILETYPE:
+            54         FD AD     9E  0027   209 	MOVAB	TYPE(FP),R4		;ADDRESS OF BYTE ARRAY
+            53            03     D0  002B   210 	MOVL	#3,R3			;MAX SIZE OF FILE TYPE
+                          0F     11  002E   211 	BRB	40$
+                                     0030   212 20$:
+            50            86     90  0030   213 	MOVB	(R6)+,R0		;GET NEXT CHARACTER
+            50            3B     91  0033   214 	CMPB	#SEMI,R0		;IS IT A SEMICOLON?
+                          0C     13  0036   215 	BEQL	VERSION			;BRANCH IF YES
+            50            2E     91  0038   216 	CMPB	#DOT,R0			;DOT FOR VERSION TOO
+                          07     13  003B   217 	BEQL	VERSION			;BRANCH IF VERSION DELIMITER
+                          3C     10  003D   218 	BSBB	STORER50BYTE		;CONVERT AND STORE THE BYTE
+                                     003F   219 40$:
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   5
+0302            CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD                                                                  (1)
+
+            EE            55     F4  003F   220 	SOBGEQ	R5,20$			;LOOP THROUGH THE CHARACTERS
+                          12     11  0042   221 	BRB	BUILDFNB		;END OF STRING, NO VERSION
+                                     0044   222 ;
+                                     0044   223 ; VERSION DELIMITER FOUND, CONVERT THE VERSION
+                                     0044   224 ;
+                                     0044   225 VERSION:
+         08 AC            08     C1  0044   226 	ADDL3	#4*2,FILNAMBLK(AP),-(SP) ;ADDRESS TO STORE VERSION
+                          7E         0048       
+            7E            55     7D  0049   227 	MOVQ	R5,-(SP)		;PUSH ADDRESS, PUSH SIZE OF VERSION STRING
+   00000000'EF            03     FB  004C   228 	CALLS	#3,LIB$CVT_DTB		;CONVERT DECIMAL VERSION STRING TO BINARY
+            2A            50     E9  0053   229 	BLBC	R0,BADFILNAM		;BRANCH IF BAD FILE NAME
+                                     0056   230 ;
+                                     0056   231 ; NOW PACK THE TEMPORARY BYTE STRING INTO THE RAD50 WORDS
+                                     0056   232 ;
+                                     0056   233 BUILDFNB:
+            54         08 AC     D0  0056   234 	MOVL	FILNAMBLK(AP),R4	;ADDRESS TO STORE PACKED RAD50
+            53         F4 AD     9E  005A   235 	MOVAB	NAME(FP),R3		;ADDRESS OF NAME STRING
+                          63     95  005E   236 	TSTB	(R3)			;ANY NAME GIVEN?
+                          06     13  0060   237 	BEQL	20$			;BRANCH IF NO
+                          26     10  0062   238 	BSBB	PACKRAD50		;1ST 3 CHARACTERS
+                          24     10  0064   239 	BSBB	PACKRAD50		;2ND 3 CHARACTERS
+                          22     10  0066   240 	BSBB	PACKRAD50		;3RD 3 CHARACTERS
+                                     0068   241 20$:
+         08 AC            06     C1  0068   242 	ADDL3	#3*2,FILNAMBLK(AP),R4	;ADDRESS TO STORE FILE TYPE
+                          54         006C       
+            53         FD AD     9E  006D   243 	MOVAB	TYPE(FP),R3		;ADDRESS OF TYPE STRING
+                          63     95  0071   244 	TSTB	(R3)			;ANY FILE TYPE PRESENT?
+                          02     13  0073   245 	BEQL	40$			;BRANCH IF NOT
+                          13     10  0075   246 	BSBB	PACKRAD50		;CONVERT 3 CHARACTERS
+                                     0077   247 40$:
+            50            01     3C  0077   248 	MOVZWL	#SS$_NORMAL,R0		;INDICATE SUCCESS
+                                 04  007A   249 	RET
+                                     007B   250 ;
+                                     007B   251 ;
+                                     007B   252 ; CONVERT ASCII BYTE TO RAD50 AND STORE IN THE SPECIFIED BYTE ARRAY
+                                     007B   253 ;
+                                     007B   254 ; CALLING SEQUENCE:
+                                     007B   255 ;
+                                     007B   256 ;	BSBB	STORER50BYTE
+                                     007B   257 ;
+                                     007B   258 ; INPUT:
+                                     007B   259 ;
+                                     007B   260 ;	R0 = ASCII BYTE
+                                     007B   261 ;	R3 = SIZE OF BYTE ARRAY TO STORE IN
+                                     007B   262 ;	R4 = ADDRESS OF BYTE ARRAY TO STORE IN
+                                     007B   263 ;
+                                     007B   264 ; OUTPUT:
+                                     007B   265 ;
+                                     007B   266 ;	RSB IF SUCCESSFUL, RET WITH ERROR CODE IN R0 IF ERROR
+                                     007B   267 ;	R3, R4 UPDATED TO REFLECT THE ADDITIONAL BYTE STORED
+                                     007B   268 ;
+                                     007B   269 	.ENABL	LSB
+                                     007B   270 STORER50BYTE:
+                          26     10  007B   271 	BSBB	ASCIITORAD50		;CONVERT TO RAD50
+            06            53     F4  007D   272 	SOBGEQ	R3,20$			;BRANCH IF ROOM TO STORE THIS CHARACTER
+                                     0080   273 BADFILNAM:
+            50       0818 8F     3C  0080   274 	MOVZWL	#SS$_BADFILENAME,R0	;RETURN ERROR CODE
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   6
+0302            CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD                                                                  (1)
+
+                                 04  0085   275 	RET
+                                     0086   276 20$:
+            84            50     90  0086   277 	MOVB	R0,(R4)+		;STORE IT
+                                 05  0089   278 	RSB				;AND RSB SUCCESSFULLY
+                                     008A   279 
+                                     008A   280 	.DSABL	LSB
+                                     008A   281 ;
+                                     008A   282 ;
+                                     008A   283 ; PACK 3 BYTES OF RAD50 CHARACTERS INTO A WORD
+                                     008A   284 ;
+                                     008A   285 ; CALLING SEQUENCE:
+                                     008A   286 ;
+                                     008A   287 ;	BSBB	PACKRAD50
+                                     008A   288 ;
+                                     008A   289 ; INPUTS:
+                                     008A   290 ;
+                                     008A   291 ;	R3 = RAD50 BYTE STRING ADDRESS
+                                     008A   292 ;	R4 = ADDRESS OF WORD ARRAY TO STORE IN
+                                     008A   293 ;
+                                     008A   294 ; OUTPUTS:
+                                     008A   295 ;
+                                     008A   296 ;	R3 UPDATED TO POINT TO NEXT GROUP OF 3 CHARACTERS
+                                     008A   297 ;	R4 UPDATED TO POINT AT NEXT WORD TO STORE IN
+                                     008A   298 ;
+                                     008A   299 PACKRAD50:
+            50            83     9A  008A   300 	MOVZBL	(R3)+,R0		;BUILD PACKED WORD IN R0
+            50       0640 8F     A4  008D   301 	MULW	#40*40,R0		;START ACCUMULUATING IN R0
+            51            83     9A  0092   302 	MOVZBL	(R3)+,R1		;SECOND CHARACTER TO TEMP
+            51            28     A4  0095   303 	MULW	#40,R1			;MULTIPLY BY THE RADIX
+            50            51     A0  0098   304 	ADDW	R1,R0			;AND ACCUMULATE
+            51            83     9A  009B   305 	MOVZBL	(R3)+,R1		;LAST CHARACTER
+            50            51     A1  009E   306 	ADDW3	R1,R0,(R4)+		;ACCUMULATE AND STORE RESULT
+                          84         00A1       
+                                 05  00A2   307 	RSB
+                                     00A3   308 ;
+                                     00A3   309 ;
+                                     00A3   310 ; CONVERT ASCII CHARACTER TO ITS RAD50 EQUIVALENT
+                                     00A3   311 ;
+                                     00A3   312 ; CALLING SEQUENCE:
+                                     00A3   313 ;
+                                     00A3   314 ;	BSBB	ASCIITORAD50
+                                     00A3   315 ;
+                                     00A3   316 ; INPUTS:
+                                     00A3   317 ;
+                                     00A3   318 ;	R0 = CHARACTER TO CONVERT
+                                     00A3   319 ;
+                                     00A3   320 ; OUTPUTS:
+                                     00A3   321 ;
+                                     00A3   322 ;	RSB IF SUCCESSFUL, RET WITH ERROR CODE IN R0 IF ERROR
+                                     00A3   323 ;	R0 = RAD50 EQUIVALENT
+                                     00A3   324 ;	R1,R2,R3 PRESERVED
+                                     00A3   325 ;
+                                     00A3   326 ASCIITORAD50:
+         7A 8F            50     91  00A3   327 	CMPB	R0,#LCZ			;LOWER CASE ALPHA?
+                          D7     1A  00A7   328 	BGTRU	BADFILNAM		;BRANCH IF BAD RAD50
+         61 8F            50     91  00A9   329 	CMPB	R0,#LCA
+                          05     19  00AD   330 	BLSS	10$			;BRANCH IF NOT
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   7
+0302            CVTFILNAM - CONVERT FILE NAME FROM ASCII TO RAD                                                                  (1)
+
+            50         60 8F     82  00AF   331 	SUBB	#LCA-1,R0		;CONVERT TO ALPHA
+                                 05  00B3   332 	RSB				;AND RETURN SUCCESSFULLY
+                                     00B4   333 10$:
+         5A 8F            50     91  00B4   334 	CMPB	R0,#UCZ			;UPPER CASE ALPHA?
+                          C6     14  00B8   335 	BGTR	BADFILNAM		;BRANCH IF BAD RAD50
+         41 8F            50     91  00BA   336 	CMPB	R0,#UCA
+                          05     19  00BE   337 	BLSS	20$			;BRANCH IF NOT ALPHA
+            50         40 8F     82  00C0   338 	SUBB	#UCA-1,R0		;CONVERT TO RAD50 ALPHA
+                                 05  00C4   339 	RSB				;AND RETURN SUCCESSFULLY
+                                     00C5   340 20$:
+            39            50     91  00C5   341 	CMPB	R0,#NINE		;NUMERIC?
+                          B6     14  00C8   342 	BGTR	BADFILNAM		;BRANCH IF BAD RAD50
+            30            50     91  00CA   343 	CMPB	R0,#ZERO
+                          B1     19  00CD   344 	BLSS	BADFILNAM		;BRANCH IF BAD RAD50
+            50            12     82  00CF   345 	SUBB	#ZERO-30,R0		;CONVERT TO RAD50 NUMERIC
+                                 05  00D2   346 	RSB				;AND RETURN SUCCESSFULLY
+                                     00D3   347 	.SBTTL	OPENFILE - RETURN FILE HEADER AND STATISTICS BLOCK
+                                     00D3   348 ;++
+                                     00D3   349 ; FUNCTIONAL DESCRIPTION:
+                                     00D3   350 ;
+                                     00D3   351 ;	THE OPENFILE ROUTINE ACCEPTS A FULL FILE NAME IN THE FORMAT
+                                     00D3   352 ;	DEV:[DIR]FILE.TYP;VERSION.
+                                     00D3   353 ; IT ASSIGNS AND RETURNS A CHANNEL, READS THE FILE HEADER, AND RETURNS THE
+                                     00D3   354 ; STATISTICS BLOCK.  DIRECTORY MAY BE IN ANY OF THE STANDARD FORMATS:
+                                     00D3   355 ;	[10,40], [010040], OR WITH < AND > REPLACING [ AND ]
+                                     00D3   356 ; VERSION MAY BE ZERO IN WHICH CASE THE HIGHEST VERSION IS FOUND
+                                     00D3   357 ;
+                                     00D3   358 ; CALLING SEQUENCE:
+                                     00D3   359 ;
+                                     00D3   360 ;	CALLG	ARGLIST,FIL$OPENFILE
+                                     00D3   361 ;
+                                     00D3   362 ; INPUT PARAMETERS:
+                                     00D3   363 ;
+                                     00D3   364 ;	CHANADR(AP)	=	ADDRESS TO RETURN CHANNEL
+                                     00D3   365 ;	FILNAM(AP)		ADDRESS OF 2 LONG WORD FILE NAME STRING DESCRIPTOR
+                                     00D3   366 ;				1 - SIZE OF STRING
+                                     00D3   367 ;				2 - ADDRESS OF STRING
+                                     00D3   368 ;					DB1:[10,40]FILTST.EXE
+                                     00D3   369 ;	IXFHDR(AP)		ADDRESS OF 512 BYTE BUFFER TO BE USED FOR
+                                     00D3   370 ;					THE INDEX FILE HEADER
+                                     00D3   371 ;	FILHDR(AP)		ADDRESS OF 512 BYTE BUFFER TO RETURN FILE HEADER
+                                     00D3   372 ;	STATBLK(AP)		ADDRESS OF 2 LONG WORD BLOCK IN WHICH THE
+                                     00D3   373 ;				FOLLOWING WILL BE RETURNED
+                                     00D3   374 ;				1 - LOGICAL BLOCK NUMBER OF FIRST BLOCK OF
+                                     00D3   375 ;					FILE OR 0 IF FILE IS NOT CONTIGUOUS
+                                     00D3   376 ;				2 - SIZE OF FILE IN BLOCKS
+                                     00D3   377 ;
+                                     00D3   378 ; IMPLICIT INPUTS:
+                                     00D3   379 ;
+                                     00D3   380 ;	NONE
+                                     00D3   381 ;
+                                     00D3   382 ; OUTPUT PARAMETERS:
+                                     00D3   383 ;
+                                     00D3   384 ;	R0 = SYSTEM STATUS CODE
+                                     00D3   385 ;
+                                     00D3   386 ; IMPLICIT OUTPUTS:
+                                     00D3   387 ;
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   8
+0302            OPENFILE - RETURN FILE HEADER AND STATISTICS BL                                                                  (1)
+
+                                     00D3   388 ;	NONE
+                                     00D3   389 ;
+                                     00D3   390 ; COMPLETION CODES:
+                                     00D3   391 ;
+                                     00D3   392 ;	SS$_NORMAL		SUCCESSFUL COMPLETION
+                                     00D3   393 ;	SS$_NOSUCHFILE		FAILED TO FIND DIRECTORY OR FILE
+                                     00D3   394 ;	SS$_BADFILENAME		SYNTAX ERROR IN DIRECTORY OR FILE NAME STRING
+                                     00D3   395 ;
+                                     00D3   396 ; THE FOLLOWING COMPLETION CODES INDICATE FILE STRUCTURE PROBLEMS
+                                     00D3   397 ;
+                                     00D3   398 ;	SS$_BADCHKSUM		CHECKSUM ERROR IN HOME BLOCK, INDEX FILE HEADER
+                                     00D3   399 ;				DIRECTORY FILE HEADER OR FILE HEADER
+                                     00D3   400 ;	SS$_BADFILEHDR		FILE HEADER CONSISTENCY CHECK FAILED FOR
+                                     00D3   401 ;				INDEX FILE, DIRECTORY FILE, OR DESIRED FILE
+                                     00D3   402 ;	SS$_FILESTRUCT		HOME BLOCK INDICATES THAT THIS VOLUME
+                                     00D3   403 ;				CONTAINS A NON-SUPPORTED FILE STRUCTURE
+                                     00D3   404 ;				OR POSSIBLY THE HOMEBLOCK IS GARBAGE
+                                     00D3   405 ;
+                                     00D3   406 ; SIDE EFFECTS:
+                                     00D3   407 ;
+                                     00D3   408 ;	NONE
+                                     00D3   409 ;
+                                     00D3   410 ; EQUATED SYMBOLS
+                                     00D3   411 ;
+                                     00D3   412 ;    OFFSETS FROM AP
+                                     00D3   413 ;
+                           00000004  00D3   414 	CHANADR	= 4
+                           00000008  00D3   415 	FILNAM	= 8
+                           0000000C  00D3   416 	IXFHDR	= 12
+                           00000010  00D3   417 	FILHDR	= 16
+                           00000014  00D3   418 	STATBLK	= 20
+                                     00D3   419 ;
+                                     00D3   420 ;    OFFSETS FROM FP
+                                     00D3   421 ;
+                                     00D3   422 	$OFFSET	0,NEGATIVE,<-
+                                     00D3   423 	<FID,6>,-			;3 WORD FILE IDENTIFIER
+                                     00D3   424 	<DIRNAM,16>,-			;DIRECTORY NAME AREA
+                                     00D3   425 	<NAMBLK,10>,-			;5 WORD NAME BLOCK AREA
+                                     00D3   426 	<SCRATCHSIZE,0>,-		;SIZE NOT COUNTING NAMDSC
+                                     00D3   427 	<NAMDSC,12>-			;NAME DESCRIPTOR AREA
+                                     00D3   428 	>
+                                     FFFA       FID:
+                                     FFEA       DIRNAM:
+                                     FFE0       NAMBLK:
+                                     FFE0       SCRATCHSIZE:
+                                     FFD4       NAMDSC:
+                                     00D3   429 ;
+                                     00D3   430 ;--
+                                     00D3   431 
+                                     00D3   432 	.ENABL	LSB
+                                     00D3   433 
+                                     00D3   434 FIL$OPENFILE::
+                               003C  00D3   435 	.WORD	^M<R2,R3,R4,R5>
+            5E            18     C2  00D5   436 	SUBL	#<-SCRATCHSIZE-8>,SP	;RESERVE SCRATCH STORAGE
+                                     00D8   437 					;UP TO LAST 8 BYTES OF NAMBLK
+            51   00000000'EF     DE  00D8   438 	MOVAL	FIL$GT_DDDEV,R1		;ADDRESS OF DEFAULT DEVICE COUNTED STRING
+            50            81     9A  00DF   439 	MOVZBL	(R1)+,R0		;SIZE OF DEFAULT DEVICE STRING
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page   9
+0302            OPENFILE - RETURN FILE HEADER AND STATISTICS BL                                                                  (1)
+
+                          03     BB  00E2   440 	PUSHR	#^M<R0,R1>		;PUSH DEFAULT DEVICE DESCRIPTOR
+            52         08 BC     7D  00E4   441 	MOVQ	@FILNAM(AP),R2		;R2 = SIZE, R3 = ADR OF FILE NAME STRING
+            52            3A     3A  00E8   442 	LOCC	#^A/:/,R2,(R3)		;ANY DEVICE SPECIFIED?
+                          63         00EB       
+                          0F     13  00EC   443 	BEQL	10$			;BRANCH IF NONE
+         04 AE            53     D0  00EE   444 	MOVL	R3,4(SP)		;ADDRESS OF DEVICE NAME
+            51            53     C3  00F2   445 	SUBL3	R3,R1,(SP)		;SIZE OF DEVICE NAME STRING
+                          6E         00F5       
+            52            70     9E  00F6   446 	MOVAB	-(R0),R2		;REMAINING SIZE (SKIP :)
+            53         01 A1     DE  00F9   447 	MOVAL	1(R1),R3		;ADDRESS OF REMAINING STRING AFTER :
+            50            5E     D0  00FD   448 10$:	MOVL	SP,R0			;ADDRESS OF DEV NAME DESCRIPTOR
+                                     0100   449 	$ASSIGN_S (R0),@CHANADR(AP)	;ASSIGN THE CHANNEL
+            51            50     E9  010E   450 	BLBC	R0,55$			;BRANCH IF BAD DEVICE NAME
+                                     0111   451 ;
+                                     0111   452 ; THE DEVICE NAME DESCRIPTOR BECOMES THE LAST 8 BYTES OF THE NAMBLK
+                                     0111   453 ; FORM 3 LONG WORD NAME DESRIPTOR
+                                     0111   454 ;
+                          5E     DD  0111   455 	PUSHL	SP			;ADDRESS OF NAME BLOCK
+                          008C   30  0113   456 	BSBW	GETDFLTDIR		;GET DEFAULT DIRECTORY DESCRIPTOR
+                                     0116   457 ;
+                                     0116   458 ; RETURNS WITH R1 = ADDRESS OF DEFAULT DIRECTORY STRING (NO BRACKETS)
+                                     0116   459 ; R0 = SIZE IN BYTES OF DEFAULT DIRECTORY STRING.
+                                     0116   460 ;
+                          03     BB  0116   461 	PUSHR	#^M<R0,R1>		;PUSH DEFAULT DIRECTORY DESCRIPTOR
+                                     0118   462 ;
+                                     0118   463 ; SEE IF DIRECTORY SPECIFIED IN THE FILE NAME STRING
+                                     0118   464 ;
+            63         5B 8F     91  0118   465 	CMPB	#^A/[/,(R3)		;DIRECTORY DELIMITER?
+                          05     13  011C   466 	BEQL	30$			;BRANCH IF YES
+            63            3C     91  011E   467 	CMPB	#^A/</,(R3)		;ALTERNATE CHARACTER
+                          1E     12  0121   468 	BNEQ	40$			;BRANCH IF NO DIRECTORY SPECIFIED
+            83            02     81  0123   469 30$:	ADDB3	#2,(R3)+,R0		;SCAN FOR MATCHING BRACKET ] OR >
+                          50         0126       
+                          52     D7  0127   470 	DECL	R2			;ADJUST SIZE AND ADR OF STRING
+            52            50     3A  0129   471 	LOCC	R0,R2,(R3)		;SCAN FOR CLOSE BRACKET
+                          63         012C       
+                          03     12  012D   472 	BNEQ	35$			;BRANCH IF FOUND IT
+                          FF4E   31  012F   473 	BRW	BADFILNAM		;BAD FILE NAME IF NO CLOSE BRACKET
+         04 AE            53     D0  0132   474 35$:	MOVL	R3,4(SP)		;ADDRESS OF DIRECTORY NAME
+            51            53     C3  0136   475 	SUBL3	R3,R1,(SP)		;SIZE OF DIRECTORY NAME
+                          6E         0139       
+            52            70     9E  013A   476 	MOVAB	-(R0),R2		;SIZE REMAINING SKIP CLOSE BRACKET
+            53         01 A1     DE  013D   477 	MOVAL	1(R1),R3		;ADR OF REMAINING STRING BEYOND CLOSE BRACKET
+                                     0141   478 ;
+                                     0141   479 ; IS DIRECTORY STRING IN GROUP, MEMBER FORMAT
+                                     0141   480 ;
+                          03     BA  0141   481 40$:	POPR	#^M<R0,R1>		;GET DIRECTORY STRING DESCRIPTOR,
+                          006C   30  0143   482 	BSBW	FORMDIRSTRING		;MAKE A DIRECTORY NAME STRING
+                          03     BB  0146   483 	PUSHR	#^M<R0,R1>		;AND STORE THE DESCRIPTOR
+                                     0148   484 ;
+                                     0148   485 ; SET UP COMMON ARGUMENT LIST FOR MOUNT, FINDFILID, RDCHKFILHDR
+                                     0148   486 ;
+                       FA AD     DF  0148   487 	PUSHAL	FID(FP)			;ADDRESS OF FILE ID
+            7E         10 AC     7D  014B   488 	MOVQ	FILHDR(AP),-(SP)	;PUSH STATBLK ADR, FILHDR ADR
+                       0C AC     DD  014F   489 	PUSHL	IXFHDR(AP)		;INDEX FILE HEADER ADDRESS
+            50         04 BC     D0  0152   490 	MOVL	@CHANADR(AP),R0		;CHANNEL
+                                     0156   491 					;REFERENCED AS A WORD BECAUSE OF BOOT
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  10
+0302            OPENFILE - RETURN FILE HEADER AND STATISTICS BL                                                                  (1)
+
+                       D4 AD     DF  0156   492 	PUSHAL	NAMDSC(FP)		;ADR OF 3 LONG WORD NAME DESCRIPTOR
+                          50     DD  0159   493 	PUSHL	R0			;CHANNEL TO USE
+                          06     DD  015B   494 	PUSHL	#6			;PARAMETER COUNT
+       0202'CF            6E     FA  015D   495 	CALLG	(SP),W^FIL$MOUNT	;"MOUNT THE VOLUME"
+            2B            50     E9  0162   496 55$:	BLBC	R0,100$			;BRANCH IF ERROR
+                                     0165   497 ;
+                                     0165   498 ; SET UP FOR THE DIRECTORY LOOK UP
+                                     0165   499 ;
+         FA AD            04     B0  0165   500 	MOVW	#4,FID(FP)		;FILE NUMBER = 4
+         FC AD            04     D0  0169   501 	MOVL	#4,FID+2(FP)		;FILE SEQUENCE NO. = 4, RVN = 0
+       028E'CF            6E     FA  016D   502 	CALLG	(SP),W^FIL$FINDFILID	;FIND DIRECTORY ID
+            1B            50     E9  0172   503 	BLBC	R0,100$			;BRANCH IF ERROR
+                       E0 AD     7C  0175   504 	CLRQ	NAMBLK(FP)		;REINIT NAME BLOCK
+                       E8 AD     B4  0178   505 	CLRW	NAMBLK+8(FP)
+         D8 AD            53     D0  017B   506 	MOVL	R3,NAMDSC+4(FP)		;ADDRESS OF REMAINING NAME STRING
+         D4 AD            52     D0  017F   507 	MOVL	R2,NAMDSC(FP)		;SIZE OF REMAINING NAME STRING
+       028E'CF            6E     FA  0183   508 	CALLG	(SP),W^FIL$FINDFILID	;FIND THE DESIRED FILE'S FILE ID
+            05            50     E9  0188   509 	BLBC	R0,100$			;BRANCH IF NOT FOUND
+       0424'CF            6E     FA  018B   510 	CALLG	(SP),W^FIL$RDCHKFILHDR	;READ AND CHECK FILE HEADER
+                                 04  0190   511 100$:	RET
+                                     0191   512 
+                                     0191   513 	.DSABL	LSB
+                                     0191   514 
+                                     0191   515 	.SBTTL	GET DIRECTORY STRING
+                                     0191   516 ;
+                                     0191   517 ; STORE 3 DIGITS OF DIRECTORY STRING
+                                     0191   518 ;
+                                     0191   519 ; INPUT:
+                                     0191   520 ;
+                                     0191   521 ;	R0 = NO. OF DIGITS TO PUT IN STRING
+                                     0191   522 ;	R1 = ADDRESS + 1 OF RIGHT MOST DIGIT
+                                     0191   523 ;	R2 = ADDRESS AT WHICH TO STORE 3 DIGITS
+                                     0191   524 ;
+                                     0191   525 ; OUTPUTS:
+                                     0191   526 ;
+                                     0191   527 ;	NONE
+                                     0191   528 ;
+                                     0191   529 STORE3DIGITS:
+            82       3030 8F     B0  0191   530 	MOVW	#^A/00/,(R2)+		;BACKGROUND WITH ASCII 0
+            82            30     90  0196   531 	MOVB	#^A/0/,(R2)+		;
+                          03     11  0199   532 	BRB	20$			;START LOOP AT BOTTOM
+            72            71     90  019B   533 10$:	MOVB	-(R1),-(R2)		;STORE BYTES LAST TO FIRST
+                                     019E   534 					;LEAVING LEADING ASCII 0'S
+            FA            50     F4  019E   535 20$:	SOBGEQ	R0,10$			;LOOP ZERO OR MORE TIMES
+                                 05  01A1   536 	RSB
+                                     01A2   537 ;
+                                     01A2   538 ; GET DEFAULT DIRECTORY STRING DESCRIPTOR
+                                     01A2   539 ;
+                                     01A2   540 ; CALLING SEQUENCE:
+                                     01A2   541 ;
+                                     01A2   542 ;	BSBW	GETDFLTDIR
+                                     01A2   543 ;
+                                     01A2   544 ; INPUTS:
+                                     01A2   545 ;
+                                     01A2   546 ;	NONE
+                                     01A2   547 ;
+                                     01A2   548 ; OUTPUTS:
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  11
+0302            GET DIRECTORY STRING                                                                                             (1)
+
+                                     01A2   549 ;
+                                     01A2   550 ;	R0 = SIZE IN BYTES OF DEFAULT DIRECTORY STRING (NO BRACKETS INCLUDED)
+                                     01A2   551 ;	R1 = ADDRESS OF DEFAULT DIRECTORY STRING
+                                     01A2   552 ;
+                                     01A2   553 GETDFLTDIR:
+            51   00000000'EF     DE  01A2   554 	MOVAL	FIL$GT_DDSTRING,R1	;ADDRESS OF COUNTED STRING
+            50            81     9A  01A9   555 	MOVZBL	(R1)+,R0		;GET BYTE COUNT
+                          51     D6  01AC   556 	INCL	R1			;STEP OVER BRACKET
+            50            02     C2  01AE   557 	SUBL	#2,R0			;DON'T COUNT THE BRACKETS
+                                 05  01B1   558 	RSB
+                                     01B2   559 ;
+                                     01B2   560 ; FORM DIRECTORY STRING
+                                     01B2   561 ;
+                                     01B2   562 ; CALLING SEQUENCE:
+                                     01B2   563 ;
+                                     01B2   564 ;	BSBW	FORMDIRSTRING
+                                     01B2   565 ;
+                                     01B2   566 ; INPUTS:
+                                     01B2   567 ;
+                                     01B2   568 ;	R0 = SIZE OF DIRECTORY STRING
+                                     01B2   569 ;	R1 = ADDRESS OF DIRECTORY STRING
+                                     01B2   570 ;		THE STRING CONTAINS NO BRACKETS, BUT MAY BE OF THE FORM
+                                     01B2   571 ;		GROUP,MEMBER
+                                     01B2   572 ;	DIRNAM(FP) = ADDRESS OF AREA TO BUILD THE NAME
+                                     01B2   573 ;
+                                     01B2   574 ; OUTPUTS:
+                                     01B2   575 ;
+                                     01B2   576 ;	R0 = SIZE OF DIRECTORY STRING
+                                     01B2   577 ;	R1 = ADDRESS OF DIRECTORY STRING
+                                     01B2   578 ;	R2,R3 PRESERVED
+                                     01B2   579 ;
+                                     01B2   580 FORMDIRSTRING:
+                          07     BB  01B2   581 	PUSHR	#^M<R0,R1,R2>		;SAVE STRING DESCRIPTORS AND R2
+            50            2C     3A  01B4   582 	LOCC	#^A/,/,R0,(R1)		;ANY ","?
+                          61         01B7       
+                          39     13  01B8   583 	BEQL	20$			;BRANCH IF NOT, RETURN THE DESCRIPTOR AS IS
+                          50     DD  01BA   584 	PUSHL	R0			;SAVE REMAINING BYTE COUNT
+         04 AE            50     C3  01BC   585 	SUBL3	R0,4(SP),R0		;BYTE COUNT TO LEFT OF ","
+                          50         01C0       
+            52         EA AD     DE  01C1   586 	MOVAL	DIRNAM(FP),R2		;ADDRESS TO STORE FIRST 3 CHARS
+                          CA     10  01C5   587 	BSBB	STORE3DIGITS		;STORE THEM
+            8E            01     C3  01C7   588 	SUBL3	#1,(SP)+,R0		;COUNT OF CHARS TO RIGHT OF ","
+                          50         01CA       
+            8E            8E     C1  01CB   589 	ADDL3	(SP)+,(SP)+,R1		;ADR OF BYTE TO RIGHT OF LAST CHAR
+                          51         01CE       
+            52         ED AD     DE  01CF   590 	MOVAL	DIRNAM+3(FP),R2		;ADR TO STORE LAST 3 CHARS OF DIR NAME
+                          BC     10  01D3   591 	BSBB	STORE3DIGITS		;STORE THEM
+                          04     BA  01D5   592 	POPR	#^M<R2>			;RESTORE SAVED R2
+            50            06     D0  01D7   593 	MOVL	#6,R0			;6 BYTES STRING SIZE
+            51         EA AD40   9E  01DA   594 10$:	MOVAB	DIRNAM(FP)[R0],R1	;POINT TO END OF STRING
+            81   5249442E 8F     D0  01DF   595 	MOVL	#^A/.DIR/,(R1)+		;PUT TYPE IN STRING
+            61       313B 8F     B0  01E6   596 	MOVW	#^A/;1/,(R1)		;AND VERSION AS WELL
+            51         EA AD     9E  01EB   597 	MOVAB	DIRNAM(FP),R1		;ADDRESS OF STRING
+            50            06     C0  01EF   598 	ADDL	#6,R0			;SIZE INCLUDES ".DIR;1"
+                                 05  01F2   599 	RSB
+                          38     BB  01F3   600 20$:	PUSHR	#^M<R3,R4,R5>		;SAVE THESE FROM MOVC3
+                                     01F5   601 ;
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  12
+0302            GET DIRECTORY STRING                                                                                             (1)
+
+                                     01F5   602 ; 12(SP) = SIZE OF STRING, 16(SP) = ADDRESS
+                                     01F5   603 ;
+         10 BE         0C AE     28  01F5   604 	MOVC3	12(SP),@16(SP),DIRNAM(FP) ;MOVE NAME TO SCRATCH AREA
+                       EA AD         01FA       
+                          38     BA  01FC   605 	POPR	#^M<R3,R4,R5>		;RESTORE REGISTERS
+                          07     BA  01FE   606 	POPR	#^M<R0,R1,R2>
+                          D8     11  0200   607 	BRB	10$
+                                     0202   608 	.SBTTL	MOUNT - MOUNT THE VOLUME, INIT FOR FILE LOOKUP
+                                     0202   609 ;++
+                                     0202   610 ; FUNCTIONAL DESCRIPTION:
+                                     0202   611 ;
+                                     0202   612 ;	MOUNT PERFORMS THE NECESSARY INITIALIZATION FOR FILE LOOKUP.
+                                     0202   613 ; IT READS THE HOME BLOCK, AND THEN RETURNS THE INDEX FILE HEADER TO THE
+                                     0202   614 ; SPECIFIED BUFFER.  THE INDEX FILE HEADER IS ALTERED BY RECORDING THE
+                                     0202   615 ; VIRTUAL BLOCK OFFSET REQUIRED TO TRANSLATE 'FILE NUMBER' TO INDEX FILE VBN
+                                     0202   616 ;
+                                     0202   617 ; CALLING SEQUENCE:
+                                     0202   618 ;
+                                     0202   619 ;	CALLG	ARGLIST,FIL$MOUNT
+                                     0202   620 ;
+                                     0202   621 ; INPUT PARAMETERS:
+                                     0202   622 ;
+                                     0202   623 ;	CHAN(AP)		CHANNEL ON WHICH DEVICE IS ASSIGNED
+                                     0202   624 ;	UNUSED			2ND PARAMETER NOT USED 
+                                     0202   625 ;	IXFHDR(AP)		ADDRESS TO RETURN INDEX FILE HEADER
+                                     0202   626 ;
+                                     0202   627 ; IMPLICIT INPUTS:
+                                     0202   628 ;
+                                     0202   629 ;	NONE
+                                     0202   630 ;
+                                     0202   631 ; OUTPUT PARAMETERS:
+                                     0202   632 ;
+                                     0202   633 ;	R0 = SYSTEM STATUS CODE
+                                     0202   634 ;
+                                     0202   635 ; IMPLICIT OUTPUTS:
+                                     0202   636 ;
+                                     0202   637 ;	NONE
+                                     0202   638 ;
+                                     0202   639 ; COMPLETION CODES:
+                                     0202   640 ;
+                                     0202   641 ;	SS$_NORMAL		SUCCESSFUL COMPLETION
+                                     0202   642 ;	SS$_FILESTRUCT		FILE STRUCTURE LEVEL NOT SUPPORTED
+                                     0202   643 ;	SS$_BADCHKSUM		CHECKSUM ERROR ON HOME BLOCK OR INDEX FILE HEADER
+                                     0202   644 ;	SS$_BADFILEHDR		INDEX FILE HEADER IS BAD
+                                     0202   645 ;
+                                     0202   646 ; SIDE EFFECTS:
+                                     0202   647 ;
+                                     0202   648 ;	NONE
+                                     0202   649 ;
+                                     0202   650 ;
+                                     0202   651 ; EQUATED SYMBOLS, OFFSETS FROM AP
+                                     0202   652 ;
+                           00000004  0202   653 	CHAN		=	4
+                           0000000C  0202   654 	IXFHDR		=	12
+                                     0202   655 ;
+                                     0202   656 ;--
+                                     0202   657 
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  13
+0302            MOUNT - MOUNT THE VOLUME, INIT FOR FILE LOOKUP                                                                   (1)
+
+                                     0202   658 FIL$MOUNT::
+                               001C  0202   659 	.WORD	^M<R2,R3,R4>
+            53         0C AC     D0  0204   660 	MOVL	IXFHDR(AP),R3		;ADDRESS OF BUFFER
+            7E            21     3C  0208   661 	MOVZWL	#IO$_READLBLK,-(SP)	;READ LOGICAL BLOCK FUNCTION
+                          53     DD  020B   662 	PUSHL	R3			;BUFFER ADDRESS
+                          01     DD  020D   663 	PUSHL	#1			;LOGICAL BLOCK NUMBER 1
+                       04 AC     DD  020F   664 	PUSHL	CHAN(AP)		;CHANNEL
+                          04     DD  0212   665 	PUSHL	#4			;NO. OF ARGUMENTS
+       0000'CF            6E     FA  0214   666 	CALLG	(SP),W^FIL$RDWRTLBN	;READ THE HOME BLOCK
+            71            50     E9  0219   667 	BLBC	R0,30$			;BRANCH IF ERROR
+            51            53     D0  021C   668 	MOVL	R3,R1			;ADDRESS OF HOME BLOCK
+            50            1D     3C  021F   669 	MOVZWL	#HM1$W_CHECKSUM1@-1,R0	;NO. OF WORDS IN FIRST CHECKSUM
+                          03DA   30  0222   670 	BSBW	FIL$CHECKSUM1		;CHECK THE FIRST CHECKSUM
+            51            53     D0  0225   671 	MOVL	R3,R1			;ADR OF HOME BLOCK AGAIN
+                          03CF   30  0228   672 	BSBW	FIL$CHECKSUM		;CHECK THE MAIN CHECKSUM
+                                     022B   673 	CASE	HM1$W_STRUCLEV+1(R3),<-
+                                     022B   674 		15$,-			;STRUCTURE LEVEL 1
+                                     022B   675 		10$-			;STRUCTURE LEVEL 2
+                                     022B   676 		>,TYPE=B,LIMIT=#1
+            50       08C0 8F     3C  0234   677 5$:	MOVZWL	#SS$_FILESTRUCT,R0	;UNSUPPORTED FILE STRUCTURE LEVEL
+                                 04  0239   678 	RET
+                                     023A   679 ;
+                                     023A   680 ; STRUCTURE LEVEL 2
+                                     023A   681 ;
+            51         18 A3     D0  023A   682 10$:	MOVL	HM2$L_IBMAPLBN(R3),R1	;INDEX BIT MAP STARTING LBN
+            50         20 A3     3C  023E   683 	MOVZWL	HM2$W_IBMAPSIZE(R3),R0	;INDEX BIT MAP SIZE IN BLOCKS
+            54         1C A3     D0  0242   684 	MOVL	HM2$L_MAXFILES(R3),R4	;MAXIMUM FILES ON VOLUME
+                                     0246   685 					;ONLY INTERESETED IN HIGH 16 BITS
+         0E A3            04     A5  0246   686 	MULW3	#4,HM2$W_CLUSTER(R3),R4	;4*CLUSTER TO LOW WORD OF R4
+                          54         024A       
+                          0B     11  024B   687 	BRB	20$
+                                     024D   688 ;
+                                     024D   689 ; STRUCTURE LEVEL 1
+                                     024D   690 ;
+         02 A3            10     9C  024D   691 15$:	ROTL	#16,HM1$L_IBMAPLBN(R3),R1 ;LOGICAL BLK NO. OF 1ST INDEX BIT MAP BLK
+                          51         0251       
+            50            63     3C  0252   692 	MOVZWL	HM1$W_IBMAPSIZE(R3),R0	;NO. OF BLOCKS OF INDEX BIT MAP
+            54            02     D0  0255   693 	MOVL	#2,R4			;NUMBER OF VBN'S BEFORE INDEX FILE BIT MAP
+            54            50     A0  0258   694 20$:	ADDW	R0,R4			;LOW WORD IS VBNOFFSET
+                                     025B   695 					;FROM FILE ID TO INDEX FILE VBN
+                                     025B   696 ;
+                                     025B   697 ; READ INDEX FILE HEADER
+                                     025B   698 ;
+            51            50     C1  025B   699 	ADDL3	R0,R1,8(SP)		;DESIRED LBN TO ARG LIST
+                       08 AE         025E       
+       0000'CF            8E     FB  0260   700 	CALLS	(SP)+,W^FIL$RDWRTLBN	;READ INDEX FILE HEADER
+                                     0265   701 					;STRIP OFF THE ARGUMENT LIST
+            25            50     E9  0265   702 	BLBC	R0,30$			;BRANCH IF ERROR
+            51            53     D0  0268   703 	MOVL	R3,R1			;ADDRESS OF HEADER
+                          7E     D4  026B   704 	CLRL	-(SP)			;FORM FILE ID ON STACK
+                 00010001 8F     DD  026D   705 	PUSHL	#^X10001		;FOR THE INDEX FILE HEADER
+            50            5E     D0  0273   706 	MOVL	SP,R0			;ADDRESS OF FILE ID
+                          0343   30  0276   707 	BSBW	FIL$CHKFILHDR		;CHECK THE FILE HEADER
+       01FE C3            54     B0  0279   708 	MOVW	R4,FH1$W_VBNOFFSET(R3)	;STORE VBN OFFSET
+                                     027E   709 ;
+                                     027E   710 ; IF MAXFILES WAS GREATER THAN ^XFFFF THEN HIGH 16 BITS OF R4 WILL BE
+                                     027E   711 ; NON-ZERO.  IN THIS CASE, RECORD THE BIGFILNUM BIT IN THE STRUCLEV WORD
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  14
+0302            MOUNT - MOUNT THE VOLUME, INIT FOR FILE LOOKUP                                                                   (1)
+
+                                     027E   712 ;
+            54         F0 8F     78  027E   713 	ASHL	#-16,R4,R4		;SEE IF HIGH 16 BITS = 0
+                          54         0282       
+                          05     13  0283   714 	BEQL	25$
+         06 A3            0A     E2  0285   715 	BBSS	#FH2$V_BIGFILNUM,FH2$W_STRUCLEV(R3),25$ ;MUST USE HIGH 8 BITS
+                          00         0289       
+                                     028A   716 					;OF RVN FIELD AS FILE NUMBER EXTENSION
+            50            01     3C  028A   717 25$:	MOVZWL	#SS$_NORMAL,R0		;SUCCESSFUL COMPLETION
+                                 04  028D   718 30$:	RET
+                                     028E   719 	.SBTTL	FINDFILID - FIND FILE ID FOR SPECIFIED FILE
+                                     028E   720 ;++
+                                     028E   721 ; FUNCTIONAL DESCRIPTION:
+                                     028E   722 ;
+                                     028E   723 ;	FINDFILID SCANS A SPECIFIED DIRECTORY FOR A FILE AND
+                                     028E   724 ; RETURNS ITS FILE ID IF FOUND.  STRUCTURE LEVEL 1 AND 2 DIRECTORIES
+                                     028E   725 ; ARE SUPPORTED, 0 VERSION NUMBER MEANS FIND MOST RECENT VERSION,
+                                     028E   726 ; -1 VERSION (FIND OLDEST) IS NOT SUPPORTED.  VERSION FOUND IS RETURNED IN
+                                     028E   727 ; THE NAME BLOCK ADDRESSED BY THE FILE DESCRIPTOR (LEVEL 1 ONLY).
+                                     028E   728 ; NOTE THAT NON-CONTIGUOUS DIRECTORIES ARE NOT SUPPORTED.
+                                     028E   729 ;
+                                     028E   730 ; CALLING SEQUENCE:
+                                     028E   731 ;
+                                     028E   732 ;	CALLG	ARGLIST,FIL$FINDFILID
+                                     028E   733 ;
+                                     028E   734 ; INPUT PARAMETERS:
+                                     028E   735 ;
+                                     028E   736 ;	CHAN(AP)		;CHANNEL ON WHICH DEVICE IS ASSIGNED
+                                     028E   737 ;	FILDSC(AP)	=	ADDRESS OF 3 LONG WORD FILE DESCRIPTOR
+                                     028E   738 ;				1 - SIZE OF ASCII STRING,  A 0 VALUE MEANS
+                                     028E   739 ;					USE THE CONTENTS OF THE NAMBLK BELOW
+                                     028E   740 ;				2 - ADDRESS OF ASCII STRING
+                                     028E   741 ;				3 - ADDRESS OF NAME BLOCK - USED ONLY FOR LEVEL 1
+                                     028E   742 ;					MAY CONTAIN DEFAULTS, BUT MUST BE
+                                     028E   743 ;					AT LEAST INITIALIZED TO ZERO
+                                     028E   744 ;					IT WILL BE WRITTEN.
+                                     028E   745 ;	IXFHDR(AP)		ADR OF INDEX FILE HDR AS RETURNED FROM FIL$MOUNT
+                                     028E   746 ;	DIRBUF(AP)		ADR OF 512 BYTE BUFFER TO USE FOR DIRECTORY SCAN
+                                     028E   747 ;	STATBLK(AP)		ADDRESS OF 2 LONG WORD AREA USED FOR A
+                                     028E   748 ;				SCRATCH STATISTICS BLOCK
+                                     028E   749 ;	FILID(AP)		ADR OF 3 WORD AREA USED BOTH AS THE ID OF
+                                     028E   750 ;				THE DIRECTORY TO SCAN AND AS THE PLACE TO
+                                     028E   751 ;				RETURN THE ID OF THE FILE FOUND
+                                     028E   752 ;
+                                     028E   753 ; IMPLICIT INPUTS:
+                                     028E   754 ;
+                                     028E   755 ;	NONE
+                                     028E   756 ;
+                                     028E   757 ; OUTPUT PARAMETERS:
+                                     028E   758 ;
+                                     028E   759 ;	R0 = SYSTEM STATUS CODE
+                                     028E   760 ;
+                                     028E   761 ; IMPLICIT OUTPUTS:
+                                     028E   762 ;
+                                     028E   763 ;	NONE
+                                     028E   764 ;
+                                     028E   765 ; COMPLETION CODES:
+                                     028E   766 ;
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  15
+0302            FINDFILID - FIND FILE ID FOR SPECIFIED FILE                                                                      (1)
+
+                                     028E   767 ;	SS$_NORMAL		SUCCESSFUL COMPLETION
+                                     028E   768 ;	SS$_NOSUCHFILE		FILE NOT FOUND
+                                     028E   769 ;	SS$_BADFILENAME		SYNTAX ERROR IN FILE NAME
+                                     028E   770 ;	SS$_BADCHKSUM		CHECKSUM ERROR ON DIRECTORY FILE HEADER
+                                     028E   771 ;	SS$_BADFILEHDR		DIRECTORY FILE HEADER WAS BAD
+                                     028E   772 ;
+                                     028E   773 ; SIDE EFFECTS:
+                                     028E   774 ;
+                                     028E   775 ;	NONE
+                                     028E   776 ;
+                                     028E   777 ;
+                                     028E   778 ; EQUATED SYMBOLS, OFFSETS FROM AP
+                                     028E   779 ;
+                           00000004  028E   780 	CHAN		=	4
+                           00000008  028E   781 	FILDSC		=	8
+                           0000000C  028E   782 	IXFHDR		=	12
+                           00000010  028E   783 	DIRBUF		=	16
+                           00000014  028E   784 	STATBLK		=	20
+                           00000018  028E   785 	FILID		=	24
+                                     028E   786 ;
+                                     028E   787 ;--
+                                     028E   788 
+                                     028E   789 FIL$FINDFILID::
+                               07FC  028E   790 	.WORD	^M<R2,R3,R4,R5,R6,R7,R8,R9,R10>
+   00000424'EF            6C     FA  0290   791 	CALLG	(AP),FIL$RDCHKFILHDR	;READ AND CHECK DIRECTORY FILE HEADER
+            34            50     E9  0297   792 	BLBC	R0,BADRET		;BRANCH IF ERROR
+            55         10 AC     D0  029A   793 	MOVL	DIRBUF(AP),R5		;ADDRESS OF BUFFER TO READ DIRECTORY BLOCKS
+         14 BC            01     C3  029E   794 	SUBL3	#1,@STATBLK(AP),R6	;GET START LBN - 1
+                          56         02A2       
+                                     02A3   795 ;
+                                     02A3   796 ; IF THIS RESULT IS NEGATIVE, THEN THE DIRECTORY WAS NOT CONTIGUOUS.
+                                     02A3   797 ; THIS CODE SUPPORTS ONLY CONTIGUOUS DIRECTORIES, ANOTHER BUFFER WOULD
+                                     02A3   798 ; BE REQUIRED TO HOLD THE DIRECTORY HEADER IN ORDER TO SUPPORT NON-CONTIGUOS
+                                     02A3   799 ; DIRECTORIES.  SUCH DIRECTORIES ARE ONLY CREATED BY FILES-11 WHEN
+                                     02A3   800 ; A DIRECTORY MUST BE EXTENDED AND THERE IS NOT ENOUGH CONTIGUOUS SPACE
+                                     02A3   801 ; ANYWHERE ON THE VOLUME TO MAKE A NEW DIRECTORY OF THE CORRECT SIZE.
+                                     02A3   802 ;
+                          24     19  02A3   803 	BLSS	BADDIR			;BRANCH IF NOT CONTIGUOUS
+                                     02A5   804 ;
+                                     02A5   805 ; SEE IF THIS LOOKS LIKE A DIRECTORY FILE
+                                     02A5   806 ;
+            54         0E A5     DE  02A5   807 	MOVAL	FH1$W_RECATTR(R5),R4	;ADDRESS OF LEVEL 1 RECORD ATTRIBUTES
+         07 A5            01     83  02A9   808 	SUBB3	#1,FH1$W_STRUCLEV+1(R5),R0 ;0 IF LEVEL 1, 1 IF LEVEL 2
+                          50         02AD       
+                          04     13  02AE   809 	BEQL	10$			;BRANCH IF LEVEL 1
+            54         14 A5     DE  02B0   810 	MOVAL	FH2$W_RECATTR(R5),R4	;ADDRESS OF LEVEL 2 RECORD ATTRIBUTES
+         08 A4            10     9C  02B4   811 10$:	ROTL	#16,FAT$L_EFBLK(R4),R7	;VBN OF DIRECTORY EOF
+                          57         02B8       
+                       0C A4     B5  02B9   812 	TSTW	FAT$W_FFBYTE(R4)	;IF ZERO, EFBLK IS LAST+1 VBN
+                          02     12  02BC   813 	BNEQ	20$
+                          57     D7  02BE   814 	DECL	R7			;CORRECT TO GET LAST VBN
+            57            56     C0  02C0   815 20$:	ADDL	R6,R7			;LAST LBN OF FILE (INCLUSIVE)
+            0C            50     E8  02C3   816 	BLBS	R0,FIND_LEVEL2		;BRANCH IF STRUCTURE LEVEL 2
+                          00C6   31  02C6   817 	BRW	FIND_LEVEL1
+                                     02C9   818 	.SBTTL	FIND FILE ID - STRUCTURE LEVEL 2
+                                     02C9   819 
+            50       0828 8F     3C  02C9   820 BADDIR:	MOVZWL	#SS$_BADIRECTORY,R0
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  16
+0302            FIND FILE ID - STRUCTURE LEVEL 2                                                                                 (1)
+
+                                 04  02CE   821 BADRET:	RET
+                                     02CF   822 BADFILNAM1:
+                          FDAE   31  02CF   823 	BRW	BADFILNAM
+                                     02D2   824 ;
+                                     02D2   825 ; STRUCTURE LEVEL 2
+                                     02D2   826 ;
+                                     02D2   827 FIND_LEVEL2:
+         34 A5            0D     E1  02D2   828 	BBC	#FH2$V_DIRECTORY,FH2$L_FILECHAR(R5),BADDIR ;DIRECTORY BIT MUST BE SET
+                          F2         02D6       
+                                     02D7   829 
+                                     02D7   830 	ASSUME	FAT$B_RATTRIB EQ FAT$B_RTYPE+1
+                                 B1  02D7   831 	CMPW	#<FAT$M_NOSPAN @ 8 + FAT$C_VARIABLE>,- ;VARIABLE LENGTH
+            64       0802 8F         02D8   832 		FAT$B_RTYPE(R4)		;RECORDS NOT CROSSING BLOCK BOUNDARIES
+                          EB     12  02DC   833 	BNEQ	BADDIR			;BRANCH IF BAD RECORD ATTRIBUTES
+                                     02DE   834 ;
+                                     02DE   835 ; ***** NOTE THAT EACH BLOCK MUST END IN A RECORD SIZE OF -1
+                                     02DE   836 ; ***** A RECORD IS NOT ALLOWED TO EXACTLY FILL THE BLOCK
+                                     02DE   837 ; ***** PDP-11 FILE CONTROL SERVICES WILL READ THIS FILE CORRECTLY, BUT
+                                     02DE   838 ; ***** WILL NOT WRITE IT PROPERLY.  LIKEWISE FOR RMS-11 AND RMS-32
+                                     02DE   839 ;
+            58         08 BC     7D  02DE   840 	MOVQ	@FILDSC(AP),R8		;R8 = SIZE, R9 = ADDRESS OF FILE NAME STRING
+                          5A     D4  02E2   841 	CLRL	R10			;ASSUME DEFAULT VERSION
+            53            58     7D  02E4   842 	MOVQ	R8,R3			;COPY FILE NAME DESCRIPTOR
+            53            2E     3A  02E7   843 	LOCC	#^A/./,R3,(R4)		;FIND FILE TYPE DELIMITER IF PRESENT
+                          64         02EA       
+                          07     13  02EB   844 	BEQL	40$			;BRANCH IF NOT PRESENT
+            53            70     9E  02ED   845 	MOVAB	-(R0),R3		;SIZE OF REMAINING STRING
+            54         01 A1     9E  02F0   846 	MOVAB	1(R1),R4		;ADDRESS OF STRING BEYOND DELIMITER
+            53            3B     3A  02F4   847 40$:	LOCC	#^A/;/,R3,(R4)		;SEE IF VERSION DELIMITER PRESENT
+                          64         02F7       
+                          06     12  02F8   848 	BNEQ	60$			;BRANCH IF IT IS
+            53            2E     3A  02FA   849 	LOCC	#^A/./,R3,(R4)		;TRY ALTERNATE VERSION DELIMITER
+                          64         02FD       
+                          34     13  02FE   850 	BEQL	120$			;BRANCH IF NO VERSION STRING PRESENT
+                                     0300   851 ;
+                                     0300   852 ; R0 = BYTE COUNT OF VERSION STRING PLUS DELIMITER
+                                     0300   853 ; R1 = ADDRESS OF VERSION DELIMITER
+                                     0300   854 ;
+            58            50     C2  0300   855 60$:	SUBL	R0,R8			;REDUCE FILE NAME STRING SIZE
+                                     0303   856 					;ELIMINATING VERSION STRING AND DELIMITER
+                          7E     DF  0303   857 	PUSHAL	-(SP)			;RESERVE LONG WORD FOR VERSION NUMBER
+                                     0305   858 					;AND PUSH ITS ADDRESS
+                       01 A1     9F  0305   859 	PUSHAB	1(R1)			;ADDRESS OF VERSION STRING
+                          70     9F  0308   860 	PUSHAB	-(R0)			;SIZE OF VERSION STRING
+   00000000'EF            03     FB  030A   861 	CALLS	#3,LIB$CVT_DTB		;CONVERT DECIMAL VERSION STRING TO BINARY
+            BB            50     E9  0311   862 	BLBC	R0,BADFILNAM1		;BRANCH IF SYNTAX ERROR IN VERSION STRING
+            5A            8E     D0  0314   863 	MOVL	(SP)+,R10		;FETCH EXPLICIT VERSION NUMBER
+                                     0317   864 ;
+                                     0317   865 ; R6  = ADDRESS OF LAST LBN READ FROM DIRECTORY FILE (FIRST - 1)
+                                     0317   866 ; R7  = ADDRESS OF LAST LBN (INCLUSIVE) TO BE READ FROM DIRECTORY FILE
+                                     0317   867 ; R8  = SIZE OF NAME STRING TO SCAN FOR
+                                     0317   868 ; R9  = ADDRESS OF NAME STRING TO SCAN FOR
+                                     0317   869 ; R10 = FILE VERSION NUMBER IF EXPLICIT, OR 0 IF DEFAULT TO LATEST VERSION
+                                     0317   870 ;
+                          1B     11  0317   871 	BRB	120$			;BEGIN LOOP AT BOTTOM
+                                     0319   872 ;
+                                     0319   873 ; R5 = ADDRESS OF NEXT RECORD
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  17
+0302            FIND FILE ID - STRUCTURE LEVEL 2                                                                                 (1)
+
+                                     0319   874 ;
+            54         05 A5     9A  0319   875 100$:	MOVZBL	DIR$B_NAMECOUNT(R5),R4	;GET SIZE OF "NAME.TYP" STRING
+            69            58     2D  031D   876 	CMPC5	R8,(R9),#0,R4,DIR$T_NAME(R5) ;SEE IF STRINGS MATCH
+            54            00         0320       
+                       06 A5         0322       
+                          2F     13  0324   877 	BEQL	200$			;BRANCH IF THEY DO
+                          10     19  0326   878 	BLSS	140$			;BRANCH IF BEYOND WHERE NAME WOULD GO
+            50            65     3C  0328   879 	MOVZWL	DIR$W_SIZE(R5),R0	;USING THE SIZE OF THIS RECORD
+            55         02 A540   9E  032B   880 	MOVAB	2(R5)[R0],R5		;FORM ADDRESS OF NEXT RECORD
+                          65     B5  0330   881 110$:	TSTW	DIR$W_SIZE(R5)		;END OF BLOCK?
+                          E5     14  0332   882 	BGTR	100$			;BRANCH IF NOT
+            56            57     F3  0334   883 120$:	AOBLEQ	R7,R6,160$
+                          06         0337       
+            50       0910 8F     3C  0338   884 140$:	MOVZWL	#SS$_NOSUCHFILE,R0	;CANNOT FIND FILE
+                                 04  033D   885 150$:	RET
+            55         10 AC     D0  033E   886 160$:	MOVL	DIRBUF(AP),R5		;ADDRESS OF DIRECTORY BLOCK BUFFER
+                                     0342   887 	READLBN	CHAN(AP),R6,(R5)	;READ THE NEXT DIRECTORY BLOCK
+            7E            21     3C  0342       		MOVZWL	#IO$_READLBLK,-(SP)
+                          65     DF  0345       		PUSHAL	(R5)
+                          56     DD  0347       		PUSHL	R6
+                       04 AC     DD  0349       		PUSHL	CHAN(AP)
+       0000'CF            04     FB  034C       		CALLS	#4,W^FIL$RDWRTLBN
+            DC            50     E8  0351   888 	BLBS	R0,110$			;BRANCH IF SUCCESSFUL
+                                 04  0354   889 	RET
+                                     0355   890 ;
+                                     0355   891 ; FOUND A MATCH OF FILE NAME AND TYPE
+                                     0355   892 ;
+                          54     D6  0355   893 200$:	INCL	R4			;ROUND UP NAME COUNT
+            54            01     CA  0357   894 	BICL	#1,R4			;TO EVEN NUMBER OF BYTES
+            53         06 A544   9E  035A   895 	MOVAB	DIR$T_NAME(R5)[R4],R3	;ADDRESS OF FIRST VERSION ENTRY
+            50            65     3C  035F   896 	MOVZWL	DIR$W_SIZE(R5),R0	;SIZE OF THIS RECORD
+            55         02 A540   9E  0362   897 	MOVAB	2(R5)[R0],R5		;FORM ADDRESS OF BEGINNING OF NEX RECORD
+                                     0367   898 					;WHICH IS ALSO THE END OF THE VERSIONS
+                          5A     D5  0367   899 	TSTL	R10			;LATEST VERSION DESIRED?
+                          11     13  0369   900 	BEQL	240$			;BRANCH IF YES, R3 IS ADDRESS OF
+                                     036B   901 					;DESIRED VERSION AND FILE ID
+            63            5A     B1  036B   902 230$:	CMPW	R10,DIR$W_VERSION(R3)	;IS THIS THE RIGHT VERSION?
+                          0C     13  036E   903 	BEQL	240$			;BRANCH IF YES
+                          C6     1A  0370   904 	BGTRU	140$			;BRANCH IF PAST WHERE IT WOULD BE
+            53            08     C0  0372   905 	ADDL	#DIR$C_VERSION,R3	;NEXT VERSION ENTRY
+            55            53     D1  0375   906 	CMPL	R3,R5			;END OF RECORD?
+                          F1     1F  0378   907 	BLSSU	230$			;BRANCH IF NOT, CHECK NEXT VERSION
+                          B4     11  037A   908 	BRB	110$			;VERSION NOT IN THIS VERSION CHAIN
+                                     037C   909 					;SEE IF IT IS IN THE NEXT RECORD
+                                     037C   910 ;
+                                     037C   911 ; FOUND THE FILE ID, RETURN IT TO CALLER
+                                     037C   912 ;
+            50         18 AC     D0  037C   913 240$:	MOVL	FILID(AP),R0		;ADDRESS TO RETURN FILE ID
+            80         02 A3     D0  0380   914 	MOVL	DIR$W_FID(R3),(R0)+	;STORE FIRST 2 WORDS
+            60         06 A3     B0  0384   915 	MOVW	DIR$W_FID+4(R3),(R0)	;STORE RELATIVE VOLUME NUMBER
+            50            01     3C  0388   916 	MOVZWL	#SS$_NORMAL,R0		;INDICATE SUCCESSFUL COMPLETION
+                                 04  038B   917 	RET
+                                     038C   918 	.SBTTL	FIND FILE ID - STRUCTURE LEVEL 1
+                                     038C   919 ;
+                                     038C   920 ; BAD DIRECTORY FILE
+                                     038C   921 ;
+                                     038C   922 BADDIR1:
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  18
+0302            FIND FILE ID - STRUCTURE LEVEL 1                                                                                 (1)
+
+                          FF3A   31  038C   923 	BRW	BADDIR
+                                     038F   924 ;
+                                     038F   925 ; STRUCTURE LEVEL 1 FIND
+                                     038F   926 ; R4 = ADDRESS OF RECORD ATTRIBUTES
+                                     038F   927 ;
+                                     038F   928 FIND_LEVEL1:
+            64            01     91  038F   929 	CMPB	#FAT$C_FIXED,FAT$B_RTYPE(R4) ;FIXED LENGTH RECORD?
+                          F8     12  0392   930 	BNEQ	BADDIR1			;BRANCH IF NOT
+         02 A4            10     B1  0394   931 	CMPW	#16,FAT$W_RSIZE(R4)	;16 BYTES EACH
+                          F2     12  0398   932 	BNEQ	BADDIR1			;BRANCH IF NOT
+                                     039A   933 ;
+                                     039A   934 ; GET FILE NAME BLOCK FOR STRUCTURE LEVEL 1 DIRECTORY SCAN
+                                     039A   935 ;
+            53         08 AC     D0  039A   936 	MOVL	FILDSC(AP),R3		;ADDRESS OF 3 LONG WORD FILE DESCRIPTOR
+                          63     D5  039E   937 	TSTL	(R3)			;SIZE OF ASCII STRING
+                          0D     13  03A0   938 	BEQL	25$			;BRANCH IF NAME BLOCK ALL SET UP
+                       08 A3     DD  03A2   939 	PUSHL	8(R3)			;ADDRESS OF NAME BLOCK
+                          63     DF  03A5   940 	PUSHAL	(R3)			;ADDRESS OF STRING DESCRIPTOR
+       FC54 CF            02     FB  03A7   941 	CALLS	#2,W^FIL$CVTFILNAM	;CONVERT ASCII STRING TO NAME BLOCK (RAD50)
+            6C            50     E9  03AC   942 	BLBC	R0,90$			;BRANCH IF ERROR
+            53         08 A3     D0  03AF   943 25$:	MOVL	8(R3),R3		;ADDRESS OF NAME BLOCK
+            6E         08 A3     3C  03B3   944 	MOVZWL	8(R3),(SP)		;SAVE FILE VERSION OVER FILE SIZE
+                                     03B7   945 					;THAT WAS LEFT FROM THE STATBLK CALL
+            50         18 AC     D0  03B7   946 	MOVL	FILID(AP),R0		;ADDRESS OF RETURN FILE ID
+                          80     D4  03BB   947 	CLRL	(R0)+			;INIT TO ZERO
+                          60     B4  03BD   948 	CLRW	(R0)			;ALL 3 WORDS.
+            54       01FF C5     DE  03BF   949 	MOVAL	511(R5),R4		;ADDRESS OF LAST BYTE OF BUFFER
+                          47     11  03C4   950 	BRB	80$			;START DIRECTORY SCAN AT BOTTOM OF LOOP
+                                     03C6   951 ;
+                                     03C6   952 ; THE FOLLOWING REGISTER CONVENTION ARE USED IN THE DIRECTORY SCAN
+                                     03C6   953 ;	R2 = CURRENT DIRECTORY ENTRY BEING SCANNED
+                                     03C6   954 ;	R3 = NAMEBLOCK TO COMPARE AGAINST
+                                     03C6   955 ;	R4 = ADDRESS OF LAST BYTE OF DIRECTORY BLOCK
+                                     03C6   956 ;	R5 = ADDRESS OF DIRECTORY BUFFER
+                                     03C6   957 ;	R6 = LOGICAL BLOCK NUMBER OF CURRENT DIRECTORY BLOCK
+                                     03C6   958 ;	R7 = LAST LOGICAL BLOCK NUMBER (INCLUSIVE) TO SCAN
+                                     03C6   959 ;	0(SP) = VERSION OF FILE FROM NAME BLOCK
+                                     03C6   960 ;
+                                     03C6   961 30$:	READLBN	CHAN(AP),R6,(R5)	;READ NEXT DIRECTORY BLOCK
+            7E            21     3C  03C6       		MOVZWL	#IO$_READLBLK,-(SP)
+                          65     DF  03C9       		PUSHAL	(R5)
+                          56     DD  03CB       		PUSHL	R6
+                       04 AC     DD  03CD       		PUSHL	CHAN(AP)
+       0000'CF            04     FB  03D0       		CALLS	#4,W^FIL$RDWRTLBN
+            43            50     E9  03D5   962 	BLBC	R0,90$			;BRANCH IF ERROR
+            52            55     D0  03D8   963 	MOVL	R5,R2			;SET DIRECTORY RECORD POINTER
+                          62     B5  03DB   964 40$:	TSTW	(R2)			;IS THIS DIRECTORY RECORD EMPTY
+                          28     13  03DD   965 	BEQL	70$			;BRANCH IF YES
+            51         06 A2     DE  03DF   966 	MOVAL	6(R2),R1		;STEP OVER FILE ID TO NAME PORTION
+            50            53     D0  03E3   967 	MOVL	R3,R0			;MAKE A SCRATCH COPY OF NAME BLOCK ADR
+            81            80     D1  03E6   968 	CMPL	(R0)+,(R1)+		;CHECK 1ST 2 WORDS OF RAD50 FILE NAME
+                          1C     12  03E9   969 	BNEQ	70$			;BRANCH IF NO MATCH
+            81            80     D1  03EB   970 	CMPL	(R0)+,(R1)+		;LAST WORD OF RAD50 FILE NAME
+                                     03EE   971 					;AND THE 1 WORD RAD50 FILE TYPE
+                          17     12  03EE   972 	BNEQ	70$			;BRANCH IF NO MATCH
+                                     03F0   973 ;
+                                     03F0   974 ; NOW CHECK THE VERSION, IF SPECIFIED VERSION WAS 0 WE'RE LOOKING FOR
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  19
+0302            FIND FILE ID - STRUCTURE LEVEL 1                                                                                 (1)
+
+                                     03F0   975 ; THE LARGEST VERSION WHICH OTHERWISE MATCHES, KEEP THE CURRENT LARGEST
+                                     03F0   976 ; IN THE INPUT NAME BLOCK, THUS RETURNING THE VERSION NUMBER FOUND.
+                                     03F0   977 ;
+                          6E     B5  03F0   978 	TSTW	(SP)			;SEARCHING FOR HIGHEST VERSION?
+                          07     13  03F2   979 	BEQL	50$			;BRANCH IF YES
+            61            60     B1  03F4   980 	CMPW	(R0),(R1)		;NO, JUST COMPARE FOR EXACT MATCH
+                          0E     12  03F7   981 	BNEQ	70$			;BRANCH IF NO MATCH
+                          21     11  03F9   982 	BRB	100$			;FILE FOUND, EXIT LOOP
+            61            60     B1  03FB   983 50$:	CMPW	(R0),(R1)		;HIGHER THAN PREVIOUS HIGHEST VERSION?
+                          07     1E  03FE   984 	BGEQU	70$			;BRANCH IF NOT
+            60            61     B0  0400   985 	MOVW	(R1),(R0)		;RECORD HIGHEST VERSION FOUND
+         18 BC            62     D0  0403   986 	MOVL	(R2),@FILID(AP)		;AND RECORD ITS FILE ID
+            10            54     F1  0407   987 70$:	ACBL	R4,#16,R2,40$		;NEXT DIRECTORY RECORD IF ANY
+            FFCE          52         040A       
+            56            57     F3  040D   988 80$:	AOBLEQ	R7,R6,30$		;NEXT DIRECTORY BLOCK IF ANY
+                          B5         0410       
+                                     0411   989 ;
+                                     0411   990 ; DIRECTORY COMPLETELY SCANNED, IF LOOKING FOR HIGHEST VERSION, THEN
+                                     0411   991 ; POSSIBLY A FILE WAS FOUND, OTHERWISE NO MATCH.
+                                     0411   992 ;
+                       18 BC     D5  0411   993 	TSTL	@FILID(AP)		;IF ANY FILE ID WAS STORED
+                                     0414   994 					;THEN A FILE WAS FOUND
+                          0A     12  0414   995 	BNEQ	120$			;BRANCH IF FILE WAS FOUND
+            50       0910 8F     3C  0416   996 	MOVZWL	#SS$_NOSUCHFILE,R0	;NO SUCH FILE
+                                 04  041B   997 90$:	RET
+                                     041C   998 ;
+                                     041C   999 ; EXACT MATCH, FILE FOUND
+                                     041C  1000 ;
+         18 BC            62     D0  041C  1001 100$:	MOVL	(R2),@FILID(AP)		;RETURN THE FILE ID
+            50            01     3C  0420  1002 120$:	MOVZWL	#SS$_NORMAL,R0		;SET SUCCESSFUL INDICATION
+                                 04  0423  1003 	RET				;AND RETURN
+                                     0424  1004 	.SBTTL	RDCHKFILHDR - READ AND CHECK FILE HEADER
+                                     0424  1005 ;++
+                                     0424  1006 ; FUNCTIONAL DESCRIPTION:
+                                     0424  1007 ;
+                                     0424  1008 ;	RDCHKFILHDR READS AND VALIDATES A FILE HEADER GIVEN ITS FILE ID
+                                     0424  1009 ; AND THE INDEX FILE HEADER AS RETURNED BY FIL$MOUNT.
+                                     0424  1010 ;
+                                     0424  1011 ; CALLING SEQUENCE:
+                                     0424  1012 ;
+                                     0424  1013 ;	CALLG	ARGLIST,FIL$RDCHKFILHDR
+                                     0424  1014 ;
+                                     0424  1015 ; INPUT PARAMETERS:
+                                     0424  1016 ;
+                                     0424  1017 ;	CHAN(AP)		CHANNEL ON WHICH DEVICE IS ASSIGNED
+                                     0424  1018 ;	UNUSED			UNUSED PARAMETER
+                                     0424  1019 ;	IXFHDR(AP)		ADR OF INDEX FILE HEADER AS RETURNED BY FIL$MOUNT
+                                     0424  1020 ;	FILHDR(AP)		ADDRESS OF 512 BYTE BUFFER FOR FILE HEADER
+                                     0424  1021 ;	STATBLK(AP)		ADR OF 2 LONG WORD AREA TO RETURN STATISTICS BLOCK
+                                     0424  1022 ;	FILID(AP)		ADDRESS OF 3 WORD FILE ID OF DESIRED FILE HEADER
+                                     0424  1023 ;
+                                     0424  1024 ; IMPLICIT INPUTS:
+                                     0424  1025 ;
+                                     0424  1026 ;	NONE
+                                     0424  1027 ;
+                                     0424  1028 ; OUTPUT PARAMETERS:
+                                     0424  1029 ;
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  20
+0302            RDCHKFILHDR - READ AND CHECK FILE HEADER                                                                         (1)
+
+                                     0424  1030 ;	R0 = SYSTEM STATUS CODE
+                                     0424  1031 ;
+                                     0424  1032 ; IMPLICIT OUTPUTS:
+                                     0424  1033 ;
+                                     0424  1034 ;	NONE
+                                     0424  1035 ;
+                                     0424  1036 ; COMPLETION CODES:
+                                     0424  1037 ;
+                                     0424  1038 ;	SS$_NORMAL		SUCCESSFUL COMPLETION
+                                     0424  1039 ;
+                                     0424  1040 ; SIDE EFFECTS:
+                                     0424  1041 ;
+                                     0424  1042 ;	NONE
+                                     0424  1043 ;
+                                     0424  1044 ;
+                                     0424  1045 ; EQUATED SYMBOLS, OFFSETS FROM AP
+                                     0424  1046 ;
+                           00000004  0424  1047 	CHAN		=	4
+                           0000000C  0424  1048 	IXFHDR		=	12
+                           00000010  0424  1049 	FILHDR		=	16
+                           00000014  0424  1050 	STATBLK		=	20
+                           00000018  0424  1051 	FILID		=	24
+                                     0424  1052 ;
+                                     0424  1053 ;--
+                                     0424  1054 
+                                     0424  1055 FIL$RDCHKFILHDR::
+                               007C  0424  1056 	.WORD	^M<R2,R3,R4,R5,R6>
+            7E            01     CE  0426  1057 	MNEGL	#1,-(SP)		;COUNT OF HEADER BLOCKS READ
+                                     0429  1058 
+                                     0429  1059 	ASSUME	FILHDR EQ IXFHDR+4
+            52         0C AC     7D  0429  1060 	MOVQ	IXFHDR(AP),R2		;R2 = INDEX FILE HEADER ADDRESS
+                                     042D  1061 					;R3 = FILE HEADER ADDRESS
+                                     042D  1062 	ASSUME	FILID EQ STATBLK+4
+            54         14 AC     7D  042D  1063 	MOVQ	STATBLK(AP),R4		;R4 = RETURN STATBLK ADDRESS
+                                     0431  1064 					;R5 = ADDRESS OF FILE ID
+            7E            65     7D  0431  1065 	MOVQ	(R5),-(SP)		;COPY FILE ID TO WRITABLE SCRATCH
+            55            5E     D0  0434  1066 	MOVL	SP,R5			;AND REMEMBER ITS ADDRESS
+            56            7E     7E  0437  1067 	MOVAQ	-(SP),R6		;RESERVE SCRATCH STATISTICS BLOCK
+                                     043A  1068 					;AND SAVE ITS ADDRESS IN R6
+                          64     7C  043A  1069 	CLRQ	(R4)			;INIT THE RETURN STAT BLOCK
+                          64     D7  043C  1070 	DECL	(R4)			;-1 LBN MEANS NOT YET STORED
+            7E            65     3C  043E  1071 5$:	MOVZWL	(R5),-(SP)		;FILE NUMBER TO LONG WORD
+         06 A2            0A     E1  0441  1072 	BBC	#FH2$V_BIGFILNUM,FH2$W_STRUCLEV(R2),10$ ;BRANCH IF NO BIG FIL NUM
+                          05         0445       
+         02 AE         05 A5     90  0446  1073 	MOVB	FID$B_NMX(R5),2(SP)	;HIGH 8 BITS OF RVN COMPLETE FILE NUMBER
+            50            8E     D0  044B  1074 10$:	MOVL	(SP)+,R0		;IF FILE ID IS ZERO,
+                          5E     13  044E  1075 	BEQL	40$			;THEN READ LAST HEADER BLOCK
+            51       01FE C2     3C  0450  1076 	MOVZWL	FH1$W_VBNOFFSET(R2),R1	;RECOVER VBN OFFSET FROM INDEX FILE HEADER
+            50            51     C0  0455  1077 	ADDL	R1,R0			;ADD VBN OFFSET TO FORM INDEX FILE VBN
+                       FC AD     D6  0458  1078 	INCL	-4(FP)			;COUNT EACH HEADER READ
+                                     045B  1079 	READVBN	CHAN(AP),R0,(R3),(R2)	;READ THE FILE HEADER
+                          62     DF  045B       		PUSHAL	(R2)
+                          63     DF  045D       		PUSHAL	(R3)
+                          50     DD  045F       		PUSHL	R0
+                       04 AC     DD  0461       		PUSHL	CHAN(AP)
+       04C7'CF            04     FB  0464       		CALLS	#4,W^FIL$READVBN
+            53            50     E9  0469  1080 	BLBC	R0,50$			;BRANCH IF ERROR
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  21
+0302            RDCHKFILHDR - READ AND CHECK FILE HEADER                                                                         (1)
+
+         FC AD            1F     E0  046C  1081 	BBS	#31,-4(FP),50$		;BRANCH IF JUST RE-READING MAIN HEADER
+                          4E         0470       
+            50            55     D0  0471  1082 	MOVL	R5,R0			;GET FILE ID ADDRESS
+            51            53     D0  0474  1083 	MOVL	R3,R1			;ADDRESS OF FILE HEADER
+                          0142   30  0477  1084 	BSBW	FIL$CHKFILHDR		;CHECK THE FILE HEADER
+            52         0C AC     D0  047A  1085 	MOVL	IXFHDR(AP),R2		;INDEX FILE HEADER ADDRESS
+                          56     DD  047E  1086 	PUSHL	R6			;ADDRESS OF SCRATCH STAT BLOCK
+                          53     DD  0480  1087 	PUSHL	R3			;ADDRESS OF FILE HEADER
+       0578'CF            02     FB  0482  1088 	CALLS	#2,W^FIL$STATBLK	;READ STATISTICS BLOCK
+            51            64     D2  0487  1089 	MCOML	(R4),R1			;SEE OF START LBN HAS BEEN SET
+                          03     12  048A  1090 	BNEQ	20$			;BRANCH IF IT HAS
+            64            66     D0  048C  1091 	MOVL	(R6),(R4)		;SET IT ONCE ONLY
+         04 A4         04 A6     C0  048F  1092 20$:	ADDL	4(R6),4(R4)		;ADD IN THE SIZE FROM THIS HEADER
+            65         0E A3     7D  0494  1093 	MOVQ	FH2$W_EXT_FID(R3),(R5)	;GET EXTENSION FILE ID IF ANY
+         06 A3            09     E0  0498  1094 	BBS	#FH2$V_LEVEL2,FH2$W_STRUCLEV(R3),5$ ;GOT IT IF LEVEL2
+                          A1         049C       
+            50         01 A3     9A  049D  1095 	MOVZBL	FH1$B_MPOFFSET(R3),R0	;GET WORD OFFSET TO LEVEL1 MAP AREA
+            50            6340   3E  04A1  1096 	MOVAW	(R3)[R0],R0		;ADDRESS OF MAP AREA
+            65         02 A0     D0  04A5  1097 	MOVL	FM1$W_EX_FILNUM(R0),(R5) ;GET EXTENSION FILE NUMBER IF ANY
+                       04 A5     D4  04A9  1098 	CLRL	4(R5)			;ZERO RVN
+                          90     11  04AC  1099 	BRB	5$			;READ THIS HEADER IF ANY
+                                     04AE  1100 ;
+                                     04AE  1101 ; LAST FILE HEADER READ, SEE IF MUST RE-READ THE ORIGINAL HEADER
+                                     04AE  1102 ;
+                       FC AD     D5  04AE  1103 40$:	TSTL	-4(FP)			;WAS -1, BUMPED ONCE PER READVBN
+                          09     15  04B1  1104 	BLEQ	45$			;BRANCH IF STILL HAVE MASTER FILE HEADER
+            65         18 BC     7D  04B3  1105 	MOVQ	@FILID(AP),(R5)		;ORIGINAL FILE ID AGAIN
+         FC AD            1F     E3  04B7  1106 	BBCS	#31,-4(FP),5$		;SET SIGN BIT AND GO READ ORIGINAL HEADER
+                          82         04BB       
+            50            01     3C  04BC  1107 45$:	MOVZWL	#SS$_NORMAL,R0		;RETURN SUCCESS STATUS
+                                 04  04BF  1108 50$:	RET
+                                     04C0  1109 	.SBTTL	READVBN, WRITEVBN - READ/WRITE VIRTUAL BLOCK
+                                     04C0  1110 ;++
+                                     04C0  1111 ; FUNCTIONAL DESCRIPTION:
+                                     04C0  1112 ;
+                                     04C0  1113 ;	THESE ROUTINES READ OR WRITE A VIRTUAL BLOCK FROM A FILE.
+                                     04C0  1114 ; VOLUME IS SPECIFIED BY THE CHANNEL TO WHICH IT IS ASSIGNED, AND THE
+                                     04C0  1115 ; FILE IS SPECIFIED BY THE ADDRESS OF ITS FILE HEADER WHICH WAS PREVIOUSLY
+                                     04C0  1116 ; READ BY A CALL TO FIL$RDFILHDR.
+                                     04C0  1117 ;
+                                     04C0  1118 ; CALLING SEQUENCE:
+                                     04C0  1119 ;
+                                     04C0  1120 ;	CALLG	ARGLIST,FIL$READVBN
+                                     04C0  1121 ;	CALLG	ARGLIST,FIL$WRITEVBN
+                                     04C0  1122 ;
+                                     04C0  1123 ; INPUT PARAMETERS:
+                                     04C0  1124 ;
+                                     04C0  1125 ;	CHAN(AP)	=		;CHANNEL TO WHICH VOLUME IS ASSIGNED
+                                     04C0  1126 ;	VBN(AP)		=		;DESIRED VIRTUAL BLOCK NUMBER
+                                     04C0  1127 ;	BUFADR(AP)	=		;ADDRESS OF BUFFER TO READ INTO
+                                     04C0  1128 ;	FILHDR(AP)	=		;ADDRESS OF FILE HEADER
+                                     04C0  1129 ;
+                                     04C0  1130 ; IMPLICIT INPUTS:
+                                     04C0  1131 ;
+                                     04C0  1132 ;	NONE
+                                     04C0  1133 ;
+                                     04C0  1134 ; OUTPUT PARAMETERS:
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  22
+0302            READVBN, WRITEVBN - READ/WRITE VIRTUAL BLOCK                                                                     (1)
+
+                                     04C0  1135 ;
+                                     04C0  1136 ;	R0 = SYSTEM STATUS CODE
+                                     04C0  1137 ;
+                                     04C0  1138 ; IMPLICIT OUTPUTS:
+                                     04C0  1139 ;
+                                     04C0  1140 ;	NONE
+                                     04C0  1141 ;
+                                     04C0  1142 ; COMPLETION CODES:
+                                     04C0  1143 ;
+                                     04C0  1144 ;	SS$_NORMAL			SUCCESSFUL RETURN
+                                     04C0  1145 ;	SS$_ENDOFFILE			SPECIFIED VBN BEYOND END OF FILE
+                                     04C0  1146 ;
+                                     04C0  1147 ; SIDE EFFECTS:
+                                     04C0  1148 ;
+                                     04C0  1149 ;	NONE
+                                     04C0  1150 ;
+                                     04C0  1151 ;
+                                     04C0  1152 ; EQUATED SYMBOLS:
+                                     04C0  1153 ;
+                                     04C0  1154 ;    OFFSET FROM AP
+                                     04C0  1155 ;
+                           00000004  04C0  1156 	CHAN		=	4	;CHANNEL TO WHICH VOLUME IS ASSIGNED
+                           00000008  04C0  1157 	VBN		=	8	;VIRTUAL BLOCK NUMBER
+                           0000000C  04C0  1158 	BUFADR		=	12	;BUFFER ADDRESS TO READ INTO
+                           00000010  04C0  1159 	FILHDR		=	16	;ADDRESS OF FILE HEADER
+                                     04C0  1160 ;
+                                     04C0  1161 ;    OFFSETS FROM FP
+                                     04C0  1162 ;
+                           FFFFFFFC  04C0  1163 	IOFUNCTION	=	-4	;SAVED I/O FUNCTION CODE
+                                     04C0  1164 ;
+                                     04C0  1165 ;--
+                                     04C0  1166 
+                                     04C0  1167 FIL$WRITEVBN::
+                               003C  04C0  1168 	.WORD	^M<R2,R3,R4,R5>
+            7E            20     3C  04C2  1169 	MOVZWL	#IO$_WRITELBLK,-(SP)
+                          05     11  04C5  1170 	BRB	RDWRTVBN
+                                     04C7  1171 FIL$READVBN::
+                               003C  04C7  1172 	.WORD	^M<R2,R3,R4,R5>
+            7E            21     3C  04C9  1173 	MOVZWL	#IO$_READLBLK,-(SP)
+                                     04CC  1174 RDWRTVBN:
+            55         10 AC     D0  04CC  1175 	MOVL	FILHDR(AP),R5		;BASE ADR OF FILE HEADER
+            52         06 A5     3C  04D0  1176 	MOVZWL	FH1$W_STRUCLEV(R5),R2	;STRUCTURE LEVEL
+                          2D     10  04D4  1177 	BSBB	INIRTRVPTRSCAN		;SET UP TO SCAN RETRIEVAL POINTERS
+                                     04D6  1178 ;
+                                     04D6  1179 ; R4 = POINTER TO FIRST RETRIEVAL POINTER,
+                                     04D6  1180 ; R5 = POINTER TO FIRST BYTE BEYOND LAST RETRIEVAL POINTER
+                                     04D6  1181 ; LOOP THROUGH RETRIEVAL POINTERS TO FIND THE ONE WHICH CONTAINS THE DESIRED VBN
+                                     04D6  1182 ;
+         08 AC            01     C3  04D6  1183 	SUBL3	#1,VBN(AP),R3		;VBN BASE 0 TO LOOK FOR
+                          53         04DA       
+                          44     10  04DB  1184 20$:	BSBB	GETRTRVPTR		;FETCH NEXT RETRIEVAL POINTER
+            50            53     D1  04DD  1185 	CMPL	R3,R0			;IS VBN IN THIS RETRIEVAL POINTER
+                          0E     19  04E0  1186 	BLSS	40$			;BRANCH IF YES
+            53            50     C2  04E2  1187 	SUBL	R0,R3			;PASS OVER THAT MANY VBN'S
+            55            54     D1  04E5  1188 	CMPL	R4,R5			;ANY MORE RETRIEVAL POINTERS?
+                          F1     1F  04E8  1189 	BLSSU	20$			;BRANCH IF YES
+            50       0870 8F     3C  04EA  1190 	MOVZWL	#SS$_ENDOFFILE,R0	;RETURN END OF FILE INDICATION
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  23
+0302            READVBN, WRITEVBN - READ/WRITE VIRTUAL BLOCK                                                                     (1)
+
+                                 04  04EF  1191 	RET
+                                     04F0  1192 ;
+                                     04F0  1193 ; VBN IS IN THIS RETRIEVAL POINTER, R1 = STARTING LBN
+                                     04F0  1194 ;
+                       FC AD     DD  04F0  1195 40$:	PUSHL	IOFUNCTION(FP)		;FUNCTION CODE
+                       0C AC     DD  04F3  1196 	PUSHL	BUFADR(AP)		;BUFFER TO TRANSFER TO/FROM
+            51            53     C1  04F6  1197 	ADDL3	R3,R1,-(SP)		;LBN
+                          7E         04F9       
+                       04 AC     DD  04FA  1198 	PUSHL	CHAN(AP)		;CHANNEL
+       0000'CF            04     FB  04FD  1199 	CALLS	#4,W^FIL$RDWRTLBN	;TRANSFER THE BLOCK
+                                 04  0502  1200 	RET
+                                     0503  1201 	.SBTTL	INIRTRVPTRSCAN, GETRTRVPTR
+                                     0503  1202 
+                                     0503  1203 ;
+                                     0503  1204 ; CALLING SEQUENCE:
+                                     0503  1205 ;
+                                     0503  1206 ;	BSBW	INIRTRVPTRSCAN
+                                     0503  1207 ;
+                                     0503  1208 ; INPUT:
+                                     0503  1209 ;
+                                     0503  1210 ;	R2 = STRUCTURE LEVEL
+                                     0503  1211 ;	R5 = FILE HEADER ADDRESS
+                                     0503  1212 ;
+                                     0503  1213 ; OUTPUT:
+                                     0503  1214 ;
+                                     0503  1215 ;	R4 = ADDRESS OF 1ST RETRIEVAL POINTER
+                                     0503  1216 ;	R5 = ADDRESS OF FIRST BYTE BEYOND LAST RETREIVAL POINTER
+                                     0503  1217 ;
+                                     0503  1218 INIRTRVPTRSCAN:
+            50         01 A5     9A  0503  1219 	MOVZBL	FH1$B_MPOFFSET(R5),R0	;WORD OFFSET TO MAP AREA
+            54            6540   3E  0507  1220 	MOVAW	(R5)[R0],R4		;BASE ADR OF MAP AREA
+            52            09     E0  050B  1221 	BBS	#FH2$V_LEVEL2,R2,20$	;BRANCH IF LEVEL2
+                          0C         050E       
+            55         08 A4     9A  050F  1222 	MOVZBL	FM1$B_INUSE(R4),R5	;WORDS OF RETRIEVAL POINTERS IN USE
+            54            0A     C0  0513  1223 	ADDL	#FM1$C_POINTERS,R4	;BEGINNING OF RETRIEVAL POINTERS
+            55            6445   3E  0516  1224 10$:	MOVAW	(R4)[R5],R5		;ADR JUST BEYOND LAST VALID RTRV PTR
+                                 05  051A  1225 	RSB
+            55         3A A5     9A  051B  1226 20$:	MOVZBL	FH2$B_MAP_INUSE(R5),R5	;NO. OF WORDS OF RTRV PTRS IN USE
+                          F5     11  051F  1227 	BRB	10$
+                                     0521  1228 
+                                     0521  1229 ;
+                                     0521  1230 ; CALLING SEQUENCE:
+                                     0521  1231 ;
+                                     0521  1232 ;	BSBW	GETRTRVPTR
+                                     0521  1233 ;
+                                     0521  1234 ; INPUTS:
+                                     0521  1235 ;
+                                     0521  1236 ;	R2 = STRUCTURE LEVEL WORD
+                                     0521  1237 ;	R4 = ADDRESS OF NEXT RETRIEVAL POINTER
+                                     0521  1238 ;
+                                     0521  1239 ; OUTPUTS:
+                                     0521  1240 ;
+                                     0521  1241 ;	R0 = NUMBER OF BLOCKS COVERED BY THE RETRIEVAL POINTER
+                                     0521  1242 ;	R1 = STARTING LOGICAL BLOCK NUMBER
+                                     0521  1243 ;	R2,R3 PRESERVED
+                                     0521  1244 ;
+                                     0521  1245 GETRTRVPTR:
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  24
+0302            INIRTRVPTRSCAN, GETRTRVPTR                                                                                       (1)
+
+            52            09     E0  0521  1246 	BBS	#FH2$V_LEVEL2,R2,20$	;BRANCH IF STRUCTURE LEVEL 2
+                          0F         0524       
+                                     0525  1247 ;
+                                     0525  1248 ; STRUCTURE LEVEL 1 RETRIEVAL POINTERS - 4 BYTES EACH
+                                     0525  1249 ;	BYTE 0 = BITS 16 - 23 OF LOGICAL BLOCK NUMBER
+                                     0525  1250 ;	BYTE 1 = COUNT - 1 OF BLOCKS COVERED BY THIS POINTER
+                                     0525  1251 ;	BYTES 2-3 = BITS 0:15 OF LOGICAL BLOCK NUMBER
+                                     0525  1252 ;
+            50         01 A4     9A  0525  1253 	MOVZBL	1(R4),R0		;COUNT - 1
+            51         02 A4     3C  0529  1254 	MOVZWL	2(R4),R1		;LOW LBN BITS
+            10            84     F0  052D  1255 	INSV	(R4)+,#16,#8,R1		;PUT HIGH LBN BITS IN
+            51            08         0530       
+                          34     11  0532  1256 	BRB	INCRSB			;INCREMENT COUNT AND EXIT
+                                     0534  1257 ;
+                                     0534  1258 ; STRUCTURE LEVEL 2 RETRIEVAL POINTERS
+                                     0534  1259 ;	BITS 14:15 = RETRIEVAL POINTER FORMAT
+                                     0534  1260 ;
+            02            0E     EF  0534  1261 20$:	EXTZV	#FM2$V_FORMAT,#FM2$S_FORMAT,(R4),R0 ;FORMAT TO R0
+            50            64         0537       
+                                     0539  1262 	CASE	R0,<-
+                                     0539  1263 		PLACEMENT,-		;PLACEMENT FORMAT
+                                     0539  1264 		FORMAT1,-		;FORMAT 1
+                                     0539  1265 		FORMAT2-		;FORMAT 2
+                                     0539  1266 		>
+                                     0543  1267 ;
+                                     0543  1268 ; FORMAT 3 = 8 BYTES
+                                     0543  1269 ;
+                                     0543  1270 ;	BITS 0:13 = BITS 16:29 OF COUNT - 1
+                                     0543  1271 ;	BITS 14:15 = FORMAT = 3
+                                     0543  1272 ;	BYTES 2-3 = BITS 0:15 OF COUNT - 1
+                                     0543  1273 ;	BYTES 4-7 = LOGICAL BLOCK NUMBER
+                                     0543  1274 ;
+                                     0543  1275 FORMAT3:
+            84            10     9C  0543  1276 	ROTL	#16,(R4)+,R0		;FORM COUNT - 1
+                          50         0546       
+            1E            00     F0  0547  1277 	INSV	#0,#30,#2,R0		;ZERO HIGH 2 BITS
+            50            02         054A       
+            51            84     D0  054C  1278 	MOVL	(R4)+,R1		;GET LBN
+                          17     11  054F  1279 	BRB	INCRSB			;INCREMENT COUNT AND EXIT
+                                     0551  1280 ;
+                                     0551  1281 ; PLACEMENT CONTROL - THIS IS NOT A RETRIEVAL POINTER, RATHER IT 
+                                     0551  1282 ;	CONSISTS OF 2 BYTES OF PLACEMENT INFORMATION.  TREAT AS IF 0 
+                                     0551  1283 ;	LENGTH RETRIEVAL POINTER.
+                                     0551  1284 ;	R0 = 0
+                                     0551  1285 ;
+                                     0551  1286 PLACEMENT:
+            51            01     CE  0551  1287 	MNEGL	#1,R1			;IMPOSSIBLE LBN
+            54            02     C0  0554  1288 	ADDL	#2,R4			;BUMP THE POINTER
+                                 05  0557  1289 	RSB
+                                     0558  1290 ;
+                                     0558  1291 ; FORMAT 1 = 4 BYTES
+                                     0558  1292 ;	BITS 0:7 = COUNT - 1
+                                     0558  1293 ;	BITS 8:13 = BITS 16:21 OF LOGICAL BLOCK NUMBER
+                                     0558  1294 ;	BYTES 2-3 = BITS 0:15  OF LOGICAL BLOCK NUMBER
+                                     0558  1295 ;
+                                     0558  1296 FORMAT1:
+            50            84     D0  0558  1297 	MOVL	(R4)+,R0		;FETCH ENTIRE RETRIEVAL POINTER
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  25
+0302            INIRTRVPTRSCAN, GETRTRVPTR                                                                                       (1)
+
+            06            08     EF  055B  1298 	EXTZV	#FM2$V_HIGHLBN,#FM2$S_HIGHLBN,R0,R1 ;FETCH HIGH LBN BITS
+            51            50         055E       
+            50            10     79  0560  1299 	ASHQ	#16,R0,R0		;FORM R1 = LBN
+                          50         0563       
+            50         FC A4     9A  0564  1300 	MOVZBL	-4(R4),R0		;REFETCH COUNT - 1
+                                     0568  1301 INCRSB:
+                          50     D6  0568  1302 	INCL	R0			;FORM COUNT
+                                 05  056A  1303 	RSB				;AND RETURN
+                                     056B  1304 ;
+                                     056B  1305 ; FORMAT 2 = 6 BYTES
+                                     056B  1306 ;
+                                     056B  1307 ;	BITS 0:13 = COUNT - 1
+                                     056B  1308 ;	BITS 14:15 = FORMAT = 2
+                                     056B  1309 ;	BYTES 2-5 = LBN
+                                     056B  1310 ;
+                                     056B  1311 FORMAT2:
+            50            84     3C  056B  1312 	MOVZWL	(R4)+,R0		;FETCH COUNT - 1 AND FORMAT BITS
+            0E            00     EF  056E  1313 	EXTZV	#FM2$V_COUNT2,#FM2$S_COUNT2,R0,R0 ;COUNT - 1
+            50            50         0571       
+            51            84     D0  0573  1314 	MOVL	(R4)+,R1		;LBN
+                          F0     11  0576  1315 	BRB	INCRSB			;INCREMENT COUNT AND RETURN
+                                     0578  1316 	.SBTTL	STATBLK - GET FILE STATISTICS BLOCK
+                                     0578  1317 ;++
+                                     0578  1318 ; FUNCTIONAL DESCRIPTION:
+                                     0578  1319 ;
+                                     0578  1320 ;	GIVEN A FILE HEADER, RETURN THE FILE STATISTICS BLOCK
+                                     0578  1321 ;
+                                     0578  1322 ; CALLING SEQUENCE:
+                                     0578  1323 ;
+                                     0578  1324 ;	CALLG	ARGLIST,FIL$STATBLK
+                                     0578  1325 ;
+                                     0578  1326 ; INPUT PARAMETERS:
+                                     0578  1327 ;
+                                     0578  1328 ;	FILHDR(AP)	=		;ADDRESS OF THE FILE HEADER
+                                     0578  1329 ;	STATBLK(AP)	=		;ADDRESS TO RETURN STATISTICS BLOCK
+                                     0578  1330 ;
+                                     0578  1331 ; IMPLICIT INPUTS:
+                                     0578  1332 ;
+                                     0578  1333 ;	NONE
+                                     0578  1334 ;
+                                     0578  1335 ; OUTPUT PARAMETERS:
+                                     0578  1336 ;
+                                     0578  1337 ;	R0 = SYSTEM STATUS CODE
+                                     0578  1338 ;	STATBLK CONTAINS 2 LONGWORDS
+                                     0578  1339 ;		LBN OF 1ST BLOCK IF CONTIGUOUS OR ZERO IF NOT
+                                     0578  1340 ;		SIZE OF FILE IN BLOCKS
+                                     0578  1341 ;
+                                     0578  1342 ; IMPLICIT OUTPUTS:
+                                     0578  1343 ;
+                                     0578  1344 ;	NONE
+                                     0578  1345 ;
+                                     0578  1346 ; COMPLETION CODES:
+                                     0578  1347 ;
+                                     0578  1348 ;	SS$_NORMAL			SUCCESSFUL COMPLETION
+                                     0578  1349 ;
+                                     0578  1350 ; SIDE EFFECTS:
+                                     0578  1351 ;
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  26
+0302            STATBLK - GET FILE STATISTICS BLOCK                                                                              (1)
+
+                                     0578  1352 ;	NONE
+                                     0578  1353 ;
+                                     0578  1354 ;
+                                     0578  1355 ; EQUATED SYMBOLS:
+                                     0578  1356 ;
+                                     0578  1357 ;    OFFSETS FROM AP
+                                     0578  1358 ;
+                           00000004  0578  1359 	FILHDR		=	4	;ADDRESS OF FILE HEADER
+                           00000008  0578  1360 	STATBLK		=	8	;ADDRESS TO RETURN STATISTICS BLOCK
+                                     0578  1361 ;
+                                     0578  1362 ;--
+                                     0578  1363 
+                                     0578  1364 FIL$STATBLK::
+                               003C  0578  1365 	.WORD	^M<R2,R3,R4,R5>
+            55         04 AC     D0  057A  1366 	MOVL	FILHDR(AP),R5		;ADDRESS OF FILE HEADER
+            52         06 A5     3C  057E  1367 	MOVZWL	FH1$W_STRUCLEV(R5),R2	;STRUCTURE LEVEL
+            50         34 A5     9A  0582  1368 	MOVZBL	FH2$L_FILECHAR(R5),R0	;FILE CHARACTERISTICS IF LEVEL 2
+            52            09     E0  0586  1369 	BBS	#FH2$V_LEVEL2,R2,10$	;BRANCH IF STRUCTURE LEVEL 2
+                          04         0589       
+            50         0C A5     9A  058A  1370 	MOVZBL	FH1$W_FILECHAR(R5),R0	;GET LEVEL 1 FILE CHARACTERISTICS
+            01            07     EF  058E  1371 10$:	EXTZV	#FH1$V_CONTIG,#1,R0,-(SP) ;CONTIGUOUS BIT TO TOP OF STACK
+            7E            50         0591       
+                          FF6D   30  0593  1372 	BSBW	INIRTRVPTRSCAN		;INIT FOR SCAN OF RETRIEVAL POINTERS
+                          53     D4  0596  1373 	CLRL	R3			;INIT REGISTER TO COUNT BLOCKS
+                          13     11  0598  1374 	BRB	50$			;START AT BOTTOM OF LOOP IN CASE
+                                     059A  1375 					;FILE HAS NO RETRIEVAL POINTERS
+                          85     10  059A  1376 20$:	BSBB	GETRTRVPTR		;GET THE NEXT RETRIEVAL POINTER
+                          53     D5  059C  1377 	TSTL	R3			;IS THIS FIRST RTRV PTR?
+                          0A     12  059E  1378 	BNEQ	40$			;BRANCH IF ALREADY COUNTED SOME
+                                     05A0  1379 ;
+                                     05A0  1380 ; FIRST RETRIEVAL POINTER
+                                     05A0  1381 ;
+                          50     D5  05A0  1382 	TSTL	R0			;IGNORE EMPTY ONES
+                          09     13  05A2  1383 	BEQL	50$
+            03            6E     E9  05A4  1384 	BLBC	(SP),40$		;BRANCH IF FILE NOT CONTIGUOUS
+                                     05A7  1385 					;0(SP) = 0 IN THIS CASE
+            6E            51     D0  05A7  1386 	MOVL	R1,(SP)			;SET LBN OF 1ST NON-ZERO RTRV PTR
+            53            50     C0  05AA  1387 40$:	ADDL	R0,R3			;ACCUMULATE COUNT OF BLOCKS
+            55            54     D1  05AD  1388 50$:	CMPL	R4,R5			;ANY MORE RETRIEVAL POINTERS?
+                          E8     1F  05B0  1389 	BLSSU	20$			;BRANCH IF YES
+                          04     BA  05B2  1390 	POPR	#^M<R2>			;GET SAVED STARTING LBN
+         08 BC            52     7D  05B4  1391 	MOVQ	R2,@STATBLK(AP)		;RETURN THE STATISTICS BLOCK
+            50            01     3C  05B8  1392 	MOVZWL	#SS$_NORMAL,R0		;SUCCESSFUL COMPLETION
+                                 04  05BB  1393 	RET
+                                     05BC  1394 	.SBTTL	CHKFILHDR - CHECK FILE HEADER VALIDITY
+                                     05BC  1395 ;++
+                                     05BC  1396 ; FUNCTIONAL DESCRIPTION:
+                                     05BC  1397 ;
+                                     05BC  1398 ;	CHECK THE VALIDITY OF A FILE HEADER
+                                     05BC  1399 ;
+                                     05BC  1400 ; CALLING SEQUENCE:
+                                     05BC  1401 ;
+                                     05BC  1402 ;	BSBW	FIL$CHKFILHDR
+                                     05BC  1403 ;
+                                     05BC  1404 ; INPUT PARAMETERS:
+                                     05BC  1405 ;
+                                     05BC  1406 ;	R0 = ADDRESS OF FILE ID
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  27
+0302            CHKFILHDR - CHECK FILE HEADER VALIDITY                                                                           (1)
+
+                                     05BC  1407 ;	R1 = ADDRESS OF FILE HEADER
+                                     05BC  1408 ;
+                                     05BC  1409 ; IMPLICIT INPUTS:
+                                     05BC  1410 ;
+                                     05BC  1411 ;	NONE
+                                     05BC  1412 ;
+                                     05BC  1413 ; OUTPUT PARAMETERS:
+                                     05BC  1414 ;
+                                     05BC  1415 ;	RSB TO CALLER IF FILE HEADER VALID
+                                     05BC  1416 ;	RET IF NOT VALID WITH R0 = ERROR STATUS
+                                     05BC  1417 ;
+                                     05BC  1418 ; IMPLICIT OUTPUTS:
+                                     05BC  1419 ;
+                                     05BC  1420 ;	NONE
+                                     05BC  1421 ;
+                                     05BC  1422 ; COMPLETION CODES:
+                                     05BC  1423 ;
+                                     05BC  1424 ;	NONE
+                                     05BC  1425 ;
+                                     05BC  1426 ; SIDE EFFECTS:
+                                     05BC  1427 ;
+                                     05BC  1428 ;	NONE
+                                     05BC  1429 ;
+                                     05BC  1430 ;--
+                                     05BC  1431 
+                                     05BC  1432 FIL$CHKFILHDR:
+                                     05BC  1433 	CASE	FH1$W_STRUCLEV+1(R1),<-
+                                     05BC  1434 		5$,-			;STRUCTURE LEVEL 1
+                                     05BC  1435 		10$-			;STRUCTURE LEVEL 2
+                                     05BC  1436 		>,TYPE=B,LIMIT=#1
+                          27     11  05C5  1437 	BRB	30$			;BAD FILE HEADER
+                                     05C7  1438 ;
+                                     05C7  1439 ; STRUCTURE LEVEL 1
+                                     05C7  1440 ;
+            7E            01     CE  05C7  1441 5$:	MNEGL	#1,-(SP)		;NO RVN TO CHECK
+            7E         02 A1     D0  05CA  1442 	MOVL	FH1$W_FID_NUM(R1),-(SP)	;PUSH FILE ID ON STACK
+                          08     11  05CE  1443 	BRB	15$
+                                     05D0  1444 ;
+                                     05D0  1445 ; STRUCTURE LEVEL 2
+                                     05D0  1446 ;
+            7E         0C A1     3C  05D0  1447 10$:	MOVZWL	FH2$W_FID_RVN(R1),-(SP)	;PUSH RELATIVE VOLUME NUMBER
+            7E         08 A1     D0  05D4  1448 	MOVL	FH2$W_FID_NUM(R1),-(SP)	;PUSH FILE ID ON STACK
+                          6E     B5  05D8  1449 15$:	TSTW	(SP)			;FILE DELETED?
+                          18     13  05DA  1450 	BEQL	40$			;BRANCH IF YES
+            8E            80     D1  05DC  1451 	CMPL	(R0)+,(SP)+		;FILE NUM AND FILE SEQ NUM AGREE?
+                          0D     12  05DF  1452 	BNEQ	30$			;BRANCH IF NOT, BAD HEADER
+                          6E     D5  05E1  1453 	TSTL	(SP)			;CHECKING RVN?
+                          05     19  05E3  1454 	BLSS	20$			;BRANCH IF NOT
+            6E            60     B1  05E5  1455 	CMPW	(R0),(SP)		;RELATIVE VOLUME NUMBER AND
+                                     05E8  1456 					;FILE NUMBER EXTENSION AGREE
+                          04     12  05E8  1457 	BNEQ	30$			;BRANCH IF NOT
+                          01     BA  05EA  1458 20$:	POPR	#^M<R0>			;CLEAN OFF STACK
+                          0C     11  05EC  1459 	BRB	FIL$CHECKSUM		;GO VERIFY THE CHECKSUM
+            50       0810 8F     3C  05EE  1460 30$:	MOVZWL	#SS$_BADFILEHDR,R0	;THIS HEADER IS BAD
+                                 04  05F3  1461 	RET
+            50       0910 8F     3C  05F4  1462 40$:	MOVZWL	#SS$_NOSUCHFILE,R0	;DELETED FILE
+                                 04  05F9  1463 	RET
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  28
+0302            CHECKSUM - VALIDATE A CHECKSUM                                                                                   (1)
+
+                                     05FA  1464 	.SBTTL	CHECKSUM - VALIDATE A CHECKSUM
+                                     05FA  1465 ;++
+                                     05FA  1466 ; FUNCTIONAL DESCRIPTION:
+                                     05FA  1467 ;
+                                     05FA  1468 ;	THIS ROUTINE CALCULATES AND CHECKS THE FILE11 CHECKSUM FOR
+                                     05FA  1469 ; FILE HEADERS AND THE HOMEBLOCK.
+                                     05FA  1470 ;
+                                     05FA  1471 ; CALLING SEQUENCE:
+                                     05FA  1472 ;
+                                     05FA  1473 ;	BSBW	FIL$CHECKSUM		;CHECK FILE HEADER CHECKSUM
+                                     05FA  1474 ;	BSBW	FIL$CHECKSUM1		;CHECK SPECIFIED NO. OF WORDS IN R0
+                                     05FA  1475 ;
+                                     05FA  1476 ; INPUT PARAMETERS:
+                                     05FA  1477 ;
+                                     05FA  1478 ;	R0 = NO. OF WORDS TO CHECK IF ENTERING AT CHECKSUM1
+                                     05FA  1479 ;	R1 = ADDRESS OF BUFFER TO CHECK
+                                     05FA  1480 ;
+                                     05FA  1481 ; IMPLICIT INPUTS:
+                                     05FA  1482 ;
+                                     05FA  1483 ;	NONE
+                                     05FA  1484 ;
+                                     05FA  1485 ; OUTPUT PARAMETERS:
+                                     05FA  1486 ;
+                                     05FA  1487 ;	RSB TO CALLER IF CHECKSUM IS OK
+                                     05FA  1488 ;	RET TO TOP LEVEL WITH ERROR CODE IN R0 IF CHECKSUM IS WRONG
+                                     05FA  1489 ;
+                                     05FA  1490 ; IMPLICIT OUTPUTS:
+                                     05FA  1491 ;
+                                     05FA  1492 ;	NONE
+                                     05FA  1493 ;
+                                     05FA  1494 ; COMPLETION CODES:
+                                     05FA  1495 ;
+                                     05FA  1496 ;	NONE
+                                     05FA  1497 ;
+                                     05FA  1498 ; SIDE EFFECTS:
+                                     05FA  1499 ;
+                                     05FA  1500 ;	NONE
+                                     05FA  1501 ;
+                                     05FA  1502 ;--
+                                     05FA  1503 
+                                     05FA  1504 FIL$CHECKSUM:
+            50       00FF 8F     3C  05FA  1505 	MOVZWL	#FH1$W_CHECKSUM@-1,R0	;NO. OF WORDS TO CHECK
+                                     05FF  1506 FIL$CHECKSUM1:
+                          52     D4  05FF  1507 	CLRL	R2			;INIT THE SUM
+                                     0601  1508 10$:
+            52            81     A0  0601  1509 	ADDW	(R1)+,R2		;ACCUMULATE THE SUM
+            FA            50     F5  0604  1510 	SOBGTR	R0,10$			;ONCE FOR EACH WORD
+            61            52     B1  0607  1511 	CMPW	R2,(R1)			;CHECKSUM OK?
+                          01     12  060A  1512 	BNEQ	20$			;BRANCH IF NOT
+                                 05  060C  1513 	RSB
+                                     060D  1514 20$:
+            50       0808 8F     3C  060D  1515 	MOVZWL	#SS$_BADCHKSUM,R0	;ERROR STATUS IN R0
+                                 04  0612  1516 	RET
+                                     0613  1517 
+                                     0613  1518 
+                                     0613  1519 	.END
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  29
+SYMBOL TABLE                                                                                                                     (1)
+
+$$T1           = 00000001            FAT$W_EFBLKH     00000008            FH2$C_LEVEL2   = 00000200            
+ASCIITORAD50     000000A3 R     03   FAT$W_EFBLKL     0000000A            FH2$K_LENGTH     0000004C            
+BADDIR           000002C9 R     03   FAT$W_FFBYTE     0000000C            FH2$L_FILECHAR   00000034            
+BADDIR1          0000038C R     03   FAT$W_HIBLKH     00000004            FH2$L_FILEOWNER  0000003C            
+BADFILNAM        00000080 R     03   FAT$W_HIBLKL     00000006            FH2$L_SEC_LIMIT  00000048            
+BADFILNAM1       000002CF R     03   FAT$W_MAXREC     00000010            FH2$L_SEC_MASK   00000044            
+BADRET           000002CE R     03   FAT$W_RSIZE      00000002            FH2$M_BADBLOCK = 00004000            
+BIT...         = 00000000            FH1$B_IDOFFSET   00000000            FH2$M_CONTIG   = 00000080            
+BUFADR         = 0000000C            FH1$B_MPOFFSET   00000001            FH2$M_CONTIGB  = 00000020            
+BUILDFNB         00000056 R     03   FH1$B_SYSCHAR    0000000D            FH2$M_DIRECTORY= 00002000            
+CHAN           = 00000004            FH1$B_UICGROUP   00000009            FH2$M_LOCKED   = 00000040            
+CHANADR        = 00000004            FH1$B_UICMEMBER  00000008            FH2$M_MARKDEL  = 00008000            
+DIR$B_FLAGS      00000004            FH1$B_USERCHAR   0000000C            FH2$M_READCHECK= 00000008            
+DIR$B_NAMECOUNT  00000005            FH1$C_LENGTH     0000002E            FH2$M_SPOOL    = 00001000            
+DIR$C_FID      = 00000000            FH1$C_LEVEL1   = 00000101            FH2$M_WRITCHECK= 00000010            
+DIR$C_LENGTH     00000006            FH1$K_LENGTH     0000002E            FH2$V_BADBLOCK = 0000000E            
+DIR$C_LINKNAME = 00000001            FH1$S_GROUPPRO = 00000004            FH2$V_BIGFILNUM= 0000000A            
+DIR$C_VERSION    00000008            FH1$S_OWNPRO   = 00000004            FH2$V_CONTIG   = 00000007            
+DIR$K_LENGTH     00000006            FH1$S_SYSPRO   = 00000004            FH2$V_CONTIGB  = 00000005            
+DIR$K_VERSION    00000008            FH1$S_WORLDPRO = 00000004            FH2$V_DIRECTORY= 0000000D            
+DIR$S_TYPE     = 00000003            FH1$V_BADBLOCK = 00000006            FH2$V_LEVEL2   = 00000009            
+DIR$T_LINKNAME   00000000            FH1$V_CONTIG   = 00000007            FH2$V_LOCKED   = 00000006            
+DIR$T_NAME       00000006            FH1$V_CONTIGB  = 00000005            FH2$V_MARKDEL  = 0000000F            
+DIR$V_NEXTREC  = 00000006            FH1$V_GROUPPRO = 00000008            FH2$V_READCHECK= 00000003            
+DIR$V_PREVREC  = 00000007            FH1$V_LEVEL1   = 00000008            FH2$V_SPOOL    = 0000000C            
+DIR$V_TYPE     = 00000000            FH1$V_LOCKED   = 00000006            FH2$V_WRITCHECK= 00000004            
+DIR$W_FID        00000002            FH1$V_MARKDEL  = 00000007            FH2$W_CHECKSUM   000001FE            
+DIR$W_FID_NUM    00000002            FH1$V_OWNPRO   = 00000004            FH2$W_EXT_FID    0000000E            
+DIR$W_FID_RVN    00000006            FH1$V_READCHECK= 00000003            FH2$W_EX_FIDNUM  0000000E            
+DIR$W_FID_SEQ    00000004            FH1$V_SPOOL    = 00000004            FH2$W_EX_FIDRVN  00000012            
+DIR$W_SIZE       00000000            FH1$V_SYSPRO   = 00000000            FH2$W_EX_FIDSEQ  00000010            
+DIR$W_VERLIMIT   00000002            FH1$V_WORLDPRO = 0000000C            FH2$W_FID        00000008            
+DIR$W_VERSION    00000000            FH1$V_WRITCHECK= 00000004            FH2$W_FID_NUM    00000008            
+DIR...         = FFFFFFFF            FH1$W_CHECKSUM   000001FE            FH2$W_FID_RVN    0000000C            
+DIRBUF         = 00000010            FH1$W_FID        00000002            FH2$W_FID_SEQ    0000000A            
+DIRNAM           FFFFFFEA            FH1$W_FID_NUM    00000002            FH2$W_FILEPROT   00000040            
+DOT            = 0000002E            FH1$W_FID_SEQ    00000004            FH2$W_RECATTR    00000014            
+FAT$B_BKTSIZE    0000000E            FH1$W_FILECHAR   0000000C            FH2$W_RECPROT    00000042            
+FAT$B_RATTRIB    00000001            FH1$W_FILEOWNER  00000008            FH2$W_SEG_NUM    00000004            
+FAT$B_RTYPE      00000000            FH1$W_FILEPROT   0000000A            FH2$W_STRUCLEV   00000006            
+FAT$B_VFCSIZE    0000000F            FH1$W_RECATTR    0000000E            FH2$W_UICGROUP   0000003E            
+FAT$C_FIXED    = 00000001            FH1$W_STRUCLEV   00000006            FH2$W_UICMEMBER  0000003C            
+FAT$C_LENGTH     00000014            FH1$W_VBNOFFSET= 000001FE            FID              FFFFFFFA            
+FAT$C_VARIABLE = 00000002            FH2$B_ACC_MODE   0000003B            FID$B_NMX        00000005            
+FAT$C_VFC      = 00000003            FH2$B_ACOFFSET   00000002            FID$B_RVN        00000004            
+FAT$K_LENGTH     00000014            FH2$B_EX_FIDNMX  00000013            FID$C_LENGTH     00000006            
+FAT$L_EFBLK      00000008            FH2$B_EX_FIDRVN  00000012            FID$K_LENGTH     00000006            
+FAT$L_HIBLK      00000004            FH2$B_FID_NMX    0000000D            FID$W_NUM        00000000            
+FAT$M_FORTRANCC= 00000001            FH2$B_FID_RVN    0000000C            FID$W_RVN        00000004            
+FAT$M_IMPLIEDCC= 00000002            FH2$B_IDOFFSET   00000000            FID$W_SEQ        00000002            
+FAT$M_NOSPAN   = 00000008            FH2$B_MAP_INUSE  0000003A            FIL$CHECKSUM     000005FA R     03   
+FAT$M_PRINTCC  = 00000004            FH2$B_MPOFFSET   00000001            FIL$CHECKSUM1    000005FF R     03   
+FAT$V_FORTRANCC= 00000000            FH2$B_RSOFFSET   00000003            FIL$CHKFILHDR    000005BC R     03   
+FAT$V_IMPLIEDCC= 00000001            FH2$B_STRUCLEV   00000007            FIL$CVTFILNAM    00000000 RG    03   
+FAT$V_NOSPAN   = 00000003            FH2$B_STRUCVER   00000006            FIL$FINDFILID    0000028E RG    03   
+FAT$V_PRINTCC  = 00000002            FH2$C_LENGTH     0000004C            FIL$GT_DDDEV     ********   X   03   
+FAT$W_DEFEXT     00000012            FH2$C_LEVEL1   = 00000101            FIL$GT_DDSTRING  ********   X   03   
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  30
+SYMBOL TABLE                                                                                                                     (1)
+
+FIL$MOUNT        00000202 RG    03   FORMAT1          00000558 R     03   HM2$T_VOLNAME    000001D8            
+FIL$OPENFILE     000000D3 RG    03   FORMAT2          0000056B R     03   HM2$V_NOATTACH = 00000004            
+FIL$RDCHKFILHDR  00000424 RG    03   FORMAT3          00000543 R     03   HM2$V_NOPHYS   = 00000003            
+FIL$RDWRTLBN     ********   X   03   FORMDIRSTRING    000001B2 R     03   HM2$V_READCHECK= 00000000            
+FIL$READVBN      000004C7 RG    03   GBL...         = 00000000            HM2$V_WRITCHECK= 00000001            
+FIL$STATBLK      00000578 RG    03   GETDFLTDIR       000001A2 R     03   HM2$W_ALHOMEVBN  00000012            
+FIL$WRITEVBN     000004C0 RG    03   GETRTRVPTR       00000521 R     03   HM2$W_ALTIDXVBN  00000014            
+FILDSC         = 00000008            HM1$B_EXTEND     0000002D            HM2$W_CHECKSUM1  0000003A            
+FILETYPE         00000027 R     03   HM1$B_LRU_LIM    0000002E            HM2$W_CHECKSUM2  000001FE            
+FILHDR         = 00000004            HM1$B_WINDOW     0000002C            HM2$W_CLUSTER    0000000E            
+FILID          = 00000018            HM1$C_LEVEL1   = 00000101            HM2$W_DEVTYPE    00000024            
+FILNAM         = 00000008            HM1$L_IBMAPLBN   00000002            HM2$W_EXTEND     00000046            
+FILNAMBLK      = 00000008            HM1$S_GROUPPRO = 00000004            HM2$W_FILEPROT   00000036            
+FIND_LEVEL1      0000038F R     03   HM1$S_OWNPRO   = 00000004            HM2$W_HOMEVBN    00000010            
+FIND_LEVEL2      000002D2 R     03   HM1$S_SYSPRO   = 00000004            HM2$W_IBMAPSIZE  00000020            
+FM1$B_AVAIL      00000009            HM1$S_WORLDPRO = 00000004            HM2$W_IBMAPVBN   00000016            
+FM1$B_COUNT      00000001            HM1$T_CREDATE    0000003C            HM2$W_PROTECT    00000034            
+FM1$B_COUNTSIZE  00000006            HM1$T_FORMAT     000001F0            HM2$W_RECPROT    00000038            
+FM1$B_EX_RVN     00000001            HM1$T_OWNERNAME  000001E4            HM2$W_RESFILES   00000022            
+FM1$B_EX_SEGNUM  00000000            HM1$T_VOLNAME    0000000E            HM2$W_RVN        00000026            
+FM1$B_HIGHLBN    00000000            HM1$T_VOLNAME2   000001D8            HM2$W_SETCOUNT   00000028            
+FM1$B_INUSE      00000008            HM1$V_GROUPPRO = 00000008            HM2$W_STRUCLEV   0000000C            
+FM1$B_LBNSIZE    00000007            HM1$V_OWNPRO   = 00000004            HM2$W_VOLCHAR    0000002A            
+FM1$B_PREVCOUNT  FFFFFFFD            HM1$V_SYSPRO   = 00000000            INCRSB           00000568 R     03   
+FM1$B_PREVHLBN   FFFFFFFC            HM1$V_WORLDPRO = 0000000C            INIRTRVPTRSCAN   00000503 R     03   
+FM1$C_LENGTH     0000000A            HM1$W_CHECKSUM1  0000003A            IO$M_ABORT     = 00000100            
+FM1$C_POINTERS   0000000A            HM1$W_CHECKSUM2  000001FE            IO$M_ACCESS    = 00000040            
+FM1$K_LENGTH     0000000A            HM1$W_CLUSTER    00000008            IO$M_ATTNAST   = 00000100            
+FM1$K_POINTERS   0000000A            HM1$W_DEVTYPE    0000000A            IO$M_BINARY    = 00000040            
+FM1$W_EX_FILNUM  00000002            HM1$W_FILEPROT   00000024            IO$M_CANCTRLO  = 00000040            
+FM1$W_EX_FILSEQ  00000004            HM1$W_IBMAPSIZE  00000000            IO$M_COMMOD    = 00000040            
+FM1$W_LOWLBN     00000002            HM1$W_MAXFILES   00000006            IO$M_CREATE    = 00000080            
+FM1$W_PREVLLBN   FFFFFFFE            HM1$W_PROTECT    00000020            IO$M_CTRLCAST  = 00000100            
+FM2$B_COUNT1     00000000            HM1$W_STRUCLEV   0000000C            IO$M_CTRLYAST  = 00000080            
+FM2$C_FORMAT1  = 00000001            HM1$W_VOLCHAR    00000022            IO$M_CVTLOW    = 00000100            
+FM2$C_FORMAT2  = 00000002            HM1$W_VOLOWNER   0000001E            IO$M_DATACHECK = 00004000            
+FM2$C_FORMAT3  = 00000003            HM2$B_LRU_LIM    00000045            IO$M_DELETE    = 00000100            
+FM2$C_LENGTH0    00000002            HM2$B_STRUCLEV   0000000D            IO$M_DMOUNT    = 00000400            
+FM2$C_LENGTH1    00000004            HM2$B_STRUCVER   0000000C            IO$M_DSABLMBX  = 00000400            
+FM2$C_LENGTH2    00000006            HM2$B_WINDOW     00000044            IO$M_ENABLMBX  = 00000080            
+FM2$C_LENGTH3    00000008            HM2$C_LEVEL1   = 00000101            IO$M_FCODE     = 0000003F            
+FM2$C_PLACEMENT= 00000000            HM2$C_LEVEL2   = 00000200            IO$M_HANGUP    = 00000200            
+FM2$K_LENGTH0    00000002            HM2$L_ALHOMELBN  00000004            IO$M_INHERLOG  = 00000800            
+FM2$K_LENGTH1    00000004            HM2$L_ALTIDXLBN  00000008            IO$M_INHEXTGAP = 00001000            
+FM2$K_LENGTH2    00000006            HM2$L_HOMELBN    00000000            IO$M_INHRETRY  = 00008000            
+FM2$K_LENGTH3    00000008            HM2$L_IBMAPLBN   00000018            IO$M_INHSEEK   = 00001000            
+FM2$L_LBN2       00000002            HM2$L_MAXFILES   0000001C            IO$M_INTERRUPT = 00000040            
+FM2$L_LBN3       00000004            HM2$L_SEC_LIMIT  00000030            IO$M_INTSKIP   = 00000100            
+FM2$S_COUNT2   = 0000000E            HM2$L_VOLOWNER   0000002C            IO$M_MOUNT     = 00000200            
+FM2$S_FORMAT   = 00000002            HM2$M_NOATTACH = 00000010            IO$M_NOECHO    = 00000040            
+FM2$S_HIGHLBN  = 00000006            HM2$M_NOPHYS   = 00000008            IO$M_NOFILTR   = 00000200            
+FM2$V_COUNT2   = 00000000            HM2$M_READCHECK= 00000001            IO$M_NOFORMAT  = 00000100            
+FM2$V_FORMAT   = 0000000E            HM2$M_WRITCHECK= 00000002            IO$M_NOW       = 00000040            
+FM2$V_HIGHLBN  = 00000008            HM2$Q_CREDATE    0000003C            IO$M_NOWAIT    = 00000080            
+FM2$W_LOWCOUNT   00000002            HM2$T_FORMAT     000001F0            IO$M_PACKED    = 00000080            
+FM2$W_LOWLBN     00000002            HM2$T_OWNERNAME  000001E4            IO$M_PURGE     = 00000800            
+FM2$W_WORD0      00000000            HM2$T_STRUCNAME  000001CC            IO$M_READATTN  = 00000080            
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  31
+SYMBOL TABLE                                                                                                                     (1)
+
+IO$M_REVERSE   = 00000040            IO$_MOUNT      = 00000039            SS$_ACPVAFUL   = 000002FC            
+IO$M_SHUTDOWN  = 00000080            IO$_NOP        = 00000000            SS$_ARTRES     = 00000474            
+IO$M_STARTUP   = 00000040            IO$_OFFSET     = 00000006            SS$_ASTFLT     = 0000040C            
+IO$M_SYNCH     = 00000200            IO$_PACKACK    = 00000008            SS$_BADATTRIB  = 00000034            
+IO$M_TIMED     = 00000080            IO$_PHYSICAL   = 0000001F            SS$_BADCHKSUM  = 00000808            
+IO$M_TRMNOECHO = 00001000            IO$_READHEAD   = 0000000E            SS$_BADESCAPE  = 0000003C            
+IO$M_WRTATTN   = 00000100            IO$_READLBLK   = 00000021            SS$_BADFILEHDR = 00000810            
+IO$S_FCODE     = 00000006            IO$_READPBLK   = 0000000C            SS$_BADFILENAME= 00000818            
+IO$V_ABORT     = 00000008            IO$_READPRESET = 00000019            SS$_BADFILEVER = 00000820            
+IO$V_ACCESS    = 00000006            IO$_READPROMPT = 00000037            SS$_BADIMGHDR  = 00000044            
+IO$V_ATTNAST   = 00000008            IO$_READTRACKD = 00000010            SS$_BADIRECTORY= 00000828            
+IO$V_BINARY    = 00000006            IO$_READVBLK   = 00000031            SS$_BADPARAM   = 00000014            
+IO$V_CANCTRLO  = 00000006            IO$_RECAL      = 00000003            SS$_BADSTACK   = 000002B4            
+IO$V_COMMOD    = 00000006            IO$_RELEASE    = 00000005            SS$_BEGOFFILE  = 00000938            
+IO$V_CREATE    = 00000007            IO$_RETCENTER  = 00000007            SS$_BLOCKCNTERR= 00000940            
+IO$V_CTRLCAST  = 00000008            IO$_REWIND     = 00000024            SS$_BREAK      = 00000414            
+IO$V_CTRLYAST  = 00000007            IO$_REWINDOFF  = 00000022            SS$_BUFBYTALI  = 0000030C            
+IO$V_CVTLOW    = 00000008            IO$_SEARCH     = 00000009            SS$_BUFFEROVF  = 00000601            
+IO$V_DATACHECK = 0000000E            IO$_SEEK       = 00000002            SS$_BUGCHECK   = 000002A4            
+IO$V_DELETE    = 00000008            IO$_SENSECHAR  = 0000001B            SS$_CANCEL     = 00000830            
+IO$V_DMOUNT    = 0000000A            IO$_SENSEMODE  = 00000027            SS$_CHANINTLK  = 0000004C            
+IO$V_DSABLMBX  = 0000000A            IO$_SETCHAR    = 0000001A            SS$_CLIFRCEXT  = 00000980            
+IO$V_ENABLMBX  = 00000007            IO$_SETMODE    = 00000023            SS$_CMODSUPR   = 0000041C            
+IO$V_FCODE     = 00000000            IO$_SKIPFILE   = 00000025            SS$_CMODUSER   = 00000424            
+IO$V_HANGUP    = 00000009            IO$_SKIPRECORD = 00000026            SS$_COMPAT     = 0000042C            
+IO$V_INHERLOG  = 0000000B            IO$_SPACEFILE  = 00000002            SS$_CONTINUE   = 00000001            
+IO$V_INHEXTGAP = 0000000C            IO$_SPACERECORD= 00000009            SS$_CONTROLC   = 00000651            
+IO$V_INHRETRY  = 0000000F            IO$_STARTSPNDL = 00000019            SS$_CONTROLO   = 00000609            
+IO$V_INHSEEK   = 0000000C            IO$_UNLOAD     = 00000001            SS$_CONTROLY   = 00000611            
+IO$V_INTERRUPT = 00000006            IO$_VIRTUAL    = 0000003F            SS$_CREATED    = 00000619            
+IO$V_INTSKIP   = 00000008            IO$_WRITECHECK = 0000000A            SS$_CTRLERR    = 00000054            
+IO$V_MOUNT     = 00000009            IO$_WRITECHECKH= 00000018            SS$_DATACHECK  = 0000005C            
+IO$V_NOECHO    = 00000006            IO$_WRITEHEAD  = 0000000D            SS$_DATAOVERUN = 00000838            
+IO$V_NOFILTR   = 00000009            IO$_WRITELBLK  = 00000020            SS$_DEBUG      = 0000046C            
+IO$V_NOFORMAT  = 00000008            IO$_WRITEMARK  = 0000001C            SS$_DECOVF     = 000004A4            
+IO$V_NOW       = 00000006            IO$_WRITEOF    = 00000028            SS$_DEVACTIVE  = 000002C4            
+IO$V_NOWAIT    = 00000007            IO$_WRITEPBLK  = 0000000B            SS$_DEVALLOC   = 00000840            
+IO$V_PACKED    = 00000007            IO$_WRITETRACKD= 0000000F            SS$_DEVALRALLOC= 00000641            
+IO$V_PURGE     = 0000000B            IO$_WRITEVBLK  = 00000030            SS$_DEVASSIGN  = 00000848            
+IO$V_READATTN  = 00000007            IOFUNCTION     = FFFFFFFC            SS$_DEVFOREIGN = 00000064            
+IO$V_REVERSE   = 00000006            IXFHDR         = 0000000C            SS$_DEVICEFULL = 00000850            
+IO$V_SHUTDOWN  = 00000007            LCA            = 00000061            SS$_DEVMOUNT   = 0000006C            
+IO$V_STARTUP   = 00000006            LCZ            = 0000007A            SS$_DEVNOTALLOC= 00000858            
+IO$V_SYNCH     = 00000009            LIB$CVT_DTB      ********   X   03   SS$_DEVNOTMBX  = 00000074            
+IO$V_TIMED     = 00000007            NAMBLK           FFFFFFE0            SS$_DEVNOTMOUNT= 0000007C            
+IO$V_TRMNOECHO = 0000000C            NAMDSC           FFFFFFD4            SS$_DEVOFFLINE = 00000084            
+IO$V_WRTATTN   = 00000008            NAME           = FFFFFFF4            SS$_DIRFULL    = 00000860            
+IO$_ACCESS     = 00000032            NINE           = 00000039            SS$_DRVERR     = 0000008C            
+IO$_ACPCONTROL = 00000038            PACKRAD50        0000008A R     03   SS$_DUPFILENAME= 00000868            
+IO$_CREATE     = 00000033            PLACEMENT        00000551 R     03   SS$_DUPLNAM    = 00000094            
+IO$_DEACCESS   = 00000034            RDWRTVBN         000004CC R     03   SS$_ENDOFFILE  = 00000870            
+IO$_DELETE     = 00000035            SAVABS...      = FFFFFFD4            SS$_ENDOFTAPE  = 00000878            
+IO$_DIAGNOSE   = 0000001D            SCRATCHSIZE      FFFFFFE0            SS$_ENDOFUSRLBL= 00000970            
+IO$_DRVCLR     = 00000004            SEMI           = 0000003B            SS$_EXQUOTA    = 0000001C            
+IO$_ERASETAPE  = 00000006            SS$_ABORT      = 0000002C            SS$_EXTIDXFILE = 00000880            
+IO$_LOGICAL    = 0000002F            SS$_ACCONFLICT = 00000800            SS$_FCPREADERR = 00000888            
+IO$_MODIFY     = 00000036            SS$_ACCVIO     = 0000000C            SS$_FCPREPSTN  = 00000988            
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  32
+SYMBOL TABLE                                                                                                                     (1)
+
+SS$_FCPREWNDERR= 00000890            SS$_MCHECK     = 000002BC            SS$_TOOMUCHDATA= 0000029C            
+SS$_FCPSPACERR = 00000898            SS$_MEDOFL     = 000001A4            SS$_UNASEFC    = 00000234            
+SS$_FCPWRITERR = 000008A0            SS$_MSGNOTFND  = 00000621            SS$_UNSAFE     = 0000023C            
+SS$_FILACCERR  = 0000009C            SS$_MTLBLLONG  = 00000304            SS$_UNWIND     = 00000920            
+SS$_FILALRACC  = 000000A4            SS$_MUSTCLOSEFL= 00000948            SS$_UNWINDING  = 00000928            
+SS$_FILELOCKED = 000008A8            SS$_NOAQB      = 00000314            SS$_VASFULL    = 00000244            
+SS$_FILENUMCHK = 000008B0            SS$_NODATA     = 000001AC            SS$_VECINUSE   = 0000024C            
+SS$_FILESEQCHK = 000008B8            SS$_NOHANDLER  = 000008F8            SS$_VOLINV     = 00000254            
+SS$_FILESTRUCT = 000008C0            SS$_NOHOMEBLK  = 000008E0            SS$_WAITUSRLBL = 00000950            
+SS$_FILNOTACC  = 000000AC            SS$_NOIOCHAN   = 000001B4            SS$_WASCLR     = 00000001            
+SS$_FILNOTCNTG = 000002AC            SS$_NOLINKS    = 0000027C            SS$_WASECC     = 00000639            
+SS$_FILNOTEXP  = 000000B4            SS$_NOLOGNAM   = 000001BC            SS$_WASSET     = 00000009            
+SS$_FLTDIV     = 00000494            SS$_NOMBX      = 00000274            SS$_WRITLCK    = 0000025C            
+SS$_FLTOVF     = 0000048C            SS$_NOMOREFILES= 00000930            SS$_WRONGACP   = 0000031C            
+SS$_FLTUND     = 0000049C            SS$_NONEXDRV   = 000001C4            STATBLK        = 00000008            
+SS$_FORMAT     = 000000BC            SS$_NONEXPR    = 000008E8            STORE3DIGITS     00000191 R     03   
+SS$_GPTFULL    = 000000C4            SS$_NONLOCAL   = 000008F0            STORER50BYTE     0000007B R     03   
+SS$_GSDFULL    = 000000CC            SS$_NOPRIV     = 00000024            SYS$ASSIGN       ********   X   03   
+SS$_HANGUP     = 000002CC            SS$_NORMAL     = 00000001            TYPE           = FFFFFFFD            
+SS$_HEADERFULL = 000008C8            SS$_NOSIGNAL   = 00000900            UCA            = 00000041            
+SS$_IDXFILEFULL= 000008D0            SS$_NOSOLICIT  = 00000284            UCZ            = 0000005A            
+SS$_ILLBLKNUM  = 000000DC            SS$_NOSUCHDEV  = 00000908            VBN            = 00000008            
+SS$_ILLCNTRFUNC= 000000E4            SS$_NOSUCHFILE = 00000910            VERSION          00000044 R     03   
+SS$_ILLEFC     = 000000EC            SS$_NOSUCHNODE = 0000028C            ZERO           = 00000030            
+SS$_ILLIOFUNC  = 000000F4            SS$_NOSUCHSEC  = 00000978            
+SS$_ILLLBLAST  = 00000968            SS$_NOTAPEOP   = 00000264            
+SS$_ILLPAGCNT  = 000000FC            SS$_NOTFILEDEV = 000001CC            
+SS$_ILLSEQOP   = 000002DC            SS$_NOTINTBLSZ = 000001D4            
+SS$_ILLSER     = 00000104            SS$_NOTLABELMT = 000001DC            
+SS$_ILLUSRLBLRD= 00000958            SS$_NOTMODIFIED= 00000659            
+SS$_ILLUSRLBLWT= 00000960            SS$_NOTNETDEV  = 000002EC            
+SS$_INCVOLLABEL= 0000010C            SS$_NOTRAN     = 00000629            
+SS$_INSFARG    = 00000114            SS$_NOTSQDEV   = 000001E4            
+SS$_INSFMEM    = 00000124            SS$_OPCCUS     = 00000434            
+SS$_INSFRAME   = 0000012C            SS$_OPCDEC     = 0000043C            
+SS$_INSFWSL    = 0000011C            SS$_OPINCOMPL  = 000002D4            
+SS$_INTDIV     = 00000484            SS$_PAGOWNVIO  = 000001EC            
+SS$_INTOVF     = 0000047C            SS$_PAGRDERR   = 00000444            
+SS$_IVADDR     = 00000134            SS$_PARITY     = 000001F4            
+SS$_IVCHAN     = 0000013C            SS$_PARTESCAPE = 000001FC            
+SS$_IVCHNLSEC  = 0000026C            SS$_PFMBSY     = 00000204            
+SS$_IVDEVNAM   = 00000144            SS$_PLHLDR     = 00000404            
+SS$_IVGSDNAM   = 0000014C            SS$_PSTFULL    = 0000020C            
+SS$_IVLOGNAM   = 00000154            SS$_RADRMOD    = 0000044C            
+SS$_IVLOGTAB   = 0000015C            SS$_REJECT     = 00000294            
+SS$_IVPROTECT  = 000002F4            SS$_REMOTE     = 00000649            
+SS$_IVQUOTAL   = 00000164            SS$_RESIGNAL   = 00000918            
+SS$_IVSECFLG   = 0000016C            SS$_RESULTOVF  = 00000214            
+SS$_IVSECIDCTL = 000002E4            SS$_ROPRAND    = 00000454            
+SS$_IVSSRQ     = 00000174            SS$_SECTBLFUL  = 0000021C            
+SS$_IVSTSFLG   = 0000017C            SS$_SSFAIL     = 0000045C            
+SS$_IVTIME     = 00000184            SS$_SUBRNG     = 000004AC            
+SS$_LCKPAGFUL  = 000000D4            SS$_SUPERSEDE  = 00000631            
+SS$_LENVIO     = 0000018C            SS$_TAPEPOSLOST= 00000224            
+SS$_LKWSETFUL  = 00000194            SS$_TBIT       = 00000464            
+SS$_MBFULL     = 000008D8            SS$_TIMEOUT    = 0000022C            
+SS$_MBTOOSML   = 0000019C            SS$_TOOMANYVER = 00000990            
+FILEREAD        - FILES11 LEVEL 1 & 2 FILE READING ROUTINES      21-AUG-1978 19:46:51   VAX-11 MACRO X0.3-11               Page  33
+PROGRAM SECTION SYNOPSIS                                                                                                         (1)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFE      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+YFILEREAD        00000613      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+7326. BYTES LEFT IN FREE MEMORY POOL.
+1464. BYTES OF RECLAIMED MEMORY.
+OBJ$:FILEREAD,LIS$:FILEREAD/-SP=EXECML$/ML,SRC$:FILEREAD
+12 MLB DIR RDS - 1014 GETS TO DEFINE 27 MACROS. 84 INTER. FILE WRITES. 

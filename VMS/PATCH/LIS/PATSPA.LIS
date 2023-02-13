@@ -1,0 +1,1080 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE PATSPA (%IF %VARIANT EQL 1
+;     L 0002			%THEN
+;	0003				ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE,
+;	0004						NONEXTERNAL = LONG_RELATIVE),
+;	0005			%FI
+;	0006			IDENT = 'X01.03'
+;	0007			) =
+;	0008	BEGIN
+;	0009	
+;	0010	!
+;	0011	! COPYRIGHT (C) 1977,1978
+;	0012	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0013	!
+;	0014	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0015	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0016	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0017	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0018	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0019	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0020	! REMAIN IN DEC.
+;	0021	!
+;	0022	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0023	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0024	! CORPORATION.
+;	0025	!
+;	0026	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0027	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0028	
+;	0029	!++
+;	0030	! FACILITY:	PATCH
+;	0031	!
+;	0032	! ABSTRACT:	THIS ROUTINE HANDLES FREE PATCH AREA, ALIGNMENT, ALLOCATION, AND EXPANSION.
+;	0033	!
+;	0034	! ENVIRONMENT:	VAX/VMS
+;	0035	!
+;	0036	! AUTHOR: K.D. MORSE	, CREATION DATE: 17-NOV-77
+;	0037	!
+;	0038	! MODIFICATIONS:
+;	0039	!
+;	0040	!  NO	DATE		PROGRAMMER	PURPOSE
+;	0041	!  --	----		----------	-------
+;	0042	!
+;	0043	!  01	07-MAR-78	K.D. MORSE	ADD ROUTINES PAT$ADD_PAL.
+;	0044	!  02	25-APR-78	K.D. MORSE	CONVERT TO NATIVE COMPILER.
+;	0045	!  03	13-JUN-78	K.D. MORSE	ADD FAO COUNTS TO SIGNALS.
+;	0046	!
+;	0047	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 2
+; Digital Equipment Corporation
+;
+;	0048	!
+;	0049	! TABLE OF CONTENTS:
+;	0050	!
+;	0051	
+;	0052	FORWARD ROUTINE
+;	0053		PAT$ALIGN_CMD : NOVALUE,				! Executes align command
+;	0054		PAT$BUILD_ISE : NOVALUE,				! Builds an image section descriptor
+;	0055		PAT$EXP_AREA : NOVALUE,					! Expands patch area
+;	0056		PAT$ADD_PAL : NOVALUE;					! Adds entry to PAL
+;	0057	
+;	0058	!
+;	0059	! INCLUDE FILES:
+;	0060	!
+;	0061	LIBRARY 'SYS$LIBRARY:LIB.L32';					! System structure definitions
+;	0062	REQUIRE 'SRC$:PATPCT.REQ';					! Defines PSECTs
+;	0078	REQUIRE 'SRC$:PATGEN.REQ';					! Defines context bits
+;	0257	REQUIRE 'SRC$:VXSMAC.REQ';					! Defines common macros
+;	0297	REQUIRE 'SRC$:PREFIX.REQ';					! Defines structure macros
+;	0480	REQUIRE 'SRC$:PATPRE.REQ';					! Defines PATCH structures
+;	0620	REQUIRE 'LIB$:PATMSG.REQ';					! Defines error message codes
+;	0778	REQUIRE 'SRC$:BSTRUC.REQ';					! Defines basic structures
+;	0829	REQUIRE 'SRC$:LISTEL.REQ';					! Defines list structures
+;	0848	REQUIRE 'SRC$:DLLNAM.REQ';					! Defines symbol table entry offsets
+;	0881	REQUIRE 'SRC$:SYSSER.REQ';					! Defines FAO output macros
+;      R0889	SWITCHES LIST (SOURCE);
+;      R0890	
+;      R0891	EXTERNAL ROUTINE
+;      R0892		PAT$fao_out;		! formats a line and outputs to the terminal
+;      R0893	
+;      R0894	SWITCHES LIST (NOSOURCE);
+;	0939	
+;	0940	!
+;	0941	! MACROS:
+;	0942	!
+;	0943	
+;	0944	!
+;	0945	! EQUATED SYMBOLS:
+;	0946	!
+;	0947	
+;	0948	!
+;	0949	! OWN STORAGE:
+;	0950	!
+;	0951	OWN
+;	0952		PAT_AREA_NAME : VECTOR[4,BYTE] INITIAL(%ASCIC 'PAA'),	! Next patch area name
+;	0953		PA_NAME_DSC : VECTOR[2,LONG] INITIAL(A_LONGWORD-A_BYTE, CH$PTR(PAT_AREA_NAME, 1)); ! String descriptor for next pat
+;	0954	
+;	0955	!
+;	0956	! EXTERNAL REFERENCES:
+;	0957	!
+;	0958	EXTERNAL
+;	0959		PAT$GL_PAL_LHD : REF BLOCK[,BYTE],			! Patch area listhead
+;	0960		PAT$GL_ERRCODE,						! Error code
+;	0961		PAT$GL_CONTEXT : BITVECTOR,				! Context bits
+;	0962		PAT$GL_IMGHDR : REF BLOCK[,BYTE],			! Pointer to image header
+;	0963		PAT$GL_PATAREA : REF BLOCK[,BYTE],			! Free patch area descriptor pointer
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 2-1
+; Digital Equipment Corporation
+;
+;	0964		PAT$GL_IHPPTR : REF BLOCK[,BYTE],			! Pointer to patch area of image header
+;	0965		PAT$GL_ISETAIL : REF BLOCK[,BYTE],			! Pointer to tail of ISE table
+;	0966		PAT$GL_NEWVPNMX,					! Max VPN of image sections in new image
+;	0967		PAT$GL_NEWVBNMX,					! Max VBN of image sections in new image
+;	0968		PAT$GL_IMGBLKS,						! Number of blocks in new image
+;	0969		PAT$GL_ISVADDR : VECTOR[,LONG],				! Addresses of last image section mapped
+;	0970		PAT$GL_HEAD_LST,					! Head of command argument list
+;	0971		PAT$GL_SYMTBPTR,					! Pointer to current default symbol table
+;	0972		PAT$GL_SYMHEAD;						! Pointer to listhead entry for user-defined symbol table
+;	0973	
+;	0974	EXTERNAL ROUTINE
+;	0975		PAT$ALLOBLK : NOVALUE,					! Allocates free storage
+;	0976		PAT$CREMAP : NOVALUE,					! Creates and maps image sections
+;	0977		PAT$DEFINE_SYM : NOVALUE,				! Defines a symbol
+;	0978		PAT$FIND_SYM,						! Find symbol definition
+;	0979		PAT$FREEZ,						! Allocates and zeros free storage
+;	0980		PAT$MAP_ADDR : NOVALUE;					! Maps an image address
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 3
+; Digital Equipment Corporation
+;
+;	0981	GLOBAL ROUTINE PAT$ALIGN_CMD  : NOVALUE =			! Performs align commands
+;	0982	
+;	0983	!++
+;	0984	! FUNCTIONAL DESCRIPTION:
+;	0985	!
+;	0986	!	This routine aligns a free patch area to the requested boundary,
+;	0987	!	word, longword, quadword, or page.  The patch area bytes between the
+;	0988	!	old address and the rounded address are lost for patching purposes.
+;	0989	!	The symbol name provided in the command is entered into the symbol list
+;	0990	!	with a value of the patch area address.  If the free patch area is not
+;	0991	!	large enough to be rounded to the appropriate boundary, an error is
+;	0992	!	SIGNALed and the alignment does not take place.  The free area 
+;	0993	!	descriptor remains unchanged.
+;	0994	!
+;	0995	!	If the symbol name was previously defined, a message is produced and
+;	0996	!	the name is redefined to the new patch area address.
+;	0997	!
+;	0998	!	Aligning the patch area to a byte boundary will merely cause the
+;	0999	!	symbol to be defined as the next free byte of patch area.
+;	1000	!
+;	1001	! FORMAL PARAMETERS:
+;	1002	!
+;	1003	!	none
+;	1004	!
+;	1005	! IMPLICIT INPUTS:
+;	1006	!
+;	1007	!	The symbol name descriptor is set up by the parser.
+;	1008	!	The context bits have already been set up for the command.
+;	1009	!	The user-defined symbol table has been initialized as has the
+;	1010	!	free memory handler.
+;	1011	!
+;	1012	! IMPLICIT OUTPUTS:
+;	1013	!
+;	1014	!	none
+;	1015	!
+;	1016	! ROUTINE VALUE:
+;	1017	!
+;	1018	!	none
+;	1019	!
+;	1020	! COMPLETION CODES:
+;	1021	!
+;	1022	!	none
+;	1023	!
+;	1024	! SIDE EFFECTS:
+;	1025	!
+;	1026	!	The default patch area is aligned to the appropriate boundary.
+;	1027	!	If there is not enough patch area to align, a new patch area is
+;	1028	!	created.
+;	1029	!
+;	1030	!--
+;	1031	
+;	1032	BEGIN
+;	1033	
+;	1034	LITERAL
+;	1035		ONE_BLOCK = 1;						! Number of blocks to expand patch area by
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 3-1
+; Digital Equipment Corporation
+;
+;	1036	
+;	1037	LOCAL
+;	1038		TEMP_SYMTB,						! Temporary symbol table pointer
+;	1039		ALIGN_FACTOR,						! Alignment boundary
+;	1040		DESC_PTR : REF BLOCK[,BYTE],				! String descriptor pointer
+;	1041		SYM_ENTRY_PTR,						! Pointer to symbol entry
+;	1042		PATCH_AREA_ADR,						! Address of aligned patch area
+;	1043		PATCH_AREA_SIZ;						! Size of aligned patch area
+;	1044	
+;	1045	!++
+;	1046	! Output current patch area statistics before alignment.
+;	1047	!--
+;	1048	$FAO_TT_OUT('old patch area size:     !XL', .PAT$GL_PATAREA[DSC$W_LENGTH]);
+;	1049	$FAO_TT_OUT('old patch area address:  !XL', .PAT$GL_PATAREA[DSC$A_POINTER]);
+;	1050	
+;	1051	!++
+;	1052	! Check for conflicting patch area requests and set up alignment factor.
+;	1053	! The alignment factor is set to the number of bytes in a longword, word,
+;	1054	! byte, page, or quadword.
+;	1055	IF .PAT$GL_CONTEXT[ALIGN_BYTE]
+;	1056	THEN
+;	1057		ALIGN_FACTOR = A_BYTE;
+;	1058	IF .PAT$GL_CONTEXT[ALIGN_WORD]
+;	1059	THEN
+;	1060		ALIGN_FACTOR = A_WORD;
+;	1061	IF .PAT$GL_CONTEXT[ALIGN_LONG]
+;	1062	THEN
+;	1063		ALIGN_FACTOR = A_LONGWORD;
+;	1064	IF .PAT$GL_CONTEXT[ALIGN_QUAD]
+;	1065	THEN
+;	1066		ALIGN_FACTOR = A_QUADWORD;
+;	1067	IF .PAT$GL_CONTEXT[ALIGN_PAGE]
+;	1068	THEN
+;	1069		ALIGN_FACTOR = A_PAGE;
+;	1070	
+;	1071	!++
+;	1072	! Now round up image header patch area address and alter patch area
+;	1073	! size to reflect any lost bytes.
+;	1074	!--
+;	1075	PATCH_AREA_ADR = ((.PAT$GL_PATAREA[DSC$A_POINTER] + (.ALIGN_FACTOR-1))/.ALIGN_FACTOR) * .ALIGN_FACTOR;
+;	1076	IF (.PATCH_AREA_ADR NEQA .PAT$GL_PATAREA[DSC$A_POINTER]) 	! If rounding actually occurred
+;	1077		OR (.PAT$GL_PATAREA[DSC$W_LENGTH] EQL 0)		! or no patch space exists
+;	1078	THEN
+;	1079		BEGIN
+;	1080		PATCH_AREA_SIZ = .PAT$GL_PATAREA[DSC$W_LENGTH] +
+;	1081				.PAT$GL_PATAREA[DSC$A_POINTER] - .PATCH_AREA_ADR;
+;	1082		IF (.PATCH_AREA_SIZ LEQ 0)				! Check no patch area left
+;	1083		THEN
+;	1084			BEGIN
+;	1085			IF (.PAT$GL_PATAREA[DSC$A_POINTER] EQLA .PAT$GL_IHPPTR[IHP$L_RW_PATADR])
+;	1086			THEN
+;	1087				PAT$EXP_AREA (ONE_BLOCK)		! Get another block
+;	1088			ELSE
+;	1089				SIGNAL(PAT$_NOPATAREA, 2, .PAT$GL_PATAREA[DSC$A_POINTER],
+;	1090					 .PAT$GL_PATAREA[DSC$W_LENGTH]);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 3-2
+; Digital Equipment Corporation
+;
+;	1091			PATCH_AREA_ADR = ((.PAT$GL_PATAREA[DSC$A_POINTER] + 
+;	1092				(.ALIGN_FACTOR-1))/.ALIGN_FACTOR) * .ALIGN_FACTOR;
+;	1093			PATCH_AREA_SIZ = .PAT$GL_PATAREA[DSC$W_LENGTH] +
+;	1094					.PAT$GL_PATAREA[DSC$A_POINTER] - .PATCH_AREA_ADR;
+;	1095			END;
+;	1096		PAT$GL_PATAREA[DSC$A_POINTER] = .PATCH_AREA_ADR;	! Set rounded address in header
+;	1097		PAT$GL_PATAREA[DSC$W_LENGTH] = .PATCH_AREA_SIZ;		! Set rounded size in header
+;	1098		END;
+;	1099	
+;	1100	!++
+;	1101	! Output current patch area after alignment.
+;	1102	!--
+;	1103	$FAO_TT_OUT('new patch area size:     !XL', .PAT$GL_PATAREA[DSC$W_LENGTH]);
+;	1104	$FAO_TT_OUT('new patch area address:  !XL', .PAT$GL_PATAREA[DSC$A_POINTER]);
+;	1105	
+;	1106	!++
+;	1107	! Now enter the symbol into the user-defined symbol table with a value equal
+;	1108	! to the aligned patch area address.
+;	1109	!--
+;	1110	!SYM_ENTRY_PTR = PAT$FIND_SYM(.LIST_ELEM_EXP1(.PAT$GL_HEAD_LST)); ! Check for previously defined symbol
+;	1111	!IF .SYM_ENTRY_PTR NEQA 0					! Yes, was previously defined
+;	1112	!THEN								! Output informational message
+;	1113	!	BEGIN
+;	1114	!	SIGNAL(PAT$_REDEFSYM, 4, .SYM_CHCOUNT(.SYM_ENTRY_PTR), SYM_NAME(.SYM_ENTRY_PTR),
+;	1115	!		.SYM_VALUE(.SYM_ENTRY_PTR), .PATCH_AREA_ADR);
+;	1116	!	SYM_VALUE(.SYM_ENTRY_PTR) = .PATCH_AREA_ADR;		! Set new value
+;	1117	!	END
+;	1118	!ELSE
+;	1119	TEMP_SYMTB = .PAT$GL_SYMTBPTR;
+;	1120	PAT$GL_SYMTBPTR = .PAT$GL_SYMHEAD;
+;	1121	PAT$DEFINE_SYM(.LIST_ELEM_EXP1(.PAT$GL_HEAD_LST), .PATCH_AREA_ADR, TRUE); ! Enter into list
+;	1122	PAT$GL_SYMTBPTR = .TEMP_SYMTB;
+;	1123	
+;	1124	
+;	1125	RETURN;
+;	1126	END;								! End of PAT$ALIGN_CMD
+
+
+							    .TITLE  PATSPA
+							    .IDENT  \X01.03\
+
+							    .PSECT  _PAT$PLIT,NOWRT,NOEXE,0
+
+					      00000 P.AAA:  .BYTE   28							      ;
+					      00001 	    .ASCII  \old patch area size:     !XL\			      ;
+					      0001D	    .BLKB   3
+					      00020 P.AAB:  .BYTE   28							      ;
+					      00021 	    .ASCII  \old patch area address:  !XL\			      ;
+					      0003D	    .BLKB   3
+					      00040 P.AAC:  .BYTE   28							      ;
+					      00041 	    .ASCII  \new patch area size:     !XL\			      ;
+					      0005D	    .BLKB   3
+					      00060 P.AAD:  .BYTE   28							      ;
+					      00061 	    .ASCII  \new patch area address:  !XL\			      ;
+					      0007D	    .BLKB   3
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 3-3
+; Digital Equipment Corporation
+;
+
+							    .PSECT  _PAT$OWN,NOEXE,2
+
+					      00000 PAT_AREA_NAME:
+							    .ASCII  <3>\PAA\						      ;
+					      00004 PA_NAME_DSC:
+							    .LONG   3							      ;
+					      00008 	    .ADDRESS  PAT_AREA_NAME+1					      ;
+
+						    ISE$C_SIZE==	20
+						    TXT$C_SIZE==	4
+						    PAL$C_SIZE==	16
+						    ASD$C_SIZE==	9
+						    FWR$C_SIZE==	24
+							    .GLOBL  PAT$FAO_OUT, PAT$GL_PAL_LHD, PAT$GL_ERRCODE, PAT$GL_CONTEXT
+							    .GLOBL  PAT$GL_IMGHDR, PAT$GL_PATAREA, PAT$GL_IHPPTR, PAT$GL_ISETAIL
+							    .GLOBL  PAT$GL_NEWVPNMX, PAT$GL_NEWVBNMX, PAT$GL_IMGBLKS
+							    .GLOBL  PAT$GL_ISVADDR, PAT$GL_HEAD_LST, PAT$GL_SYMTBPTR
+							    .GLOBL  PAT$GL_SYMHEAD, PAT$ALLOBLK, PAT$CREMAP, PAT$DEFINE_SYM
+							    .GLOBL  PAT$FIND_SYM, PAT$FREEZ, PAT$MAP_ADDR
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 0FFC 00000 	    .ENTRY  PAT$ALIGN_CMD, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11       ; 0981
+		         57 00000000G  EF  9E 00002 	    MOVAB   PAT$GL_SYMTBPTR, R7					      ;
+		         58 00000000G  EF  9E 00009 	    MOVAB   PAT$FAO_OUT, R8					      ;
+		         59 00000000'  EF  9E 00010 	    MOVAB   P.AAA, R9						      ;
+		         5A 00000000G  EF  9E 00017 	    MOVAB   PAT$GL_CONTEXT, R10					      ;
+		         5B 00000000G  EF  9E 0001E 	    MOVAB   PAT$GL_PATAREA, R11					      ;
+		         7E	  00   BB  3C 00025 	    MOVZWL  @PAT$GL_PATAREA, -(SP)				      ; 1048
+				       59  DD 00029 	    PUSHL   R9							      ;
+		         68	       02  FB 0002B 	    CALLS   #2, PAT$FAO_OUT					      ;
+		         50	       6B  D0 0002E 	    MOVL    PAT$GL_PATAREA, R0					      ; 1049
+				  04   A0  DD 00031 	    PUSHL   4(R0)						      ;
+				  20   A9  9F 00034 	    PUSHAB  P.AAB						      ;
+		         68	       02  FB 00037 	    CALLS   #2, PAT$FAO_OUT					      ;
+	   03	         6A	       06  E1 0003A 	    BBC     #6, PAT$GL_CONTEXT, 1$				      ; 1055
+		         52	       01  D0 0003E 	    MOVL    #1, ALIGN_FACTOR					      ; 1057
+	   03	         6A	       04  E1 00041 1$:     BBC     #4, PAT$GL_CONTEXT, 2$				      ; 1058
+		         52	       02  D0 00045 	    MOVL    #2, ALIGN_FACTOR					      ; 1060
+	   03	         6A	       02  E1 00048 2$:     BBC     #2, PAT$GL_CONTEXT, 3$				      ; 1061
+		         52	       04  D0 0004C 	    MOVL    #4, ALIGN_FACTOR					      ; 1063
+	   03	         6A	       03  E1 0004F 3$:     BBC     #3, PAT$GL_CONTEXT, 4$				      ; 1064
+		         52	       08  D0 00053 	    MOVL    #8, ALIGN_FACTOR					      ; 1066
+	   05	         6A	       05  E1 00056 4$:     BBC     #5, PAT$GL_CONTEXT, 5$				      ; 1067
+		         52	0200   8F  3C 0005A 	    MOVZWL  #512, ALIGN_FACTOR					      ; 1069
+		         53	       6B  D0 0005F 5$:     MOVL    PAT$GL_PATAREA, R3					      ; 1075
+	   54	         53	       04  C1 00062 	    ADDL3   #4, R3, R4						      ;
+	   50	         64	       52  C1 00066 	    ADDL3   ALIGN_FACTOR, (R4), R0				      ;
+				       50  D7 0006A 	    DECL    R0							      ;
+		         50	       52  C6 0006C 	    DIVL2   ALIGN_FACTOR, R0					      ;
+	   56	         50	       52  C5 0006F 	    MULL3   ALIGN_FACTOR, R0, PATCH_AREA_ADR			      ;
+		         64	       56  D1 00073 	    CMPL    PATCH_AREA_ADR, (R4)				      ; 1076
+				       04  12 00076 	    BNEQ    6$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 3-4
+; Digital Equipment Corporation
+;
+				       63  B5 00078 	    TSTW    (R3)						      ; 1077
+				       5B  12 0007A 	    BNEQ    10$							      ;
+		         50	       63  3C 0007C 6$:     MOVZWL  (R3), R0						      ; 1080
+		         50	       64  C0 0007F 	    ADDL2   (R4), R0						      ;
+	   55	         50	       56  C3 00082 	    SUBL3   PATCH_AREA_ADR, R0, PATCH_AREA_SIZ			      ; 1081
+				       48  14 00086 	    BGTR    9$							      ; 1082
+		         50 00000000G  EF  D0 00088 	    MOVL    PAT$GL_IHPPTR, R0					      ; 1085
+		    14   A0	       64  D1 0008F 	    CMPL    (R4), 20(R0)					      ;
+				       0B  12 00093 	    BNEQ    7$							      ;
+				       01  DD 00095 	    PUSHL   #1							      ; 1087
+	      00000000V  EF	       01  FB 00097 	    CALLS   #1, PAT$EXP_AREA					      ;
+				       14  11 0009E 	    BRB     8$							      ; 1085
+		         7E	       63  3C 000A0 7$:     MOVZWL  (R3), -(SP)						      ; 1089
+				       64  DD 000A3 	    PUSHL   (R4)						      ;
+				       02  DD 000A5 	    PUSHL   #2							      ;
+			    006D8102   8F  DD 000A7 	    PUSHL   #7176450						      ;
+	      00000000G  00	       04  FB 000AD 	    CALLS   #4, LIB$SIGNAL					      ;
+	   54	         6B	       04  C1 000B4 8$:     ADDL3   #4, PAT$GL_PATAREA, R4				      ; 1091
+	   50	         64	       52  C1 000B8 	    ADDL3   ALIGN_FACTOR, (R4), R0				      ;
+				       50  D7 000BC 	    DECL    R0							      ;
+		         50	       52  C6 000BE 	    DIVL2   ALIGN_FACTOR, R0					      ;
+	   56	         50	       52  C5 000C1 	    MULL3   ALIGN_FACTOR, R0, PATCH_AREA_ADR			      ; 1092
+		         50	  00   BB  3C 000C5 	    MOVZWL  @PAT$GL_PATAREA, R0					      ; 1093
+		         50	       64  C0 000C9 	    ADDL2   (R4), R0						      ;
+	   55	         50	       56  C3 000CC 	    SUBL3   PATCH_AREA_ADR, R0, PATCH_AREA_SIZ			      ; 1094
+		         64	       56  D0 000D0 9$:     MOVL    PATCH_AREA_ADR, (R4)				      ; 1096
+		    00   BB	       55  B0 000D3 	    MOVW    PATCH_AREA_SIZ, @PAT$GL_PATAREA			      ; 1097
+		         7E	  00   BB  3C 000D7 10$:    MOVZWL  @PAT$GL_PATAREA, -(SP)				      ; 1103
+				  40   A9  9F 000DB 	    PUSHAB  P.AAC						      ;
+		         68	       02  FB 000DE 	    CALLS   #2, PAT$FAO_OUT					      ;
+		         50	       6B  D0 000E1 	    MOVL    PAT$GL_PATAREA, R0					      ; 1104
+				  04   A0  DD 000E4 	    PUSHL   4(R0)						      ;
+				  60   A9  9F 000E7 	    PUSHAB  P.AAD						      ;
+		         68	       02  FB 000EA 	    CALLS   #2, PAT$FAO_OUT					      ;
+		         53	       67  D0 000ED 	    MOVL    PAT$GL_SYMTBPTR, TEMP_SYMTB				      ; 1119
+		         67 00000000G  EF  D0 000F0 	    MOVL    PAT$GL_SYMHEAD, PAT$GL_SYMTBPTR			      ; 1120
+				       01  DD 000F7 	    PUSHL   #1							      ; 1121
+				       56  DD 000F9 	    PUSHL   PATCH_AREA_ADR					      ;
+		         50 00000000G  EF  D0 000FB 	    MOVL    PAT$GL_HEAD_LST, R0					      ;
+				  04   A0  DD 00102 	    PUSHL   4(R0)						      ;
+	      00000000G  EF	       03  FB 00105 	    CALLS   #3, PAT$DEFINE_SYM					      ;
+		         67	       53  D0 0010C 	    MOVL    TEMP_SYMTB, PAT$GL_SYMTBPTR				      ; 1122
+					   04 0010F 	    RET     							      ; 0981
+
+; Routine Size:  272 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 4
+; Digital Equipment Corporation
+;
+;	1127	GLOBAL ROUTINE PAT$BUILD_ISE (ISE_PTR,VPN,VBN,PAGE_CNT) : NOVALUE =	! Builds an ISD and enters it into ISE table
+;	1128	
+;	1129	!++
+;	1130	! FUNCTIONAL DESCRIPTION:
+;	1131	!
+;	1132	!	This routine builds a new image section descriptor.  It is a normal
+;	1133	!	type image section with read-write, copy-on-reference attributes.
+;	1134	!	The virtual page number, virtual block number, and the page count
+;	1135	!	are input parameters.  The address of the image section table entry,
+;	1136	!	built around the image section descriptor, is returned.  The image
+;	1137	!	section entry is linked into the table.
+;	1138	!
+;	1139	! FORMAL PARAMETERS:
+;	1140	!
+;	1141	!	ISE_PTR - Pointer to image section entry built
+;	1142	!	VPN - Virtual page number of image section
+;	1143	!	VBN - Virtual block number of image section
+;	1144	!	PAGE_CNT - Number of pages in image section
+;	1145	!
+;	1146	! IMPLICIT INPUTS:
+;	1147	!
+;	1148	!	The image section table is set up.
+;	1149	!
+;	1150	! IMPLICIT OUTPUTS:
+;	1151	!
+;	1152	!	A new image section descriptor is built.
+;	1153	!
+;	1154	! ROUTINE VALUE:
+;	1155	!
+;	1156	!	none
+;	1157	!
+;	1158	! COMPLETION CODES:
+;	1159	!
+;	1160	!	none
+;	1161	!
+;	1162	! SIDE EFFECTS:
+;	1163	!
+;	1164	!	none
+;	1165	!
+;	1166	!--
+;	1167	
+;	1168	BEGIN
+;	1169	
+;	1170	LOCAL
+;	1171		LOCAL_ISE_PTR : REF BLOCK[,BYTE],			! Image section table entry pointer
+;	1172		ISD_PTR : REF BLOCK[,BYTE];				! Image section descriptor pointer
+;	1173	
+;	1174	!++
+;	1175	! Allocate space for new image section table entry.
+;	1176	! ***** UNTIL SYSTEM IS UPDATED TO CONTAIN AN IDENT PERFORM TEST ON WHAT
+;	1177	! ***** SIZE TO USE.
+;	1178	!--
+;	1179	IF PAT$K_LENPRIV GTR ISD$K_LENPRIV
+;	1180	THEN
+;	1181		PAT$ALLOBLK(ISE$C_SIZE+PAT$K_LENPRIV, .ISE_PTR)
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 4-1
+; Digital Equipment Corporation
+;
+;	1182	ELSE
+;	1183		PAT$ALLOBLK(ISE$C_SIZE+ISD$K_LENPRIV, .ISE_PTR);
+;	1184	
+;	1185	!++
+;	1186	! Now link the new entry into the table.
+;	1187	!--
+;	1188	LOCAL_ISE_PTR = CH$PTR(..ISE_PTR, 0);				! Initialize ISE pointer
+;	1189	PAT$GL_ISETAIL[ISE$L_NXTISE] = CH$PTR(.LOCAL_ISE_PTR, 0);	! Set pointer to new entry
+;	1190	PAT$GL_ISETAIL = CH$PTR(.LOCAL_ISE_PTR, 0);			! Set new last entry pointer
+;	1191	LOCAL_ISE_PTR[ISE$L_NXTISE] = 0;				! Set no next entry
+;	1192	
+;	1193	!++
+;	1194	! Initialize the image section table information.
+;	1195	!--
+;	1196	LOCAL_ISE_PTR[ISE$L_MAPVST] = 0;
+;	1197	LOCAL_ISE_PTR[ISE$L_MAPVEND] = 0;
+;	1198	LOCAL_ISE_PTR[ISE$L_IMGVST] = 0;
+;	1199	LOCAL_ISE_PTR[ISE$L_IMGVEND] = 0;
+;	1200	
+;	1201	!++
+;	1202	! Now build the image section descriptor.
+;	1203	!--
+;	1204	ISD_PTR = CH$PTR(.LOCAL_ISE_PTR, ISE$C_SIZE);			! Point to ISD
+;	1205	! ****** THIS SHOULD CHANGE WHEN IDENT FIELD IS DEFINED FOR PROCESS PRIVATE IMAGE SECTIONS.
+;	1206	! ISD_PTR[ISD$W_SIZE] = (IF (PAT$K_LENPRIV GTR ISD$K_LENPRIV) THEN PAT$K_LENPRIV ELSE ISD$K_LENPRIV);
+;	1207	! *****
+;	1208	ISD_PTR[ISD$W_SIZE] = ISD$K_LENPRIV;
+;	1209	ISD_PTR[ISD$W_PAGCNT] = .PAGE_CNT;
+;	1210	ISD_PTR[ISD$L_VPNPFC] = .VPN;
+;	1211	ISD_PTR[ISD$B_PFC] = 0;
+;	1212	ISD_PTR[ISD$L_FLAGS] = 0;
+;	1213	ISD_PTR[ISD$V_CRF] = TRUE;
+;	1214	ISD_PTR[ISD$V_WRT] = TRUE;
+;	1215	ISD_PTR[ISD$V_MATCHCTL] = ISD$K_MATNEV;
+;	1216	ISD_PTR[ISD$B_TYPE] = ISD$K_NORMAL;
+;	1217	ISD_PTR[ISD$L_VBN] = .VBN;
+;	1218	ISD_PTR[ISD$L_IDENT] = 0;
+;	1219	
+;	1220	RETURN;
+;	1221	
+;	1222	END;								! End of PAT$BUILD_ISE
+
+
+
+
+
+					 0000 00110 	    .ENTRY  PAT$BUILD_ISE, Save nothing				      ; 1127
+				  04   AC  DD 00112 	    PUSHL   ISE_PTR						      ; 1181
+				       28  DD 00115 	    PUSHL   #40							      ;
+	      00000000G  EF	       02  FB 00117 	    CALLS   #2, PAT$ALLOBLK					      ;
+		         50	  04   BC  D0 0011E 	    MOVL    @ISE_PTR, LOCAL_ISE_PTR				      ; 1188
+	      00000000G  FF	       50  D0 00122 	    MOVL    LOCAL_ISE_PTR, @PAT$GL_ISETAIL			      ; 1189
+	      00000000G  EF	       50  D0 00129 	    MOVL    LOCAL_ISE_PTR, PAT$GL_ISETAIL			      ; 1190
+				       80  D4 00130 	    CLRL    (LOCAL_ISE_PTR)+					      ; 1191
+				  08   A0  7C 00132 	    CLRQ    8(LOCAL_ISE_PTR)					      ; 1196
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 4-2
+; Digital Equipment Corporation
+;
+				       80  7C 00135 	    CLRQ    (LOCAL_ISE_PTR)+					      ; 1198
+		         50	       08  C0 00137 	    ADDL2   #8, ISD_PTR						      ; 1204
+		         60	       10  B0 0013A 	    MOVW    #16, (ISD_PTR)					      ; 1208
+		    02   A0	  10   AC  B0 0013D 	    MOVW    PAGE_CNT, 2(ISD_PTR)				      ; 1209
+		    04   A0	  08   AC  D0 00142 	    MOVL    VPN, 4(ISD_PTR)					      ; 1210
+				  07   A0  94 00147 	    CLRB    7(ISD_PTR)						      ; 1211
+				  08   A0  D4 0014A 	    CLRL    8(ISD_PTR)						      ; 1212
+		    08   A0	       0A  88 0014D 	    BISB2   #10, 8(ISD_PTR)					      ; 1214
+	   03	         04	       03  F0 00151 	    INSV    #3, #4, #3, 8(ISD_PTR)				      ; 1215
+				  08   A0     00155									      ;
+				  0B   A0  94 00157 	    CLRB    11(ISD_PTR)						      ; 1216
+		    0C   A0	  0C   AC  D0 0015A 	    MOVL    VBN, 12(ISD_PTR)					      ; 1217
+				  10   A0  D4 0015F 	    CLRL    16(ISD_PTR)						      ; 1218
+					   04 00162 	    RET     							      ; 1127
+
+; Routine Size:  83 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 5
+; Digital Equipment Corporation
+;
+;	1223	GLOBAL ROUTINE PAT$EXP_AREA (NUM_BLKS) : NOVALUE =		! Expands patch area
+;	1224	
+;	1225	!++
+;	1226	! FUNCTIONAL DESCRIPTION:
+;	1227	!
+;	1228	!	This routine expands the read-write patch area defined in the image
+;	1229	!	header.  If there is no patch area, then an image section descriptor
+;	1230	!	is created for it.  In either case, the image header is updated to 
+;	1231	!	describe the expanded patch area.
+;	1232	!
+;	1233	!	If the patch area is mapped to the highest address used during this
+;	1234	!	patch session, then the patch area can be expanded contiguously.
+;	1235	!	In this case, the image section descriptor is updated to hold a new
+;	1236	!	page count and the patch area size in the image header is increased.
+;	1237	!	If the patch area is not the highest address used, then the patch area
+;	1238	!	must be relocated to another area, which will be contiguous.  This
+;	1239	!	involves expanding the program region, copying in the old patch area,
+;	1240	!	and then changing the image section table entry to point to a new
+;	1241	!	mapped address.  The image header and image section descriptor counts
+;	1242	!	are incremented as above.
+;	1243	!
+;	1244	!	NOTE:  The patch area must be mapped contiguously in order for
+;	1245	!	the mapping of addresses to work.  It could also be accomplished
+;	1246	!	if two image section table entries were created.  However, this
+;	1247	!	would require an extra, unneccessary image section descriptor.
+;	1248	!
+;	1249	!	Some of the PATCH commands which deposit symbolic instructions do an
+;	1250	!	PAT$EXPAREA just to force the address to be non-zero so that
+;	1251	!	the symbolic instruction encoder can correctly encode operands.
+;	1252	!
+;	1253	! FORMAL PARAMETERS:
+;	1254	!
+;	1255	!	NUM_BLKS - Number of blocks to be allocated for the patch area
+;	1256	!
+;	1257	! IMPLICIT INPUTS:
+;	1258	!
+;	1259	!	The image header and image section entry table must be set up.
+;	1260	!
+;	1261	! IMPLICIT OUTPUTS:
+;	1262	!
+;	1263	!	none
+;	1264	!
+;	1265	! ROUTINE VALUE:
+;	1266	!
+;	1267	!	none
+;	1268	!
+;	1269	! COMPLETION CODES:
+;	1270	!
+;	1271	!	none
+;	1272	!
+;	1273	! SIDE EFFECTS:
+;	1274	!
+;	1275	!	A new patch area is set up.  The image header is updated to
+;	1276	!	describe the new patch area.
+;	1277	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 5-1
+; Digital Equipment Corporation
+;
+;	1278	!--
+;	1279	
+;	1280	BEGIN
+;	1281	
+;	1282	LITERAL
+;	1283		START_OFF = 0,						! Offset to starting address
+;	1284		END_OFF = 1;						! Offset to ending address
+;	1285	
+;	1286	LOCAL
+;	1287		ISE_PTR : REF BLOCK[,BYTE],				! Pointer to image section table entry
+;	1288		ISD_PTR : REF BLOCK[,BYTE],				! Pointer to image section descriptor
+;	1289		MAPPED_ADDR;						! Mapped address
+;	1290	
+;	1291	!++
+;	1292	! If there is no patch area defined yet, then build an image section table
+;	1293	! entry and an image section descriptor for it.
+;	1294	!--
+;	1295	IF (.PAT$GL_IHPPTR[IHP$L_RW_PATADR] EQLA 0)
+;	1296	THEN
+;	1297		BEGIN
+;	1298		!++
+;	1299		! Build an image section table entyr as no patch area was defined.
+;	1300		!--
+;	1301		PAT$BUILD_ISE(ISE_PTR, .PAT$GL_NEWVPNMX+1, .PAT$GL_NEWVBNMX+1, .NUM_BLKS);
+;	1302		ISD_PTR = CH$PTR(.ISE_PTR, ISE$C_SIZE);
+;	1303		END
+;	1304	ELSE
+;	1305		BEGIN
+;	1306		!++
+;	1307		! Find the image section table entry which describes the patch area.
+;	1308		!--
+;	1309		PAT$MAP_ADDR(.PAT$GL_IHPPTR[IHP$L_RW_PATADR], MAPPED_ADDR, ISE_PTR);
+;	1310		ISD_PTR = CH$PTR(.ISE_PTR, ISE$C_SIZE);
+;	1311		ISD_PTR[ISD$W_PAGCNT] = .ISD_PTR[ISD$W_PAGCNT] + .NUM_BLKS; ! Expand size of image section
+;	1312		END;
+;	1313	
+;	1314	!++
+;	1315	! Update the VPN and VBN for the last ones used in the new image for
+;	1316	! the image section.
+;	1317	!--
+;	1318	PAT$GL_NEWVPNMX = .PAT$GL_NEWVPNMX + .NUM_BLKS;
+;	1319	PAT$GL_NEWVBNMX = .PAT$GL_NEWVBNMX + .NUM_BLKS;
+;	1320	
+;	1321	!++
+;	1322	! Now create the patch area, i.e., map it into the image.  This is done
+;	1323	! with an expand region instead of a create and map as the area is not defined
+;	1324	! in the old image.
+;	1325	!--
+;	1326	PAT$GL_ERRCODE = $EXPREG(PAGCNT = .ISD_PTR[ISD$W_PAGCNT]
+;     P 1327				, RETADR = PAT$GL_ISVADDR);
+;	1328	IF NOT .PAT$GL_ERRCODE
+;	1329	THEN
+;	1330		SIGNAL(PAT$_EXPREG, 1, .PAT$GL_ERRCODE);
+;	1331	
+;	1332	!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 5-2
+; Digital Equipment Corporation
+;
+;	1333	! If the patch area was expanded, and not created, then copy in the old
+;	1334	! patch area part.
+;	1335	!--
+;	1336	IF (.ISD_PTR[ISD$W_PAGCNT] NEQ .NUM_BLKS)
+;	1337	THEN
+;	1338		CH$MOVE((.ISD_PTR[ISD$W_PAGCNT] - .NUM_BLKS) * A_PAGE,
+;	1339			 .ISE_PTR[ISE$L_MAPVST], .PAT$GL_ISVADDR[START_OFF]);
+;	1340	
+;	1341	!++
+;	1342	! Initialize the image section table entry.
+;	1343	!--
+;	1344	ISE_PTR[ISE$L_MAPVST] = .PAT$GL_ISVADDR[START_OFF];
+;	1345	ISE_PTR[ISE$L_MAPVEND] = .PAT$GL_ISVADDR[END_OFF];
+;	1346	ISE_PTR[ISE$L_IMGVST] = .ISD_PTR[ISD$V_VPN] ^9;
+;	1347	ISE_PTR[ISE$L_IMGVEND] = ((.ISD_PTR[ISD$V_VPN] + .ISD_PTR[ISD$W_PAGCNT]) ^9) - 1;
+;	1348	
+;	1349	!++
+;	1350	! Increment the number of blocks in the new image.
+;	1351	!--
+;	1352	PAT$GL_IMGBLKS = .PAT$GL_IMGBLKS + .NUM_BLKS;
+;	1353	
+;	1354	!++
+;	1355	! Update the patch area descriptor in the image header.
+;	1356	!--
+;	1357	PAT$GL_PATAREA[DSC$W_LENGTH] = .PAT$GL_PATAREA[DSC$W_LENGTH] + (.NUM_BLKS * A_PAGE);
+;	1358	IF (.PAT$GL_PATAREA[DSC$A_POINTER] EQLA 0)
+;	1359	THEN
+;	1360		PAT$GL_PATAREA[DSC$A_POINTER] = .ISE_PTR[ISE$L_IMGVST];
+;	1361	
+;	1362	!++
+;	1363	! Now update the patch area list entry for the default patch area.
+;	1364	!--
+;	1365	PAT$ADD_PAL(.ISE_PTR[ISE$L_IMGVST], .ISE_PTR[ISE$L_IMGVEND], PAL$K_EXP_PAREA);
+;	1366	
+;	1367	RETURN;
+;	1368	
+;	1369	END;								! END OF PAT$EXP_AREA
+
+
+
+							    .GLOBL  SYS$EXPREG
+
+					 0FFC 00163 	    .ENTRY  PAT$EXP_AREA, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 1223
+		         58 00000000G  EF  9E 00165 	    MOVAB   PAT$GL_NEWVPNMX, R8					      ;
+		         59 00000000G  EF  9E 0016C 	    MOVAB   PAT$GL_NEWVBNMX, R9					      ;
+		         5A 00000000G  EF  9E 00173 	    MOVAB   PAT$GL_ERRCODE, R10					      ;
+		         5B 00000000G  EF  9E 0017A 	    MOVAB   PAT$GL_ISVADDR, R11					      ;
+		         5E	       08  C2 00181 	    SUBL2   #8, SP						      ;
+		         57	  04   AC  D0 00184 	    MOVL    NUM_BLKS, R7					      ; 1301
+		         50 00000000G  EF  D0 00188 	    MOVL    PAT$GL_IHPPTR, R0					      ; 1295
+				  14   A0  D5 0018F 	    TSTL    20(R0)						      ;
+				       19  12 00192 	    BNEQ    1$							      ;
+				       57  DD 00194 	    PUSHL   R7							      ; 1301
+	   7E	         69	       01  C1 00196 	    ADDL3   #1, PAT$GL_NEWVBNMX, -(SP)				      ;
+	   7E	         68	       01  C1 0019A 	    ADDL3   #1, PAT$GL_NEWVPNMX, -(SP)				      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 5-3
+; Digital Equipment Corporation
+;
+				  10   AE  9F 0019E 	    PUSHAB  ISE_PTR						      ;
+		  FF6A   CF	       04  FB 001A1 	    CALLS   #4, PAT$BUILD_ISE					      ;
+	   56	    04   AE	       14  C1 001A6 	    ADDL3   #20, ISE_PTR, ISD_PTR				      ; 1302
+				       19  11 001AB 	    BRB     2$							      ; 1295
+				  04   AE  9F 001AD 1$:     PUSHAB  ISE_PTR						      ; 1309
+				  04   AE  9F 001B0 	    PUSHAB  MAPPED_ADDR						      ;
+				  14   A0  DD 001B3 	    PUSHL   20(R0)						      ;
+	      00000000G  EF	       03  FB 001B6 	    CALLS   #3, PAT$MAP_ADDR					      ;
+	   56	    04   AE	       14  C1 001BD 	    ADDL3   #20, ISE_PTR, ISD_PTR				      ; 1310
+		    02   A6	       57  A0 001C2 	    ADDW2   R7, 2(ISD_PTR)					      ; 1311
+		         68	       57  C0 001C6 2$:     ADDL2   R7, PAT$GL_NEWVPNMX					      ; 1318
+		         69	       57  C0 001C9 	    ADDL2   R7, PAT$GL_NEWVBNMX					      ; 1319
+				       7E  7C 001CC 	    CLRQ    -(SP)						      ; 1327
+				       5B  DD 001CE 	    PUSHL   R11							      ;
+		         7E	  02   A6  3C 001D0 	    MOVZWL  2(ISD_PTR), -(SP)					      ;
+	      00000000G  9F	       04  FB 001D4 	    CALLS   #4, @#SYS$EXPREG					      ;
+		         6A	       50  D0 001DB 	    MOVL    R0, PAT$GL_ERRCODE					      ;
+		         11	       6A  E8 001DE 	    BLBS    PAT$GL_ERRCODE, 3$					      ; 1328
+				       6A  DD 001E1 	    PUSHL   PAT$GL_ERRCODE					      ; 1330
+				       01  DD 001E3 	    PUSHL   #1							      ;
+			    006D8184   8F  DD 001E5 	    PUSHL   #7176580						      ;
+	      00000000G  00	       03  FB 001EB 	    CALLS   #3, LIB$SIGNAL					      ;
+      02   A6	         10	       00  ED 001F2 3$:     CMPZV   #0, #16, 2(ISD_PTR), R7				      ; 1336
+				       57     001F7									      ;
+				       15  13 001F8 	    BEQL    4$							      ;
+		         51	  02   A6  3C 001FA 	    MOVZWL  2(ISD_PTR), R1					      ; 1338
+		         51	       57  C2 001FE 	    SUBL2   R7, R1						      ;
+	   51	         51	       09  78 00201 	    ASHL    #9, R1, R1						      ; 0000
+		         50	  04   AE  D0 00205 	    MOVL    ISE_PTR, R0						      ; 1339
+      00   BB	    0C   B0	       51  28 00209 	    MOVC3   R1, @12(R0), @PAT$GL_ISVADDR			      ; 1338
+		         50	  04   AE  D0 0020F 4$:     MOVL    ISE_PTR, R0						      ; 1344
+		    0C   A0	       6B  7D 00213 	    MOVQ    PAT$GL_ISVADDR, 12(R0)				      ;
+      04   A6	         15	       00  EF 00217 	    EXTZV   #0, #21, 4(ISD_PTR), R1				      ; 1346
+				       51     0021C									      ;
+      04   A0	         51	       09  78 0021D 	    ASHL    #9, R1, 4(R0)					      ;
+      04   A6	         15	       00  EF 00222 	    EXTZV   #0, #21, 4(ISD_PTR), R1				      ; 1347
+				       51     00227									      ;
+		         52	  02   A6  3C 00228 	    MOVZWL  2(ISD_PTR), R2					      ;
+		         51	       52  C0 0022C 	    ADDL2   R2, R1						      ;
+	   51	         51	       09  78 0022F 	    ASHL    #9, R1, R1						      ;
+      08   A0	         51	       01  C3 00233 	    SUBL3   #1, R1, 8(R0)					      ;
+	      00000000G  EF	       57  C0 00238 	    ADDL2   R7, PAT$GL_IMGBLKS					      ; 1352
+		         51 00000000G  EF  D0 0023F 	    MOVL    PAT$GL_PATAREA, R1					      ; 1357
+	   52	         57	       09  78 00246 	    ASHL    #9, R7, R2						      ;
+		         61	       52  A0 0024A 	    ADDW2   R2, (R1)						      ;
+				  04   A1  D5 0024D 	    TSTL    4(R1)						      ; 1358
+				       05  12 00250 	    BNEQ    5$							      ;
+		    04   A1	  04   A0  D0 00252 	    MOVL    4(R0), 4(R1)					      ; 1360
+				       01  DD 00257 5$:     PUSHL   #1							      ; 1365
+		         7E	  04   A0  7D 00259 	    MOVQ    4(R0), -(SP)					      ;
+	      00000000V  EF	       03  FB 0025D 	    CALLS   #3, PAT$ADD_PAL					      ;
+					   04 00264 	    RET     							      ; 1223
+
+; Routine Size:  258 bytes
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 5-4
+; Digital Equipment Corporation
+;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 6
+; Digital Equipment Corporation
+;
+;	1370	GLOBAL ROUTINE PAT$ADD_PAL (START_ADR, END_ADR, PAT_AREA_FLAG) : NOVALUE =	! EXPANDS PATCH AREAS
+;	1371	
+;	1372	!++
+;	1373	! FUNCTIONAL DESCRIPTION:
+;	1374	!
+;	1375	!	THIS ROUTINE MAINTAINS THE PATCH AREA LIST (PAL).  THIS INCLUDES
+;	1376	!	UPDATING THE ENTRY FOR THE DEFAULT PATCH AREA WHENEVER PATCH EXPANDS
+;	1377	!	IT AND CREATING ENTRIES WHENEVER THE USER ISSUES A "SET PATCH_AREA"
+;	1378	!	COMMAND.  THE FIRST ENTRY ON THE LIST IS ALWAYS THE DEFAULT PATCH AREA.
+;	1379	!
+;	1380	!	THE PATCH AREA LIST IS USED TO CORRECTLY OUTPUT ADDRESSES FOR
+;	1381	!	PATCH AREA TO THE OUTPUT COMMAND FILE.  THESE ADDRESSES MUST BE
+;	1382	!	WRITTEN TO THE FILE AS SYMBOLIC NAMES PLUS OFFSETS BECAUSE THE
+;	1383	!	IMAGES IN THE FIELD MAY HAVE BEEN PATCHED BY CUSTOMERS ( THUS 
+;	1384	!	CHANGING THE NEXT FREE PATCH AREA ADDRESS ).  BY OUTPUTING PATCH
+;	1385	!	AREA ADDRESSES AS SYMBOLIC NAMES, PATCH WILL PERMIT PATCHES TO
+;	1386	!	USE DIFFERENT PATCH AREA ADDRESSES.
+;	1387	!
+;	1388	!	AN ENTRY IN THE PATCH AREA LIST HAS THE FOLLOWING FORMAT:
+;	1389	!
+;	1390	!		+----------------------------+
+;	1391	!		|        FORWARD LINK        |	PAL$L_FLINK
+;	1392	!		+----------------------------+
+;	1393	!		|      STARTING ADDRESS      |	PAL$L_ST_ADR
+;	1394	!		+----------------------------+
+;	1395	!		|       ENDING ADDRESS       |	PAL$L_END_ADR
+;	1396	!		+----------------------------+
+;	1397	!		|      PATCH AREA NAME       |	PAL$L_CS_NAME
+;	1398	!		+----------------------------+
+;	1399	!
+;	1400	!	THE PATCH AREA NAME CONSISTS OF AN ASCIC STRING, WHICH IS ALWAYS A
+;	1401	!	COUNT OF THREE FOLLOWED BY THE ASCII CHARACTERS "P", "A", AND A THIRD
+;	1402	!	CHARACTER RANGING FROM "A" TO "Z".  THIS NAME IS USED TO OUTPUT
+;	1403	!	SYMBOLIC REFERENCES TO THE OUTPUT COMMAND FILE FOR ALL ADDRESSES WITHIN
+;	1404	!	THE PATCH AREAS INSTEAD OF ABSOLUTE VALUES.
+;	1405	!
+;	1406	!	THIS ROUTINE ALSO CAUSES A SYMBOL TO BE DEFINED FOR THE STARTING ADDRESS
+;	1407	!	OF THE PATCH AREA.
+;	1408	!
+;	1409	! FORMAL PARAMETERS:
+;	1410	!
+;	1411	!	START_ADR - STARTING ADDRESS OF THE PATCH AREA
+;	1412	!	END_ADR - ENDING ADDRESS OF THE PATCH AREA
+;	1413	!	PAT_AREA_FLAG - INDICATOR FOR TYPE OF PAL UPDATE
+;	1414	!			PAL$K_EXP_PAREA = 1  - EXPANDING DEFAULT PATCH AREA
+;	1415	!			PAL$K_ADD_PAREA = 0  - ADDING NEW PATCH AREA ENTRY
+;	1416	!
+;	1417	! IMPLICIT INPUTS:
+;	1418	!
+;	1419	!	THE FREE STORAGE ROUTINES MUST HAVE BEEN INITIALIZED.
+;	1420	!
+;	1421	! IMPLICIT OUTPUTS:
+;	1422	!
+;	1423	!	NONE
+;	1424	!
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 6-1
+; Digital Equipment Corporation
+;
+;	1425	! ROUTINE VALUE:
+;	1426	!
+;	1427	!	NONE
+;	1428	!
+;	1429	! COMPLETION CODES:
+;	1430	!
+;	1431	!	NONE
+;	1432	!
+;	1433	! SIDE EFFECTS:
+;	1434	!
+;	1435	!	THE PATCH AREA LIST IS UPDATED.  EITHER AN ENTRY IS MODIFIED OR
+;	1436	!	A NEW LINK IS CREATED.  IN THE LATTER CASE, THE NEXT PATCH AREA NAME
+;	1437	!	IS ALSO UPDATED.  THE NEXT PATCH AREA NAME IS ALSO UPDATED.
+;	1438	!
+;	1439	!--
+;	1440	
+;	1441	BEGIN
+;	1442	
+;	1443	LOCAL
+;	1444		TEMP_SYMTB,						! Temporary symbol table pointer
+;	1445		NEW_PTR : REF BLOCK[,BYTE],				! POINTER TO NEW PAL ENTRY
+;	1446		TEMP_PTR : REF BLOCK[,BYTE],				! POINTER TO CURRENT PAL ENTRY
+;	1447		NAME_DESC : BLOCK[8,BYTE];				! STRING DESCRIPTOR FOR DEFAULT PATCH AREA NAME
+;	1448	
+;	1449	!++
+;	1450	! FIRST, LOOP THROUGH THE PATCH AREA LIST TRYING TO FIND AN ENTRY FOR THIS
+;	1451	! PATCH AREA, I.E., HAS THIS PATCH AREA JUST BEEN EXPANDED.  IF SO, UPDATE
+;	1452	! THE PAL ENTRY AND RETURN.  IF NOT, FALL THROUGH TO CREATE A NEW PAL ENTRY.
+;	1453	!--
+;	1454	TEMP_SYMTB = .PAT$GL_SYMTBPTR;					! Remember current label symbol table
+;	1455	IF (TEMP_PTR = CH$PTR(.PAT$GL_PAL_LHD, 0)) NEQ 0		! GET FIRST ENTRY IN LIST
+;	1456	THEN
+;	1457		REPEAT
+;	1458			BEGIN
+;	1459			!++
+;	1460			! IF THE DEFAULT PATCH AREA WAS CREATED, THEN BOTH THE STARTING
+;	1461			! AND ENDING ADDRESSES MUST BE RESET.  IF THE DEFAULT PATCH
+;	1462			! AREA WAS EXPANDED, THEN THE STARTING ADDRESS REMAINS THE
+;	1463			! SAME AND THE ENDING ADDRESS IS UPDATED.  THIS WILL NEED
+;	1464			! SOME NEW INVENTION WHEN READ-ONLY PATCH AREAS ARE
+;	1465			! ALSO ADDED.
+;	1466			!--
+;	1467			IF .PAT_AREA_FLAG EQL PAL$K_EXP_PAREA
+;	1468			THEN
+;	1469				BEGIN
+;	1470				TEMP_PTR[PAL$L_END_ADR] = .END_ADR;
+;	1471				IF .TEMP_PTR[PAL$L_START_ADR] EQLA 0
+;	1472				THEN
+;	1473					BEGIN
+;	1474					TEMP_PTR[PAL$L_START_ADR] = .START_ADR;
+;	1475					NAME_DESC[DSC$W_LENGTH] = .PAT_AREA_NAME[0];
+;	1476					NAME_DESC[DSC$A_POINTER] = CH$PTR(TEMP_PTR[PAL$L_CS_NAME], 1);
+;	1477					PAT$GL_SYMTBPTR = .PAT$GL_SYMHEAD;
+;	1478					PAT$DEFINE_SYM(NAME_DESC, .START_ADR, FALSE);
+;	1479					PAT$GL_SYMTBPTR = .TEMP_SYMTB;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 6-2
+; Digital Equipment Corporation
+;
+;	1480					END;
+;	1481				RETURN;
+;	1482				END;
+;	1483			IF (.START_ADR GEQA .TEMP_PTR[PAL$L_START_ADR]) AND
+;	1484			   (.END_ADR EQLA .TEMP_PTR[PAL$L_END_ADR])
+;	1485			THEN
+;	1486				RETURN;
+;	1487			IF .TEMP_PTR[PAL$L_FLINK] NEQA 0
+;	1488			THEN
+;	1489				TEMP_PTR = .TEMP_PTR[PAL$L_FLINK]
+;	1490			ELSE
+;	1491				EXITLOOP;
+;	1492			END;
+;	1493	
+;	1494	!++
+;	1495	! THERE WAS NO CORRESPONDING PAL ENTRY.  THEREFORE A NEW ENTRY MUST BE CREATED.
+;	1496	!--
+;	1497	NEW_PTR = PAT$FREEZ((PAL$C_SIZE + A_LONGWORD - 1)/A_LONGWORD);	! ALLOCATE SPACE FOR NEW ENTRY
+;	1498	IF .TEMP_PTR EQLA 0
+;	1499	THEN
+;	1500		PAT$GL_PAL_LHD = CH$PTR(.NEW_PTR, 0)			! SET THE LIST HEAD
+;	1501	ELSE
+;	1502		TEMP_PTR[PAL$L_FLINK] = .NEW_PTR;			! LINK IN NEW ENTRY
+;	1503	NEW_PTR[PAL$L_START_ADR] = .START_ADR;				! SET STARTING PATCH AREA ADDRESS
+;	1504	NEW_PTR[PAL$L_END_ADR] = .END_ADR;				! SET ENDING PATCH AREA ADDRESS
+;	1505	CH$MOVE(A_LONGWORD, PAT_AREA_NAME, NEW_PTR[PAL$L_CS_NAME]);	! SET PATCH AREA NAME
+;	1506	PAT$GL_SYMTBPTR = .PAT$GL_SYMHEAD;				! Use user-defined symbol table
+;	1507	PAT$DEFINE_SYM(PA_NAME_DSC, .NEW_PTR[PAL$L_START_ADR], FALSE);	! DEFINE SYMBOL AS START OF PATCH AREA
+;	1508	PAT$GL_SYMTBPTR = .TEMP_SYMTB;				! Restore label symbol table
+;	1509	PAT_AREA_NAME[3] = .PAT_AREA_NAME[3] + 1;			! SET NEW PATCH AREA NAME
+;	1510	
+;	1511	!++
+;	1512	! NOW CHECK THAT THE NEXT PATCH AREA NAME IS BETWEEN "PAA" AND "PAZ".  IF
+;	1513	! IT IS NOT, THE RESET THE THIRD CHARACTER OF THE NAME TO AN "A" AND
+;	1514	! INCREMENT THE SECOND LETTER OF THE NAME.  THIS WILL ALLOW THE USER TO DEFINE
+;	1515	! UP TO 676 PATCH AREAS.
+;	1516	!--
+;	1517	IF .PAT_AREA_NAME[3] GTRU (%ASCII'Z')				! CHECK FOR OVERFLOW OF PATCH AREA NAMES
+;	1518	THEN
+;	1519		BEGIN
+;	1520		PAT_AREA_NAME[2] = .PAT_AREA_NAME[2] + 1;		! INCREMENT THE "A" OF "PAZ"
+;	1521		PAT_AREA_NAME[3] = (%ASCII'A');				! CHANGE THE "Z" TO AN "A"
+;	1522		END;
+;	1523	
+;	1524	RETURN;
+;	1525	
+;	1526	END;								! END OF PAT$ADD_PAL
+
+
+
+
+
+					 0FFC 00265 	    .ENTRY  PAT$ADD_PAL, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 1370
+		         58 00000000G  EF  9E 00267 	    MOVAB   PAT$GL_SYMHEAD, R8					      ;
+		         59 00000000G  EF  9E 0026E 	    MOVAB   PAT$GL_PAL_LHD, R9					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 6-3
+; Digital Equipment Corporation
+;
+		         5A 00000000G  EF  9E 00275 	    MOVAB   PAT$GL_SYMTBPTR, R10				      ;
+		         5B 00000000'  EF  9E 0027C 	    MOVAB   PAT_AREA_NAME+3, R11				      ;
+		         5E	       08  C2 00283 	    SUBL2   #8, SP						      ;
+		         57	       6A  D0 00286 	    MOVL    PAT$GL_SYMTBPTR, TEMP_SYMTB				      ; 1454
+		         52	       69  D0 00289 	    MOVL    PAT$GL_PAL_LHD, TEMP_PTR				      ; 1455
+				       4C  13 0028C 	    BEQL    5$							      ;
+		         01	  0C   AC  D1 0028E 1$:     CMPL    PAT_AREA_FLAG, #1					      ; 1467
+				       2F  12 00292 	    BNEQ    3$							      ;
+		    08   A2	  08   AC  D0 00294 	    MOVL    END_ADR, 8(TEMP_PTR)				      ; 1470
+				  04   A2  D5 00299 	    TSTL    4(TEMP_PTR)						      ; 1471
+				       01  13 0029C 	    BEQL    2$							      ;
+					   04 0029E 	    RET     							      ;
+		    04   A2	  04   AC  D0 0029F 2$:     MOVL    START_ADR, 4(TEMP_PTR)				      ; 1474
+		         6E	  FD   AB  9B 002A4 	    MOVZBW  PAT_AREA_NAME, NAME_DESC				      ; 1475
+      04   AE	         52	       0D  C1 002A8 	    ADDL3   #13, TEMP_PTR, NAME_DESC+4				      ; 1476
+		         6A	       68  D0 002AD 	    MOVL    PAT$GL_SYMHEAD, PAT$GL_SYMTBPTR			      ; 1477
+				       7E  D4 002B0 	    CLRL    -(SP)						      ; 1478
+				  04   AC  DD 002B2 	    PUSHL   START_ADR						      ;
+				  08   AE  9F 002B5 	    PUSHAB  NAME_DESC						      ;
+	      00000000G  EF	       03  FB 002B8 	    CALLS   #3, PAT$DEFINE_SYM					      ;
+		         6A	       57  D0 002BF 	    MOVL    TEMP_SYMTB, PAT$GL_SYMTBPTR				      ; 1479
+					   04 002C2 	    RET     							      ; 1481
+		    04   A2	  04   AC  D1 002C3 3$:     CMPL    START_ADR, 4(TEMP_PTR)				      ; 1483
+				       07  1F 002C8 	    BLSSU   4$							      ;
+		    08   A2	  08   AC  D1 002CA 	    CMPL    END_ADR, 8(TEMP_PTR)				      ; 1484
+				       50  13 002CF 	    BEQL    8$							      ;
+				       62  D5 002D1 4$:     TSTL    (TEMP_PTR)						      ; 1487
+				       05  13 002D3 	    BEQL    5$							      ;
+		         52	       62  D0 002D5 	    MOVL    (TEMP_PTR), TEMP_PTR				      ; 1489
+				       B4  11 002D8 	    BRB     1$							      ; 1487
+				       04  DD 002DA 5$:     PUSHL   #4							      ; 1497
+	      00000000G  EF	       01  FB 002DC 	    CALLS   #1, PAT$FREEZ					      ;
+		         56	       50  D0 002E3 	    MOVL    R0, NEW_PTR						      ;
+				       52  D5 002E6 	    TSTL    TEMP_PTR						      ; 1498
+				       05  12 002E8 	    BNEQ    6$							      ;
+		         69	       56  D0 002EA 	    MOVL    NEW_PTR, PAT$GL_PAL_LHD				      ; 1500
+				       03  11 002ED 	    BRB     7$							      ; 1498
+		         62	       56  D0 002EF 6$:     MOVL    NEW_PTR, (TEMP_PTR)					      ; 1502
+		    04   A6	  04   AC  7D 002F2 7$:     MOVQ    START_ADR, 4(NEW_PTR)				      ; 1503
+      0C   A6	    FD   AB	       04  28 002F7 	    MOVC3   #4, PAT_AREA_NAME, 12(NEW_PTR)			      ; 1505
+		         6A	       68  D0 002FD 	    MOVL    PAT$GL_SYMHEAD, PAT$GL_SYMTBPTR			      ; 1506
+				       7E  D4 00300 	    CLRL    -(SP)						      ; 1507
+				  04   A6  DD 00302 	    PUSHL   4(NEW_PTR)						      ;
+				  01   AB  9F 00305 	    PUSHAB  PA_NAME_DSC						      ;
+	      00000000G  EF	       03  FB 00308 	    CALLS   #3, PAT$DEFINE_SYM					      ;
+		         6A	       57  D0 0030F 	    MOVL    TEMP_SYMTB, PAT$GL_SYMTBPTR				      ; 1508
+				       6B  96 00312 	    INCB    PAT_AREA_NAME+3					      ; 1509
+		    5A   8F	       6B  91 00314 	    CMPB    PAT_AREA_NAME+3, #90				      ; 1517
+				       07  1B 00318 	    BLEQU   8$							      ;
+				  FF   AB  96 0031A 	    INCB    PAT_AREA_NAME+2					      ; 1520
+		         6B	  41   8F  90 0031D 	    MOVB    #65, PAT_AREA_NAME+3				      ; 1521
+					   04 00321 8$:     RET     							      ; 1370
+
+; Routine Size:  189 bytes
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 6-4
+; Digital Equipment Corporation
+;
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:30:02	DBB3:[PATCH.SRC]PATSPA.B32;2					Page 7
+; Digital Equipment Corporation
+;
+;	1527	END								! End of module
+;	1528	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  _PAT$OWN       	    12    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  _PAT$PLIT      	   128  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(0)
+;  _PAT$CODE      	   802  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        22         0       228
+
+
+
+
+
+; Size:		802 code + 140 data bytes
+; Run Time:	00:38.1
+; Elapsed Time:	01:08.4
+; Memory Used:	353 pages
+; Compilation Complete

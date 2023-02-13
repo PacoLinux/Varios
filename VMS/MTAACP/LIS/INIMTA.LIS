@@ -1,0 +1,415 @@
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE INIMTA (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0003'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! COPYRIGHT (C) 1977
+;	0009	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0010	!
+;	0011	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0012	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0013	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0014	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0015	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0016	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0017	! REMAIN IN DEC.
+;	0018	!
+;	0019	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0020	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0021	! CORPORATION.
+;	0022	!
+;	0023	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0024	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MTAACP
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!	ONE TIME INITIALIZATION FOR MTAACP
+;	0032	!
+;	0033	! ENVIRONMENT:
+;	0034	!
+;	0035	!	STARLET OPERATING SYSTEM, INCLUDING PRIVILEGED SYSTEM SERVICES
+;	0036	!	AND INTERNAL EXEC ROUTINES.
+;	0037	!
+;	0038	!--
+;	0039	!
+;	0040	!
+;	0041	! AUTHOR:  D. H. GILLESPIE,	 CREATION DATE:  25-MAY-77 15:00  
+;	0042	!
+;	0043	! REVISION HISTORY:
+;	0044	!
+;	0045	!   D. H. Gillespie, 11-Jan-1978  15:19
+;	0046	!   X0002 - MAKE MAILBOX TEMPORARY
+;	0047	!
+;	0048	!   D. H. Gillespie, 26-Jan-1978  8:32
+;	0049	!   A0001 - CHANGE TO NEW BUG_CHECK
+;	0050	!
+;	0051	!   D. H. Gillespie, 8-Jun-78  8:25
+;	0052	!   A0002 - change CTL$GL_CCB to @CTL$GL_CCBBASE
+;	0053	!
+;	0054	!   D. H. Gillespie, 12-Jun-78  10:57
+;	0055	!   A0003 - add lock in working set code
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!
+;	0057	!**
+;	0058	
+;	0059	
+;	0060	LIBRARY	'SYS$LIBRARY:LIB.L32';
+;	0061	REQUIRE 'SRC$:MTADEF.B32';
+;	0357	
+;	0358	! DUMMY VECTORS TO BRACKET THE LOCKED DOWN CODE AND DATA PSECTS.
+;	0359	!
+;	0360	PSECT	OWN	= $LOCKEDC0$(NOWRITE,EXECUTE,ALIGN(9));
+;	0361	OWN	L_CODE_START	: VECTOR [0];
+;	0362	
+;	0363	PSECT	OWN 	= $LOCKEDC9$ (NOWRITE,EXECUTE,ALIGN(2));
+;	0364	OWN	L_CODE_END	: VECTOR [0];
+;	0365	
+;	0366	PSECT	OWN	= $LOCKEDD0$;
+;	0367	OWN	L_DATA_START	: VECTOR [0];
+;	0368	
+;	0369	PSECT	OWN 	= $LOCKEDD9$;
+;	0370	OWN	L_DATA_END	: VECTOR [0];
+;	0371	
+;	0372	PSECT	OWN	= $LOCKEDD1$;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2
+; Digital Equipment Corporation
+;
+;	0373	GLOBAL ROUTINE INIT_MTAACP: NOVALUE =
+;	0374	
+;	0375	!++
+;	0376	!
+;	0377	! FUNCTIONAL DESCRIPTION:
+;	0378	!	ONE TIME INITIALIZATION OF MTAACP
+;	0379	!
+;	0380	! CALLING SEQUENCE:
+;	0381	!	INIT_MTAACP()
+;	0382	!
+;	0383	! INPUT PARAMETERS:
+;	0384	!	NONE
+;	0385	!
+;	0386	! IMPLICIT INPUTS:
+;	0387	!	IO DATA BASE
+;	0388	!
+;	0389	! OUTPUT PARAMETERS:
+;	0390	!	NONE
+;	0391	!
+;	0392	! IMPLICIT OUTPUTS:
+;	0393	!	IO_CHANNEL	CHANNEL # FOR I/O
+;	0394	!	MAIL_CHANNEL	CHANNEL # FOR MAILBOX
+;	0395	!	QUEUE_HEAD	ACP QUEUE LIST HEAD
+;	0396	!	FREE_PAGE_HEAD - INITIALIZED TO BE EMPTY
+;	0397	!	LAST_PAGE      - 0 (NOT DETERMINED YET)
+;	0398	!
+;	0399	! ROUTINE VALUE:
+;	0400	!	NONE
+;	0401	!
+;	0402	! SIDE EFFECTS:
+;	0403	!	NONE
+;	0404	!
+;	0405	!--
+;	0406	
+;	0407	BEGIN
+;	0408	
+;	0409	LOCAL
+;	0410		SYSEXV	: VECTOR [2],			!SYSTEM EXCEPTION HANDLERS
+;	0411		AQB	: REF BBLOCK,			!POINTER TO SCAN AQB LIST
+;	0412		CCB	: REF BBLOCK;			!POINTER TO CHANNEL CONTROL BLOCK
+;	0413	
+;	0414	
+;	0415	
+;	0416	LITERAL
+;	0417		EXEC_MODE = 1,				!EXEC MODE
+;	0418		MSGSIZE	= 128,
+;	0419		PROTECTION = %X'0000';
+;	0420	
+;	0421	
+;	0422	EXTERNAL
+;	0423		CTL$GL_CCBBASE	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE),	!BASE OF PROCESS CHANNEL TABLE
+;	0424		IO_CHANNEL	: REF BBLOCK,		!CHANNEL # FOR I/O
+;	0425		DISK_UCB	: REF BBLOCK,		!UCB ADDRESS OF 'SYS$DISK'
+;	0426		IOC$GL_AQBLIST	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE),
+;	0427		FREE_PAGE_HEAD	: VECTOR [2],		!ADDRESS OF TWO LONG WORDS WHICH ARE THE FREE PAGE LIST HEAD
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2-1
+; Digital Equipment Corporation
+;
+;	0428		LAST_PAGE,				!LAST PAGE IN PROGRAM REGION
+;	0429		MAIL_CHANNEL,				!CHANNEL # FOR MAILBOX
+;	0430		QUEUE_HEAD	: REF BBLOCK,		!ADDRESS OF QUEUE HEAD
+;	0431		SCH$GL_CURPCB	: REF BBLOCK ADDRESSING_MODE(ABSOLUTE);	!ADDR OF CUR PCB
+;	0432	
+;	0433	EXTERNAL ROUTINE
+;	0434		SYS$ASSIGN:	ADDRESSING_MODE(ABSOLUTE),	!ASSIGN DEVICE
+;	0435		SYS$CREMBX:	ADDRESSING_MODE(ABSOLUTE);	!CREATE A MAILBOX
+;	0436	
+;	0437	
+;	0438	! DISABLE THE KERNEL EXCEPTION VECTORS
+;	0439	
+;	0440	$SETEXV	(VECTOR = 0, ACMODE = EXEC_MODE, PRVHND = SYSEXV[0]);
+;	0441	$SETEXV	(VECTOR = 1, ACMODE = EXEC_MODE, PRVHND = SYSEXV[1]);
+;	0442	
+;	0443	! ***** FOR DEBUG:  IF THE PREVIOUS HANDLER ADDRESSES ARE FOUND TO BE IN 
+;	0444	! PROCESS SPACE, PUT THEM BACK SINCE THEY BELONG TO THE DEBUGGER
+;	0445	
+;	0446	IF .SYSEXV[0] GTR 0
+;	0447	THEN $SETEXV (VECTOR = 0, ACMODE = EXEC_MODE, ADDRES = .SYSEXV[0]);
+;	0448	IF .SYSEXV[1] GTR 0
+;	0449	THEN $SETEXV (VECTOR = 1, ACMODE = EXEC_MODE, ADDRES = .SYSEXV[1]);
+;	0450	
+;	0451	! FIND THE QUEUE HEADER FOR THIS ACP BY SEARCHING THE SYSTEM AQB LIST
+;	0452	! FOR AN AQB WITH A MATCHING PID.  THEN ASSIGN A CHANNEL TO 
+;	0453	! 'SYS$DISK' (AS GOOD A DEVICE AS ANY) AND RECORD THE CHANNEL NUMBER.
+;	0454	! SAID CHANNEL NUMBER IS USED FOR ALL I/O - IT IS ASSIGNED TO THE RIGHT
+;	0455	! DEVICE SIMPLY BY STUFFING THE UCB POINTER IN THE CCB.
+;	0456	! ALSO SAVE THE UCB ADDRESS IN THE CHANNEL SO THAT IT CAN BE RESTORED
+;	0457	! TO PROPERLY DEASSIGN THE CHANNEL WHEN WE EXIT.
+;	0458	AQB = .IOC$GL_AQBLIST;
+;	0459	UNTIL .AQB EQL 0 OR .AQB[AQB$L_ACPPID] EQL .SCH$GL_CURPCB[PCB$L_PID] 
+;	0460	DO AQB = .AQB[AQB$L_LINK];
+;	0461	
+;	0462	IF .AQB NEQ 0
+;	0463	THEN QUEUE_HEAD = .AQB
+;	0464	ELSE $EXIT(CODE = SS$_NOAQB);
+;	0465	
+;	0466	!
+;	0467	! NOW LOCK SOME CODE AND DATA INTO THE WORKING SET.  SOME IS NECESSARY
+;	0468	! INORDER TO RAISE IPL.
+;	0469	!
+;	0470	$ADJWSL	(PAGCNT = -10000);		!ADJUST WORKING SET TO MINIMUM
+;	0471	$ADJWSL	(PAGCNT = 64);			!THEN ADD DESIRED SIZE
+;	0472	
+;	0473	(LOCAL STATUS;
+;	0474	STATUS = $LKWSET(INADR = UPLIT(L_CODE_START, L_CODE_END));
+;	0475	IF NOT .STATUS THEN $EXIT (CODE =.STATUS));
+;	0476	
+;	0477	(LOCAL STATUS;
+;	0478	STATUS = $LKWSET(INADR = UPLIT (L_DATA_START, L_DATA_END));
+;	0479	IF NOT .STATUS THEN $EXIT(CODE = .STATUS));
+;	0480	
+;	0481	! SETUP FREE PAGE HEADER
+;	0482	FREE_PAGE_HEAD[0] = FREE_PAGE_HEAD;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2-2
+; Digital Equipment Corporation
+;
+;	0483	FREE_PAGE_HEAD[1] = FREE_PAGE_HEAD;
+;	0484	LAST_PAGE = 0;
+;	0485	
+;	0486	! ASSIGN CHANNEL FOR I/O AND CREATE A MAILBOX TO COMMUNICATE WITH OPERATOR
+;	0487	IO_CHANNEL = 0;			!CLEAR UPPER WORD
+;	0488	IF NOT SYS$ASSIGN(DESCRIPTOR('SYS$SYSTEM'),IO_CHANNEL,EXEC_MODE,0)
+;	0489	THEN BUG_CHECK(NOACPCHAN);
+;	0490	
+;	0491	CCB = .CTL$GL_CCBBASE - .IO_CHANNEL;
+;	0492	DISK_UCB = .CCB[CCB$L_UCB];
+;	0493	
+;	0494	MAIL_CHANNEL = 0;
+;	0495	IF NOT SYS$CREMBX (0,MAIL_CHANNEL,MSGSIZE,,PROTECTION,EXEC_MODE,) 
+;	0496	THEN BUG_CHECK (NOACPMAIL);
+;	0497	
+;	0498	
+;	0499	! CLEAR THE TRANSITION BIT IN THE AQB TO TELL MOUNT THAT WE ARE ALIVE AND WELL.
+;	0500	QUEUE_HEAD[AQB$V_CREATING] = 0;
+;	0501	END;						!END OF ROUTINE
+
+
+							    .TITLE  INIMTA
+							    .IDENT  \A0003\
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					      00000 P.AAA:  .ADDRESS  L_CODE_START , L_CODE_END				      ;
+					      00008 P.AAB:  .ADDRESS  L_DATA_START , L_DATA_END				      ;
+					      00010 P.AAD:  .ASCII  \SYS$SYSTEM\					      ;
+					      0001A	    .BLKB   2
+					      0001C P.AAC:  .LONG   10							      ;
+					      00020 	    .ADDRESS  P.AAD						      ;
+
+							    .PSECT  $LOCKEDC2$,NOWRT,2
+
+					      00000 P.AAE:  .WORD   0, -257						      ;
+					      00004 	    .WORD    <BUG$_NOACPCHAN!4>					      ;
+					      00006	    .BLKB   2
+					      00008 P.AAF:  .WORD   0, -257						      ;
+					      0000C 	    .WORD    <BUG$_NOACPMAIL!4>					      ;
+					      0000E	    .BLKB   2
+
+							    .PSECT  $LOCKEDD9$,NOEXE,2
+
+					      00000 L_DATA_END:
+							    .BLKB   0
+
+							    .PSECT  $LOCKEDD0$,NOEXE,2
+
+					      00000 L_DATA_START:
+							    .BLKB   0
+
+							    .PSECT  $LOCKEDC9$,NOWRT,2
+
+					      00000 L_CODE_END:
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2-3
+; Digital Equipment Corporation
+;
+							    .BLKB   0
+
+							    .PSECT  $LOCKEDC0$,NOWRT,9
+
+					      00000 L_CODE_START:
+							    .BLKB   0
+
+							    .GLOBL  CTL$GL_CCBBASE, IO_CHANNEL, DISK_UCB, IOC$GL_AQBLIST
+							    .GLOBL  FREE_PAGE_HEAD, LAST_PAGE, MAIL_CHANNEL, QUEUE_HEAD
+							    .GLOBL  SCH$GL_CURPCB, SYS$ASSIGN, SYS$CREMBX, SYS$SETEXV
+							    .GLOBL  SYS$EXIT, SYS$ADJWSL, SYS$LKWSET, BUG$_NOACPCHAN
+							    .GLOBL  BUG$_NOACPMAIL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FC0 00024 	    .ENTRY  INIT_MTAACP, Save R6,R7,R8,R9,R10,R11		      ; 0373
+		         56	0000G  CF  9E 00026 	    MOVAB   IO_CHANNEL, R6					      ;
+		         57	0000G  CF  9E 0002B 	    MOVAB   FREE_PAGE_HEAD, R7					      ;
+		         58 00000000G  9F  9E 00030 	    MOVAB   @#SYS$LKWSET, R8					      ;
+		         59 00000000G  9F  9E 00037 	    MOVAB   @#SYS$ADJWSL, R9					      ;
+		         5A 00000000G  9F  9E 0003E 	    MOVAB   @#SYS$EXIT, R10					      ;
+		         5B 00000000G  9F  9E 00045 	    MOVAB   @#SYS$SETEXV, R11					      ;
+		         5E	       08  C2 0004C 	    SUBL2   #8, SP						      ;
+				       5E  DD 0004F 	    PUSHL   SP							      ; 0440
+				       01  DD 00051 	    PUSHL   #1							      ;
+				       7E  7C 00053 	    CLRQ    -(SP)						      ;
+		         6B	       04  FB 00055 	    CALLS   #4, SYS$SETEXV					      ;
+				  04   AE  9F 00058 	    PUSHAB  SYSEXV+4						      ; 0441
+				       01  DD 0005B 	    PUSHL   #1							      ;
+		         7E	       01  7D 0005D 	    MOVQ    #1, -(SP)						      ;
+		         6B	       04  FB 00060 	    CALLS   #4, SYS$SETEXV					      ;
+		         50	       6E  D0 00063 	    MOVL    SYSEXV, R0						      ; 0446
+				       0A  15 00066 	    BLEQ    1$							      ;
+		         7E	       01  7D 00068 	    MOVQ    #1, -(SP)						      ; 0447
+				       50  DD 0006B 	    PUSHL   R0							      ;
+				       7E  D4 0006D 	    CLRL    -(SP)						      ;
+		         6B	       04  FB 0006F 	    CALLS   #4, SYS$SETEXV					      ;
+		         50	  04   AE  D0 00072 1$:     MOVL    SYSEXV+4, R0					      ; 0448
+				       0A  15 00076 	    BLEQ    2$							      ;
+		         7E	       01  7D 00078 	    MOVQ    #1, -(SP)						      ; 0449
+				       50  DD 0007B 	    PUSHL   R0							      ;
+				       01  DD 0007D 	    PUSHL   #1							      ;
+		         6B	       04  FB 0007F 	    CALLS   #4, SYS$SETEXV					      ;
+		         51 00000000G  9F  D0 00082 2$:     MOVL    @#IOC$GL_AQBLIST, AQB				      ; 0458
+				       51  D5 00089 3$:     TSTL    AQB							      ; 0459
+				       14  13 0008B 	    BEQL    4$							      ;
+		         50 00000000G  9F  D0 0008D 	    MOVL    @#SCH$GL_CURPCB, R0					      ;
+		    60   A0	  0C   A1  D1 00094 	    CMPL    12(AQB), 96(R0)					      ;
+				       06  13 00099 	    BEQL    4$							      ;
+		         51	  10   A1  D0 0009B 	    MOVL    16(AQB), AQB					      ; 0460
+				       E8  11 0009F 	    BRB     3$							      ; 0459
+				       51  D5 000A1 4$:     TSTL    AQB							      ; 0462
+				       07  13 000A3 	    BEQL    5$							      ;
+		  0000G  CF	       51  D0 000A5 	    MOVL    AQB, QUEUE_HEAD					      ; 0463
+				       08  11 000AA 	    BRB     6$							      ; 0462
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2-4
+; Digital Equipment Corporation
+;
+		         7E	0314   8F  3C 000AC 5$:     MOVZWL  #788, -(SP)						      ; 0464
+		         6A	       01  FB 000B1 	    CALLS   #1, SYS$EXIT					      ;
+				       7E  D4 000B4 6$:     CLRL    -(SP)						      ; 0470
+		         7E	D8F0   8F  32 000B6 	    CVTWL   #-10000, -(SP)					      ;
+		         69	       02  FB 000BB 	    CALLS   #2, SYS$ADJWSL					      ;
+				       7E  D4 000BE 	    CLRL    -(SP)						      ; 0471
+		         7E	  40   8F  9A 000C0 	    MOVZBL  #64, -(SP)						      ;
+		         69	       02  FB 000C4 	    CALLS   #2, SYS$ADJWSL					      ;
+				       7E  7C 000C7 	    CLRQ    -(SP)						      ; 0474
+				FF33   CF  9F 000C9 	    PUSHAB  P.AAA						      ;
+		         68	       03  FB 000CD 	    CALLS   #3, SYS$LKWSET					      ;
+		         05	       50  E8 000D0 	    BLBS    STATUS, 7$						      ; 0475
+				       50  DD 000D3 	    PUSHL   STATUS						      ;
+		         6A	       01  FB 000D5 	    CALLS   #1, SYS$EXIT					      ;
+				       7E  7C 000D8 7$:     CLRQ    -(SP)						      ; 0478
+				FF2A   CF  9F 000DA 	    PUSHAB  P.AAB						      ;
+		         68	       03  FB 000DE 	    CALLS   #3, SYS$LKWSET					      ;
+		         05	       50  E8 000E1 	    BLBS    STATUS, 8$						      ; 0479
+				       50  DD 000E4 	    PUSHL   STATUS						      ;
+		         6A	       01  FB 000E6 	    CALLS   #1, SYS$EXIT					      ;
+		         67	       67  9E 000E9 8$:     MOVAB   FREE_PAGE_HEAD, FREE_PAGE_HEAD			      ; 0482
+		    04   A7	       67  9E 000EC 	    MOVAB   FREE_PAGE_HEAD, FREE_PAGE_HEAD+4			      ; 0483
+				0000G  CF  D4 000F0 	    CLRL    LAST_PAGE						      ; 0484
+				       66  D4 000F4 	    CLRL    IO_CHANNEL						      ; 0487
+		         7E	       01  7D 000F6 	    MOVQ    #1, -(SP)						      ; 0488
+				       56  DD 000F9 	    PUSHL   R6							      ;
+				FF1D   CF  9F 000FB 	    PUSHAB  P.AAC						      ;
+	      00000000G  9F	       04  FB 000FF 	    CALLS   #4, @#SYS$ASSIGN					      ;
+		         05	       50  E8 00106 	    BLBS    R0, 9$						      ;
+		  0000'  CF	       00  FB 00109 	    CALLS   #0, P.AAE						      ; 0489
+	   50 00000000G  9F	       66  C3 0010E 9$:     SUBL3   IO_CHANNEL, @#CTL$GL_CCBBASE, CCB			      ; 0491
+		  0000G  CF	       60  D0 00116 	    MOVL    (CCB), DISK_UCB					      ; 0492
+				0000G  CF  D4 0011B 	    CLRL    MAIL_CHANNEL					      ; 0494
+		         7E	       01  7D 0011F 	    MOVQ    #1, -(SP)						      ; 0495
+				       7E  7C 00122 	    CLRQ    -(SP)						      ;
+		         7E	  80   8F  9A 00124 	    MOVZBL  #128, -(SP)						      ;
+				0000G  CF  9F 00128 	    PUSHAB  MAIL_CHANNEL					      ;
+				       7E  D4 0012C 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       07  FB 0012E 	    CALLS   #7, @#SYS$CREMBX					      ;
+		         05	       50  E8 00135 	    BLBS    R0, 10$						      ;
+		  0000'  CF	       00  FB 00138 	    CALLS   #0, P.AAF						      ; 0496
+		         50	0000G  CF  D0 0013D 10$:    MOVL    QUEUE_HEAD, R0					      ; 0500
+		    14   A0	       08  8A 00142 	    BICB2   #8, 20(R0)						      ;
+					   04 00146 	    RET     							      ; 0373
+
+; Routine Size:  291 bytes
+
+
+;	0502	END
+;	0503	ELUDOM
+
+
+
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:00	DBB3:[MTAACP.SRC]INIMTA.B32;10					Page 2-5
+; Digital Equipment Corporation
+;
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $LOCKEDC0$     	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(9)
+;  $LOCKEDC9$     	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDD0$     	     0    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDD9$     	     0    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   327  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDC2$     	    16  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        16         0       235
+
+
+
+
+
+; Size:		291 code + 52 data bytes
+; Run Time:	00:10.0
+; Elapsed Time:	00:23.1
+; Memory Used:	315 pages
+; Compilation Complete

@@ -1,0 +1,803 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE PATFRE (
+;	0002			%IF %VARIANT EQL 1
+;     L 0003			%THEN
+;	0004				ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE, NONEXTERNAL = LONG_RELATIVE),
+;	0005			%FI
+;	0006			IDENT = 'X01.07') =
+;	0007	BEGIN
+;	0008	
+;	0009	! Copyright (C) 1976,1977,1978
+;	0010	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0011	!
+;	0012	! This software is furnished under a license for use only on a
+;	0013	! single computer system and may be copied only with the inclusion
+;	0014	! of the above copyright notice. This software, or any
+;	0015	! other copies thereof, may not be provided or otherwise made
+;	0016	! available to any other person except for use on such system
+;	0017	! and to one who agrees to these license terms. Title to and
+;	0018	! ownership of the software shall at all times remain in DEC.
+;	0019	!
+;	0020	! The information in this software is subject to change without
+;	0021	! notice and should not be construed as a commitment by Digital
+;	0022	! Equipment Corporation.
+;	0023	!
+;	0024	! DEC assumes no responsibility for the use or reliability of
+;	0025	! its software on equipment which is not supplied by DEC.
+;	0026	!
+;	0027	! FACILITY:	PATCH
+;	0028	!
+;	0029	!++
+;	0030	! FUNCTIONAL DESCRIPTION:
+;	0031	!
+;	0032	!	Free storage allocator and manager for symbol table.
+;	0033	!
+;	0034	! Version:	X01.07
+;	0035	!
+;	0036	! History:
+;	0037	!	Author:
+;	0038	!		Isaac Nassi, 7 Jul 1976: Version 01
+;	0039	!
+;	0040	!	Modified by:
+;	0041	!		Carol Peters, 11 Oct 1977: Version 13
+;	0042	!
+;	0043	!	Modified by:
+;	0044	!		Kathleen Morse, 13 Oct 1977: Version 14
+;	0045	!
+;	0046	! Revision history:
+;	0047	!
+;	0048	!  NO	DATE		PROGRAMMER		PURPOSE
+;	0049	!  --	----		----------		-------
+;	0050	!
+;	0051	!  00	13-OCT-77	K.D. MORSE		MODIFY VERSION 13 FOR PATCH
+;	0052	!  01	27-DEC-77	K.D. MORSE		ADD ROUTINE PAT$REPORT_FREE.
+;	0053	!  02	27-DEC-77	K.D. MORSE		INITIALIZE PAT$GL_RST_BEGN.
+;	0054	!  03	5-JAN-78	K.D. MORSE		NO CHANGES FOR VERS 14-16.
+;	0055	!  04	14-APR-78	K.D. MORSE		NO CHANGES FOR VERS 17.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!  05	25-APR-78	K.D. MORSE		CONVERT TO NATIVE COMPILER.
+;	0057	!  06	18-MAY-78	K.D. MORSE		NO CHANGES FOR VERS 18-19.
+;	0058	!  07	13-JUN-78	K.D. MORSE		ADD FAO COUNTS TO SIGNALS.
+;	0059	!
+;	0060	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 2
+; Digital Equipment Corporation
+;
+;	0061	!++
+;	0062	! Abstract:
+;	0063	!
+;	0064	!	THIS MODULE CONTAINS PROCEDURES TO MANAGE AN AREA OF FREE
+;	0065	!	STORAGE.
+;	0066	!
+;	0067	!	THE ROUTINE PAT$FREEINIT IS CALLED AT SYSTEM INITIALIZATION
+;	0068	!	TO INITIALIZE THE MODULE.  IT TAKES AS INPUT THE ADDRESS
+;	0069	!	OF THE PROCEDURE TO BE CALLED IN THE EVENT AN ERROR
+;	0070	!	IS ENCOUNTERED.  CODES FOR ERROR CONDITIONS ARE CONTAINED IN
+;	0071	!	FILE 'PATMSG.REQ'.
+;	0072	!
+;	0073	!	THE ROUTINE FREEGET IS CALLED TO ALLOCATE A USER SPECIFIED
+;	0074	!	NUMBER OF LONGWORDS.  IF THE REQUEST CAN BE SATISFIED,
+;	0075	!	FREEGET RETURNS A POINTER TO THE BLOCK OF LONGWORDS.
+;	0076	!	THE RETURNED BLOCK CONTAINS ONE EXTRA WORD CONTAINING
+;	0077	!	THE SIZE REQUEST AT WORD -1 IN THE BLOCK.  THIS SIZE
+;	0078	!	IS CHECKED WHEN THE STORAGE IS RETURNED.  IT SHOULD
+;	0079	!	NOT BE MODIFIED.  THE ALGORITHM USED IS A FIRST FIT
+;	0080	!	ALGORITHM WHICH WHILE NOT OPTIMAL SHOULD GIVE REASONABLE
+;	0081	!	RESULTS, AND DO A MINIMUM OF SEARCHING.
+;	0082	!
+;	0083	!	Dynamic storage is the last 64K bytes of the per process
+;	0084	!	address space. It is made accessible by a $CRETVA system
+;	0085	!	service call made in FREEINIT.
+;	0086	!
+;	0087	!	PAT$FREERELEASE IS CALLED TO RELEASE STORAGE NO LONGER NEEDED.
+;	0088	!	IT ATTEMPTS TO DO AS MUCH COMPACTION AS IS POSSIBLE.
+;	0089	!
+;	0090	!	ROUTINE PAT$FREEZ IS CALLED TO ALLOCATE A BLOCK OF 
+;	0091	!	CLEARED FREE STORAGE.
+;	0092	!
+;	0093	!	ROUTINE PAT$REPORT_FREE REPORTS THE NUMBER OF BYTES LEFT IN FREE STORAGE.
+;	0094	!
+;	0095	!--
+;	0096	
+;	0097	!
+;	0098	! TABLE OF CONTENTS
+;	0099	!
+;	0100	
+;	0101	FORWARD ROUTINE
+;	0102		PAT$FREEINIT : NOVALUE,					! routine to initialize free storage
+;	0103		FREEGET,						! routine to get some free storage
+;	0104		PAT$FREERELEASE : NOVALUE,				! routine to release some free storage
+;	0105		PAT$FREEZ,						! routine to get and zero some free storage
+;	0106		PAT$REPORT_FREE;					! ROUTINE TO REPORT FREE STORAGE LEFT
+;	0107	
+;	0108	!
+;	0109	! INCLUDE FILES
+;	0110	!
+;	0111	
+;	0112	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0113	REQUIRE 'SRC$:PATPCT.REQ';
+;	0129	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0169	REQUIRE 'SRC$:PATGEN.REQ';
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 2-1
+; Digital Equipment Corporation
+;
+;	0348	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0399	REQUIRE 'LIB$:PATMSG.REQ';
+;	0557	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0565	SWITCHES LIST (SOURCE);
+;      R0566	
+;      R0567	EXTERNAL ROUTINE
+;      R0568		PAT$fao_out;		! formats a line and outputs to the terminal
+;      R0569	
+;      R0570	SWITCHES LIST (NOSOURCE);
+;	0615	
+;	0616	!
+;	0617	! EXTERNAL REFERENCES
+;	0618	!
+;	0619	
+;	0620	EXTERNAL
+;	0621		PAT$GL_RST_BEGN,					! START OF RST
+;	0622		PAT$GL_ERRCODE;						! ERROR CODE
+;	0623	!
+;	0624	! EQUATED SYMBOLS
+;	0625	!
+;	0626	
+;	0627	LITERAL
+;	0628		DEBUGGER = TRUE;					! COMPILE TIME CONDITIONAL FOR DEBUGGING
+;	0629	
+;	0630	%IF DEBUGGER
+;     L 0631	%THEN
+;	0632		LITERAL
+;	0633			NUM_OF_WRK_PAG=128,				! NUMBER OF WORK AREA PAGES
+;	0634			STORESIZE=(512*NUM_OF_WRK_PAG)/4;		! GET 65K OF WORK AREA FROM P0 NOT P1
+;	0635	%ELSE
+;     U 0636		LITERAL							! GET WORK SPACE FROM P1 AREA
+;     U 0637			SYM_TAB_START	=%X'7FFF0000',			! virtual address of symbol table beginning
+;     U 0638			SYM_TAB_END	=%X'7FFFFFFF',
+;     U 0639			STORESIZE	= (SYM_TAB_END - SYM_TAB_START) / 4;
+;     U 0640	%FI
+;	0641	
+;	0642	!
+;	0643	! OWN STORAGE
+;	0644	!
+;	0645	
+;	0646	OWN
+;	0647	%IF DEBUGGER
+;     L 0648	%THEN
+;	0649		PAT$GL_STORAGE: VECTOR[STORESIZE],			! SET ASIDE WORK AREA IN P0
+;	0650	%FI
+;	0651		PAT$STORE: REF VECTOR,					! pointer to free storage area
+;	0652		PAT$FREELIST : VECTOR [2];				! describes remaining unallocated free storage
+;	0653	
+;	0654	BASED_STRUCTURE (FR, 2,
+;     P 0655		SIZE,	0,	0,	32,	0,
+;     P 0656		NEXT,	1,	0,	32,	0);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 3
+; Digital Equipment Corporation
+;
+;	0657	GLOBAL ROUTINE PAT$FREEINIT : NOVALUE =
+;	0658	
+;	0659	!++
+;	0660	! FUNCTIONAL DESCRIPTION:
+;	0661	!
+;	0662	!	PAT$FREEINIT IS CALLED TO INITIALIZE THE FREE STORAGE
+;	0663	!	PACKAGE.
+;	0664	!
+;	0665	! CALLING SEQUENCE:
+;	0666	!
+;	0667	!	PAT$FREEINIT ()
+;	0668	!
+;	0669	! INPUTS:
+;	0670	!
+;	0671	!	none
+;	0672	!
+;	0673	! IMPLICIT INPUTS:
+;	0674	!
+;	0675	!	NONE
+;	0676	!
+;	0677	! OUTPUTS:
+;	0678	!
+;	0679	!	NONE
+;	0680	!
+;	0681	! IMPLICIT OUTPUTS:
+;	0682	!
+;	0683	!	PAT$FREELIST AND THE FIRST ELEMENT OF PAT$STORE ARE INITIALIZED.
+;	0684	!
+;	0685	! ROUTINE VALUE:
+;	0686	!
+;	0687	!	NOVALUE
+;	0688	!
+;	0689	! SIDE EFFECTS:
+;	0690	!
+;	0691	!	NONE
+;	0692	!--
+;	0693	
+;	0694	BEGIN
+;	0695	!
+;	0696	!++
+;	0697	! THIS ROUTINE HAS TWO VERSIONS, DEPENDING UPON WHETHER IT MUST LEAVE THE
+;	0698	! P1 SPACE FOR THE DEBUGGER TO USE, OR CAN USE IT FOR ITS OWN PURPOSES.
+;	0699	! IF THE DEBUGGER IS TO BE LINKED WITH PATCH, THEN THE COMPILE-TIME VARIABLE "DEBUGGER"
+;	0700	! IS SET TO TRUE, CAUSING PATCH TO ALLOCATE THE WORK SPACE FROM P0 SPACE
+;	0701	! INSTEAD OF P1 SPACE.  OTHERWISE, "DEBUGGER" IS SET TO FALSE AND PATCH
+;	0702	! USES THE P1 SPACE FOR WORK AREA.
+;	0703	!--
+;	0704	
+;	0705	!++
+;	0706	! FIRST HANDLE THE CASE WHERE THE DEBUGGER IS NOT TO BE LINKED IN.
+;	0707	!--
+;	0708	%IF NOT DEBUGGER
+;     L 0709	%THEN
+;     U 0710	
+;     U 0711	LITERAL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 3-1
+; Digital Equipment Corporation
+;
+;     U 0712		START_TAB	= 0,					! offset for start of symbol table
+;     U 0713		END_TAB		= 1;					! offset for end of symbol table.
+;     U 0714	
+;     U 0715	LOCAL
+;     U 0716		SYMTAB_DESC : VECTOR [2];				! descriptor for space to create
+;     U 0717	
+;     U 0718	SYMTAB_DESC [START_TAB] = SYM_TAB_START;
+;     U 0719	SYMTAB_DESC [END_TAB] = SYM_TAB_END;
+;     U 0720	PAT$GL_ERRCODE = $CRETVA (INADR = SYMTAB_DESC, RETADR = SYMTAB_DESC);
+;     U 0721	IF NOT .PAT$GL_ERRCODE
+;     U 0722	THEN
+;     U 0723		SIGNAL (.PAT$GL_ERRCODE);
+;     U 0724	
+;     U 0725	!++
+;     U 0726	! The create virtual page system service was successful.
+;     U 0727	! Now initialize the first few words of the space, and the
+;     U 0728	! freelist values.
+;     U 0729	!--
+;     U 0730	PAT$STORE = .SYMTAB_DESC [START_TAB];
+;     U 0731	
+;     U 0732	!++
+;     U 0733	! NOW HANDLE THE CASE WHERE THE DEBUGGER IS LINKED IN.
+;     U 0734	!--
+;     U 0735	
+;     U 0736	%ELSE
+;	0737	PAT$STORE = PAT$GL_STORAGE;
+;	0738	%FI
+;	0739	
+;	0740	FR_SIZE (.PAT$STORE) = STORESIZE;
+;	0741	FR_NEXT (.PAT$STORE) = NULL;
+;	0742	FR_NEXT (PAT$FREELIST) = .PAT$STORE;
+;	0743	FR_SIZE (PAT$FREELIST) = 2;
+;	0744	
+;	0745	!++
+;	0746	! NOW SET THE ADDRESS OF THE START OF THE RST.
+;	0747	!--
+;	0748	PAT$GL_RST_BEGN = .PAT$STORE;
+;	0749	
+;	0750	END;
+
+
+							    .TITLE  PATFRE
+							    .IDENT  \X01.07\
+
+							    .PSECT  _PAT$OWN,NOEXE,2
+
+					      00000 PAT$GL_STORAGE:
+							    .BLKB   65536
+					      10000 PAT$STORE:
+							    .BLKB   4
+					      10004 PAT$FREELIST:
+							    .BLKB   8
+
+							    .GLOBL  PAT$FAO_OUT, PAT$GL_RST_BEGN, PAT$GL_ERRCODE
+							    .WEAK   ACCESS_CHECK
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 3-2
+; Digital Equipment Corporation
+;
+
+							    .PSECT  _PAT$CODE,NOWRT,2
+
+					 0800 00000 	    .ENTRY  PAT$FREEINIT, Save R11				      ; 0657
+		         5B 00000000'  EF  9E 00002 	    MOVAB   PAT$STORE, R11					      ;
+		         6B 00000000'  EF  9E 00009 	    MOVAB   PAT$GL_STORAGE, PAT$STORE				      ; 0737
+		         50	       6B  D0 00010 	    MOVL    PAT$STORE, R0					      ; 0740
+		         60	4000   8F  3C 00013 	    MOVZWL  #16384, (R0)					      ;
+				  04   A0  D4 00018 	    CLRL    4(R0)						      ; 0741
+		    08   AB	       50  D0 0001B 	    MOVL    R0, PAT$FREELIST+4					      ; 0742
+		    04   AB	       02  D0 0001F 	    MOVL    #2, PAT$FREELIST					      ; 0743
+	      00000000G  EF	       50  D0 00023 	    MOVL    R0, PAT$GL_RST_BEGN					      ; 0748
+					   04 0002A 	    RET     							      ; 0657
+
+; Routine Size:  43 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 4
+; Digital Equipment Corporation
+;
+;	0751	ROUTINE FREEGET (NEED1) =
+;	0752	
+;	0753	!++
+;	0754	! FUNCTIONAL DESCRIPTION:
+;	0755	!
+;	0756	!	PROCEDURE FREEGET IS CALLED WITH ONE INPUT ARGUMENT,
+;	0757	!	NEED1, WHICH REPRESENTS THE NUMBER OF WORDS OF FREE
+;	0758	!	STORAGE NEEDED.  IT SEARCHES THE FREELIST FOR A
+;	0759	!	NODE THAT HAS AT LEAST THE REQUIRED NUMBER OF WORDS.
+;	0760	!	IF THE NODE HAS MORE THAN THE REQUIRED NUMBER OF WORDS,
+;	0761	!	THE NODE IS SPLIT INTO TWO NODES, AND ONE IS RETURNED.
+;	0762	!
+;	0763	! CALLING SEQUENCE:
+;	0764	!
+;	0765	!	FREEGET ()
+;	0766	!
+;	0767	! INPUTS:
+;	0768	!
+;	0769	!	NEED1	- THE NUMBER OF WORDS NEEDED OF FREE STORAGE
+;	0770	!
+;	0771	! IMPLICIT INPUTS:
+;	0772	!
+;	0773	!	THE CURRENT STATE OF PAT$FREELIST.
+;	0774	!
+;	0775	! OUTPUTS:
+;	0776	!
+;	0777	!	THE ADDRESS OF THE FREE STORAGE ACQUIRED.
+;	0778	!
+;	0779	! IMPLICIT OUTPUTS:
+;	0780	!
+;	0781	!	THE STATE OF PAT$FREELIST AND THE COUNT OF WORDS
+;	0782	!	OF STORAGE LEFT ARE CHANGED.
+;	0783	!
+;	0784	! ROUTINE VALUE:
+;	0785	!
+;	0786	!	THE ADDRESS OF THE BLOCK
+;	0787	!
+;	0788	! SIDE EFFECTS:
+;	0789	!
+;	0790	!	IF THERE IS NO FREE STORAGE, THEN A SEVERE ERROR IS REPORTED WHICH
+;	0791	!	CAUSES AN "UNWIND" FOR THE NEXT COMMAND (INTERACTIVE MODE) OR AN
+;	0792	!	EXIT FROM PATCH (BATCH MODE).
+;	0793	!--
+;	0794	
+;	0795	BEGIN
+;	0796	
+;	0797	LOCAL
+;	0798		NEED,
+;	0799		OLDNODE,
+;	0800		LIST,
+;	0801		HAVE;
+;	0802	
+;	0803	NEED = .NEED1 + 1 ;						! ONE WORD BIAS FOR SIZE
+;	0804	IF .NEED LSS 0
+;	0805	THEN
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 4-1
+; Digital Equipment Corporation
+;
+;	0806		SIGNAL (PAT$_NOFREE);
+;	0807	LIST = .FR_NEXT (PAT$FREELIST);
+;	0808	OLDNODE = PAT$FREELIST;
+;	0809	WHILE .LIST NEQ NULL
+;	0810	DO
+;	0811		BEGIN							! FIND FIRST FIT
+;	0812		IF ((HAVE = .FR_SIZE (.LIST)) EQL .NEED)
+;	0813			OR (.have GEQ (.need + 2))
+;	0814		THEN
+;	0815			BEGIN						! FOUND 
+;	0816			IF .HAVE EQL .NEED
+;	0817			THEN FR_NEXT (.OLDNODE) = .FR_NEXT (.LIST)
+;	0818			ELSE
+;	0819				BEGIN					! LARGER THAN NEEDED
+;	0820				FR_NEXT (.LIST + .NEED * 4) = .FR_NEXT (.LIST);
+;	0821				FR_SIZE (.LIST + .NEED * 4 ) = .FR_SIZE (.LIST) - .NEED;
+;	0822				FR_NEXT (.OLDNODE)  = .LIST + .NEED * 4;
+;	0823				END;					! LARGER THAN NEEDED
+;	0824			FR_SIZE (.LIST) = .NEED;
+;	0825	
+;	0826			RETURN (.LIST + 4);				! CONTAINS SIZE
+;	0827			END						! FOUND
+;	0828		ELSE LIST = .FR_NEXT (.LIST);
+;	0829		OLDNODE = .FR_NEXT (.OLDNODE);
+;	0830		END;							! FIND FIRST FIT
+;	0831	SIGNAL (PAT$_NOFREE);						! Signal error
+;	0832	RETURN NULL
+;	0833	END;	
+
+
+
+
+
+					 081C 0002B FREEGET:.WORD   Save R2,R3,R4,R11					      ; 0751
+		         5B 00000000G  00  9E 0002D 	    MOVAB   LIB$SIGNAL, R11					      ;
+	   53	    04   AC	       01  C1 00034 	    ADDL3   #1, NEED1, NEED					      ; 0803
+				       09  18 00039 	    BGEQ    1$							      ; 0804
+			    006D80FA   8F  DD 0003B 	    PUSHL   #7176442						      ; 0806
+		         6B	       01  FB 00041 	    CALLS   #1, LIB$SIGNAL					      ;
+		         50 00000000'  EF  D0 00044 1$:     MOVL    PAT$FREELIST+4, LIST				      ; 0807
+		         52 00000000'  EF  9E 0004B 	    MOVAB   PAT$FREELIST, OLDNODE				      ; 0808
+				       50  D5 00052 2$:     TSTL    LIST						      ; 0809
+				       43  13 00054 	    BEQL    7$							      ;
+		         54	       60  D0 00056 	    MOVL    (LIST), HAVE					      ; 0812
+		         53	       54  D1 00059 	    CMPL    HAVE, NEED						      ;
+				       09  13 0005C 	    BEQL    3$							      ;
+	   51	         53	       02  C1 0005E 	    ADDL3   #2, NEED, R1					      ; 0813
+		         51	       54  D1 00062 	    CMPL    HAVE, R1						      ;
+				       28  19 00065 	    BLSS    6$							      ;
+		         53	       54  D1 00067 3$:     CMPL    HAVE, NEED						      ; 0816
+				       07  12 0006A 	    BNEQ    4$							      ;
+		    04   A2	  04   A0  D0 0006C 	    MOVL    4(LIST), 4(OLDNODE)					      ; 0817
+				       11  11 00071 	    BRB     5$							      ; 0816
+		         51	     6043  DE 00073 4$:     MOVAL   (LIST)[NEED], R1					      ; 0820
+		    04   A1	  04   A0  D0 00077 	    MOVL    4(LIST), 4(R1)					      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 4-2
+; Digital Equipment Corporation
+;
+	   61	         60	       53  C3 0007C 	    SUBL3   NEED, (LIST), (R1)					      ; 0821
+		    04   A2	       51  D0 00080 	    MOVL    R1, 4(OLDNODE)					      ; 0822
+		         60	       53  D0 00084 5$:     MOVL    NEED, (LIST)					      ; 0824
+		         51	  04   A0  9E 00087 	    MOVAB   4(LIST), R1						      ; 0826
+		         50	       51  D0 0008B 	    MOVL    R1, R0						      ;
+					   04 0008E 	    RET     							      ;
+		         50	  04   A0  D0 0008F 6$:     MOVL    4(LIST), LIST					      ; 0828
+		         52	  04   A2  D0 00093 	    MOVL    4(OLDNODE), OLDNODE					      ; 0829
+				       B9  11 00097 	    BRB     2$							      ; 0809
+			    006D80FA   8F  DD 00099 7$:     PUSHL   #7176442						      ; 0831
+		         6B	       01  FB 0009F 	    CALLS   #1, LIB$SIGNAL					      ;
+				       50  D4 000A2 	    CLRL    R0							      ; 0832
+					   04 000A4 	    RET     							      ; 0751
+
+; Routine Size:  122 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 5
+; Digital Equipment Corporation
+;
+;	0834	GLOBAL ROUTINE PAT$FREERELEASE (INODE1, NUM1) : NOVALUE =
+;	0835	
+;	0836	!++
+;	0837	! FUNCTIONAL DESCRIPTION:
+;	0838	!
+;	0839	!	PROCEDURE PAT$FREERELEASE IS CALLED TO RETURN STORAGE
+;	0840	!	BACK INTO THE FREE STORAGE POOL.  IT MAINTAINS A
+;	0841	!	FREELIST IN ASCENDING ORDER OF STORAGE ADDRESSES,
+;	0842	!	AND FINDS THE PROPER LOCATION FOR INODE IN THIS
+;	0843	!	LIST.  THEN IT ATTEMPTS TO MERGE WITH THE LEFT HAND 
+;	0844	!	NEIGHBOR AND WITH THE RIGHT HAND NEIGHBOR.
+;	0845	!
+;	0846	! CALLING SEQUENCE:
+;	0847	!
+;	0848	!	PAT$FREERELEASE ()
+;	0849	!
+;	0850	! INPUTS:
+;	0851	!
+;	0852	!	INODE1	- ADDRESS OF A NODE
+;	0853	!	NUM1	- LENGTH OF A NODE
+;	0854	!
+;	0855	! IMPLICIT INPUTS:
+;	0856	!
+;	0857	!	THE FREE STORAGE POOL, AND THE CURRENT CONTENTS OF PAT$FREELIST.
+;	0858	!
+;	0859	! OUTPUTS:
+;	0860	!
+;	0861	!	NONE
+;	0862	!
+;	0863	! IMPLICIT OUTPUTS:
+;	0864	!
+;	0865	!	AN ERROR MESSAGE CALL ON ERROR
+;	0866	!
+;	0867	! ROUTINE VALUE:
+;	0868	!
+;	0869	!	NOVALUE
+;	0870	!
+;	0871	! SIDE EFFECTS:
+;	0872	!
+;	0873	!	THE STORAGE IS RETURNED TO THE POOL.
+;	0874	!--
+;	0875	
+;	0876	BEGIN
+;	0877	
+;	0878	LOCAL
+;	0879		INODE,
+;	0880		NUM,
+;	0881		NODE,
+;	0882		OLDNODE;
+;	0883	
+;	0884	INODE = .INODE1 - 4 ;						! BIAS FOR SIZE WORD
+;	0885	NUM = .NUM1 + 1 ;						! INVISIBLE TO USER
+;	0886	IF .INODE GEQA .PAT$STORE 
+;	0887	    AND .INODE LEQA .PAT$STORE + (STORESIZE * 4) - 1
+;	0888	    AND .FR_SIZE (.INODE) EQL .NUM				! CORRECT SIZE
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 5-1
+; Digital Equipment Corporation
+;
+;	0889	THEN
+;	0890		BEGIN							! IN RANGE
+;	0891		NODE = .FR_NEXT (PAT$FREELIST);
+;	0892		OLDNODE = PAT$FREELIST;
+;	0893		WHILE .INODE GTRA .NODE AND .NODE NEQ NULL
+;	0894		DO
+;	0895			BEGIN						! FIND CORRECT SLOT
+;	0896			OLDNODE = .NODE;
+;	0897			NODE = .FR_NEXT (.NODE);
+;	0898			END;						! FIND CORRECT SLOT
+;	0899		FR_NEXT (.INODE) = .NODE;				! MERGE INTO LIST
+;	0900		FR_NEXT (.OLDNODE) = .INODE;
+;	0901		INCR I FROM 1 TO 2 DO
+;	0902			IF .OLDNODE + .FR_SIZE (.OLDNODE) * 4 EQLA .FR_NEXT (.OLDNODE)
+;	0903				AND .OLDNODE NEQA PAT$FREELIST 	!NOT FIRST ON LIST
+;	0904			THEN
+;	0905				BEGIN					! MERGE A NEIGHBOR
+;	0906				FR_SIZE (.OLDNODE) = .FR_SIZE (.OLDNODE) + .FR_SIZE (.FR_NEXT (.OLDNODE));
+;	0907				FR_NEXT (.OLDNODE) = .FR_NEXT (.FR_NEXT (.OLDNODE));
+;	0908				END				 	 !MERGE A NEIGHBOR
+;	0909			ELSE OLDNODE = .FR_NEXT (.OLDNODE);
+;	0910		END							! IN RANGE
+;	0911	ELSE
+;	0912		BEGIN
+;	0913		SIGNAL (IF .FR_SIZE (.INODE) NEQ .NUM
+;	0914				THEN PAT$_FRESIZE
+;	0915				ELSE PAT$_FRERANGE);			! alarm
+;	0916		END;
+;	0917	END;
+
+
+
+
+
+					 080C 000A5 	    .ENTRY  PAT$FREERELEASE, Save R2,R3,R11			      ; 0834
+		         5B 00000000'  EF  9E 000A7 	    MOVAB   PAT$STORE, R11					      ;
+	   52	    04   AC	       04  C3 000AE 	    SUBL3   #4, INODE1, INODE					      ; 0884
+	   53	    08   AC	       01  C1 000B3 	    ADDL3   #1, NUM1, NUM					      ; 0885
+		         6B	       52  D1 000B8 	    CMPL    INODE, PAT$STORE					      ; 0886
+				       62  1F 000BB 	    BLSSU   6$							      ;
+	   50	         6B 0000FFFF   8F  C1 000BD 	    ADDL3   #65535, PAT$STORE, R0				      ; 0887
+		         50	       52  D1 000C5 	    CMPL    INODE, R0						      ;
+				       55  1A 000C8 	    BGTRU   6$							      ;
+		         53	       62  D1 000CA 	    CMPL    (INODE), NUM					      ; 0888
+				       50  12 000CD 	    BNEQ    6$							      ;
+		         50	  08   AB  D0 000CF 	    MOVL    PAT$FREELIST+4, NODE				      ; 0891
+		         51	  04   AB  9E 000D3 	    MOVAB   PAT$FREELIST, OLDNODE				      ; 0892
+		         50	       52  D1 000D7 1$:     CMPL    INODE, NODE						      ; 0893
+				       0D  1B 000DA 	    BLEQU   2$							      ;
+				       50  D5 000DC 	    TSTL    NODE						      ;
+				       09  13 000DE 	    BEQL    2$							      ;
+		         51	       50  D0 000E0 	    MOVL    NODE, OLDNODE					      ; 0896
+		         50	  04   A0  D0 000E3 	    MOVL    4(NODE), NODE					      ; 0897
+				       EE  11 000E7 	    BRB     1$							      ; 0893
+		    04   A2	       50  D0 000E9 2$:     MOVL    NODE, 4(INODE)					      ; 0899
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 5-2
+; Digital Equipment Corporation
+;
+		    04   A1	       52  D0 000ED 	    MOVL    INODE, 4(OLDNODE)					      ; 0900
+		         53	       01  D0 000F1 	    MOVL    #1, I						      ; 0901
+		         50	       61  D0 000F4 3$:     MOVL    (OLDNODE), R0					      ; 0902
+		         52	     6140  DE 000F7 	    MOVAL   (OLDNODE)[R0], R2					      ;
+		         50	  04   A1  D0 000FB 	    MOVL    4(OLDNODE), R0					      ;
+		         50	       52  D1 000FF 	    CMPL    R2, R0						      ;
+				       13  12 00102 	    BNEQ    4$							      ;
+		         52	  04   AB  9E 00104 	    MOVAB   PAT$FREELIST, R2					      ; 0903
+		         52	       51  D1 00108 	    CMPL    OLDNODE, R2						      ;
+				       0A  13 0010B 	    BEQL    4$							      ;
+		         61	       60  C0 0010D 	    ADDL2   (R0), (OLDNODE)					      ; 0906
+		    04   A1	  04   A0  D0 00110 	    MOVL    4(R0), 4(OLDNODE)					      ; 0907
+				       03  11 00115 	    BRB     5$							      ; 0902
+		         51	       50  D0 00117 4$:     MOVL    R0, OLDNODE						      ; 0909
+	   D6	         53	       02  F3 0011A 5$:     AOBLEQ  #2, I, 3$						      ; 0901
+					   04 0011E 	    RET     							      ; 0886
+		         53	       62  D1 0011F 6$:     CMPL    (INODE), NUM					      ; 0913
+				       08  13 00122 	    BEQL    7$							      ;
+			    006D80A2   8F  DD 00124 	    PUSHL   #7176354						      ;
+				       06  11 0012A 	    BRB     8$							      ;
+			    006D809A   8F  DD 0012C 7$:     PUSHL   #7176346						      ;
+	      00000000G  00	       01  FB 00132 8$:     CALLS   #1, LIB$SIGNAL					      ;
+					   04 00139 	    RET     							      ; 0834
+
+; Routine Size:  149 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 6
+; Digital Equipment Corporation
+;
+;	0918	GLOBAL ROUTINE PAT$FREEZ (NEED) =
+;	0919	
+;	0920	!++
+;	0921	! FUNCTIONAL DESCRIPTION:
+;	0922	!
+;	0923	!	CALLS FREEGET TO ALLOCATE STORAGE, AND CLEARS IT
+;	0924	!
+;	0925	! CALLING SEQUENCE:
+;	0926	!
+;	0927	!	PAT$FREEZ ()
+;	0928	!
+;	0929	! INPUTS:
+;	0930	!
+;	0931	!	LENGTH OF AREA WANTED (IN LONGWORDS)
+;	0932	!
+;	0933	! IMPLICIT INPUTS:
+;	0934	!
+;	0935	!	NONE
+;	0936	!
+;	0937	! OUTPUTS:
+;	0938	!
+;	0939	!	ADDRESS OF AREA
+;	0940	!
+;	0941	! IMPLICIT OUTPUTS:
+;	0942	!
+;	0943	!	NONE
+;	0944	!
+;	0945	! ROUTINE VALUE:
+;	0946	!
+;	0947	!	NOVALUE
+;	0948	!
+;	0949	! SIDE EFFECTS:
+;	0950	!
+;	0951	!	NONE
+;	0952	!--
+;	0953	
+;	0954	BEGIN
+;	0955	
+;	0956	LOCAL
+;	0957		P;
+;	0958	
+;	0959	IF (P = FREEGET (.NEED)) NEQ 0
+;	0960	THEN ZEROCOR (.P, .NEED);
+;	0961	RETURN .P
+;	0962	END;
+
+
+
+
+
+					 007C 0013A 	    .ENTRY  PAT$FREEZ, Save R2,R3,R4,R5,R6			      ; 0918
+				  04   AC  DD 0013C 	    PUSHL   NEED						      ; 0959
+		  FEE7   CF	       01  FB 0013F 	    CALLS   #1, FREEGET						      ;
+		         56	       50  D0 00144 	    MOVL    R0, P						      ;
+				       0B  13 00147 	    BEQL    1$							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 6-1
+; Digital Equipment Corporation
+;
+	   50	    04   AC	       02  78 00149 	    ASHL    #2, NEED, R0					      ; 0960
+	   00	         6E	       00  2C 0014E 	    MOVC5   #0, (SP), #0, R0, (P)				      ;
+		         66	       50     00152									      ;
+		         50	       56  D0 00154 1$:     MOVL    P, R0						      ; 0961
+					   04 00157 	    RET     							      ; 0918
+
+; Routine Size:  30 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 7
+; Digital Equipment Corporation
+;
+;	0963	GLOBAL ROUTINE PAT$REPORT_FREE =
+;	0964	
+;	0965	!++
+;	0966	! FUNCTIONAL DESCRIPTION:
+;	0967	!
+;	0968	!	REPORTS THE NUMBER OF BYTES LEFT IN FREE STORAGE.
+;	0969	!
+;	0970	! CALLING SEQUENCE:
+;	0971	!
+;	0972	!	PAT$REPORT_FREE ()
+;	0973	!
+;	0974	! INPUTS:
+;	0975	!
+;	0976	!	NONE
+;	0977	!
+;	0978	! IMPLICIT INPUTS:
+;	0979	!
+;	0980	!	THE ELEMENTS OF THE FREE LIST.
+;	0981	!
+;	0982	! OUTPUTS:
+;	0983	!
+;	0984	!	NONE
+;	0985	!
+;	0986	! IMPLICIT OUTPUTS:
+;	0987	!
+;	0988	!	NONE
+;	0989	!
+;	0990	! ROUTINE VALUE:
+;	0991	!
+;	0992	!	THE NUMBER OF BYTES OF STROAGE THAT IS FREE.
+;	0993	!
+;	0994	! SIDE EFFECTS:
+;	0995	!
+;	0996	!	NONE
+;	0997	!--
+;	0998	
+;	0999	BEGIN
+;	1000	
+;	1001	LOCAL
+;	1002		COUNT,
+;	1003		POINTER;
+;	1004	
+;	1005	COUNT = 0;
+;	1006	
+;	1007	!++
+;	1008	! STEP THROUGH THE FREE LIST.
+;	1009	!--
+;	1010	POINTER = .FR_NEXT (PAT$FREELIST);
+;	1011	WHILE .POINTER NEQ NULL
+;	1012	DO
+;	1013		BEGIN
+;	1014		COUNT = .COUNT + .FR_SIZE (.POINTER);
+;	1015		POINTER = .FR_NEXT (.POINTER);
+;	1016		END;
+;	1017	RETURN .COUNT * 4
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 7-1
+; Digital Equipment Corporation
+;
+;	1018	END;
+
+
+
+
+
+					 0000 00158 	    .ENTRY  PAT$REPORT_FREE, Save nothing			      ; 0963
+				       50  D4 0015A 	    CLRL    COUNT						      ; 1005
+		         51 00000000'  EF  D0 0015C 	    MOVL    PAT$FREELIST+4, POINTER				      ; 1010
+				       51  D5 00163 1$:     TSTL    POINTER						      ; 1011
+				       09  13 00165 	    BEQL    2$							      ;
+		         50	       61  C0 00167 	    ADDL2   (POINTER), COUNT					      ; 1014
+		         51	  04   A1  D0 0016A 	    MOVL    4(POINTER), POINTER					      ; 1015
+				       F3  11 0016E 	    BRB     1$							      ; 1011
+		         50	       04  C4 00170 2$:     MULL2   #4, R0						      ; 1017
+					   04 00173 	    RET     							      ; 0963
+
+; Routine Size:  28 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:01:37	DBB3:[PATCH.SRC]PATFRE.B32;2					Page 8
+; Digital Equipment Corporation
+;
+;	1019	END
+;	1020	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  _PAT$OWN       	 65548    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  _PAT$CODE      	   372  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         3         0       108
+
+
+
+
+
+; Size:		372 code + 65548 data bytes
+; Run Time:	00:21.0
+; Elapsed Time:	00:33.1
+; Memory Used:	187 pages
+; Compilation Complete

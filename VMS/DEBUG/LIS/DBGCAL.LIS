@@ -1,0 +1,415 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGCAL ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000005') =
+;	0003	BEGIN
+;	0004	
+;	0005	!
+;	0006	!			  COPYRIGHT (c) 1977 BY
+;	0007	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0008	!
+;	0009	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0010	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0011	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0012	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0013	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0014	! TRANSFERRED.
+;	0015	!
+;	0016	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0017	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0018	! CORPORATION.
+;	0019	!
+;	0020	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0021	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0022	!
+;	0023	
+;	0024	!++
+;	0025	! FACILITY:	DEBUG (DBG)
+;	0026	!
+;	0027	! ABSTRACT:
+;	0028	!	This module contains a routine that allows the user to call a
+;	0029	!	subroutine from DEBUG, have it execute, and then view its
+;	0030	!	returned value.
+;	0031	!
+;	0032	! ENVIRONMENT:	VAX/VMS, user mode, interrupts disabled
+;	0033	!
+;	0034	! AUTHOR:	Carol Peters, CREATION DATE:	26 October 1977
+;	0035	!
+;	0036	! MODIFIED BY:
+;	0037	!		Dale Roedger, 27 April 1978:	05
+;	0038	!
+;	0039	! 01	05-10-77	CP	SIGNAL errors.
+;	0040	! 02	26-10-77	CP	Make the argument list constructed for a
+;	0041	!				CALLG pointed to by a global pointer.
+;	0042	! 03	07-11-77	CP	Change gl_frameptr to be part of
+;	0043	!				the user run frame context pointed to
+;	0044	!				by dbg$gl_runframe.
+;	0045	! 04	09-11-77	CP	Have call_cmd act like a GO or STEP
+;	0046	!				command by setting the take command to
+;	0047	!				false and causing an REI.
+;	0048	! 05	27-APR-78	DAR	Modified the require and library directives
+;	0049	!				for the native build.
+;	0050	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0051	! TABLE OF CONTENTS:
+;	0052	!
+;	0053	
+;	0054	FORWARD ROUTINE
+;	0055		dbg$call_cmd : NOVALUE;			! calls a subroutine
+;	0056	
+;	0057	!
+;	0058	! INCLUDE FILES:
+;	0059	!
+;	0060	%IF %VARIANT		! True for TEN.
+;     L 0061	%THEN
+;     U 0062	LIBRARY 'NEW:STARLE';
+;     U 0063	
+;     U 0064	REQUIRE 'DBGPCT.REQ';
+;     U 0065	REQUIRE 'DBGGEN.REQ';
+;     U 0066	REQUIRE 'VXSMAC.REQ';
+;     U 0067	REQUIRE 'BSTRUC.REQ';
+;     U 0068	REQUIRE 'LISTEL.REQ';
+;     U 0069	REQUIRE 'DBGMSG.REQ';
+;     U 0070	REQUIRE 'SYSSER.REQ';
+;     U 0071	%ELSE
+;	0072	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0073	
+;	0074	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0086	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0336	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0376	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0427	REQUIRE 'SRC$:LISTEL.REQ';
+;	0461	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0740	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0743	SWITCHES LIST (SOURCE);
+;      R0744	
+;      R0745	EXTERNAL ROUTINE
+;      R0746		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R0747	
+;      R0748	SWITCHES LIST (NOSOURCE);
+;	0793	%FI
+;	0794	
+;	0795	!
+;	0796	! MACROS:
+;	0797	!
+;	0798	
+;	0799	!
+;	0800	! EQUATED SYMBOLS:
+;	0801	!
+;	0802	
+;	0803	LITERAL
+;	0804		dbg_cal	= FALSE;			! for debugging
+;	0805	
+;	0806	!
+;	0807	! OWN STORAGE:
+;	0808	!
+;	0809	
+;	0810	!
+;	0811	! EXTERNAL REFERENCES:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 2-1
+; Digital Equipment Corporation
+;
+;	0812	!
+;	0813	
+;	0814	EXTERNAL ROUTINE
+;	0815		dbg$freez;				! allocates an area of storage
+;	0816	
+;	0817	EXTERNAL
+;	0818		dbg$gb_take_cmd : BYTE,			! flag that says take further commands
+;	0819		dbg$gl_head_lst,			! pointer to head of argument list
+;	0820		dbg$gl_runframe : REF BLOCK [, BYTE],	! pointer to current run context
+;	0821		dbg$pseudo_prog;			! address of phony user code
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	0822	GLOBAL ROUTINE dbg$call_cmd : NOVALUE =	! calls a user subroutine
+;	0823	
+;	0824	!++
+;	0825	! Functional description:
+;	0826	!	This routine calls a user-specified subroutine and displays the
+;	0827	!	returned value from that subroutine on the output device.
+;	0828	!
+;	0829	!	The arguments to the subroutine are found in the normal command
+;	0830	!	parameter singly-linked list. The arguments occur in items 1 to
+;	0831	!	"n - 1" on the list and the subroutine address occurs in item
+;	0832	!	"n" on the list.
+;	0833	!
+;	0834	!	The arguments are counted, and if any exist, a standard VAX
+;	0835	!	call frame argument list is constructed. Then the routine
+;	0836	!	is called via a CALLG instruction. If no arguments exist, the
+;	0837	!	routine is called via a CALLS instruction.
+;	0838	!
+;	0839	! Formal parameters:
+;	0840	!
+;	0841	!	none
+;	0842	!
+;	0843	! Implicit inputs:
+;	0844	!
+;	0845	!	dbg$gl_head_lst points to the head of the command
+;	0846	!	parameter list.
+;	0847	!
+;	0848	! Implicit outputs:
+;	0849	!
+;	0850	!	none
+;	0851	!
+;	0852	! Routine value:
+;	0853	!
+;	0854	!	novalue
+;	0855	!
+;	0856	! Side effects:
+;	0857	!
+;	0858	!	The user-specified routine is executed, and the returned value
+;	0859	!	is displayed on the output device.
+;	0860	!
+;	0861	!--
+;	0862	
+;	0863		BEGIN
+;	0864	
+;	0865		LOCAL
+;	0866			argument_ptr,				! pointer to command parameter list
+;	0867			count,					! parameter count
+;	0868			frame_ptr : REF VECTOR,			! pointer to call frame
+;	0869			old_runframe : REF BLOCK [, BYTE],	! pointer to old runframe context
+;	0870			status,					! value from user routine
+;	0871			output_buffer : VECTOR [40, BYTE];	! output buffer
+;	0872	
+;	0873		LITERAL
+;	0874			stock_user_psl	= %x'03C00000';		! standard user PSL value
+;	0875	
+;	0876		argument_ptr = .dbg$gl_head_lst;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+;	0877		IF .argument_ptr EQL 0
+;	0878		THEN SIGNAL (dbg$_parseerr);
+;	0879		count = 0;
+;	0880		REPEAT
+;	0881			BEGIN
+;	0882	
+;	0883			!++
+;	0884			! This loop counts the number of command parameters.
+;	0885			! Increment the count by one each time through the
+;	0886			! loop. If this is the last link in the command
+;	0887			! list, exit the loop. The count will contain the number
+;	0888			! of arguments to the routine plus one (for the routine
+;	0889			! name itself, which is at the end of the list).
+;	0890			!--
+;	0891			count = .count + 1;
+;	0892			argument_ptr = .list_elem_flink (.argument_ptr);
+;	0893			IF .argument_ptr EQL 0
+;	0894			THEN EXITLOOP;
+;	0895			END;
+;	0896	
+;	0897	%IF dbg_cal
+;     L 0898	%THEN
+;     U 0899		$fao_tt_out ('There are !SL arguments', .count - 1);
+;     U 0900	%FI
+;	0901	
+;	0902		argument_ptr = .dbg$gl_head_lst;
+;	0903		IF .count GTR 1
+;	0904		THEN
+;	0905			BEGIN
+;	0906	
+;	0907			!++
+;	0908			! If there were arguments to the routine, make a
+;	0909			! call frame argument list. Allocate enough storage for
+;	0910			! one longword per argument plus a longword for the
+;	0911			! count. Insert the arguments in order as they appear
+;	0912			! in the command parameter list.
+;	0913			!--
+;	0914			frame_ptr = dbg$freez (.count);
+;	0915	
+;	0916			frame_ptr [0] = .count - 1;
+;	0917			INCR index FROM 1 to .count - 1 DO
+;	0918				BEGIN
+;	0919	
+;	0920	%IF dbg_cal
+;     L 0921	%THEN
+;     U 0922				$fao_tt_out ('argument is !XL', .list_elem_exp1 (.argument_ptr));
+;     U 0923	%FI
+;	0924	
+;	0925				frame_ptr [.index] = .list_elem_exp1 (.argument_ptr);
+;	0926				argument_ptr = .list_elem_flink (.argument_ptr);
+;	0927				END;
+;	0928	
+;	0929	%IF dbg_cal
+;     L 0930	%THEN
+;     U 0931			$fao_tt_out ('call frame is!/!SL!/!XL', .frame_ptr [0], .frame_ptr [1]);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+;     U 0932	%FI
+;	0933	
+;	0934			END
+;	0935		ELSE
+;	0936			BEGIN
+;	0937	
+;	0938			!++
+;	0939			! No arguments. Construct a call frame with argument
+;	0940			! count of zero.
+;	0941			!--
+;	0942			frame_ptr = dbg$freez (1);
+;	0943			frame_ptr [0] = 0;
+;	0944	
+;	0945	%IF dbg_cal
+;     L 0946	%THEN
+;     U 0947			$fao_tt_out ('call frame is!/!SL', .frame_ptr [0]);
+;     U 0948	%FI
+;	0949	
+;	0950			END;
+;	0951	
+;	0952		!++
+;	0953		! Now activate a new block of runtime context for the routine
+;	0954		! to be called. Copy all the current user registers into it.
+;	0955		! Make its next_link point to the old runframe block. Load the
+;	0956		! address of the routine to be called and its call frame. Load
+;	0957		! the PC value with a phony program in DEBUG that will do the
+;	0958		! actual CALLG. Set the bit that says that interrupts are to
+;	0959		! be enabled before running the program.
+;	0960		!--
+;	0961		old_runframe = .dbg$gl_runframe;
+;	0962		dbg$gl_runframe = dbg$freez ((dbg$k_runfr_len + 3) / %UPVAL);
+;	0963		dbg$gl_runframe [dbg$l_next_link] = .old_runframe;
+;	0964		dbg$gl_runframe [dbg$l_frame_ptr] = .frame_ptr;
+;	0965		dbg$gl_runframe [dbg$l_call_addr] = .list_elem_exp1 (.argument_ptr);
+;	0966		dbg$gl_runframe [dbg$v_enab_ast] = TRUE;
+;	0967		ch$move ((register_count - 2) * %UPVAL, ch$ptr (old_runframe [dbg$l_user_r0]),
+;	0968				ch$ptr (dbg$gl_runframe [dbg$l_user_r0]));
+;	0969		dbg$gl_runframe [dbg$l_user_pc] = dbg$pseudo_prog;
+;	0970		dbg$gl_runframe [dbg$l_user_psl] = stock_user_psl;
+;	0971		dbg$gb_take_cmd = FALSE;
+;	0972	
+;	0973	%IF dbg_cal
+;     L 0974	%THEN
+;     U 0975		$fao_tt_out ('run frame is !/next link is !XL!/R0:  !XL, PC:  !XL, PSL:  !XL',
+;     U 0976			.dbg$gl_runframe [dbg$l_next_link], .dbg$gl_runframe [dbg$l_user_r0],
+;     U 0977			.dbg$gl_runframe [dbg$l_user_pc], .dbg$gl_runframe [dbg$l_user_psl]);
+;     U 0978		$fao_tt_out ('call frame address is !XL!/call address is !XL', .dbg$gl_runframe [dbg$l_frame_ptr],
+;     U 0979			.dbg$gl_runframe [dbg$l_call_addr]);
+;     U 0980		$fao_tt_out ('argument count is !SL', .(.dbg$gl_runframe [dbg$l_frame_ptr]));
+;     U 0981	%FI
+;	0982	
+;	0983		END;
+
+
+							    .TITLE  DBGCAL
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 3-3
+; Digital Equipment Corporation
+;
+							    .IDENT  \000005\
+
+							    .GLOBL  DBG$FAO_OUT, DBG$FREEZ, DBG$GB_TAKE_CMD, DBG$GL_HEAD_LST
+							    .GLOBL  DBG$GL_RUNFRAME, DBG$PSEUDO_PROG
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0E7C 00000 	    .ENTRY  DBG$CALL_CMD, Save R2,R3,R4,R5,R6,R9,R10,R11	      ; 0822
+		         59 00000000G  EF  9E 00002 	    MOVAB   DBG$GL_HEAD_LST, R9					      ;
+		         5A 00000000G  EF  9E 00009 	    MOVAB   DBG$GL_RUNFRAME, R10				      ;
+		         5B 00000000G  EF  9E 00010 	    MOVAB   DBG$FREEZ, R11					      ;
+		         5E	       28  C2 00017 	    SUBL2   #40, SP						      ;
+		         53	       69  D0 0001A 	    MOVL    DBG$GL_HEAD_LST, ARGUMENT_PTR			      ; 0876
+				       0D  12 0001D 	    BNEQ    1$							      ; 0877
+			    00028248   8F  DD 0001F 	    PUSHL   #164424						      ; 0878
+	      00000000G  00	       01  FB 00025 	    CALLS   #1, LIB$SIGNAL					      ;
+				       52  D4 0002C 1$:     CLRL    COUNT						      ; 0879
+				       52  D6 0002E 2$:     INCL    COUNT						      ; 0891
+		         53	       63  D0 00030 	    MOVL    (ARGUMENT_PTR), ARGUMENT_PTR			      ; 0892
+				       F9  12 00033 	    BNEQ    2$							      ; 0893
+		         53	       69  D0 00035 	    MOVL    DBG$GL_HEAD_LST, ARGUMENT_PTR			      ; 0902
+		         01	       52  D1 00038 	    CMPL    COUNT, #1						      ; 0903
+				       21  15 0003B 	    BLEQ    5$							      ;
+				       52  DD 0003D 	    PUSHL   COUNT						      ; 0914
+		         6B	       01  FB 0003F 	    CALLS   #1, DBG$FREEZ					      ;
+		         54	       50  D0 00042 	    MOVL    R0, FRAME_PTR					      ;
+	   51	         52	       01  C3 00045 	    SUBL3   #1, COUNT, R1					      ; 0916
+		         64	       51  D0 00049 	    MOVL    R1, (FRAME_PTR)					      ;
+				       50  D4 0004C 	    CLRL    INDEX						      ; 0917
+				       08  11 0004E 	    BRB     4$							      ;
+		       6440	  04   A3  D0 00050 3$:     MOVL    4(ARGUMENT_PTR), (FRAME_PTR)[INDEX]			      ; 0925
+		         53	       63  D0 00055 	    MOVL    (ARGUMENT_PTR), ARGUMENT_PTR			      ; 0926
+	   F4	         50	       51  F3 00058 4$:     AOBLEQ  R1, INDEX, 3$					      ; 0917
+				       0A  11 0005C 	    BRB     6$							      ; 0903
+				       01  DD 0005E 5$:     PUSHL   #1							      ; 0942
+		         6B	       01  FB 00060 	    CALLS   #1, DBG$FREEZ					      ;
+		         54	       50  D0 00063 	    MOVL    R0, FRAME_PTR					      ;
+				       64  D4 00066 	    CLRL    (FRAME_PTR)						      ; 0943
+		         52	       6A  D0 00068 6$:     MOVL    DBG$GL_RUNFRAME, OLD_RUNFRAME			      ; 0961
+				       19  DD 0006B 	    PUSHL   #25							      ; 0962
+		         6B	       01  FB 0006D 	    CALLS   #1, DBG$FREEZ					      ;
+		         6A	       50  D0 00070 	    MOVL    R0, DBG$GL_RUNFRAME					      ;
+		         56	       6A  D0 00073 	    MOVL    DBG$GL_RUNFRAME, R6					      ; 0963
+		         66	       52  D0 00076 	    MOVL    OLD_RUNFRAME, (R6)					      ;
+		    4E   A6	       54  D0 00079 	    MOVL    FRAME_PTR, 78(R6)					      ; 0964
+		    52   A6	  04   A3  D0 0007D 	    MOVL    4(ARGUMENT_PTR), 82(R6)				      ; 0965
+		    48   A6	       20  88 00082 	    BISB2   #32, 72(R6)						      ; 0966
+      04   A6	    04   A2	       3C  28 00086 	    MOVC3   #60, 4(OLD_RUNFRAME), 4(R6)				      ; 0967
+		    40   A6 00000000G  EF  9E 0008C 	    MOVAB   DBG$PSEUDO_PROG, 64(R6)				      ; 0969
+		    44   A6 03C00000   8F  D0 00094 	    MOVL    #62914560, 68(R6)					      ; 0970
+			    00000000G  EF  94 0009C 	    CLRB    DBG$GB_TAKE_CMD					      ; 0971
+					   04 000A2 	    RET     							      ; 0822
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:08:59	DBB3:[DEBUG.SRC]DBGCAL.B32;5					Page 3-4
+; Digital Equipment Corporation
+;
+; Routine Size:  163 bytes
+
+
+;	0984	END				!End of module
+;	0985	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$CODE       	   163  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         3         0       108
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      317	00:14.0		00:32.5
+;	FLOWAN	       23	00:00.3		00:00.6
+;	DELAY	       25	00:00.3		00:00.7
+;	TNBIND	       25	00:00.3		00:00.6
+;	CODE	       44	00:00.5		00:00.8
+;	FINAL	       75	00:01.0		00:01.3
+;	Total	      509	00:16.3		00:36.4
+
+; Size:		163 code + 0 data bytes
+; Run Time:	00:16.6
+; Elapsed Time:	00:37.1
+; Memory Used:	199 pages
+; Compilation Complete

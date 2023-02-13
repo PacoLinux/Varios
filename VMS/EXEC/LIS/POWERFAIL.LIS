@@ -1,0 +1,701 @@
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)    8500  EXE$POWERFAIL - POWER FAIL INTERRUPT SERVICE RO
+   (1)   20200  EXE$RESTART - Restore state and restart after p
+   (1)   39800  EXE$PWRTIMCHK - Check for reasonable interval s
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   1
+02                                                                                                                               (1)
+
+                                     0000   100 	.TITLE	POWERFAIL - POWER FAIL INTERRUPT HANDLER
+                                     0000   200 	.IDENT	/02/
+                                     0000   300 ;
+                                     0000   400 ; COPYRIGHT (C) 1978
+                                     0000   500 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000   600 ;
+                                     0000   700 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000   800 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000   900 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000  1000 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000  1100 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000  1200 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000  1300 ; REMAIN IN DEC.
+                                     0000  1400 ;
+                                     0000  1500 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000  1600 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000  1700 ; CORPORATION.
+                                     0000  1800 ;
+                                     0000  1900 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000  2000 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000  2100 
+                                     0000  2200 ;++
+                                     0000  2300 ;
+                                     0000  2400 ; Facility:  Executive , Hardware fault handling
+                                     0000  2500 ;
+                                     0000  2600 ; Abstract: POWERFAIL contains the code necessary to save the volatile state
+                                     0000  2700 ;	    necessary for restart when power is restored. POWERFAIL also
+                                     0000  2800 ;	    contains the code to restore this state and continue operation
+                                     0000  2900 ;	    upon power restoration.
+                                     0000  3000 ;
+                                     0000  3100 ; Environment: MODE=Kernel , IPL=31
+                                     0000  3200 ;
+                                     0000  3300 ; Author:  RICHARD I. HUSTVEDT, Creation date:  15-JUN-1978
+                                     0000  3400 ;
+                                     0000  3500 ; Modified by:
+                                     0000  3600 ;
+                                     0000  3700 ;  , Version  ,
+                                     0000  3800 ; 01	- 
+                                     0000  3900 ;--
+                                     0000  4000 
+                                     0000  4100 ;
+                                     0000  4200 ; Include files:
+                                     0000  4300 ;
+                                     0000  4400 	$ADPDEF				; DEFINE ADAPTER CONTROL BLOCK
+                                     0000  4500 	$CRBDEF				; DEFINE CRB OFFSETS
+                                     0000  4600 	$DDBDEF				; DEFINE DEVICE DATA BLOCK
+                                     0000  4700 	$DDTDEF				; DEFINE DRIVER DISPATCH TABLE
+                                     0000  4800 	$IDBDEF				; DEFINE IDB OFFSETS
+                                     0000  4900 	$IPLDEF				; DEFINE INTERRUPT PRIORITY LEVELS
+                                     0000  5000 	$PRDEF				; DEFINE PROCESSOR REGISTER NUMBERS
+                                     0000  5100 	$RPBDEF				; DEFINE RESTART PARAMETER BLOCK OFFSETS
+                                     0000  5200 	$TQEDEF				; DEFINE TIMER QUEUE ENTRY OFFSETS
+                                     0000  5300 	$UBADEF				; DEFINE UBA REGISTERS
+                                     0000  5400 	$UCBDEF				; DEFINE UNIT CONTROL BLOCK
+                                     0000  5500 	$VECDEF				; DEFINE VECTOR OFFSETS
+                                     0000  5600 
+                                     0000  5700 ;
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   2
+02                                                                                                                               (1)
+
+                                     0000  5800 ; MACROS:
+                                     0000  5900 ;
+                                     0000  6000 
+                                     0000  6100 ;
+                                     0000  6200 ; Equated Symbols:
+                                     0000  6300 ;
+                           00000003  0000  6400 RESTRT_POWERUP	=	3		; Power recovery restart code
+                           00000004  0000  6500 RESTRT_IVLISTK	=	4		; Interrupt stack not valid
+                           00000005  0000  6600 RESTRT_DBLERR	=	5		; Double error restart code
+                           00000006  0000  6700 RESTRT_HALT	=	6		; Halt restart code
+                           00000007  0000  6800 RESTRT_ILLVEC	=	7		; Illegal vector code
+                           00000008  0000  6900 RESTRT_NOUSRWCS	=	8		; No user WCS restart code
+                           00000009  0000  7000 RESTRT_ERRHALT	=	9		; Error halt restart code
+                           0000000A  0000  7100 RESTRT_CHM	=	10		; CHMx with IS=1 restart code
+                                     0000  7200 ;
+                                     0000  7300  
+                                 00000000  7400 	.PSECT	$$$220,LONG		; Data psect
+                                     0000  7500 EXE$GL_PWRDONE::			; End time for power up interval
+                           00000000  0000  7600 	.LONG	0			; Done now
+                                     0004  7700 EXE$GL_PWRINTVL::			; Allowable interval in 10MS units
+                           00002EE0  0004  7800 	.LONG	100*120			; Allow two minutes
+                                 00000000  7900 	.PSECT	$AEXENONPAGED,LONG	; INTERRUPT ROUTINES MUST BE LONGWORD
+                                     0000  8000 					; ALIGNED
+                                     0000  8100 ;
+                                     0000  8200 ; Own Storage:
+                                     0000  8300 ;
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   3
+02              EXE$POWERFAIL - POWER FAIL INTERRUPT SERVICE RO                                                                  (1)
+
+                                     0000  8500 	.SBTTL	EXE$POWERFAIL - POWER FAIL INTERRUPT SERVICE ROUTINE
+                                     0000  8600 ;++
+                                     0000  8700 ;
+                                     0000  8800 ; Functional Description:
+                                     0000  8900 ;	EXE$POWERFAIL is entered with IPL=31 as a result of a power fail
+                                     0000  9000 ;	interrupt.  The objective is to save the critical volatile machine
+                                     0000  9100 ;	state as quickly as possible and halt the machine.
+                                     0000  9200 ;
+                                     0000  9300 ; Calling Sequence:
+                                     0000  9400 ;	Powerfail interrupt through Vector at offset 12 in the SCB.
+                                     0000  9500 ;
+                                     0000  9600 ; Input Parameters:
+                                     0000  9700 ;	00(SP) - PC at time of powerfail interrupt
+                                     0000  9800 ;	04(SP) - PSL at tiem of powerfail interrupt
+                                     0000  9900 ;
+                                     0000 10000 ; Implicit Inputs:
+                                     0000 10100 ;	All registers and processor registers.
+                                     0000 10200 ;	Restart Parameter Block located via EXE$GL_RPB
+                                     0000 10300 ;
+                                     0000 10400 ;--
+                                     0000 10500 	.LIST	MEB			; Show macro expansions
+                                     0000 10600 
+                                     0000 10700 	.ALIGN	LONG			; Exception and Interrupt routines must 
+                                     0000 10800 					; be longword aligned
+                                     0000 10900 EXE$POWERFAIL::				;
+                     0000'CF     D5  0000 11000 	TSTL	W^EXE$GL_PFAILTIM		; Have we restarted yet?
+                          4D     12  0004 11100 	BNEQ	10$			; No, wait for restart
+                     3FFF 8F     BB  0006 11200 	PUSHR	#^M<R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,AP,FP> ; Save all registers
+            55       0000'CF     D0  000A 11300 	MOVL	W^EXE$GL_RPB,R5		; Get address of restart parameter block
+       00A8 C5            10     DB  000F 11400 	MFPR	#PR$_PCBB,RPB$L_PCBB(R5); Save physical address of current pcb
+       00B0 C5            11     DB  0014 11500 	MFPR	#PR$_SCBB,RPB$L_SCBB(R5); Save physical address of System Control Block
+       00AC C5            0C     DB  0019 11600 	MFPR	#PR$_SBR,RPB$L_SBR(R5)	; Save physical address of System page table
+       00B4 C5            15     DB  001E 11700 	MFPR	#PR$_SISR,RPB$L_SISR(R5); Save software interrupt summary register
+       00B8 C5            0D     DB  0023 11800 	MFPR	#PR$_SLR,RPB$L_SLR(R5)	; Save SPT length
+       0000'CF            1B     DB  0028 11900 	MFPR	#PR$_TODR,W^EXE$GL_PFAILTIM	; Save time of day at power fail
+                                     002D 12000 ;
+                                     002D 12100 ; Save all other volatile processor registers on the current stack (ISP)
+                                     002D 12200 ;
+            7E            00     DB  002D 12300 	MFPR	#PR$_KSP,-(SP)		; Save kernel stack pointer
+            7E            01     DB  0030 12400 	MFPR	#PR$_ESP,-(SP)		; Save exec stack pointer
+            7E            02     DB  0033 12500 	MFPR	#PR$_SSP,-(SP)		; Save supervisor stack pointer
+            7E            03     DB  0036 12600 	MFPR	#PR$_USP,-(SP)		; Save user stack pointer
+            7E            13     DB  0039 12700 	MFPR	#PR$_ASTLVL,-(SP)	; Save AST level
+            7E            3D     DB  003C 12800 	MFPR	#PR$_PME,-(SP)		; Save performance monitor enable
+            7E            08     DB  003F 12900 	MFPR	#PR$_P0BR,-(SP)		; Save P0 base register
+            7E            09     DB  0042 13000 	MFPR	#PR$_P0LR,-(SP)		; Save P0 length register
+            7E            0A     DB  0045 13100 	MFPR	#PR$_P1BR,-(SP)		; Save P1 base register
+            7E            0B     DB  0048 13200 	MFPR	#PR$_P1LR,-(SP)		; Save P1 length register
+            7E            33     DB  004B 13300 	MFPR	#PR$_SBIMT,-(SP)	; Save SBI maintenance register
+                                     004E 13400 ;
+                                     004E 13500 ; All volatile machine state necessary for restart has now been saved.
+                                     004E 13600 ; At this point the interrupt stack contains:
+                                     004E 13700 ;
+                                     004E 13800 ;	+-------------------------+
+                                     004E 13900 ;	|	   SBIMT	  | 00(SP)
+                                     004E 14000 ;	+-------------------------+
+                                     004E 14100 ;	|	   P1LR		  | 04(SP)
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   4
+02              EXE$POWERFAIL - POWER FAIL INTERRUPT SERVICE RO                                                                  (1)
+
+                                     004E 14200 ;	+-------------------------+
+                                     004E 14300 ;	|	   P1BR		  | 08(SP)
+                                     004E 14400 ;	+-------------------------+
+                                     004E 14500 ;	|	   P0LR		  | 12(SP)
+                                     004E 14600 ;	+-------------------------+
+                                     004E 14700 ;	|	   P0BR		  | 16(SP)
+                                     004E 14800 ;	+-------------------------+
+                                     004E 14900 ;	|	   PME		  | 20(SP)
+                                     004E 15000 ;	+-------------------------+
+                                     004E 15100 ;	|	   ASTLVL	  | 24(SP)
+                                     004E 15200 ;	+-------------------------+
+                                     004E 15300 ;	|	   USP		  | 28(SP)
+                                     004E 15400 ;	+-------------------------+
+                                     004E 15500 ;	|	   SSP		  | 32(SP)
+                                     004E 15600 ;	+-------------------------+
+                                     004E 15700 ;	|	   ESP		  | 36(SP)
+                                     004E 15800 ;	+-------------------------+
+                                     004E 15900 ;	|	   KSP		  | 40(SP)
+                                     004E 16000 ;	+-------------------------+
+                                     004E 16100 ;	|	   R0		  | 44(SP)
+                                     004E 16200 ;	+-------------------------+
+                                     004E 16300 ;	|	   R1		  | 48(SP)
+                                     004E 16400 ;	+-------------------------+
+                                     004E 16500 ;	|	   R2		  | 52(SP)
+                                     004E 16600 ;	+-------------------------+
+                                     004E 16700 ;	|	   R3		  | 56(SP)
+                                     004E 16800 ;	+-------------------------+
+                                     004E 16900 ;	|	   R4		  | 60(SP)
+                                     004E 17000 ;	+-------------------------+
+                                     004E 17100 ;	|	   R5		  | 64(SP)
+                                     004E 17200 ;	+-------------------------+
+                                     004E 17300 ;	|	   R6		  | 68(SP)
+                                     004E 17400 ;	+-------------------------+
+                                     004E 17500 ;	|	   R7		  | 72(SP)
+                                     004E 17600 ;	+-------------------------+
+                                     004E 17700 ;	|	   R8		  | 76(SP)
+                                     004E 17800 ;	+-------------------------+
+                                     004E 17900 ;	|	   R9		  | 80(SP)
+                                     004E 18000 ;	+-------------------------+
+                                     004E 18100 ;	|	   R10		  | 84(SP)
+                                     004E 18200 ;	+-------------------------+
+                                     004E 18300 ;	|	   R11		  | 88(SP)
+                                     004E 18400 ;	+-------------------------+
+                                     004E 18500 ;	|	   AP		  | 92(SP)
+                                     004E 18600 ;	+-------------------------+
+                                     004E 18700 ;	|	   FP		  | 96(SP)
+                                     004E 18800 ;	+-------------------------+
+                                     004E 18900 ;	|	   PC		  | 100(SP)
+                                     004E 19000 ;	+-------------------------+
+                                     004E 19100 ;	|	   PSL		  | 104(SP)
+                                     004E 19200 ;	+-------------------------+
+                                     004E 19300 ;
+       00A4 C5            5E     D0  004E 19400 	MOVL	SP,RPB$L_ISP(R5)	; Save final interrupt stack pointer
+                          FE     11  0053 19500 10$:	BRB	10$			; Wait for power off halt
+                                     0055 19600 					; This loop is to avoid halting
+                                     0055 19700 					; and confusing the console
+                                     0055 19800 					; by inadvertently triggering an
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   5
+02              EXE$POWERFAIL - POWER FAIL INTERRUPT SERVICE RO                                                                  (1)
+
+                                     0055 19900 					; automatic restart too soon.
+                                     0055 20000 
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   6
+02              EXE$RESTART - Restore state and restart after p                                                                  (1)
+
+                                     0055 20200 	.SBTTL	EXE$RESTART - Restore state and restart after power on
+                                     0055 20300 ;++
+                                     0055 20400 ; Functional Description:
+                                     0055 20500 ;	EXE$RESTART is given control by the restart ROM bootstrap if it
+                                     0055 20600 ;	is determined that memory content is valid, the checksum of the 
+                                     0055 20700 ;	restart routine verifies and the restart flag in the Restart Control
+                                     0055 20800 ;	Block is enabled.  Initial entry to EXE$RESTART is made with memory
+                                     0055 20900 ;	management disabled IPL=31 with the stack pointer set to the high
+                                     0055 21000 ;	end of the page containing the restart control block.
+                                     0055 21100 ;
+                                     0055 21200 ; Calling Sequence:
+                                     0055 21300 ;	JMP	@RPB$L_RESTART-^X200(SP)
+                                     0055 21400 ;
+                                     0055 21500 ; Input Parameters:
+                                     0055 21600 ;	SP - Address of RPB+^x200
+                                     0055 21700 ;
+                                     0055 21800 ;--
+                                     0055 21900 
+                                 00000000 22000 	.PSECT	$AAEXENONPAGED,PAGE	; Must be in page aligned psect
+                                     0000 22100 EXE$RESTART::				; Restart entry point
+            56            22     DB  0000 22200 5$:	MFPR	#PR$_TXCS,R6		; Get console transmitter status
+            56            07     E1  0003 22300 	BBC	#7,R6,5$		; Wait until ready
+                          F9         0006       
+            23   00000F03 8F     DA  0007 22400 	MTPR	#^XF03,#PR$_TXDB	; Send code to clear warmstart inhibit
+            56            22     DB  000E 22500 6$:	MFPR	#PR$_TXCS,R6		; Get console transmitter status
+            56            07     E1  0011 22600 	BBC	#7,R6,6$		; Wait until console accepts request
+                          F9         0014       
+            55       FE00 CE     9E  0015 22700 	MOVAB	-512(SP),R5		; Compute base of RPB
+         0C A5            01     CA  001A 22800 	BICL	#1,RPB$L_RSTRTFLG(R5)	; Clear flag to re-enable warmstart
+            54       00AC C5     D0  001E 22900 	MOVL	RPB$L_SBR(R5),R4	; Get base of SPT
+            0C            54     DA  0023 23000 	MTPR	R4,#PR$_SBR		; Set SPT base register
+            0D       00B8 C5     DA  0026 23100 	MTPR	RPB$L_SLR(R5),#PR$_SLR	;  and length register
+            15       00B4 C5     DA  002B 23200 	MTPR	RPB$L_SISR(R5),#PR$_SISR; Restore Software interrupt state
+            11       00B0 C5     DA  0030 23300 	MTPR	RPB$L_SCBB(R5),#PR$_SCBB; Restore pointer to System Control Block
+            10       00A8 C5     DA  0035 23400 	MTPR	RPB$L_PCBB(R5),#PR$_PCBB; Restore pointer to current PCB
+            53         50 A5     D0  003A 23500 	MOVL	RPB$L_SVASPT(R5),R3	; Get virtual address of SPT
+            51   FFC00000'8F     D0  003E 23600 	MOVL	#<<EXE$RESTART-^X80000000>@-9>,R1; VPN of EXE$RESTART
+            50         B8 AF     9E  0045 23700 	MOVAB	EXE$RESTART,R0		; Physical address of EXE$RESTART
+            50         F7 8F     78  0049 23800 	ASHL	#-9,R0,R0		; Convert to physical page number
+                          50         004D       
+            51            50     C2  004E 23900 	SUBL	R0,R1			; Compute delta VPN-PFN
+            53            6341   DE  0051 24000 	MOVAL	(R3)[R1],R3		; Now compute base address for P0PT
+            09       00B8 C5     DA  0055 24100 	MTPR	RPB$L_SLR(R5),#PR$_P0LR	; Set dummy P0 length
+            08            53     DA  005A 24200 	MTPR	R3,#PR$_P0BR		; Set base for P0 page table
+            56       00A4 C5     D0  005D 24300 	MOVL	RPB$L_ISP(R5),R6	; Get Saved interrupt stack pointer
+                                     0062 24400 	INVALID				; Clear translation buffer
+            39            01     DA  0062       		MTPR	#1,S^#PR$_TBIA
+            38            01     DA  0065 24500 	MTPR	#1,#PR$_MAPEN		; Enable memory management
+                 0000006E'9F     17  0068 24600 	JMP	@#10$			; Set PC to system space
+            5E            56     D0  006E 24700 10$:	MOVL	R6,SP			; Now restore correct Stack pointer
+            03            5C     D1  0071 24800 	CMPL	AP,#RESTRT_POWERUP	; Is this a power recovery?
+                          3E     13  0074 24900 	BEQL	POWERUP			; Yes
+   00000000'EF   00000200 8F     C1  0076 25000 	ADDL3	#512,EXE$GL_RPB,SP	; Use end of restart page as stack
+                          5E         0081       
+                                     0082 25100 	CASE	AP,<-			; Else switch on restart code
+                                     0082 25200 		20$,-			; 4 => Interrupt stack not valid
+                                     0082 25300 		30$,-			; 5 => CPU oduble error halt
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   7
+02              EXE$RESTART - Restore state and restart after p                                                                  (1)
+
+                                     0082 25400 		40$,-			; 6 => Halt instruction
+                                     0082 25500 		50$,-			; 7 => Illegal I/E vector
+                                     0082 25600 		60$,-			; 8 => No user WCS
+                                     0082 25700 		70$,-			; 9 => Error pending on Halt
+                                     0082 25800 		80$,-			;10 => CHM on ISTK halt
+                                     0082 25900 		>,LIMIT=#RESTRT_IVLISTK	;
+            04            5C     AF  0082       	CASEW	AP,#RESTRT_IVLISTK,S^#<<30001$-30000$>/2>-1
+                          06'        0085       
+                                     0086       30000$:
+                               0012' 0086       	.WORD	20$-30000$
+                               0016' 0088       	.WORD	30$-30000$
+                               001A' 008A       	.WORD	40$-30000$
+                               001E' 008C       	.WORD	50$-30000$
+                               0022' 008E       	.WORD	60$-30000$
+                               0026' 0090       	.WORD	70$-30000$
+                               002A' 0092       	.WORD	80$-30000$
+                                     0094       30001$:
+                                     0094 26000 	BUG_CHECK	UNKRSTRT,FATAL	; Unknown restart code
+                               FEFF  0094       		.WORD	^XFEFF
+                               0004' 0096       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_UNKRSTRT!4
+                                     0098 26100 20$:	BUG_CHECK	IVLISTK,FATAL	; Invalid interrupt stack
+                               FEFF  0098       		.WORD	^XFEFF
+                               0004' 009A       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_IVLISTK!4
+                                     009C 26200 30$:	BUG_CHECK	DBLERR,FATAL	; Double error halt
+                               FEFF  009C       		.WORD	^XFEFF
+                               0004' 009E       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_DBLERR!4
+                                     00A0 26300 40$:	BUG_CHECK	HALT,FATAL	; Halt instruction
+                               FEFF  00A0       		.WORD	^XFEFF
+                               0004' 00A2       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_HALT!4
+                                     00A4 26400 50$:	BUG_CHECK	ILLVEC,FATAL	; Illegal Vector code
+                               FEFF  00A4       		.WORD	^XFEFF
+                               0004' 00A6       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_ILLVEC!4
+                                     00A8 26500 60$:	BUG_CHECK	NOUSRWCS,FATAL	; No user WCS for vector
+                               FEFF  00A8       		.WORD	^XFEFF
+                               0004' 00AA       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_NOUSRWCS!4
+                                     00AC 26600 70$:	BUG_CHECK	ERRHALT,FATAL	; Error pending on halt
+                               FEFF  00AC       		.WORD	^XFEFF
+                               0004' 00AE       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_ERRHALT!4
+                                     00B0 26700 80$:	BUG_CHECK	CHMONIS,FATAL	; CHM on interrupt stack
+                               FEFF  00B0       		.WORD	^XFEFF
+                               0004' 00B2       		.IIF IDN <FATAL>,<FATAL> , .WORD	BUG$_CHMONIS!4
+                                     00B4 26800 
+                                     00B4 26900 POWERUP:				;
+                                     00B4 27000 ;
+                                     00B4 27100 ; None of the interrupt stack area containing saved state will be overwritten
+                                     00B4 27200 ; during the restart process in case another power failure occurs. The restart
+                                     00B4 27300 ; procedure only reads the saved state and re-writes volatile registers so
+                                     00B4 27400 ; that it can be repeated without harm.
+                                     00B4 27500 ;
+            33            86     DA  00B4 27600 	MTPR	(R6)+,#PR$_SBIMT	; Restore SBI maintenance register
+            0B            86     DA  00B7 27700 	MTPR	(R6)+,#PR$_P1LR		; Restore P1 length register
+            0A            86     DA  00BA 27800 	MTPR	(R6)+,#PR$_P1BR		;  and P1 base register
+            09            86     DA  00BD 27900 	MTPR	(R6)+,#PR$_P0LR		; Restore real P0 length register
+            08            86     DA  00C0 28000 	MTPR	(R6)+,#PR$_P0BR		;  and P0 base register
+            3D            86     DA  00C3 28100 	MTPR	(R6)+,#PR$_PME		; Restore performance monitor enable
+            13            86     DA  00C6 28200 	MTPR	(R6)+,#PR$_ASTLVL	; Restore AST level
+            03            86     DA  00C9 28300 	MTPR	(R6)+,#PR$_USP		; Restore user mode stack pointer
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   8
+02              EXE$RESTART - Restore state and restart after p                                                                  (1)
+
+            02            86     DA  00CC 28400 	MTPR	(R6)+,#PR$_SSP		; Restore supervisor mode stack pointer
+            01            86     DA  00CF 28500 	MTPR	(R6)+,#PR$_ESP		; Restore executive mode stack pointer
+            00            86     DA  00D2 28600 	MTPR	(R6)+,#PR$_KSP		; Restore kernel mode stack pointer
+                                     00D5 28700 ;
+                                     00D5 28800 ; All saved Machine state has now been restored.  Renable SBI and CRD error
+                                     00D5 28900 ; interrupts, re-initialize interval timer and Scan device data base to
+                                     00D5 29000 ; set powerfail status for all units.  All controllers and devices are then
+                                     00D5 29100 ; re-initialized.
+                                     00D5 29200 ;
+                          56     DD  00D5 29300 	PUSHL	R6			; Save updated "stack pointer"
+                 00000000'EF     16  00D7 29400 	JSB	INI$PROCREG		; Initialize processor registers
+                                     00DD 29500 					; for error detection and start interval
+                                     00DD 29600 					; timer.
+                                     00DD 29700 TIMERESET:				;
+            50            1B     DB  00DD 29800 	MFPR	#PR$_TODR,R0		; Get current time of day
+       0004'CF            50     C1  00E0 29900 	ADDL3	R0,W^EXE$GL_PWRINTVL,W^EXE$GL_PWRDONE	; Compute expected done 
+                     0000'CF         00E5       
+                                     00E8 30000 					; time
+            50       0000'CF     C3  00E8 30100 	SUBL3	W^EXE$GL_PFAILTIM,R0,W^EXE$GL_PFATIM	; Get duration of power fail
+                     0000'CF         00ED       
+            50       0000'CF     C2  00F0 30200 	SUBL	W^EXE$GL_TODR,R0		; Compute time since boot
+            1F            01     EF  00F5 30300 	EXTZV	#1,#31,R0,R0		; Unsigned divide by 2
+            50            50         00F8       
+            50   00030D40 8F     7A  00FA 30400 	EMUL	#<100*1000*2>,R0,#0,R0	; Convert to 100 nanosecond units
+            50            00         0101       
+            50       0000'CF     C0  0103 30500 	ADDL	W^EXE$GQ_TODCBASE,R0	; Compute current system time	
+            51       0004'CF     D8  0108 30600 	ADWC	W^EXE$GQ_TODCBASE+4,R1	; 
+       0000'CF            50     7D  010D 30700 	MOVQ	R0,W^EXE$GQ_SYSTIME	; Set as current system time
+            56       0000'CF     9E  0112 30800 	MOVAB	W^EXE$GL_TQFL,R6	; Get pointer to timer queue head
+            57            66     D0  0117 30900 	MOVL	(R6),R7			; Point at head of timer queue
+            57            56     D1  011A 31000 10$:	CMPL	R6,R7			; Check for end of timer queue
+                          17     13  011D 31100 	BEQL	30$			; Branch if yes
+         1C A7            51     D1  011F 31200 	CMPL	R1,TQE$Q_TIME+4(R7)	; Check high order bits for past due
+                          0C     1F  0123 31300 	BLSSU	20$			; No try another
+                          06     1A  0125 31400 	BGTRU	15$			; Past due, convert entry
+         18 A7            50     D1  0127 31500 	CMPL	R0,TQE$Q_TIME(R7)	; High order bits equal, check low order
+                          04     1F  012B 31600 	BLSSU	20$			; Not yet due
+         18 A7            50     7D  012D 31700 15$:	MOVQ	R0,TQE$Q_TIME(R7)	; Set new expiration time
+            57            67     D0  0131 31800 20$:	MOVL	(R7),R7			; Flink to next entry
+                          E4     11  0134 31900 	BRB	10$			; 
+                                     0136 32000 30$:					;
+                          FEC7'  30  0136 32100 	BSBW	ERL$WARMSTART		; Log power recovery in the error log
+                                     0139 32200 RESTARTIO:				; 
+            5D            5E     D0  0139 32300 	MOVL	SP,FP			; Save current stack pointer
+                     0000'CF     D4  013C 32400 	CLRL	W^IOC$GL_DIALUP		; Zap  dialup list before initializing
+            5B   FFFFFFFC'8F     D0  0140 32500 	MOVL	#<IOC$GL_ADPLIST-ADP$L_LINK>,R11; Get pointer to head of adapter list
+            5B         04 AB     D0  0147 32600 10$:	MOVL	ADP$L_LINK(R11),R11	; Flink onward
+                          0B     13  014B 32700 	BEQL	50$			; Branch if at end of list
+            54            6B     D0  014D 32800 	MOVL	ADP$L_CSR(R11),R4	; Get address of CSR
+                 00000000'EF     16  0150 32900 	JSB	UBA$INITIAL		; Initialize UNIBUS adapter
+                          EF     11  0156 33000 	BRB	10$			; Next adapter
+                                     0158 33100 50$:					;
+            5B   00000000'EF     DE  0158 33200 	MOVAL	IOC$GL_DEVLIST,R11	; Get pointer to head of device list
+                                     015F 33300 DDBLOOP:				; 
+                                     015F 33400 	ASSUME	DDB$L_LINK EQ 0		;
+            5B            6B     D0  015F 33500 	MOVL	DDB$L_LINK(R11),R11	; Get address of next DDB
+                          03     12  0162 33600 	BNEQ	5$			;
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page   9
+02              EXE$RESTART - Restore state and restart after p                                                                  (1)
+
+                          0088   31  0164 33700 	BRW	DEVEND			;
+            5A         D8 AB     DE  0167 33800 5$:	MOVAL	DDB$L_UCB-UCB$L_LINK(R11),R10	; Get address of first UCB address
+                          59     D4  016B 33900 	CLRL	R9			; Clear last CRB address
+            5A         2C AA     D0  016D 34000 10$:	MOVL	UCB$L_LINK(R10),R10	; Get address of next UCB
+                          EC     13  0171 34100 	BEQL	DDBLOOP			; If zero, no more for this DDB
+         34 AA            00'    E0  0173 34200 	BBS	S^#DEV$V_MBX,UCB$L_DEVCHAR(R10),10$ ; Branch if mailbox
+                          F5         0177       
+         58 AA            20     A8  0178 34300 	BISW	#UCB$M_POWER,UCB$W_STS(R10)	; Set power failed status
+            54         20 AA     D0  017C 34400 	MOVL	UCB$L_CRB(R10),R4	; Get address of CRB
+            59            54     D1  0180 34500 	CMPL	R4,R9			; Is address equal to last
+                          3B     13  0183 34600 	BEQL	40$			; If yes, controller already initialized
+            59            54     D0  0185 34700 	MOVL	R4,R9			; Save CRB address
+            58            59     D0  0188 34800 	MOVL	R9,R8			; Copy primary CRB address
+                       10 A8     D5  018B 34900 	TSTL	CRB$L_LINK(R8)		; Slave controller?
+                          04     13  018E 35000 	BEQL	30$			; If equal, then no
+            58         10 A8     D0  0190 35100 	MOVL	CRB$L_LINK(R8),R8	; Get link to secondary CRB
+            56            5B     D0  0194 35200 30$:	MOVL	R11,R6			; Set address of DDB
+            55         1C A8     D0  0197 35300 	MOVL	CRB$L_INTD+8(R8),R5	; Get address of IDB
+            54            65     D0  019B 35400 	MOVL	IDB$L_CSR(R5),R4	; Get address of controller CSR
+                                     019E 35500 ;
+                                     019E 35600 ; Enter controller initialization with:
+                                     019E 35700 ;	R4 - CSR
+                                     019E 35800 ;	R5 - IDB
+                                     019E 35900 ;	R6 - DDB
+                                     019E 36000 ;
+                                     019E 36100 ;	R8,R9,R10,R11 must be preserved.
+                                     019E 36200 ;
+            53         28 A8     D0  019E 36300 	MOVL	CRB$L_INTD+VEC$L_ADP(R8),R3 ; Get address of ADP
+                          14     13  01A2 36400 	BEQL	35$			; If equal, then none
+         0E A3       0000'8F     B1  01A4 36500 	CMPW	#AT$_UBA,ADP$W_ADPTYPE(R3); Is this a UNIBUS adapter?
+                          0C     12  01AA 36600 	BNEQ	35$			; Branch if not
+            53            63     D0  01AC 36700 	MOVL	ADP$L_CSR(R3),R3	; Get address of adapter configuration register
+                          64     B5  01AF 36800 	TSTW	(R4)			; Test if controller present
+         08 A3         08 A3     D0  01B1 36900 	MOVL	UBA$L_SR(R3),UBA$L_SR(R3); Clear UBA status register
+                          2E     12  01B6 37000 	BNEQ	70$			; Branch if not present
+            50         20 A8     D0  01B8 37100 35$:	MOVL	CRB$L_INTD+VEC$L_INITIAL(R8),R0	; Initialize controller
+                          02     13  01BC 37200 	BEQL	40$			; Branch if no controller initialization
+                          60     16  01BE 37300 	JSB	(R0)			; Call controller initialization
+            53         1C B9     D0  01C0 37400 40$:	MOVL	@CRB$L_INTD+VEC$L_IDB(R9),R3	; Get primary control register address
+            54         1C B8     D0  01C4 37500 	MOVL	@CRB$L_INTD+VEC$L_IDB(R8),R4	; And get secondary control register
+            55            5A     D0  01C8 37600 	MOVL	R10,R5			; Set device unit UCB address
+                       2C A9     D5  01CB 37700 	TSTL	CRB$L_INTD+VEC$L_UNITINIT(R9) ; Unit initialization specified?
+                          03     13  01CE 37800 	BEQL	60$			; If eql no
+                       2C B9     16  01D0 37900 	JSB	@CRB$L_INTD+VEC$L_UNITINIT(R9) ; Initialize unit
+         58 A5            03     B3  01D3 38000 60$:	BITW	#UCB$M_INT!UCB$M_TIM,UCB$W_STS(R5); INTERRUPT OR TIMEOUT EXPECTED?
+                          94     13  01D7 38100 	BEQL	10$			; IF EQL THEN NO
+         58 A5            02     AA  01D9 38200 	BICW	#UCB$M_INT,UCB$W_STS(R5); CLEAR INTERRUPT EXPECTED
+         58 A5            01     A8  01DD 38300 	BISW	#UCB$M_TIM,UCB$W_STS(R5); SET TIMEOUT EXPECTED
+                       5C A5     D4  01E1 38400 	CLRL	UCB$L_DUETIM(R5)	; NOW
+                          87     11  01E4 38500 	BRB	10$			; Next unit
+                          59     D4  01E6 38600 70$:	CLRL	R9			; Zap CRB to force CRB search
+         58 AA            10     AA  01E8 38700 	BICW	#UCB$M_ONLINE,UCB$W_STS(R10)	; Set unit offline
+                          FF7E   31  01EC 38800 	BRW	10$			; Continue search
+                                     01EF 38900 DEVEND:					;
+            5E            5D     D0  01EF 39000 	MOVL	FP,SP			; Restore stack pointer
+                                     01F2 39100 	SETIPL 	#IPL$_POWER		; Block power fail interrupt
+            12            1F     DA  01F2       		MTPR	#IPL$_POWER,S^#PR$_IPL
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  10
+02              EXE$RESTART - Restore state and restart after p                                                                  (1)
+
+            5E            8E     D0  01F5 39200 	MOVL	(SP)+,SP		; Set SP to point to saved registers
+                     0000'CF     D4  01F8 39300 	CLRL	W^EXE$GL_PFAILTIM		; Enable subsequent power fail
+                     3FFF 8F     BA  01FC 39400 	POPR	#^M<R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,AP,FP>	;
+                                 02  0200 39500 	REI				; Restore registers and exit
+                                     0201 39600 
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  11
+02              EXE$PWRTIMCHK - Check for reasonable interval s                                                                  (1)
+
+                                     0201 39800 	.SBTTL	EXE$PWRTIMCHK - Check for reasonable interval since power recovery
+                                     0201 39900 ;++
+                                     0201 40000 ; Functional Description:
+                                     0201 40100 ;	EXE$PWRTIMCHK is called by driver initialization code to check for
+                                     0201 40200 ;	a sufficient interval since power recovery to expect devices to be
+                                     0201 40300 ;	ready again.  If the return from EXE$PWRTIMCHK indicates that the
+                                     0201 40400 ;	reasonable interval has not yet elapsed, the device driver may elect
+                                     0201 40500 ;	to wait for a while using EXE$PWRTIMCHK check the time.
+                                     0201 40600 ;
+                                     0201 40700 ; Calling Sequence:
+                                     0201 40800 ;	BSB/JSB	EXE$PWRTIMCHK
+                                     0201 40900 ;
+                                     0201 41000 ; Output Parameters:
+                                     0201 41100 ;	R0 - Low bit clear if interval expired.
+                                     0201 41200 ;--
+                                     0201 41300 EXE$PWRTIMCHK::				;
+                          50     D4  0201 41400 	CLRL	R0			; Assume interval expired
+            7E            1B     DB  0203 41500 	MFPR	#PR$_TODR,-(SP)		; Get current time of day
+            8E       0000'CF     D1  0206 41600 	CMPL	W^EXE$GL_PWRDONE,(SP)+	; Check for time expired
+                          02     1B  020B 41700 	BLEQU	10$			; Exit with low bit clear if expired
+                          50     D6  020D 41800 	INCL	R0			; Else set low bit of R0
+                                 05  020F 41900 10$:	RSB				;
+                                     0210 42000 
+                                     0210 42100 	.END				;
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  12
+SYMBOL TABLE                                                                                                                     (1)
+
+ADP$B_NUMBER     0000000B            DDB$W_SIZE       00000008            PR$_KSP        = 00000000            
+ADP$B_TYPE       0000000A            DDBLOOP          0000015F R     05   PR$_MAPEN      = 00000038            
+ADP$C_MBAADPLEN  00000014            DDT$L_CANCEL     0000000C            PR$_NICR       = 00000019            
+ADP$C_NUMDATAP = 00000010            DDT$L_FDT        00000008            PR$_P0BR       = 00000008            
+ADP$C_UBAADPLEN  00000070            DDT$L_INIT       00000018            PR$_P0LR       = 00000009            
+ADP$K_MBAADPLEN  00000014            DDT$L_REGDUMP    00000010            PR$_P1BR       = 0000000A            
+ADP$K_UBAADPLEN  00000070            DDT$L_START      00000000            PR$_P1LR       = 0000000B            
+ADP$L_CRB        00000010            DDT$L_UNSOLINT   00000004            PR$_PCBB       = 00000010            
+ADP$L_CSR        00000000            DDT$W_DIAGBUF    00000014            PR$_PME        = 0000003D            
+ADP$L_DPQBL      00000018            DDT$W_ERRORBUF   00000016            PR$_RXCS       = 00000020            
+ADP$L_DPQFL      00000014            DEV$V_MBX        ********   X   05   PR$_RXDB       = 00000021            
+ADP$L_INTD       00000064            DEVEND           000001EF R     05   PR$_SBIER      = 00000034            
+ADP$L_LINK       00000004            ERL$WARMSTART    ********   X   05   PR$_SBIFS      = 00000030            
+ADP$L_MRQBL      00000020            EXE$GL_PFAILTIM  ********   X   04   PR$_SBIMT      = 00000033            
+ADP$L_MRQFL      0000001C            EXE$GL_PFATIM    ********   X   05   PR$_SBIQC      = 00000036            
+ADP$L_VECTOR     00000010            EXE$GL_PWRDONE   00000000 RG    03   PR$_SBIS       = 00000031            
+ADP$W_ADPTYPE    0000000E            EXE$GL_PWRINTVL  00000004 RG    03   PR$_SBISC      = 00000032            
+ADP$W_DPBITMAP   00000024            EXE$GL_RPB       ********   X   04   PR$_SBITA      = 00000035            
+ADP$W_MRBITMAP   00000026            EXE$GL_TODR      ********   X   05   PR$_SBR        = 0000000C            
+ADP$W_SIZE       00000008            EXE$GL_TQFL      ********   X   05   PR$_SCBB       = 00000011            
+ADP$W_TR         0000000C            EXE$GQ_SYSTIME   ********   X   05   PR$_SID        = 0000003E            
+AT$_UBA          ********   X   05   EXE$GQ_TODCBASE  ********   X   05   PR$_SIRR       = 00000014            
+BIT...         = 00000008            EXE$POWERFAIL    00000000 RG    04   PR$_SISR       = 00000015            
+BUG$_CHMONIS     ********   X   05   EXE$PWRTIMCHK    00000201 RG    05   PR$_SLR        = 0000000D            
+BUG$_DBLERR      ********   X   05   EXE$RESTART      00000000 RG    05   PR$_SSP        = 00000002            
+BUG$_ERRHALT     ********   X   05   GBL...         = 00000000            PR$_TBIA       = 00000039            
+BUG$_HALT        ********   X   05   IDB$B_TYPE       0000000A            PR$_TBIS       = 0000003A            
+BUG$_ILLVEC      ********   X   05   IDB$B_UNITS      0000000B            PR$_TODR       = 0000001B            
+BUG$_IVLISTK     ********   X   05   IDB$C_LENGTH     00000030            PR$_TXCS       = 00000022            
+BUG$_NOUSRWCS    ********   X   05   IDB$K_LENGTH     00000030            PR$_TXDB       = 00000023            
+BUG$_UNKRSTRT    ********   X   05   IDB$L_ADP        0000000C            PR$_USP        = 00000003            
+CRB$B_MASK       0000000E            IDB$L_CSR        00000000            PR$_WCSA       = 0000002C            
+CRB$B_TT_ATTN    00000004            IDB$L_OWNER      00000004            PR$_WCSD       = 0000002D            
+CRB$B_TT_EXPEC   00000005            IDB$L_UCBLST     00000010            RESTARTIO        00000139 R     05   
+CRB$B_TYPE       0000000A            IDB$W_SIZE       00000008            RESTRT_CHM     = 0000000A            
+CRB$C_LENGTH     00000038            INI$PROCREG      ********   X   05   RESTRT_DBLERR  = 00000005            
+CRB$K_LENGTH     00000038            IOC$GL_ADPLIST   ********   X   05   RESTRT_ERRHALT = 00000009            
+CRB$L_INTD       00000014            IOC$GL_DEVLIST   ********   X   05   RESTRT_HALT    = 00000006            
+CRB$L_INTD2      00000038            IOC$GL_DIALUP    ********   X   05   RESTRT_ILLVEC  = 00000007            
+CRB$L_LINK       00000010            IPL$_ASTDEL    = 00000002            RESTRT_IVLISTK = 00000004            
+CRB$L_TT_DIAL    00000000            IPL$_HWCLK     = 00000018            RESTRT_NOUSRWCS= 00000008            
+CRB$L_WQBL       00000004            IPL$_IOPOST    = 00000004            RESTRT_POWERUP = 00000003            
+CRB$L_WQFL       00000000            IPL$_MAILBOX   = 0000000B            RPB$B_CONFREG    00000090            
+CRB$M_BSY      = 00000001            IPL$_POWER     = 0000001F            RPB$B_DEVTYP     00000066            
+CRB$V_BSY      = 00000000            IPL$_QUEUEAST  = 00000006            RPB$B_HDRPGCNT   000000A0            
+CRB$W_REFC       0000000C            IPL$_SCHED     = 00000003            RPB$B_SLAVE      00000067            
+CRB$W_SIZE       00000008            IPL$_SYNCH     = 00000007            RPB$C_LENGTH     000000BC            
+DDB$B_ACPCLASS   00000013            IPL$_TIMER     = 00000007            RPB$K_LENGTH     000000BC            
+DDB$B_TYPE       0000000A            POWERUP          000000B4 R     05   RPB$L_ADPPHY     0000005C            
+DDB$C_LENGTH     00000034            PR$_ACCR       = 00000029            RPB$L_ADPVIR     00000060            
+DDB$K_LENGTH     00000034            PR$_ACCS       = 00000028            RPB$L_BASE       00000000            
+DDB$L_ACPD       00000010            PR$_ASTLVL     = 00000013            RPB$L_BOOTR0     0000001C            
+DDB$L_DDT        0000000C            PR$_ESP        = 00000001            RPB$L_BOOTR1     00000020            
+DDB$L_LINK       00000000            PR$_ICCS       = 00000018            RPB$L_BOOTR2     00000024            
+DDB$L_UCB        00000004            PR$_ICR        = 0000001A            RPB$L_BOOTR3     00000028            
+DDB$T_DRVNAME    00000024            PR$_IPL        = 00000012            RPB$L_BOOTR4     0000002C            
+DDB$T_NAME       00000014            PR$_ISP        = 00000004            RPB$L_BOOTR5     00000030            
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  13
+SYMBOL TABLE                                                                                                                     (1)
+
+RPB$L_CHKSUM     00000008            TQE$Q_TIME       00000018            UBA$S_CR_MRDSB = 00000005            
+RPB$L_CSRPHY     00000054            TQE$V_REPEAT   = 00000002            UBA$S_CSR_ADCOD= 00000008            
+RPB$L_CSRVIR     00000058            TQE$W_SIZE       00000008            UBA$S_DPR_ADDR = 00000010            
+RPB$L_FILLBN     0000003C            UBA$INITIAL      ********   X   05   UBA$S_DPR_STATE= 00000008            
+RPB$L_FILSIZ     00000040            UBA$L_BRRVR      00000030            UBA$S_FMER_MRN = 00000009            
+RPB$L_HALTCODE   00000018            UBA$L_BRSVR      00000020            UBA$S_FUBAR_ADR= 00000012            
+RPB$L_HALTPC     00000010            UBA$L_CR         00000004            UBA$S_MAP_ADDR = 00000015            
+RPB$L_HALTPSL    00000014            UBA$L_CSR        00000000            UBA$S_MAP_DPD  = 00000004            
+RPB$L_IOVEC      00000034            UBA$L_DCR        0000000C            UBA$S_SR_BRRVF = 00000004            
+RPB$L_IOVECSZ    00000038            UBA$L_DPR        00000040            UBA$V_BRRVR_AIR= 0000001F            
+RPB$L_ISP        000000A4            UBA$L_FMER       00000010            UBA$V_BRRVR_IVA= 00000000            
+RPB$L_PCBB       000000A8            UBA$L_FUBAR      00000014            UBA$V_CR_ARLVL = 00000007            
+RPB$L_PFNCNT     0000004C            UBA$L_MAP        00000800            UBA$V_CR_BRIE  = 00000005            
+RPB$L_RESTART    00000004            UBA$L_SR         00000008            UBA$V_CR_CNFIE = 00000002            
+RPB$L_RSTRTFLG   0000000C            UBA$M_BRRVR_AIR= 80000000            UBA$V_CR_IFSIE = 00000006            
+RPB$L_SBR        000000AC            UBA$M_CR_ARLVL = 00000180            UBA$V_CR_INIT  = 00000000            
+RPB$L_SCBB       000000B0            UBA$M_CR_BRIE  = 00000020            UBA$V_CR_MRDSB = 0000001A            
+RPB$L_SISR       000000B4            UBA$M_CR_CNFIE = 00000004            UBA$V_CR_SUEFIE= 00000003            
+RPB$L_SLR        000000B8            UBA$M_CR_IFSIE = 00000040            UBA$V_CR_UBPF  = 00000001            
+RPB$L_SVASPT     00000050            UBA$M_CR_INIT  = 00000001            UBA$V_CR_USEFIE= 00000004            
+RPB$Q_PFNMAP     00000044            UBA$M_CR_SUEFIE= 00000008            UBA$V_CSR_ADCOD= 00000000            
+RPB$T_FILE       00000068            UBA$M_CR_UBPF  = 00000002            UBA$V_CSR_IS   = 0000001C            
+RPB$V_BBLOCK   = 00000003            UBA$M_CR_USEFIE= 00000010            UBA$V_CSR_MT   = 0000001B            
+RPB$V_BOOBPT   = 00000005            UBA$M_CSR_IS   = 10000000            UBA$V_CSR_OT   = 00000015            
+RPB$V_CONV     = 00000000            UBA$M_CSR_MT   = 08000000            UBA$V_CSR_PD   = 00000017            
+RPB$V_DEBUG    = 00000001            UBA$M_CSR_OT   = 00200000            UBA$V_CSR_PE   = 0000001F            
+RPB$V_DIAG     = 00000004            UBA$M_CSR_PD   = 00800000            UBA$V_CSR_PU   = 00000016            
+RPB$V_HALT     = 00000009            UBA$M_CSR_PE   = 80000000            UBA$V_CSR_UBIC = 00000010            
+RPB$V_HEADER   = 00000006            UBA$M_CSR_PU   = 00400000            UBA$V_CSR_UBIIP= 00000012            
+RPB$V_INIBPT   = 00000002            UBA$M_CSR_UBIC = 00010000            UBA$V_CSR_UBPDN= 00000011            
+RPB$V_NOPFND   = 0000000A            UBA$M_CSR_UBIIP= 00040000            UBA$V_CSR_URD  = 0000001D            
+RPB$V_NOTEST   = 00000007            UBA$M_CSR_UBPDN= 00020000            UBA$V_CSR_WS   = 0000001E            
+RPB$V_SOLICT   = 00000008            UBA$M_CSR_URD  = 20000000            UBA$V_CSR_XMFLT= 0000001A            
+RPB$W_UNIT       00000064            UBA$M_CSR_WS   = 40000000            UBA$V_DPR_ADDR = 00000000            
+TIMERESET        000000DD R     05   UBA$M_CSR_XMFLT= 04000000            UBA$V_DPR_BNE  = 0000001F            
+TQE$B_EFN        00000029            UBA$M_DPR_BNE  = 80000000            UBA$V_DPR_DPF  = 0000001D            
+TQE$B_RMOD       00000028            UBA$M_DPR_DPF  = 20000000            UBA$V_DPR_STATE= 00000010            
+TQE$B_RQTYPE     0000000B            UBA$M_DPR_XMTER= 40000000            UBA$V_DPR_XMTER= 0000001E            
+TQE$B_TYPE       0000000A            UBA$M_MAP_BO   = 02000000            UBA$V_FMER_MRN = 00000000            
+TQE$C_LENGTH     00000030            UBA$M_MAP_VALID= 80000000            UBA$V_FUBAR_ADR= 00000000            
+TQE$C_SSREPT   = 00000005            UBA$M_SR_BRID  = 00000800            UBA$V_MAP_ADDR = 00000000            
+TQE$C_SSSNGL   = 00000001            UBA$M_SR_BRSVF = 10000000            UBA$V_MAP_BO   = 00000019            
+TQE$C_TMSNGL   = 00000000            UBA$M_SR_CRD   = 00000100            UBA$V_MAP_DPD  = 00000015            
+TQE$C_WKREPT   = 00000006            UBA$M_SR_CXTER = 00000080            UBA$V_MAP_VALID= 0000001F            
+TQE$C_WKSNGL   = 00000002            UBA$M_SR_CXTMO = 00000040            UBA$V_SR_BRID  = 0000000B            
+TQE$K_LENGTH     00000030            UBA$M_SR_DPPE  = 00000020            UBA$V_SR_BRRVF = 00000018            
+TQE$L_AST        00000010            UBA$M_SR_IVMR  = 00000010            UBA$V_SR_BRSVF = 0000001C            
+TQE$L_ASTPRM     00000014            UBA$M_SR_LER   = 00000004            UBA$V_SR_CRD   = 00000008            
+TQE$L_FPC        0000000C            UBA$M_SR_MRPE  = 00000008            UBA$V_SR_CXTER = 00000007            
+TQE$L_FR3        00000010            UBA$M_SR_RDS   = 00000200            UBA$V_SR_CXTMO = 00000006            
+TQE$L_FR4        00000014            UBA$M_SR_RDTO  = 00000400            UBA$V_SR_DPPE  = 00000005            
+TQE$L_PID        0000000C            UBA$M_SR_RIE   = 20000000            UBA$V_SR_IVMR  = 00000004            
+TQE$L_RQPID      0000002C            UBA$M_SR_SSYNC = 00000001            UBA$V_SR_LER   = 00000002            
+TQE$L_TQBL       00000004            UBA$M_SR_UBIFS = 40000000            UBA$V_SR_MRPE  = 00000003            
+TQE$L_TQFL       00000000            UBA$M_SR_UBSTO = 00000002            UBA$V_SR_RDS   = 00000009            
+TQE$M_REPEAT   = 00000004            UBA$S_BRRVR_IVA= 00000010            UBA$V_SR_RDTO  = 0000000A            
+TQE$Q_DELTA      00000020            UBA$S_CR_ARLVL = 00000002            UBA$V_SR_RIE   = 0000001D            
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  14
+SYMBOL TABLE                                                                                                                     (1)
+
+UBA$V_SR_SSYNC = 00000000            UCB$L_NT_DATSSB  00000074            UCB$V_NOCNVRT  = 00000002            
+UBA$V_SR_UBIFS = 0000001E            UCB$L_NT_INTSSB  00000078            UCB$V_NT_BFROVF= 00000002            
+UBA$V_SR_UBSTO = 00000001            UCB$L_OPCNT      00000060            UCB$V_NT_BREAK = 00000005            
+UCB$B_AMOD       00000053            UCB$L_OWNUIC     0000001C            UCB$V_NT_NAME  = 00000004            
+UCB$B_CEX        00000077            UCB$L_PID        00000028            UCB$V_ONLINE   = 00000004            
+UCB$B_CM1        0000004A            UCB$L_RQBL       00000004            UCB$V_POWER    = 00000005            
+UCB$B_CM2        0000004B            UCB$L_RQFL       00000000            UCB$V_PRMMBX   = 00000000            
+UCB$B_DEVCLASS   00000038            UCB$L_SVAPTE     00000068            UCB$V_SEGFLO   = 00000002            
+UCB$B_DEVTYPE    00000039            UCB$L_SVPN       00000064            UCB$V_TIM      = 00000000            
+UCB$B_DIPL       00000052            UCB$L_TTCHAR     0000003C            UCB$V_TIMOUT   = 00000006            
+UCB$B_DX_SCTCNT  000000A6            UCB$L_VCB        00000030            UCB$V_TT_NOTIF = 00000002            
+UCB$B_ERTCNT     00000070            UCB$M_BACKP    = 00000020            UCB$V_TT_TIMO  = 00000001            
+UCB$B_ERTMAX     00000071            UCB$M_BSY      = 00000100            UCB$V_UNLOAD   = 0000000C            
+UCB$B_ESCAPE     0000004B            UCB$M_CANCEL   = 00000008            UCB$V_VALID    = 0000000B            
+UCB$B_FEX        00000076            UCB$M_DEADMO   = 00000400            UCB$W_BCNT       0000006E            
+UCB$B_FIPL       0000000B            UCB$M_DELMBX   = 00000002            UCB$W_BCR        00000096            
+UCB$B_LOCSRV     0000003C            UCB$M_DIAGBUF  = 00000002            UCB$W_BOFF       0000006C            
+UCB$B_OFFNDX     00000094            UCB$M_DX_WRITE = 00000008            UCB$W_BUFQUO     00000018            
+UCB$B_OFFRTC     00000095            UCB$M_ECC      = 00000001            UCB$W_BYTESTOGO  0000003E            
+UCB$B_REMSRV     0000003D            UCB$M_ERLOGIP  = 00000004            UCB$W_CHARGE     0000004A            
+UCB$B_SECTORS    0000003C            UCB$M_INT      = 00000002            UCB$W_CYLINDERS  0000003E            
+UCB$B_SLAVE      00000074            UCB$M_INTTYPE  = 00000080            UCB$W_DA         0000008C            
+UCB$B_SPR        00000075            UCB$M_JOB      = 00000001            UCB$W_DC         0000008E            
+UCB$B_STATE      00000052            UCB$M_MOUNTING = 00000200            UCB$W_DEVBUFSIZ  0000003A            
+UCB$B_TRACKS     0000003D            UCB$M_NOCNVRT  = 00000004            UCB$W_DEVSTS     0000005A            
+UCB$B_TYPE       0000000A            UCB$M_NT_BFROVF= 00000004            UCB$W_DIRSEQ     00000088            
+UCB$B_VERTSZ     0000003F            UCB$M_NT_BREAK = 00000020            UCB$W_DSTADDR    00000018            
+UCB$C_LENGTH     00000074            UCB$M_NT_NAME  = 00000010            UCB$W_DX_BCR     000000A4            
+UCB$C_LOGLNK   = 00000001            UCB$M_ONLINE   = 00000010            UCB$W_EC1        00000090            
+UCB$K_LENGTH     00000074            UCB$M_POWER    = 00000020            UCB$W_EC2        00000092            
+UCB$L_AMB        00000054            UCB$M_PRMMBX   = 00000001            UCB$W_ERRCNT     00000072            
+UCB$L_ASTQBL     00000010            UCB$M_TIM      = 00000001            UCB$W_FUNC       0000007E            
+UCB$L_ASTQFL     0000000C            UCB$M_TIMOUT   = 00000040            UCB$W_MB_SEED    FFFFFFFC            
+UCB$L_CPID       0000005C            UCB$M_TT_NOTIF = 00000004            UCB$W_MSGCNT     00000016            
+UCB$L_CRB        00000020            UCB$M_TT_TIMO  = 00000002            UCB$W_MSGMAX     00000014            
+UCB$L_DDB        00000024            UCB$M_UNLOAD   = 00001000            UCB$W_NT_CHAN    0000007C            
+UCB$L_DEVCHAR    00000034            UCB$M_VALID    = 00000800            UCB$W_OFFSET     0000008A            
+UCB$L_DEVDEPEND  0000003C            UCB$S_LNKPRI   = 00000002            UCB$W_REFC       00000050            
+UCB$L_DPC        00000080            UCB$S_LTYPE    = 00000002            UCB$W_SIZE       00000008            
+UCB$L_DUETIM     0000005C            UCB$T_PARTNER    0000000C            UCB$W_SRCADDR    0000001A            
+UCB$L_DX_BFPNT   0000009C            UCB$V_BACKP    = 00000005            UCB$W_STS        00000058            
+UCB$L_DX_BUF     00000098            UCB$V_BSY      = 00000008            UCB$W_UNIT       00000048            
+UCB$L_DX_RXDB    000000A0            UCB$V_CANCEL   = 00000003            UCB$W_VPROT      0000001A            
+UCB$L_EMB        00000078            UCB$V_DEADMO   = 0000000A            VEC$B_DATAPATH   00000013            
+UCB$L_FIRST      00000014            UCB$V_DELMBX   = 00000001            VEC$B_NUMREG     00000012            
+UCB$L_FPC        0000000C            UCB$V_DIAGBUF  = 00000001            VEC$C_LENGTH     00000024            
+UCB$L_FQBL       00000004            UCB$V_DX_WRITE = 00000003            VEC$K_LENGTH     00000024            
+UCB$L_FQFL       00000000            UCB$V_ECC      = 00000000            VEC$L_ADP        00000014            
+UCB$L_FR3        00000010            UCB$V_ERLOGIP  = 00000002            VEC$L_IDB        00000008            
+UCB$L_FR4        00000014            UCB$V_INT      = 00000001            VEC$L_INITIAL    0000000C            
+UCB$L_IOQBL      00000044            UCB$V_INTTYPE  = 00000007            VEC$L_START      0000001C            
+UCB$L_IOQFL      00000040            UCB$V_JOB      = 00000000            VEC$L_UNITDISC   00000020            
+UCB$L_IRP        0000004C            UCB$V_LNKPRI   = 00000006            VEC$L_UNITINIT   00000018            
+UCB$L_LINK       0000002C            UCB$V_LTYPE    = 00000000            VEC$M_MAPLOCK  = 00008000            
+UCB$L_LOGADR     00000064            UCB$V_MOUNTING = 00000009            VEC$M_PATHLOCK = 00000080            
+UCB$L_MAXBLOCK   00000084            UCB$V_MSGACK   = 00000004            VEC$Q_DISPATCH   00000000            
+UCB$L_MEDIA      0000008C            UCB$V_MSGFLO   = 00000003            VEC$S_DATAPATH = 00000007            
+POWERFAIL       - POWER FAIL INTERRUPT HANDLER                   21-AUG-1978 20:06:20   VAX-11 MACRO X0.3-11               Page  15
+SYMBOL TABLE                                                                                                                     (1)
+
+VEC$S_MAPREG   = 0000000F            
+VEC$V_DATAPATH = 00000000            
+VEC$V_MAPLOCK  = 0000000F            
+VEC$V_MAPREG   = 00000000            
+VEC$V_PATHLOCK = 00000007            
+VEC$W_MAPREG     00000010            
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFE      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+$$$220           00000008      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT LONG  
+$AEXENONPAGED    00000055      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT LONG  
+$AAEXENONPAGED   00000210      05     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT PAGE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+11130. BYTES LEFT IN FREE MEMORY POOL.
+2638. BYTES OF RECLAIMED MEMORY.
+OBJ$:POWERFAIL,LIS$:POWERFAIL/-SP=EXECML$/ML,SRC$:POWERFAIL
+10 MLB DIR RDS - 836 GETS TO DEFINE 26 MACROS. 59 INTER. FILE WRITES. 

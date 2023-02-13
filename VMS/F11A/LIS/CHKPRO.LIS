@@ -1,0 +1,393 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 1
+;
+;	0001	MODULE CHKPRO (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0004'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine checks the volume and file protection to see if the
+;	0033	!	user is authorized to perform the intended operation.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  2-May-1977  10:45
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 9-Aug-1977  10:40
+;	0048	!   X0002 - Add file segment number check (access to primary headers only)
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 23-May-78  13:56
+;	0051	!   A0003 - Bug in write attributes protection check
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 12-Jun-78  20:53
+;	0054	!   A0004 - PCB vector name change
+;	0055	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 1-1
+;
+;	0056	!**
+;	0057	
+;	0058	
+;	0059	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0060	REQUIRE 'SRC$:FCPDEF.B32';
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2
+;
+;	0379	GLOBAL ROUTINE CHECK_PROTECT (ACCESS, HEADER, FCB) : NOVALUE =
+;	0380	
+;	0381	!++
+;	0382	!
+;	0383	! FUNCTIONAL DESCRIPTION:
+;	0384	!
+;	0385	!	This routine checks the volume and file protection to see if the
+;	0386	!	user is authorized to perform the intended operation.
+;	0387	!
+;	0388	! CALLING SEQUENCE:
+;	0389	!	CHECK_PROTECTION (ARG1, ARG2, ARG3)
+;	0390	!
+;	0391	! INPUT PARAMETERS:
+;	0392	!	ARG1: access mode
+;	0393	!		READ_ACCESS	= 0
+;	0394	!		WRITE_ACCESS	= 1
+;	0395	!		DELETE_ACCESS	= 2
+;	0396	!		CREATE_ACCESS	= 3
+;	0397	!		RDATT_ACCESS	= 4
+;	0398	!		WRATT_ACCESS	= 5
+;	0399	!	ARG2: address of file header, if any
+;	0400	!	ARG3: address of FCB or 0
+;	0401	!
+;	0402	! IMPLICIT INPUTS:
+;	0403	!	CURRENT_UCB: address of device UCB
+;	0404	!	IO_PACKET: I/O packet of this request
+;	0405	!
+;	0406	! OUTPUT PARAMETERS:
+;	0407	!	NONE
+;	0408	!
+;	0409	! IMPLICIT OUTPUTS:
+;	0410	!	NONE
+;	0411	!
+;	0412	! ROUTINE VALUE:
+;	0413	!	NONE
+;	0414	!
+;	0415	! SIDE EFFECTS:
+;	0416	!	NONE
+;	0417	!
+;	0418	!--
+;	0419	
+;	0420	BEGIN
+;	0421	
+;	0422	MAP
+;	0423		HEADER		: REF BBLOCK,	! file header arg
+;	0424		FCB		: REF BBLOCK;	! FCB arg
+;	0425	
+;	0426	LITERAL					! file and volume protection bits
+;	0427		READ_BIT	= 1,
+;	0428		WRITE_BIT	= 2,
+;	0429		DELETE_BIT	= 8;
+;	0430	
+;	0431	LOCAL
+;	0432		FILE_PROT,			! protection code of file
+;	0433		FILE_UIC,			! file owner UIC
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2-1
+;
+;	0434		SEG_NUMBER,			! segment number of file header
+;	0435		PCB		: REF BBLOCK,	! PCB of user
+;	0436		MAP_AREA	: REF BBLOCK;	! file header map area
+;	0437	
+;	0438	BIND					! access mode tables
+;	0439						! write operation on volume
+;	0440		WRITE_OP	= UPLIT BYTE (
+;	0441				%B'101110'
+;	0442				) : BITVECTOR,
+;	0443	
+;	0444						! check system or owner UIC
+;	0445		SYS_OWNER	= UPLIT BYTE (
+;	0446				%B'110000'
+;	0447				) : BITVECTOR,
+;	0448	
+;	0449						! check for zero file segment number
+;	0450		EXT_HEADER	= UPLIT BYTE (
+;	0451				%B'100111'
+;	0452				) : BITVECTOR,
+;	0453	
+;	0454						! volume access bits
+;	0455		VOL_ACCESS	= UPLIT BYTE (
+;	0456				READ_BIT,
+;	0457				READ_BIT OR WRITE_BIT,
+;	0458				DELETE_BIT,
+;	0459				READ_BIT OR WRITE_BIT,
+;	0460				READ_BIT,
+;	0461				READ_BIT OR WRITE_BIT
+;	0462				) : VECTOR [,BYTE],
+;	0463	
+;	0464						! file access bits
+;	0465		FILE_ACCESS	= UPLIT BYTE (
+;	0466				READ_BIT,
+;	0467				READ_BIT OR WRITE_BIT,
+;	0468				DELETE_BIT,
+;	0469				0,
+;	0470				READ_BIT,
+;	0471				0
+;	0472				) : VECTOR [,BYTE];
+;	0473	
+;	0474	EXTERNAL
+;	0475		CURRENT_UCB	: REF BBLOCK,	! device UCB
+;	0476		IO_PACKET	: REF BBLOCK,	! I/O packet of this request
+;	0477		SCH$GL_PCBVEC	: REF VECTOR ADDRESSING_MODE (ABSOLUTE);
+;	0478						! system PCB vector
+;	0479	
+;	0480	EXTERNAL ROUTINE
+;	0481		GET_ACCESS;			! get access bits for user
+;	0482	
+;	0483	
+;	0484	! First, if this is a write operation, check is the volume is software
+;	0485	! write locked.
+;	0486	!
+;	0487	
+;	0488	IF .WRITE_OP[.ACCESS]
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2-2
+;
+;	0489	AND .BBLOCK [CURRENT_UCB[UCB$L_DEVCHAR], DEV$V_SWL]
+;	0490	THEN ERR_EXIT (SS$_WRITLCK);
+;	0491	
+;	0492	! Now check the volume protection. Get the volume access rights for this user
+;	0493	! and use them to bit clear the access intent bits appropriate to the
+;	0494	! function. If all intent bits clear, access is granted.
+;	0495	!
+;	0496	
+;	0497	IF (NOT GET_ACCESS (.CURRENT_UCB[UCB$L_OWNUIC], .CURRENT_UCB[UCB$W_VPROT])
+;	0498	    AND .VOL_ACCESS[.ACCESS]) NEQ 0
+;	0499	THEN ERR_EXIT (SS$_NOPRIV);
+;	0500	
+;	0501	! Get the protection bits and the owner UIC of the file.
+;	0502	!
+;	0503	
+;	0504	IF .FCB NEQ 0
+;	0505	THEN
+;	0506	    BEGIN
+;	0507	    FILE_PROT = .FCB[FCB$W_FILEPROT];
+;	0508	    FILE_UIC = .FCB[FCB$L_FILEOWNER];
+;	0509	    SEG_NUMBER = .FCB[FCB$W_SEGN];
+;	0510	    END
+;	0511	ELSE
+;	0512	    BEGIN
+;	0513	    IF .HEADER NEQ 0
+;	0514	    THEN
+;	0515		BEGIN
+;	0516		FILE_PROT = .HEADER[FH1$W_FILEPROT];
+;	0517		FILE_UIC = .HEADER[FH1$B_UICMEMBER];
+;	0518		FILE_UIC<16,8> = .HEADER[FH1$B_UICGROUP];
+;	0519		MAP_AREA = .HEADER + .HEADER[FH1$B_MPOFFSET]*2;
+;	0520		SEG_NUMBER = .MAP_AREA[FM1$B_EX_SEGNUM];
+;	0521		END
+;	0522	    ELSE
+;	0523		BEGIN
+;	0524		FILE_PROT = 0;
+;	0525		FILE_UIC = 0;
+;	0526		SEG_NUMBER = 0;
+;	0527		END;
+;	0528	    END;
+;	0529	
+;	0530	! Check if the system or owner is allowed regardless of file protection.
+;	0531	!
+;	0532	
+;	0533	PCB = .SCH$GL_PCBVEC[.(IO_PACKET[IRP$L_PID])<0,16>];
+;	0534	IF .SYS_OWNER[.ACCESS]
+;	0535	AND (.IO_PACKET[IRP$V_PRIVIO]
+;	0536	    OR .PCB[PCB$W_GRP] LEQU SYSTEM_UIC
+;	0537	    OR .PCB[PCB$L_UIC] EQL .FILE_UIC)
+;	0538	THEN RETURN;
+;	0539	
+;	0540	! Check if this is an extension header. If so, only the system is allowed access
+;	0541	! for most operations.
+;	0542	!
+;	0543	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2-3
+;
+;	0544	IF .EXT_HEADER[.ACCESS]
+;	0545	THEN
+;	0546	    BEGIN
+;	0547	    IF .SEG_NUMBER NEQ 0
+;	0548	    AND NOT .IO_PACKET[IRP$V_PRIVIO]
+;	0549	    AND .PCB[PCB$W_GRP] GTRU SYSTEM_UIC
+;	0550	    THEN ERR_EXIT (SS$_NOPRIV);
+;	0551	    END;
+;	0552	
+;	0553	
+;	0554	! Finally check the access intent bits against the file protection in the
+;	0555	! same way as the volume protection. Note that write attributes is not
+;	0556	! handled by protection bits - it must have passed system or owner above.
+;	0557	!
+;	0558	
+;	0559	IF .ACCESS EQL WRATT_ACCESS
+;	0560	OR (NOT GET_ACCESS (.FILE_UIC, .FILE_PROT)
+;	0561	    AND .FILE_ACCESS[.ACCESS]) NEQ 0
+;	0562	THEN ERR_EXIT (SS$_NOPRIV);
+;	0563	
+;	0564	END;					! end of routine CHECK_PROTECT
+
+
+							    .TITLE  CHKPRO
+							    .IDENT  \A0004\
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					  2E  00000 P.AAA:  .BYTE   46							      ;
+					      00001	    .BLKB   3
+					  30  00004 P.AAB:  .BYTE   48							      ;
+					      00005	    .BLKB   3
+					  27  00008 P.AAC:  .BYTE   39							      ;
+					      00009	    .BLKB   3
+		      03  01  03  08  03  01  0000C P.AAD:  .BYTE   1, 3, 8, 3, 1, 3					      ;
+					      00012	    .BLKB   2
+		      00  01  00  08  03  01  00014 P.AAE:  .BYTE   1, 3, 8, 0, 1, 0					      ;
+					      0001A	    .BLKB   2
+
+						    WRITE_OP=		P.AAA
+						    SYS_OWNER=		P.AAB
+						    EXT_HEADER=		P.AAC
+						    VOL_ACCESS=		P.AAD
+						    FILE_ACCESS=	P.AAE
+							    .EXTRN  CURRENT_UCB, IO_PACKET, SCH$GL_PCBVEC, GET_ACCESS
+
+					 007C 0001C 	    .ENTRY  CHECK_PROTECT, Save R2,R3,R4,R5,R6			      ; 0379
+		         56 	  DF   AF  9E 0001E 	    MOVAB   WRITE_OP, R6					      ;
+	   0E 	         66 	  04   AC  E1 00022 	    BBC     ACCESS, WRITE_OP, 1$				      ; 0488
+		         50 	0000G  CF  D0 00027 	    MOVL    CURRENT_UCB, R0					      ; 0489
+	   04 	    37   A0	       01  E1 0002C 	    BBC     #1, 55(R0), 1$					      ;
+				025C   8F  BF 00031 	    CHMU    #604						      ; 0490
+		         50 	0000G  CF  D0 00035 1$:     MOVL    CURRENT_UCB, R0					      ; 0497
+		         7E 	  1A   A0  3C 0003A 	    MOVZWL  26(R0), -(SP)					      ;
+				  1C   A0  DD 0003E 	    PUSHL   28(R0)						      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2-4
+;
+		  0000G  CF	       02  FB 00041 	    CALLS   #2, GET_ACCESS					      ;
+		         50 	       50  D2 00046 	    MCOML   R0, R0						      ;
+		         51 	  0C   A6  9E 00049 	    MOVAB   VOL_ACCESS, R1					      ; 0379
+		    04 BC41	       50  93 0004D 	    BITB    R0, @ACCESS[R1]					      ; 0497
+				       02  13 00052 	    BEQL    2$							      ;
+				       24  BF 00054 	    CHMU    #36							      ; 0499
+		         50 	  0C   AC  D0 00056 2$:     MOVL    FCB, R0						      ; 0504
+				       0E  13 0005A 	    BEQL    3$							      ;
+		         54 	  3C   A0  3C 0005C 	    MOVZWL  60(R0), FILE_PROT					      ; 0507
+		         53 	  38   A0  D0 00060 	    MOVL    56(R0), FILE_UIC					      ; 0508
+		         55 	  26   A0  3C 00064 	    MOVZWL  38(R0), SEG_NUMBER					      ; 0509
+				       25  11 00068 	    BRB     5$							      ; 0504
+		         50 	  08   AC  D0 0006A 3$:     MOVL    HEADER, R0						      ; 0513
+				       1B  13 0006E 	    BEQL    4$							      ;
+		         54 	  0A   A0  3C 00070 	    MOVZWL  10(R0), FILE_PROT					      ; 0516
+		         53 	  08   A0  9A 00074 	    MOVZBL  8(R0), FILE_UIC					      ; 0517
+	   08 	         10 	  09   A0  F0 00078 	    INSV    9(R0), #16, #8, FILE_UIC				      ; 0518
+				       53     0007D									      ;
+		         51 	  01   A0  9A 0007E 	    MOVZBL  1(R0), R1						      ; 0519
+		         50 	     6041  3E 00082 	    MOVAW   (R0)[R1], MAP_AREA					      ;
+		         55 	       60  9A 00086 	    MOVZBL  (MAP_AREA), SEG_NUMBER				      ; 0520
+				       04  11 00089 	    BRB     5$							      ; 0513
+				       53  7C 0008B 4$:     CLRQ    FILE_UIC						      ; 0525
+				       55  D4 0008D 	    CLRL    SEG_NUMBER						      ; 0526
+		         52 00000000G  9F  D0 0008F 5$:     MOVL    @#SCH$GL_PCBVEC, R2					      ; 0533
+		         51 	0000G  CF  D0 00096 	    MOVL    IO_PACKET, R1					      ;
+		         50 	  0C   A1  3C 0009B 	    MOVZWL  12(R1), R0						      ;
+		         50 	     6240  D0 0009F 	    MOVL    (R2)[R0], PCB					      ;
+	   11 	    04   A6	  04   AC  E1 000A3 	    BBC     ACCESS, SYS_OWNER, 6$				      ; 0534
+	   40 	    2B   A1	       01  E0 000A9 	    BBS     #1, 43(R1), 9$					      ; 0535
+		         08 	  22   A0  B1 000AE 	    CMPW    34(PCB), #8						      ; 0536
+				       3A  1B 000B2 	    BLEQU   9$							      ;
+		         53 	  20   A0  D1 000B4 	    CMPL    32(PCB), FILE_UIC					      ; 0537
+				       34  13 000B8 	    BEQL    9$							      ;
+	   11 	    08   A6	  04   AC  E1 000BA 6$:     BBC     ACCESS, EXT_HEADER, 7$				      ; 0544
+				       55  D5 000C0 	    TSTL    SEG_NUMBER						      ; 0547
+				       0D  13 000C2 	    BEQL    7$							      ;
+	   08 	    2B   A1	       01  E0 000C4 	    BBS     #1, 43(R1), 7$					      ; 0548
+		         08 	  22   A0  B1 000C9 	    CMPW    34(PCB), #8						      ; 0549
+				       02  1B 000CD 	    BLEQU   7$							      ;
+				       24  BF 000CF 	    CHMU    #36							      ; 0550
+		         05 	  04   AC  D1 000D1 7$:     CMPL    ACCESS, #5						      ; 0559
+				       15  13 000D5 	    BEQL    8$							      ;
+				       18  BB 000D7 	    PUSHR   #^M<R3,R4>						      ; 0560
+		  0000G  CF	       02  FB 000D9 	    CALLS   #2, GET_ACCESS					      ;
+		         50 	       50  D2 000DE 	    MCOML   R0, R0						      ;
+		         51 	  14   A6  9E 000E1 	    MOVAB   FILE_ACCESS, R1					      ; 0379
+		    04 BC41	       50  93 000E5 	    BITB    R0, @ACCESS[R1]					      ; 0560
+				       02  13 000EA 	    BEQL    9$							      ;
+				       24  BF 000EC 8$:     CHMU    #36							      ; 0562
+					   04 000EE 9$:     RET     							      ; 0379
+
+; Routine Size:  211 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:49:56	DBB3:[F11A.SRC]CHKPRO.B32;12					Page 2-5
+;
+;	0565	
+;	0566	END
+;	0567	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   239  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        19         0       233
+
+
+
+
+
+; Size:		211 code + 28 data bytes
+; Run Time:	00:07.5
+; Elapsed Time:	00:16.6
+; Memory Used:	296 pages
+; Compilation Complete

@@ -1,0 +1,342 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 1
+;
+;	0001	MODULE DIRACC (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0008A'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine "accesses" a directory and readies it for processing.
+;	0033	! ENVIRONMENT:
+;	0034	!
+;	0035	!	STARLET operating system, including privileged system services
+;	0036	!	and internal exec routines.
+;	0037	!
+;	0038	!--
+;	0039	!
+;	0040	!
+;	0041	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  2-Jan-1977  22:53
+;	0042	!
+;	0043	! REVISION HISTORY:
+;	0044	!
+;	0045	!   Andrew C. Goldstein, 16-Feb-1977  14:55
+;	0046	!   X0002 - Modify for condition handling
+;	0047	!
+;	0048	!   Andrew C. Goldstein, 3-May-1977  15:08
+;	0049	!   X0003 - Add file protection check
+;	0050	!
+;	0051	!   Andrew C. Goldstein, 22-Jul-1977  17:06
+;	0052	!   X0004 - Add check for multi-header directory
+;	0053	!
+;	0054	!   Andrew C. Goldstein, 4-Nov-1977  14:55
+;	0055	!   X0005 - Remove end of file setup (done by INIFCB)
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 1-1
+;
+;	0056	!
+;	0057	!   Andrew C. Goldstein, 12-Dec-1977  13:36
+;	0058	!   X0006 - file ID interface changes
+;	0059	!
+;	0060	!   Andrew C. Goldstein, 5-Jan-1978  20:44
+;	0061	!   X0007 - Clear file header address after read
+;	0062	!
+;	0063	!   Andrew C. Goldstein, 1-Feb-1978  17:10
+;	0064	!   X0008 - Save and restore FILE_HEADER around header read
+;	0065	!
+;	0066	!**
+;	0067	
+;	0068	
+;	0069	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0070	REQUIRE 'SRC$:FCPDEF.B32';
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 2
+;
+;	0389	GLOBAL ROUTINE DIR_ACCESS (FIB, WRITE) : NOVALUE =
+;	0390	
+;	0391	!++
+;	0392	!
+;	0393	! FUNCTIONAL DESCRIPTION:
+;	0394	!
+;	0395	!	This routine "accesses" a directory and readies it for processing.
+;	0396	!
+;	0397	! CALLING SEQUENCE:
+;	0398	!	DIR_ACCESS (ARG1, ARG2)
+;	0399	!
+;	0400	! INPUT PARAMETERS:
+;	0401	!	ARG1: address of FIB
+;	0402	!	ARG2: 0 if read only
+;	0403	!	      1 if read/write
+;	0404	!
+;	0405	! IMPLICIT INPUTS:
+;	0406	!	NONE
+;	0407	!
+;	0408	! OUTPUT PARAMETERS:
+;	0409	!	NONE
+;	0410	!
+;	0411	! IMPLICIT OUTPUTS:
+;	0412	!	DIR_FCB: address of FCB for directory
+;	0413	!	DIR_WINDOW: address of window, if any
+;	0414	!
+;	0415	! ROUTINE VALUE:
+;	0416	!	NONE
+;	0417	!
+;	0418	! SIDE EFFECTS:
+;	0419	!	FCB and/or window may be created
+;	0420	!	directory LRU may be altered
+;	0421	!	directory file header may be read
+;	0422	!
+;	0423	!--
+;	0424	
+;	0425	BEGIN
+;	0426	
+;	0427	MAP
+;	0428		FIB		: REF BBLOCK;	! FIB argument
+;	0429	
+;	0430	LOCAL
+;	0431		TEMP,				! temp storage for file header address
+;	0432		FCB		: REF BBLOCK,	! FCB address
+;	0433		HEADER		: REF BBLOCK,	! directory header address
+;	0434		MAP_AREA	: REF BBLOCK;	! address of file header map area
+;	0435	
+;	0436	EXTERNAL
+;	0437		DIR_FCB		: REF BBLOCK,	! global FCB address
+;	0438		DIR_WINDOW	: REF BBLOCK,	! global window address
+;	0439		FILE_HEADER	: REF BBLOCK;	! global file header address
+;	0440	
+;	0441	EXTERNAL ROUTINE
+;	0442		SEARCH_FCB,			! search FCB list
+;	0443		READ_HEADER,			! read file header
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 2-1
+;
+;	0444		CREATE_FCB,			! create an FCB
+;	0445		CREATE_WINDOW,			! create a file window
+;	0446		CHECK_PROTECT,			! check file protection
+;	0447		MAKE_DIR_FCB;			! put directory FCB in LRU
+;	0448	
+;	0449	
+;	0450	! First find the FCB of the directory, if any exists.
+;	0451	!
+;	0452	
+;	0453	FCB = SEARCH_FCB (FIB[FIB$W_DID]);
+;	0454	
+;	0455	! If there was no FCB, or it is an accessed file, read the header.
+;	0456	! If the FCB is in the LRU, check the sequence number since no
+;	0457	! one else does. If there was no FCB, create one.
+;	0458	!
+;	0459	
+;	0460	HEADER = 0;				! assume no header
+;	0461	IF (IF .FCB EQL 0 THEN 1 ELSE (NOT .FCB[FCB$V_DIR]))
+;	0462	THEN
+;	0463	    BEGIN
+;	0464	    TEMP = .FILE_HEADER;
+;	0465	    HEADER = READ_HEADER (FIB[FIB$W_DID], .FCB);
+;	0466	    FILE_HEADER = .TEMP;		! restore address for cleanup
+;	0467	    END
+;	0468	ELSE
+;	0469	    IF .FCB[FCB$W_FID_SEQ] NEQ .FIB[FIB$W_DID_SEQ]
+;	0470		THEN ERR_EXIT (SS$_FILESEQCHK);
+;	0471	
+;	0472	IF .FCB EQL 0
+;	0473	    THEN FCB = KERNEL_CALL (CREATE_FCB, .HEADER);
+;	0474	DIR_FCB = .FCB;				! store global FCB address
+;	0475	
+;	0476	! Check directory file protection.
+;	0477	!
+;	0478	
+;	0479	CHECK_PROTECT (.WRITE, .HEADER, .FCB);
+;	0480	
+;	0481	! If we read a header, check the file attributes to make sure that
+;	0482	! this is a real directory file.
+;	0483	!
+;	0484	
+;	0485	IF .HEADER NEQ 0
+;	0486	THEN
+;	0487	    BEGIN
+;	0488	    MAP_AREA = .HEADER + .HEADER[FH1$B_MPOFFSET]*2;
+;	0489	    IF .BBLOCK [HEADER[FH1$W_RECATTR], FAT$B_RTYPE] NEQ FAT$C_FIXED
+;	0490	    OR .BBLOCK [HEADER[FH1$W_RECATTR], FAT$W_RSIZE] NEQ 16
+;	0491	    OR .MAP_AREA[FM1$B_EX_SEGNUM] NEQ 0
+;	0492	    OR .MAP_AREA[FM1$W_EX_FILNUM] NEQ 0
+;	0493	    OR .MAP_AREA[FM1$W_EX_FILSEQ] NEQ 0
+;	0494	    THEN ERR_EXIT (SS$_BADIRECTORY);
+;	0495	    END;
+;	0496	
+;	0497	! Arbitrate the access interlocks.
+;	0498	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 2-2
+;
+;	0499	
+;	0500	IF .FCB[FCB$V_EXCL]			! check for exclusive access
+;	0501	    THEN ERR_EXIT (SS$_ACCONFLICT);
+;	0502	IF .WRITE				! if write access desired
+;	0503	AND .FCB[FCB$W_LCNT] NEQ 0		! and file locked against writers
+;	0504	    THEN ERR_EXIT (SS$_ACCONFLICT);
+;	0505	
+;	0506	! If the file is not contiguous, construct a window.
+;	0507	!
+;	0508	
+;	0509	IF .FCB[FCB$L_STLBN] EQL 0
+;	0510	THEN DIR_WINDOW = KERNEL_CALL (CREATE_WINDOW, 0, 0, .HEADER, 0, .FCB);
+;	0511	
+;	0512	! Make the final diddles for the FCB to be useful for directory searches.
+;	0513	!
+;	0514	
+;	0515	KERNEL_CALL (MAKE_DIR_FCB, .FCB);
+;	0516	
+;	0517	RETURN 1;
+;	0518	
+;	0519	END;					! end of routine ACCESS_DIR
+
+
+							    .TITLE  DIRACC
+							    .IDENT  \A0008A\
+
+							    .EXTRN  DIR_FCB, DIR_WINDOW, FILE_HEADER, SEARCH_FCB, READ_HEADER
+							    .EXTRN  CREATE_FCB, CREATE_WINDOW, CHECK_PROTECT, MAKE_DIR_FCB
+							    .EXTRN  SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 007C 00000 	    .ENTRY  DIR_ACCESS, Save R2,R3,R4,R5,R6			      ; 0389
+		         56 00000000G  9F  9E 00002 	    MOVAB   @#SYS$CMKRNL, R6					      ;
+		         52 	  04   AC  D0 00009 	    MOVL    FIB, R2						      ; 0453
+				  0A   A2  9F 0000D 	    PUSHAB  10(R2)						      ;
+		  0000G  CF	       01  FB 00010 	    CALLS   #1, SEARCH_FCB					      ;
+		         54 	       50  D0 00015 	    MOVL    R0, FCB						      ;
+				       53  D4 00018 	    CLRL    HEADER						      ; 0460
+				       54  D5 0001A 	    TSTL    FCB							      ; 0461
+				       04  13 0001C 	    BEQL    1$							      ;
+		         19 	  1E   A4  E8 0001E 	    BLBS    30(FCB), 2$						      ;
+		         55 	0000G  CF  D0 00022 1$:     MOVL    FILE_HEADER, TEMP					      ; 0464
+				       54  DD 00027 	    PUSHL   FCB							      ; 0465
+				  0A   A2  9F 00029 	    PUSHAB  10(R2)						      ;
+		  0000G  CF	       02  FB 0002C 	    CALLS   #2, READ_HEADER					      ;
+		         53 	       50  D0 00031 	    MOVL    R0, HEADER						      ;
+		  0000G  CF	       55  D0 00034 	    MOVL    TEMP, FILE_HEADER					      ; 0466
+				       0B  11 00039 	    BRB     3$							      ; 0461
+		    0C   A2	  22   A4  B1 0003B 2$:     CMPW    34(FCB), 12(R2)					      ; 0469
+				       04  13 00040 	    BEQL    3$							      ;
+				08B8   8F  BF 00042 	    CHMU    #2232						      ; 0470
+				       54  D5 00046 3$:     TSTL    FCB							      ; 0472
+				       10  12 00048 	    BNEQ    4$							      ;
+				       53  DD 0004A 	    PUSHL   HEADER						      ; 0473
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 2-3
+;
+				       01  DD 0004C 	    PUSHL   #1							      ;
+				       5E  DD 0004E 	    PUSHL   SP							      ;
+				0000G  CF  9F 00050 	    PUSHAB  CREATE_FCB						      ;
+		         66 	       04  FB 00054 	    CALLS   #4, SYS$CMKRNL					      ;
+		         54 	       50  D0 00057 	    MOVL    R0, FCB						      ;
+		  0000G  CF	       54  D0 0005A 4$:     MOVL    FCB, DIR_FCB					      ; 0474
+				       18  BB 0005F 	    PUSHR   #^M<R3,R4>						      ; 0479
+				  08   AC  DD 00061 	    PUSHL   WRITE						      ;
+		  0000G  CF	       03  FB 00064 	    CALLS   #3, CHECK_PROTECT					      ;
+				       53  D5 00069 	    TSTL    HEADER						      ; 0485
+				       29  13 0006B 	    BEQL    6$							      ;
+		         50 	  01   A3  9A 0006D 	    MOVZBL  1(HEADER), R0					      ; 0488
+		         50 	     6340  3E 00071 	    MOVAW   (HEADER)[R0], MAP_AREA				      ;
+		         51 	  0E   A3  9E 00075 	    MOVAB   14(HEADER), R1					      ; 0489
+		         01 	       61  91 00079 	    CMPB    (R1), #1						      ;
+				       14  12 0007C 	    BNEQ    5$							      ;
+		         10 	  02   A1  B1 0007E 	    CMPW    2(R1), #16						      ; 0490
+				       0E  12 00082 	    BNEQ    5$							      ;
+				       60  95 00084 	    TSTB    (MAP_AREA)						      ; 0491
+				       0A  12 00086 	    BNEQ    5$							      ;
+				  02   A0  B5 00088 	    TSTW    2(MAP_AREA)						      ; 0492
+				       05  12 0008B 	    BNEQ    5$							      ;
+				  04   A0  B5 0008D 	    TSTW    4(MAP_AREA)						      ; 0493
+				       04  13 00090 	    BEQL    6$							      ;
+				0828   8F  BF 00092 5$:     CHMU    #2088						      ; 0494
+	   04 	    1E   A4	       03  E1 00096 6$:     BBC     #3, 30(FCB), 7$					      ; 0500
+				0800   8F  BF 0009B 	    CHMU    #2048						      ; 0501
+		         09 	  08   AC  E9 0009F 7$:     BLBC    WRITE, 8$						      ; 0502
+				  1A   A4  B5 000A3 	    TSTW    26(FCB)						      ; 0503
+				       04  13 000A6 	    BEQL    8$							      ;
+				0800   8F  BF 000A8 	    CHMU    #2048						      ; 0504
+				  2C   A4  D5 000AC 8$:     TSTL    44(FCB)						      ; 0509
+				       18  12 000AF 	    BNEQ    9$							      ;
+				       54  DD 000B1 	    PUSHL   FCB							      ; 0510
+				       7E  D4 000B3 	    CLRL    -(SP)						      ;
+				       53  DD 000B5 	    PUSHL   HEADER						      ;
+				       7E  7C 000B7 	    CLRQ    -(SP)						      ;
+				       05  DD 000B9 	    PUSHL   #5							      ;
+				       5E  DD 000BB 	    PUSHL   SP							      ;
+				0000G  CF  9F 000BD 	    PUSHAB  CREATE_WINDOW					      ;
+		         66 	       08  FB 000C1 	    CALLS   #8, SYS$CMKRNL					      ;
+		  0000G  CF	       50  D0 000C4 	    MOVL    R0, DIR_WINDOW					      ;
+				       54  DD 000C9 9$:     PUSHL   FCB							      ; 0515
+				       01  DD 000CB 	    PUSHL   #1							      ;
+				       5E  DD 000CD 	    PUSHL   SP							      ;
+				0000G  CF  9F 000CF 	    PUSHAB  MAKE_DIR_FCB					      ;
+		         66 	       04  FB 000D3 	    CALLS   #4, SYS$CMKRNL					      ;
+					   04 000D6 	    RET     							      ; 0389
+
+; Routine Size:  215 bytes
+
+
+;	0520	
+;	0521	END
+;	0522	ELUDOM
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:54:04	DBB3:[F11A.SRC]DIRACC.B32;7					Page 2-4
+;
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   215  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        19         0       238
+
+
+
+
+
+; Size:		215 code + 0 data bytes
+; Run Time:	00:06.8
+; Elapsed Time:	00:13.8
+; Memory Used:	299 pages
+; Compilation Complete

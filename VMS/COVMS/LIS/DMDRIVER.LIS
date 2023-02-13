@@ -1,0 +1,1967 @@
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)     292  RK611-RK06/RK07 FUNCTION DECISION TABLE
+   (1)     398  TEST ALIGNMENT OF BUFFER
+   (1)     435  START I/O OPERATION
+   (1)     786  RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION
+   (1)    1114  RK611-RK06/RK07 CLASSIFY DRIVE TYPE AND SET PAR
+   (1)    1145  RK611-RK06/RK07 REGISTER DUMP ROUTINE
+   (1)    1180  RK06/RK07 DISK DRIVE INITIALIZATION
+   (1)    1231  RK611-RK06/RK07 UNSOLICITED INTERRUPT ROUTINE
+   (1)    1258  WAIT FOR CONTROLLER READY
+   (1)    1288  RK611 DISK CONTROLLER INTERRUPT DISPATCHER
+   (1)    1405  RK611 DISK CONTROLLER INITIALIZATION
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   1
+01                                                                                                                               (1)
+
+                                     0000     1 	.TITLE	DMDRIVER - RK611-RK06/RK07 DISK DRIVER
+                                     0000     2 	.IDENT	/01/
+                                     0000     3  
+                                     0000     4 ;
+                                     0000     5 ; COPYRIGHT (C) 1977
+                                     0000     6 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+                                     0000     7 ;
+                                     0000     8 ; THIS SOFTWARE IS FURNISHED UNDER  A LICENSE FOR USE ONLY  ON  A
+                                     0000     9 ; SINGLE COMPUTER SYSTEM AND MAY BE  COPIED ONLY WITH  THE INCLU-
+                                     0000    10 ; SION OF  THE  ABOVE  COPYRIGHT NOTICE.  THIS SOFTWARE,  OR  ANY
+                                     0000    11 ; OTHER COPIES THEREOF, MAY NOT BE  PROVIDED  OR  OTHERWISE  MADE
+                                     0000    12 ; AVAILABLE TO ANY OTHER PERSON EXCEPT  FOR  USE  ON  SUCH SYSTEM
+                                     0000    13 ; AND TO  ONE WHO AGREES  TO  THESE LICENSE  TERMS.  TITLE TO AND
+                                     0000    14 ; OWNERSHIP OF THE SOFTWARE SHALL AT ALL TIMES REMAIN IN DEC.
+                                     0000    15 ;
+                                     0000    16 ; THE INFORMATION IN THIS SOFTWARE  IS  SUBJECT TO CHANGE WITHOUT
+                                     0000    17 ; NOTICE AND SHOULD NOT BE CONSTRUED  AS  A COMMITMENT BY DIGITAL
+                                     0000    18 ; EQUIPMENT CORPORATION.
+                                     0000    19 ;
+                                     0000    20 ; DEC ASSUMES NO RESPONSIBILITY FOR THE USE OR RELIABILITY OF ITS
+                                     0000    21 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    22 ;
+                                     0000    23 ; D. N. CUTLER 12-MAR-77
+                                     0000    24 ;
+                                     0000    25 ; RK611-RK06/RK07 DISK DRIVER
+                                     0000    26 ;
+                                     0000    27 ; MACRO LIBRARY CALLS
+                                     0000    28 ;
+                                     0000    29  
+                                     0000    30 	$ADPDEF				;DEFINE ADP OFFSETS
+                                     0000    31 	$CRBDEF				;DEFINE CRB OFFSETS
+                                     0000    32 	$DCDEF				;DEFINE DEVICE TYPE CODES
+                                     0000    33 	$DDBDEF				;DEFINE DDB OFFSETS
+                                     0000    34 	$DDTDEF				;DEFINE DDT OFFSETS
+                                     0000    35 	$EMBDEF				;DEFINE EMB OFFSETS
+                                     0000    36 	$IDBDEF				;DEFINE IDB OFFSETS
+                                     0000    37 	$IODEF				;DEFINE I/O FUNCTION CODES
+                                     0000    38 	$IRPDEF				;DEFINE IRP OFFSETS
+                                     0000    39 	$PRDEF				;DEFINE PROCESSOR REGISTERS
+                                     0000    40 	$UBADEF				;DEFINE UBA REGISTER OFFSETS
+                                     0000    41 	$UCBDEF				;DEFINE UCB OFFSETS
+                                     0000    42 	$VECDEF				;DEFINE INTERRUPT DISPATCH VECTOR OFFSETS
+                                     0000    43  
+                                     0000    44 ;
+                                     0000    45 ; LOCAL MACROS
+                                     0000    46 ;
+                                     0000    47 ; EXECUTE FUNCTION AND BRANCH ON RETRIABLE ERROR CONDITION
+                                     0000    48 ;
+                                     0000    49  
+                                     0000    50 	.MACRO	EXFUNCH BDST,FCODE
+                                     0000    51 		.IF NB	FCODE
+                                     0000    52 		MOVZBL	#CD'FCODE,R3
+                                     0000    53 		.ENDC
+                                     0000    54 		BSBW	FEXH
+                                     0000    55 		.BYTE	BDST-.-1
+                                     0000    56 	.ENDM
+                                     0000    57  
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   2
+01                                                                                                                               (1)
+
+                                     0000    58 	.MACRO	EXFUNCL BDST,FCODE
+                                     0000    59 		.IF NB	FCODE
+                                     0000    60 		MOVZBL	#CD'FCODE,R3
+                                     0000    61 		.ENDC
+                                     0000    62 		BSBW	FEXL
+                                     0000    63 		.BYTE	BDST-.-1
+                                     0000    64 	.ENDM
+                                     0000    65  
+                                     0000    66 ;
+                                     0000    67 ; GENERATE FUNCTION TABLE ENTRY AND CASE TABLE INDEX SYMBOL
+                                     0000    68 ;
+                                     0000    69  
+                                     0000    70 	.MACRO	GENF FCODE
+                                     0000    71 		CD'FCODE=.-FTAB/2
+                                     0000    72 		.WORD	FCODE!RK_CS1_M_GO!RK_CS1_M_IE
+                                     0000    73 	.ENDM
+                                     0000    74  
+                                     0000    75 ;
+                                     0000    76 ; LOCAL SYMBOLS
+                                     0000    77 ;
+                                     0000    78 ; RK611-RK06/RK07 CONTROLLER REGISTER OFFSETS
+                                     0000    79 ;
+                                     0000    80  
+                                     0000    81 	$DEFINI	RK
+                                     0000    82  
+                                     0000    83 $DEF	RK_CS1		.BLKW	1	;CONTROL STATUS REGISTER 1
+                                     0002    84 	_VIELD	RK_CS1,0,<-		; CONTROL STATUS REGISTER 1 FIELD DEFINITIONS
+                                     0002    85 		<GO,,M>,-		; GO BIT
+                                     0002    86 		<FCODE,4>,-		; FUNCTION CODE
+                                     0002    87 		<DPPE,,M>,-		; DATA PATH PURGE ERROR
+                                     0002    88 		<IE,,M>,-		; INTERRUPT ENABLE
+                                     0002    89 		<RDY,,M>,-		; CONTROLLER READY
+                                     0002    90 		<MEX,2>,-		; MEMORY EXTENSION BITS
+                                     0002    91 		<CDT,,M>,-		; CONTROLLER DRIVE TYPE
+                                     0002    92 		<CTO,,M>,-		; CONTROLLER TIME OUT
+                                     0002    93 		<CFMT,,M>,-		; CONTROLLER FORMAT ERROR
+                                     0002    94 		<SPAR,,M>,-		; SERIAL BUS PARITY ERROR
+                                     0002    95 		<DI,,M>,-		; DRIVE INTERRUPT
+                                     0002    96 		<CERR,,M>-		; CONTROLLER ERROR
+                                     0002    97 	>				;
+                                     0002    98 $DEF	RK_WC		.BLKW	1	;WORD COUNT REGISTER
+                                     0004    99 $DEF	RK_BA		.BLKW	1	;BUFFER ADDRESS REGISTER
+                                     0006   100 $DEF	RK_DA		.BLKW	1	;DESIRED SECTOR/TRACK ADDRESS REGISTER
+                                     0008   101 	_VIELD	RK_DA,0,<-		; DESIRED ADDRESS FIELD DEFINITIONS
+                                     0008   102 		<SA,5>,-		; DESIRED SECTOR ADDRESS
+                                     0008   103 		<,3>,-			; RESERVED BITS
+                                     0008   104 		<TA,3>-			; DESIRED TRACK ADDRESS
+                                     0008   105 	>				;
+                                     0008   106 $DEF	RK_CS2		.BLKW	1	;CONTROL STATUS REGISTER 2
+                                     000A   107 	_VIELD	RK_CS2,0,<-		; CONTROL STATUS REGISTER 2 FIELD DEFINITIONS
+                                     000A   108 		<DS,3>,-		; DRIVE SELECT
+                                     000A   109 		<RLS,,M>,-		; RELEASE DRIVE
+                                     000A   110 		<BAI,,M>,-		; BUFFER ADDRESS INCREMENT INHIBIT
+                                     000A   111 		<SCLR,,M>,-		; SUBSYSTEM CLEAR
+                                     000A   112 		<IR,,M>,-		; INPUT READY
+                                     000A   113 		<OR,,M>,-		; OUTPUT READY
+                                     000A   114 		<UFE,,M>,-		; UNIT FIELD ERROR
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   3
+01                                                                                                                               (1)
+
+                                     000A   115 		<MDS,,M>,-		; MULTIPLE DRIVE SELECT
+                                     000A   116 		<PGE,,M>,-		; PROGRAMMING ERROR
+                                     000A   117 		<NEM,,M>,-		; NONEXISTENT MEMORY
+                                     000A   118 		<NED,,M>,-		; NONEXISTENT DRIVE
+                                     000A   119 		<UPE,,M>,-		; UNIBUS PARITY ERROR
+                                     000A   120 		<WCE,,M>,-		; WRITE CHECK ERROR
+                                     000A   121 		<DLT,,M>-		; DATA LATE ERROR
+                                     000A   122 	>				;
+                                     000A   123 $DEF	RK_DS		.BLKW	1	;DRIVE STATUS REGISTER
+                                     000C   124 	_VIELD	RK_DS,0,<-		; DRIVE STATUS REGISTER BIT DEFINTIONS
+                                     000C   125 		<DRA,,M>,-		; DRIVE AVAILABLE
+                                     000C   126 		<,1>,-			; RESERVED BIT
+                                     000C   127 		<OFST,,M>,-		; DRIVE OFFSET
+                                     000C   128 		<ACLO,,M>,-		; DRIVE AC LOW
+                                     000C   129 		<DCLO,,M>,-		; DRIVE DC LOW
+                                     000C   130 		<DROT,,M>,-		; DRIVE OFF TRACK
+                                     000C   131 		<VV,,M>,-		; VOLUME VALID
+                                     000C   132 		<DRDY,,M>,-		; DRIVE READY
+                                     000C   133 		<DDT,,M>,-		; DRIVE DRIVE TYPE
+                                     000C   134 		<,2>,-			; RESERVED BITS
+                                     000C   135 		<WRL,,M>,-		; DRIVE WRITE LOCKED
+                                     000C   136 		<,1>,-			; RESERVED BIT
+                                     000C   137 		<PIP,,M>,-		; POSITIONING IN PROGRESS
+                                     000C   138 		<DSC,,M>,-		; DRIVE STATUS CHANGE
+                                     000C   139 		<SVAL,,M>-		; DRIVE STATUS VALID
+                                     000C   140 	>				;
+                                     000C   141 $DEF	RK_ER		.BLKW	1	;ERROR REGISTER
+                                     000E   142 	_VIELD	RK_ER,0,<-		; ERROR REGISTER BIT DEFINITIONS
+                                     000E   143 		<ILF,,M>,-		; ILLEGAL FUNCTION
+                                     000E   144 		<SKI,,M>,-		; SEEK INCOMPLETE
+                                     000E   145 		<NXF,,M>,-		; NONEXECUTABLE FUNCTION
+                                     000E   146 		<DRPAR,,M>,-		; DRIVE PARITY ERROR
+                                     000E   147 		<FMTE,,M>,-		; FORMAT ERROR
+                                     000E   148 		<DTYE,,M>,-		; DRIVE TYPE ERROR
+                                     000E   149 		<ECH,,M>,-		; ECC HARD ERROR
+                                     000E   150 		<BSE,,M>,-		; BAD SECTOR ERROR
+                                     000E   151 		<HVRC,,M>,-		; HEADER VRC ERROR
+                                     000E   152 		<COE,,M>,-		; CYLINDER OVERFLOW ERROR
+                                     000E   153 		<IDAE,,M>,-		; INVALID DISK ADDRESS ERROR
+                                     000E   154 		<WLE,,M>,-		; WRITE LOCK ERROR
+                                     000E   155 		<DTE,,M>,-		; DRIVE TIMING ERROR
+                                     000E   156 		<OPI,,M>,-		; OPERATION INCOMPLETE
+                                     000E   157 		<UNS,,M>,-		; DRIVE UNSAFE
+                                     000E   158 		<DCK,,M>-		; DATA CHECK ERROR
+                                     000E   159 	>				;
+                                     000E   160 $DEF	RK_AS		.BLKW	1	;ATTENTION SUMMARY/OFFSET REGISTER
+                                     0010   161 	_VIELD	RK_AS,0,<-		; ATTENSION SUMMARY/OFFSET REGISTER FIELDS
+                                     0010   162 		<OF,7>,-		; DRIVE OFFSET
+                                     0010   163 		<,1>,-			; RESERVED BIT
+                                     0010   164 		<ATTN,8,M>-		; DRIVE ATTENTION SUMARY
+                                     0010   165 	>				;
+                                     0010   166 $DEF	RK_DC		.BLKW	1	;DESIRED CYLINDER ADDRESS
+                                     0012   167 $DEF	RK_SPR		.BLKW	1	;UNUSED REGISTER
+                                     0014   168 $DEF	RK_DB		.BLKW	1	;DATA BUFFER REGISTER
+                                     0016   169 $DEF	RK_MR1		.BLKW	1	;MAINTENANCE REGISTER 1
+                                     0018   170 	_VIELD	RK_MR1,0,<<MS,3>>	; MAINTENANCE REGISTER 1 FIELD DEFINITION
+                                     0018   171 $DEF	RK_EC1		.BLKW	1	;ECC POSITION REGISTER
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   4
+01                                                                                                                               (1)
+
+                                     001A   172 	_VIELD	RK_EC1,0,<<EPS,13>>	; ECC POSITION FIELD
+                                     001A   173 $DEF	RK_EC2		.BLKW	1	;ECC PATTERN REGISTER
+                                     001C   174 	_VIELD	RK_EC2,0,<<EPT,11>>	; ECC PATTERN FIELD
+                                     001C   175 $DEF	RK_MR2		.BLKW	1	;MAINTENANCE REGISTER 2
+                                     001E   176 $DEF	RK_MR3		.BLKW	1	;MAINTENANCE REGISTER 3
+                                     0020   177  
+                                     0020   178 	$DEFEND	RK
+                                     0000   179  
+                                     0000   180 ;
+                                     0000   181 ; SOFTWARE STATUS IN UPPER BYTE OF OFFSET WORD
+                                     0000   182 ;
+                                     0000   183  
+                                     0000   184 	_VIELD	DM,0,<-			;SOFTWARE STATUS BIT DEFINTIONS
+                                     0000   185 		<ECI,,M>,-		; ECC INHIBIT
+                                     0000   186 		<DCK,,M>-		; DATACHECK IN PROGRESS
+                                     0000   187 	>				;
+                                     0000   188  
+                                     0000   189 ;
+                                     0000   190 ; DEFINE DEVICE DEPENDENT UNIT CONTROL BLOCK  OFFSETS
+                                     0000   191 ;
+                                     0000   192  
+                                     0000   193 	$DEFINI	UCB
+                                     0000   194  
+                           00000094  0000   195 .=UCB$W_BCR+2				;
+                                     0094   196  
+                                     0094   197 $DEF	UCB$W_DM_DTYP	.BLKW	1	;DRIVE TYPE MASK
+                                     0096   198 $DEF	UCB$W_DM_CS1	.BLKW	1	;CONTROL STATUS REGISTER 1
+                                     0098   199 $DEF	UCB$W_DM_WC	.BLKW	1	;WORK COUNT REGISTER
+                                     009A   200 $DEF	UCB$W_DM_BA	.BLKW	1	;BUFFER ADDRESS REGISTER
+                                     009C   201 $DEF	UCB$W_DM_DA	.BLKW	1	;DISK ADDRESS REGISTER
+                                     009E   202 $DEF	UCB$W_DM_CS2	.BLKW	1	;CONTROL STATUS REGISTER 2
+                                     00A0   203 $DEF	UCB$W_DM_DS	.BLKW	1	;DRIVE STATUS REGISTER
+                                     00A2   204 $DEF	UCB$W_DM_ER	.BLKW	1	;ERROR REGISTER
+                                     00A4   205 $DEF	UCB$W_DM_AS	.BLKW	1	;ATTENTION SUMMARY REGISTER
+                                     00A6   206 $DEF	UCB$W_DM_DC	.BLKW	1	;DESIRED CYLINDER REGISTER
+                                     00A8   207 $DEF	UCB$W_DM_MR1	.BLKW	1	;MAINTENANCE REGISTER 1
+                                     00AA   208 $DEF	UCB$W_DM_MR2	.BLKW	1	;MAINTENANCE REGISTER 2
+                                     00AC   209 $DEF	UCB$W_DM_MR3	.BLKW	1	;MAINTENANCE REGISTER 3
+                                     00AE   210 $DEF	UCB$W_DM_DPN	.BLKW	1	;DATAPATH NUMBER
+                                     00B0   211 $DEF	UCB$L_DM_DPR	.BLKL	1	;DATAPATH REGISTER
+                                     00B4   212 $DEF	UCB$L_DM_FMPR	.BLKL	1	;FINAL MAP REGISTER
+                                     00B8   213 $DEF	UCB$L_DM_PMPR	.BLKL	1	;PREVIOUS MAP REGISTER
+                                     00BC   214 $DEF	UCB$W_DM_DB	.BLKW	3	;DATA BUFFER REGISTER
+                           000000C4  00C2   215 			.BLKW	1	;SPARE USED WORD
+                                     00C4   216  
+                                     00C4   217 	$DEFEND	UCB
+                                     0000   218  
+                                     0000   219 ;
+                                     0000   220 ; HARDWARE FUNCTION CODES
+                                     0000   221 ;
+                                     0000   222  
+                           00000000  0000   223 F_NOP=0*2				;NO OPERATION (SELECT DRIVE)
+                           00000006  0000   224 F_UNLOAD=3*2				;UNLOAD DRIVE
+                           0000000E  0000   225 F_SEEK=7*2				;SEEK CYLINDER
+                           0000000A  0000   226 F_RECAL=5*2				;RECALIBRATE
+                           00000004  0000   227 F_DRVCLR=2*2				;DRIVE CLEAR
+                           00000000  0000   228 F_RELEASE=0*2				;RELEASE DRIVE
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   5
+01                                                                                                                               (1)
+
+                           0000000C  0000   229 F_OFFSET=6*2				;OFFSET HEADS
+                           0000000C  0000   230 F_RETCENTER=6*2				;RETURN TO CENTERLINE
+                           00000002  0000   231 F_PACKACK=1*2				;PACK ACKNOWLEDGE
+                           00000008  0000   232 F_STARTSPNDL=4*2			;START SPINDLE
+                           00000018  0000   233 F_WRITECHECK=12*2			;WRITE CHECK DATA
+                           00000012  0000   234 F_WRITEDATA=9*2				;WRITE DATA
+                           00000016  0000   235 F_WRITEHEAD=11*2			;WRITE HEADER AND DATA
+                           00000010  0000   236 F_READDATA=8*2				;READ DATA
+                           00000014  0000   237 F_READHEAD=10*2				;READ HEADER AND DATA
+                                     0000   238  
+                                     0000   239 ;
+                                     0000   240 ; LOCAL DATA
+                                     0000   241 ;
+                                     0000   242 ; DRIVER DISPATCH TABLE
+                                     0000   243 ;
+                                     0000   244  
+                                 00000000   245 	.PSECT	$$$102_DRIVER
+                                     0000   246 DM$DDT::				;ADDRESS OF DRIVER DISPATCH TABLE
+                           000000D6' 0000   247 	.LONG	DM_STARTIO		;START I/O OPERATION
+                           0000067B' 0004   248 	.LONG	DM_UNSOLNT		;UNSOLICITED INTERRUPT
+                           00000042' 0008   249 	.LONG	DM_FUNCTABLE		;FUNCTION DECISION TABLE
+                           00000000  000C   250 	.LONG	0			;CANCEL I/O ENTRY POINT
+                           000005C9' 0010   251 	.LONG	DM_REGDUMP		;REGISTER DUMP ROUTINE
+                               006C' 0014   252 	.WORD	<<RK_MR3+2-4+8>*2>+<<3+5+1>*4> ;SIZE OF DIAGNOSTIC BUFFER
+                               009C' 0016   253 	.WORD	<<RK_MR3+2-4+8>*2>+<1*4>+<EMB$L_DV_REGSAV> ;SIZE OF ERROR BUFFER
+                           000005F7' 0018   254 	.LONG	DM_RK0X_INIT		;UNIT INITIALIZATION ENTRY POINT
+                                     001C   255  
+                                     001C   256 ;
+                                     001C   257 ; HARDWARE I/O FUNCTION CODE TABLE
+                                     001C   258 ;
+                                     001C   259  
+                                     001C   260 FTAB:					;
+                                     001C   261 	GENF	F_NOP			;NO OPERATION
+                                     001E   262 	GENF	F_UNLOAD		;UNLOAD VOLUME
+                                     0020   263 	GENF	F_SEEK			;SEEK CYLINDER
+                                     0022   264 	GENF	F_RECAL			;RECALIBRATE
+                                     0024   265 	GENF	F_DRVCLR		;DRIVE CLEAR
+                                     0026   266 	GENF	F_RELEASE		;RELEASE PORT
+                                     0028   267 	GENF	F_OFFSET		;OFFSET HEADS
+                                     002A   268 	GENF	F_RETCENTER		;RETURN HEADS TO CENTERLINE
+                                     002C   269 	GENF	F_PACKACK		;PACK ACKNOWLEDGE
+                                     002E   270 	GENF	F_STARTSPNDL		;START SPINDLE
+                                     0030   271 	GENF	F_WRITECHECK		;WRITE CHECK
+                                     0032   272 	GENF	F_WRITEDATA		;WRITE DATA
+                                     0034   273 	GENF	F_READDATA		;READ DATA
+                                     0036   274 	GENF	F_WRITEHEAD		;WRITE HEADERS
+                                     0038   275 	GENF	F_READHEAD		;READ HEADER
+                                     003A   276  
+                                     003A   277 ;
+                                     003A   278 ; OFFSET TABLE FOR RK611-RK06/RK07
+                                     003A   279 ;
+                                     003A   280  
+                                     003A   281 OFFTAB:					;
+                                 00  003A   282 	.BYTE	0			;RETURN TO CENTERLINE
+                                 10  003B   283 	.BYTE	^X10			;+400
+                                 90  003C   284 	.BYTE	^X90			;-400
+                                 20  003D   285 	.BYTE	^X20			;+800
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   6
+01                                                                                                                               (1)
+
+                                 A0  003E   286 	.BYTE	^XA0			;-800
+                                 30  003F   287 	.BYTE	^X30			;+1200
+                                 B0  0040   288 	.BYTE	^XB0			;-1200
+                                 00  0041   289 	.BYTE	0			;RETURN TO CENTERLINE
+                           00000008  0042   290 OFFSIZ=.-OFFTAB				;SIZE OF OFFSET TABLE
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   7
+01              RK611-RK06/RK07 FUNCTION DECISION TABLE                                                                          (1)
+
+                                     0042   292 	.SBTTL	RK611-RK06/RK07 FUNCTION DECISION TABLE
+                                     0042   293 ;+
+                                     0042   294 ; RK611-RK06/RK07 FUNCTION DECISION TABLE
+                                     0042   295 ;-
+                                     0042   296  
+                                     0042   297 DM_FUNCTABLE:				;FUNCTION DECISION TABLE
+                                     0042   298 	FUNCTAB	,-			;LEGAL FUNCTIONS
+                                     0042   299 		<NOP,-			;NO OPERATION
+                                     0042   300 		 UNLOAD,-		;UNLOAD VOLUME
+                                     0042   301 		 SEEK,-			;SEEK CYLINDER
+                                     0042   302 		 RECAL,-		;RECALIBRATE
+                                     0042   303 		 DRVCLR,-		;DRIVE CLEAR
+                                     0042   304 		 RELEASE,-		;RELEASE PORT
+                                     0042   305 		 OFFSET,-		;OFFSET HEADS
+                                     0042   306 		 RETCENTER,-		;RETURN HEADS TO CENTERLINE
+                                     0042   307 		 PACKACK,-		;PACK ACKNOWLEDGE
+                                     0042   308 		 STARTSPNDL,-		;START SPINDLE
+                                     0042   309 		 SENSECHAR,-		;SENSE CHARACTERISTICS
+                                     0042   310 		 SETCHAR,-		;SET CHARACTERISITCS
+                                     0042   311 		 SENSEMODE,-		;SENSE MODE
+                                     0042   312 		 SETMODE,-		;SET MODE
+                                     0042   313 		 WRITECHECK,-		;WRITE CHECK
+                                     0042   314 		 WRITEHEAD,-		;WRITE HEADERS
+                                     0042   315 		 READHEAD,-		;READ HEADER
+                                     0042   316 		 READLBLK,-		;READ LOGICAL BLOCK
+                                     0042   317 		 WRITELBLK,-		;WRITE LOGICAL BLOCK
+                                     0042   318 		 READPBLK,-		;READ PHYSICAL BLOCK
+                                     0042   319 		 WRITEPBLK,-		;WRITE PHYSICAL BLOCK
+                                     0042   320 		 READVBLK,-		;READ VIRTUAL BLOCK
+                                     0042   321 		 WRITEVBLK,-		;WRITE VIRTUAL BLOCK
+                                     0042   322 		 ACCESS,-		;ACCESS FILE AND/OR FIND DIRECTORY ENTRY
+                                     0042   323 		 ACPCONTROL,-		;ACP CONTROL FUNCTION
+                                     0042   324 		 CREATE,-		;CREATE FILE AND/OR CREATE DIRECTORY ENTRY
+                                     0042   325 		 DEACCESS,-		;DEACCESS FILE
+                                     0042   326 		 DELETE,-		;DELETE FILE AND/OR DIRECTORY ENTRY
+                                     0042   327 		 MODIFY,-		;MODIFY FILE ATTRIBUTES
+                                     0042   328 		 MOUNT>			;MOUNT VOLUME
+                                     004A   329 	FUNCTAB	,-			;BUFFERED I/O FUNCTIONS
+                                     004A   330 		<NOP,-			;NO OPERATION
+                                     004A   331 		 UNLOAD,-		;UNLOAD VOLUME
+                                     004A   332 		 SEEK,-			;SEEK CYLINDER
+                                     004A   333 		 RECAL,-		;RECALIBRATE
+                                     004A   334 		 DRVCLR,-		;DRIVE CLEAR
+                                     004A   335 		 RELEASE,-		;RELEASE PORT
+                                     004A   336 		 OFFSET,-		;OFFSET HEADS
+                                     004A   337 		 RETCENTER,-		;RETURN HEADS TO CENTERLINE
+                                     004A   338 		 PACKACK,-		;PACK ACKNOWLEDGE
+                                     004A   339 		 STARTSPNDL,-		;START SPINDLE
+                                     004A   340 		 SENSECHAR,-		;SENSE CHARACTERISTICS
+                                     004A   341 		 SETCHAR,-		;SET CHARACTERISITCS
+                                     004A   342 		 SENSEMODE,-		;SENSE MODE
+                                     004A   343 		 SETMODE,-		;SET MODE
+                                     004A   344 		 ACCESS,-		;ACCESS FILE AND/OR FIND DIRECTORY ENTRY
+                                     004A   345 		 ACPCONTROL,-		;ACP CONTROL FUNCTION
+                                     004A   346 		 CREATE,-		;CREATE FILE AND/OR CREATE DIRECTORY ENTRY
+                                     004A   347 		 DEACCESS,-		;DEACCESS FILE
+                                     004A   348 		 DELETE,-		;DELETE FILE AND/OR DIRECTORY ENTRY
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   8
+01              RK611-RK06/RK07 FUNCTION DECISION TABLE                                                                          (1)
+
+                                     004A   349 		 MODIFY,-		;MODIFY FILE ATTRIBUTES
+                                     004A   350 		 MOUNT>			;MOUNT VOLUME
+                                     0052   351 	FUNCTAB	DM_ALIGN,-		;TEST ALIGNMENT FUNCTIONS
+                                     0052   352 		<READHEAD,-		;READ HEADER
+                                     0052   353 		 READLBLK,-		;READ LOGICAL BLOCK
+                                     0052   354 		 READPBLK,-		;READ PHYSICAL BLOCK
+                                     0052   355 		 READVBLK,-		;READ VIRTUAL BLOCK
+                                     0052   356 		 WRITECHECK,-		;WRITE CHECK
+                                     0052   357 		 WRITEHEAD,-		;WRITE HEADERS
+                                     0052   358 		 WRITELBLK,-		;WRITE LOGICAL BLOCK
+                                     0052   359 		 WRITEPBLK,-		;WRITE PHYSICAL BLOCK
+                                     0052   360 		 WRITEVBLK>		;WRITE VIRTUAL BLOCK
+                                     005E   361 	FUNCTAB	ACP$READBLK,-		;READ FUNCTIONS
+                                     005E   362 		<READHEAD,-		;READ HEADER
+                                     005E   363 		 READLBLK,-		;READ LOGICAL BLOCK
+                                     005E   364 		 READPBLK,-		;READ PHYSICAL BLOCK
+                                     005E   365 		 READVBLK>		;READ VIRTUAL BLOCK
+                                     006A   366 	FUNCTAB	ACP$WRITEBLK,-		;WRITE FUNCTIONS
+                                     006A   367 		<WRITECHECK,-		;WRITE CHECK
+                                     006A   368 		 WRITEHEAD,-		;WRITE HEADERS
+                                     006A   369 		 WRITELBLK,-		;WRITE LOGICAL BLOCK
+                                     006A   370 		 WRITEPBLK,-		;WRITE PHYSICAL BLOCK
+                                     006A   371 		 WRITEVBLK>		;WRITE VIRTUAL BLOCK
+                                     0076   372 	FUNCTAB	ACP$ACCESS,<ACCESS,CREATE> ;ACCESS AND CREATE FILE OR DIRECTORY
+                                     0082   373 	FUNCTAB	ACP$DEACCESS,<DEACCESS>	;DEACCESS FILE
+                                     008E   374 	FUNCTAB	ACP$MODIFY,-		;
+                                     008E   375 		<ACPCONTROL,-		;ACP CONTROL FUNCTION
+                                     008E   376 		 DELETE,-		;DELETE FILE OR DIRECTORY ENTRY
+                                     008E   377 		 MODIFY>		;MODIFY FILE ATTRIBUTES
+                                     009A   378 	FUNCTAB	ACP$MOUNT,<MOUNT>	;MOUNT VOLUME
+                                     00A6   379 	FUNCTAB	EXE$ZEROPARM,-		;ZERO PARAMETER FUNCTIONS
+                                     00A6   380 		<NOP,-			;NO OPERATION
+                                     00A6   381 		 UNLOAD,-		;UNLOAD VOLUME
+                                     00A6   382 		 RECAL,-		;RECALIBRATE
+                                     00A6   383 		 DRVCLR,-		;DRIVE CLEAR
+                                     00A6   384 		 RELEASE,-		;RELEASE PORT
+                                     00A6   385 		 RETCENTER,-		;RETURN HEADS TO CENTERLINE
+                                     00A6   386 		 STARTSPNDL,-		;START SPINDLE
+                                     00A6   387 		 PACKACK>		;PACK ACKNOWLEDGE
+                                     00B2   388 	FUNCTAB	EXE$ONEPARM,-		;ONE PARAMETER FUNCTIONS
+                                     00B2   389 		<SEEK,-			;SEEK CYLINDER
+                                     00B2   390 		 OFFSET>		;OFFSET HEADS
+                                     00BE   391 	FUNCTAB	EXE$SENSEMODE,-		;
+                                     00BE   392 		<SENSECHAR,-		;SENSE CHARACTERISTICS
+                                     00BE   393 		 SENSEMODE>		;SENSE MODE
+                                     00CA   394 	FUNCTAB	EXE$SETCHAR,-		;
+                                     00CA   395 		<SETCHAR,-		;SET CHARACTERISTICS
+                                     00CA   396 		 SETMODE>		;SET MODE
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page   9
+01              TEST ALIGNMENT OF BUFFER                                                                                         (1)
+
+                                     00D6   398 	.SBTTL	TEST ALIGNMENT OF BUFFER
+                                     00D6   399 ;+
+                                     00D6   400 ; DM_ALIGN - TEST ALIGNMENT OF BUFFER
+                                     00D6   401 ;
+                                     00D6   402 ; THIS ROUTINE IS CALLED FROM THE FUNCTION DECISION TABLE DISPATCHER TO CHECK THE
+                                     00D6   403 ; ALIGNMENT OF THE BUFFER.
+                                     00D6   404 ;
+                                     00D6   405 ; INPUTS:
+                                     00D6   406 ;
+                                     00D6   407 ;	R0 = SCRATCH.
+                                     00D6   408 ;	R1 = SCRATCH.
+                                     00D6   409 ;	R2 = SCRATCH.
+                                     00D6   410 ;	R3 = ADDRESS OF I/O REQUEST PACKET.
+                                     00D6   411 ;	R4 = CURRENT PROCESS PCB ADDRESS.
+                                     00D6   412 ;	R5 = ASSIGNED DEVICE UCB ADDRESS.
+                                     00D6   413 ;	R6 = ADDRESS OF CCB.
+                                     00D6   414 ;	R7 = I/O FUNCTION CODE.
+                                     00D6   415 ;	R8 = FUNCTION DECISION TABLE DISPATCH ADDRESS.
+                                     00D6   416 ;	R9 = SCRATCH.
+                                     00D6   417 ;	R10 = SCRATCH.
+                                     00D6   418 ;	R11 = SCRATCH.
+                                     00D6   419 ;	AP = ADDRESS OF FIRST FUNCTION DEPENDENT PARAMETER.
+                                     00D6   420 ;
+                                     00D6   421 ; OUTPUTS:
+                                     00D6   422 ;
+                                     00D6   423 ;	THE BUFFER BYTE COUNT IS CHECKED FOR BEING EQUAL TO 0 MOD 2. IF THE CHECK
+                                     00D6   424 ;	FAILS, THEN THE I/O OPERATION IS TERMINATED WITH AN ERROR. ELSE A RETURN
+                                     00D6   425 ;	TO THE FUNCTION DECISION TABLE DISPATCHER IS EXECUTED.
+                                     00D6   426 ;-
+                                     00D6   427  
+                                 00000000   428 	.PSECT	Y$EXEPAGED
+                                     0000   429 DM_ALIGN:				;
+         04 AC            00     E0  0000   430 	BBS	#0,4(AP),10$		;IF SET, ODD BYTE COUNT
+                          01         0004       
+                                 05  0005   431 	RSB				;
+            50       0000'8F     3C  0006   432 10$:	MOVZWL	#SS$_BUFBYTALI,R0	;SET BUFFER ALIGNMENT STATUS
+                 00000000'GF     17  000B   433 	JMP	G^EXE$ABORTIO		;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  10
+01              START I/O OPERATION                                                                                              (1)
+
+                                     0011   435 	.SBTTL	START I/O OPERATION
+                                     0011   436 ;+
+                                     0011   437 ; STARTIO - START I/O OPERATION ON DEVICE UNIT
+                                     0011   438 ;
+                                     0011   439 ; THIS ENTRY POINT IS ENTERED TO START AN I/O OPERATION ON A DEVICE UNIT.
+                                     0011   440 ;
+                                     0011   441 ; INPUTS:
+                                     0011   442 ;
+                                     0011   443 ;	R3 = ADDRESS OF I/O PACKET.
+                                     0011   444 ;	R5 = UCB ADDRESS OF DEVICE UNIT.
+                                     0011   445 ;
+                                     0011   446 ; OUTPUTS:
+                                     0011   447 ;
+                                     0011   448 ;	FUNCTION DEPENDENT PARAMETERS ARE STORED IN THE DEVICE UCB, THE ERROR
+                                     0011   449 ;	RETRY COUNT IS RESET, AND THE FUNCTION IS EXECUTED. AT FUNCTION COMPLETION
+                                     0011   450 ;	THE OPERATION IS TERMINATED THROUGH REQUEST COMPLETE.
+                                     0011   451 ;-
+                                     0011   452  
+                                 000000D6   453 	.PSECT	$$$102_DRIVER
+                                     00D6   454 DM_STARTIO:				;START I/O OPERATION
+         70 A5         71 A5     90  00D6   455 	MOVB	UCB$B_ERTMAX(R5),UCB$B_ERTCNT(R5) ;INITIALIZE ERROR RETRY COUNT
+       0084 C5         20 A3     B0  00DB   456 	MOVW	IRP$W_FUNC(R3),UCB$W_FUNC(R5) ;SAVE FUNCTION CODE AND MODIFIERS
+            50         34 A3     D0  00E1   457 	MOVL	IRP$L_MEDIA(R3),R0	;GET PARAMETER LONGWORD
+                                     00E5   458  
+                                     00E5   459 ;
+                                     00E5   460 ; MOVE FUNCTION DEPENDENT PARAMETERS TO UCB
+                                     00E5   461 ;
+                                     00E5   462  
+                          00     EF  00E5   463 10$:	EXTZV	#IRP$V_FCODE,#IRP$S_FCODE,- ;EXTRACT I/O FUNCTION CODE
+         20 A3            06         00E7   464 		IRP$W_FUNC(R3),R1	;
+                          51         00EA       
+            51            02     91  00EB   465 	CMPB	#IO$_SEEK,R1 		;SEEK FUNCTION?
+                          19     13  00EE   466 	BEQL	20$			;IF EQL YES
+            51            07     91  00F0   467 	CMPB	#IO$_RETCENTER,R1	;RETURN HEADS TO CENTERLINE?
+                          1B     13  00F3   468 	BEQL	30$			;IF EQL YES
+            51            06     91  00F5   469 	CMPB	#IO$_OFFSET,R1 		;OFFSET FUNCTION?
+                          18     13  00F8   470 	BEQL	40$			;IF EQL YES
+       0088 C5            50     D0  00FA   471 	MOVL	R0,UCB$W_DA(R5)		;STORE PARAMETER LONGWORD
+            51            19     91  00FF   472 	CMPB	#IO$_STARTSPNDL,R1	;DISJOINT FUNCTION CODE?
+                          13     1A  0102   473 	BGTRU	50$			;IF GTRU NO
+            51            10     A2  0104   474 	SUBW	#IO$_STARTSPNDL-IO$_SEARCH,R1 ;CONVERT TO DENSE FUNCTION CODE
+                          0E     11  0107   475 	BRB	50$			;
+                                     0109   476  
+                                     0109   477 ;
+                                     0109   478 ; SEEK FUNCTION - SET CYLINDER ADDRESS
+                                     0109   479 ;
+                                     0109   480  
+       008A C5            50     B0  0109   481 20$:	MOVW	R0,UCB$W_DC(R5)		;SET CYLINDER ADDRESS
+                          07     11  010E   482 	BRB	50$			;
+                                     0110   483  
+                                     0110   484 ;
+                                     0110   485 ; RETURN HEADS TO CENTERLINE FUNCTION - CLEAR OFFSET VALUE
+                                     0110   486 ;
+                                     0110   487  
+                          50     D4  0110   488 30$:	CLRL	R0			;CLEAR OFFSET VALUE
+                                     0112   489  
+                                     0112   490 ;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  11
+01              START I/O OPERATION                                                                                              (1)
+
+                                     0112   491 ; OFFSET FUNCTION - SET CURRENT OFFSET VALUE
+                                     0112   492 ;
+                                     0112   493  
+       0086 C5            50     90  0112   494 40$:	MOVB	R0,UCB$W_OFFSET(R5)	;SET OFFSET VALUE
+                                     0117   495  
+                                     0117   496 ;
+                                     0117   497 ; FINISH PREPROCESSING
+                                     0117   498 ;
+                                     0117   499  
+         76 A5            51     90  0117   500 50$:	MOVB	R1,UCB$B_FEX(R5)	;SAVE FUNCTION DISPATCH INDEX
+         5A A5            03     AA  011B   501 	BICW	#UCB$M_ECC!-		;CLEAR ECC CORRECTION MADE AND,
+                                     011F   502 		UCB$M_DIAGBUF,UCB$W_DEVSTS(R5) ;DIAGNOSTIC BUFFER PRESENT
+         2A A3            07     E1  011F   503 	BBC	#IRP$V_DIAGBUF,IRP$W_STS(R3),FDISPATCH ;IF CLR, NO BUFFER
+                          04         0123       
+         5A A5            02     A8  0124   504 	BISW	#UCB$M_DIAGBUF,UCB$W_DEVSTS(R5) ;SET DIAGNOSTIC BUFFER PRESENT
+                                     0128   505  
+                                     0128   506 ;
+                                     0128   507 ; CENTRAL FUNCTION DISPATCH
+                                     0128   508 ;
+                                     0128   509  
+                                     0128   510 FDISPATCH:				;FUNCTION DISPATCH
+            53         4C A5     D0  0128   511 	MOVL	UCB$L_IRP(R5),R3	;RETRIEVE ADDRESS OF I/O PACKET
+         2A A3            08     E0  012C   512 	BBS	#IRP$V_PHYSIO,IRP$W_STS(R3),10$ ;IF SET, PHYSICAL I/O FUNCTION
+                          0D         0130       
+         58 A5            0B     E0  0131   513 	BBS	#UCB$V_VALID,UCB$W_STS(R5),10$ ;IF SET, VOLUME SOFTWARE VALID
+                          08         0135       
+            50       0000'8F     3C  0136   514 	MOVZWL	#SS$_VOLINV,R0		;SET VOLUME INVALID STATUS
+                          0438   31  013B   515 	BRW	RESETXFR		;
+                                     013E   516  
+                                     013E   517 ;
+                                     013E   518 ; UNIT IS SOFTWARE VALID OR FUNCTION IS PHYSICAL I/O
+                                     013E   519 ;
+                                     013E   520  
+                     0087 C5     94  013E   521 10$:	CLRB	UCB$W_OFFSET+1(R5)	;CLEAR ECC INHIBIT AND DATACHECK IN PROGRESS
+       0091 C5            01     90  0142   522 	MOVB	#1,UCB$B_OFFRTC(R5)	;SET INITIAL OFFSET RETRY COUNT
+                     0090 C5     94  0147   523 	CLRB	UCB$B_OFFNDX(R5)	;CLEAR INITIAL OFFSET TABLE INDEX
+            53         76 A5     9A  014B   524 	MOVZBL	UCB$B_FEX(R5),R3	;GET FUNCTION DISPATCH INDEX
+                                     014F   525 	CASE	R3,<-			;DISPATCH TO FUNCTION HANDLING ROUTINE
+                                     014F   526 		WRITECHECK,-		;WRITE CHECK DATA
+                                     014F   527 		WRITEDATA,-		;WRITE DATA
+                                     014F   528 		READDATA,-		;READ DATA
+                                     014F   529 		WRITEHEAD,-		;WRITE HEADER
+                                     014F   530 		READHEAD,-		;READ HEADER
+                                     014F   531 		>,LIMIT=#CDF_WRITECHECK	;
+                                     015D   532  
+                                     015D   533 ;
+                                     015D   534 ; NO OPERATION, UNLOAD, SEEK, RECALIBRATE, DRIVE CLEAR, RELEASE, OFFSET,
+                                     015D   535 ; RETURN TO CENTER LINE, PACK ACKNOWLEDGE, AND START SPINDLE
+                                     015D   536 ;
+                                     015D   537  
+                                     015D   538 NOP:					;NO OPERATION
+                                     015D   539 UNLOAD:					;UNLOAD DRIVE
+                                     015D   540 SEEK:					;SEEK CYLINDER
+                                     015D   541 RECAL:					;RECALIBRATE
+                                     015D   542 DRVCLR:					;DRIVE CLEAR
+                                     015D   543 RELEASE:				;RELEASE PORT
+                                     015D   544 OFFSET:					;OFFSET READ HEADS
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  12
+01              START I/O OPERATION                                                                                              (1)
+
+                                     015D   545 RETCENTER:				;RETURN TO CENTERLINE
+                                     015D   546 PACKACK:				;PACK ACKNOWLEDGE
+                                     015D   547 STARTSPNDL:				;START SPINDLE
+                                     015D   548 	EXFUNCH	RETRY			;EXECUTE HOUSEKEEPING FUNCTION
+                          56     11  0161   549 	BRB	NORMAL			;
+                                     0163   550  
+                                     0163   551 ;
+                                     0163   552 ; WRITE CHECK DATA, WRITE HEADERS, AND READ HEAD
+                                     0163   553 ;
+                                     0163   554  
+                                     0163   555 WRITECHECK:				;WRITE CHECK DATA
+                                     0163   556 WRITEHEAD:				;WRITE HEADERS
+                                     0163   557 READHEAD:				;READ HEADER
+       0084 C5       4000 8F     AA  0163   558 	BICW	#IO$M_DATACHECK,UCB$W_FUNC(R5) ;CLEAR DATA CHECK REQUEST
+                                     016A   559  
+                                     016A   560 ;
+                                     016A   561 ; WRITE DATA, WRITE CHECK DATA, WRITE HEADERS, AND READ HEADER
+                                     016A   562 ;
+                                     016A   563  
+                                     016A   564 WRITEDATA:				;WRITE DATA
+       0087 C5            01     88  016A   565 	BISB	#DM_M_ECI,UCB$W_OFFSET+1(R5) ;SET ECC INHIBIT
+                                     016F   566  
+                                     016F   567 ;
+                                     016F   568 ; READ DATA, WRITE DATA, WRITE CHECK DATA, WRITE HEADERS, AND READ HEADER
+                                     016F   569 ;
+                                     016F   570  
+                                     016F   571 READDATA:				;READ DATA
+       0084 C5            0C     E0  016F   572 	BBS	#IO$V_INHSEEK,UCB$W_FUNC(R5),TRANSFR ;IF SET, NO EXPLICIT SEEK
+                          07         0174       
+                                     0175   573 	EXFUNCH	RETRY,F_SEEK		;SEEK DESIRED CYLINDER
+                                     017C   574  
+                                     017C   575 ;
+                                     017C   576 ; DATA TRANSFER
+                                     017C   577 ;
+                                     017C   578  
+                                     017C   579 TRANSFR:				;DATA TRANSFER REQUEST CHANNEL
+            53         76 A5     9A  017C   580 	MOVZBL	UCB$B_FEX(R5),R3	;GET FUNCTION DISPATCH INDEX
+                                     0180   581 	EXFUNCL	TRANXT			;EXECUTE TRANSFER FUNCTION
+                                     0184   582  
+                                     0184   583 ;
+                                     0184   584 ; DATA CHECK
+                                     0184   585 ;
+                                     0184   586  
+                                     0184   587 DATACHECK:				;DATA CHECK
+       0084 C5            0E     E1  0184   588 	BBC	#IO$V_DATACHECK,UCB$W_FUNC(R5),NORMAL ;IF CLR, NO DATA CHECK
+                          2F         0189       
+            50       0000'8F     3C  018A   589 	MOVZWL	#SS$_WASECC,R0		;ASSUME ECC CORRECTION WAS MADE
+       0084 C5            00     E0  018F   590 	BBS	#UCB$V_ECC,UCB$W_FUNC(R5),CHECKXT ;IF SET, ECC CORRECTION MADE
+                          27         0194       
+       0087 C5            03     90  0195   591 	MOVB	#DM_M_DCK!-		;SET DATA CHECK IN PROGRESS
+                                     019A   592 		DM_M_ECI,UCB$W_OFFSET+1(R5) ;AND INHIBIT ECC CORRECTION
+       0091 C5            01     90  019A   593 	MOVB	#1,UCB$B_OFFRTC(R5)	;SET INITIAL OFFSET RETRY COUNT
+                     0090 C5     94  019F   594 	CLRB	UCB$B_OFFNDX(R5)	;CLEAR INITIAL OFFSET TABLE INDEX
+            52         4C A5     D0  01A3   595 	MOVL	UCB$L_IRP(R5),R2	;GET ADDRESS OF IRP
+         68 A5         2C A2     7D  01A7   596 	MOVQ	IRP$L_SVAPTE(R2),UCB$L_SVAPTE(R5) ;RESET TRANSFER PARAMETERS
+       0088 C5         34 A2     D0  01AC   597 	MOVL	IRP$L_MEDIA(R2),UCB$W_DA(R5) ;
+                                     01B2   598  
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  13
+01              START I/O OPERATION                                                                                              (1)
+
+                                     01B2   599 ;
+                                     01B2   600 ; DATA CHECK RETRY
+                                     01B2   601 ;
+                                     01B2   602  
+                                     01B2   603 CHECKRETRY:				;DATA CHECK RETRY
+                                     01B2   604 	EXFUNCL	TRANXT,F_WRITECHECK	;EXECUTE WRITECHECK FUNCTION
+                                     01B9   605  
+                                     01B9   606 ;
+                                     01B9   607 ; SUCCESSFUL OPERATION COMPLETION
+                                     01B9   608 ;
+                                     01B9   609  
+                                     01B9   610 NORMAL:					;
+            50            00'    3C  01B9   611 	MOVZWL	S^#SS$_NORMAL,R0	;SET NORMAL COMPLETION STATUS
+                                     01BC   612 CHECKXT:				;
+                          0139   31  01BC   613 	BRW	FUNCXT			;
+                                     01BF   614  
+                                     01BF   615 ;
+                                     01BF   616 ; TRANSFER ENDED WITH A RETRIABLE ERROR
+                                     01BF   617 ;
+                                     01BF   618  
+                                     01BF   619 TRANXT:					;TRANSFER EXIT
+         77 A5            0B     91  01BF   620 	CMPB	#CDF_WRITEDATA,UCB$B_CEX(R5) ;WRITE DATA FUNCTION?
+                          1B     13  01C3   621 	BEQL	RETRY			;IF EQL YES
+         77 A5            0D     91  01C5   622 	CMPB	#CDF_WRITEHEAD,UCB$B_CEX(R5) ;WRITE HEADER FUNCTION?
+                          15     13  01C9   623 	BEQL	RETRY			;IF EQL YES
+            51       2820 8F     B3  01CB   624 	BITW	#RK_CS1_M_CTO!-		;CONTROLLER TIMEOUT OR,
+                                     01D0   625 		RK_CS1_M_DPPE!-		;DATAPATH PURGE ERROR OR,
+                                     01D0   626 		RK_CS1_M_SPAR,R1	;SERIAL BUS PARITY ERROR?
+                          0E     12  01D0   627 	BNEQ	RETRY			;IF NEQ YES
+            52       E800 8F     B3  01D2   628 	BITW	#RK_CS2_M_DLT!-		;DATA LATE OR,
+                                     01D7   629 		RK_CS2_M_UPE!-		;UNIBUS PARITY ERROR OR,
+                                     01D7   630 		RK_CS2_M_NEM!-		;NONEXISTENT MEMORY OR,
+                                     01D7   631 		RK_CS2_M_WCE,R2		;WRITE CHECK ERROR?
+                          07     12  01D7   632 	BNEQ	RETRY			;IF NEQ YES
+            53       200A 8F     B3  01D9   633 	BITW	#RK_ER_M_DRPAR!-	;DRIVE PARITY ERROR OR,
+                                     01DE   634 		RK_ER_M_OPI!-		;OPERATION INCOMPLETE OR,
+                                     01DE   635 		RK_ER_M_SKI,R3		;SEEK INCOMPLETE?
+                          03     13  01DE   636 	BEQL	ECC			;IF EQL NO
+                                     01E0   637 RETRY:					;
+                          008D   31  01E0   638 	BRW	RETRYERR		;RETRIABLE ERROR
+                                     01E3   639  
+                                     01E3   640 ;
+                                     01E3   641 ; ECC, DRIVE TIMING, OR HEADER ERROR - APPLY ECC OR PERFORM OFFSET RECOVERY
+                                     01E3   642 ;
+                                     01E3   643  
+                                     01E3   644 ECC:					;ECC CORRECTION
+            50       0092 C5     3C  01E3   645 	MOVZWL	UCB$W_BCR(R5),R0	;GET NEGATIVE NUMBER OF BYTES REMAINING
+            50         6E A5     A0  01E8   646 	ADDW	UCB$W_BCNT(R5),R0	;CALCULATE NUMBER OF BYTES TRANSFERED
+            51            50     D0  01EC   647 	MOVL	R0,R1			;COPY NUMBER OF BYTES TRANSFERED
+                          34     13  01EF   648 	BEQL	OFF			;IF EQL NONE - PERFORM OFFSET RECOVERY
+            53            08     E0  01F1   649 	BBS	#RK_ER_V_HVRC,R3,10$	;IF SET, HEADER VRC ERROR
+                          02         01F4       
+                          50     D7  01F5   650 	DECL	R0			;SET TO TRUNCATE LAST BLOCK TRANSFERED
+            50       01FF 8F     AA  01F7   651 10$:	BICW	#^X1FF,R0		;TRUNCATE RESIDUAL BYTES TRANSFERED
+            53       1140 8F     B3  01FC   652 	BITW	#RK_ER_M_DTE!-		;DRIVE TIMING ERROR OR,
+                                     0201   653 		RK_ER_M_ECH!-		;ECC HARD ERROR OR,
+                                     0201   654 		RK_ER_M_HVRC,R3		;HEADER VRC ERROR?
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  14
+01              START I/O OPERATION                                                                                              (1)
+
+                          22     12  0201   655 	BNEQ	OFF			;IF NEQ YES - PERFORM OFFSET RECOVERY
+       0087 C5            00     E0  0203   656 	BBS	#DM_V_ECI,UCB$W_OFFSET+1(R5),OFF ;IF SET, ECC INHIBITED
+                          1C         0208       
+                          51     DD  0209   657 	PUSHL	R1			;SAVE TOTAL NUMBER OF BYTES TRANSFERED
+                 00000000'GF     16  020B   658 	JSB	G^IOC$APPLYECC		;APPLY ECC CORRECTION
+                          50   8ED0  0211   659 	POPL	R0			;RETRIEVE TRANSFERED BYTE COUNT
+                 00000000'GF     16  0214   660 	JSB	G^IOC$UPDATRANSP	;UPDATE TRANSFER PARAMETERS
+                       6E A5     B5  021A   661 	TSTW	UCB$W_BCNT(R5)		;ANY MORE TO TRANSFER?
+                          03     13  021D   662 	BEQL	20$			;IF EQL NO
+                          FF5A   31  021F   663 	BRW	TRANSFR			;TRANSFER NEXT SEGMENT
+                          FF5F   31  0222   664 20$:	BRW	DATACHECK		;CHECK FOR WRITE CHECK
+                                     0225   665  
+                                     0225   666 ;
+                                     0225   667 ; OFF - OFFSET RECOVERY
+                                     0225   668 ;
+                                     0225   669 ; THIS CODE IS EXECUTED WHEN A DRIVE TIMING ERROR, HEADER VRC, OR ECC HARD
+                                     0225   670 ; ERROR IS DETECTED ON A READ FUNCTION.
+                                     0225   671 ;
+                                     0225   672  
+                                     0225   673 OFF:					;OFFSET RECOVERY
+                          50     D5  0225   674 	TSTL	R0			;ANY GOOD DATA TRANSFERED?
+                          0C     13  0227   675 	BEQL	10$			;IF EQL NO
+                                     0229   676  
+                                     0229   677 ;
+                                     0229   678 ; THE TRANSFER ENDED IN AN ERROR BUT THERE WERE SECTORS TRANSFERED THAT
+                                     0229   679 ; CONTAINED GOOD DATA. SINCE THE ERROR COULD HAVE BEEN CAUSED BY A CYLIN-
+                                     0229   680 ; DER CROSSING, THE GOOD DATA IS SAVED AND THE TRANSFER IS RETRIED FROM THE
+                                     0229   681 ; POINT OF ERROR.
+                                     0229   682 ;
+                                     0229   683  
+                 00000000'GF     16  0229   684 	JSB	G^IOC$UPDATRANSP	;UPDATE TRANSFER PARAMETERS
+                     0090 C5     94  022F   685 	CLRB	UCB$B_OFFNDX(R5)	;RESET OFFSET TABLE INDEX
+                          0B     11  0233   686 	BRB	20$			;
+                                     0235   687  
+                                     0235   688 ;
+                                     0235   689 ; NO GOOD DATA TRANSFERED - CHECK IF CHANGE IN OFFSET NEEDED
+                                     0235   690 ;
+                                     0235   691  
+                     0091 C5     97  0235   692 10$:	DECB	UCB$B_OFFRTC(R5)	;CHANGE CURRENT OFFSET?
+                          29     12  0239   693 	BNEQ	40$			;IF NEQ NO
+       0091 C5            02     90  023B   694 	MOVB	#2,UCB$B_OFFRTC(R5)	;SET OFFSET RETRY COUNT
+                     0090 C5     96  0240   695 20$:	INCB	UCB$B_OFFNDX(R5)	;UPDATE OFFSET TABLE INDEX
+            50       0090 C5     9A  0244   696 	MOVZBL	UCB$B_OFFNDX(R5),R0	;GET NEXT OFFSET TABLE INDEX
+            50            08     91  0249   697 	CMPB	#OFFSIZ,R0		;ALL OFFSETS TRIED?
+                          38     13  024C   698 	BEQL	OFFSETERR		;IF EQL YES
+       0086 C5       FDE6 CF40   90  024E   699 	MOVB	OFFTAB-1[R0],UCB$W_OFFSET(R5) ;SET NEXT OFFSET VALUE
+                          05     12  0256   700 	BNEQ	30$			;IF NEQ NOT OFFSET ZERO
+       0091 C5            10     90  0258   701 	MOVB	#16,UCB$B_OFFRTC(R5)	;SET OFFSET RETRY COUNT
+                                     025D   702 30$:	EXFUNCH	FATALERR,F_OFFSET	;OFFSET TO NEXT POSITION
+       0087 C5            01     E0  0264   703 40$:	BBS	#DM_V_DCK,UCB$W_OFFSET+1(R5),50$ ;IF SET, DATA CHECK FUNCTION
+                          03         0269       
+                          FF0F   31  026A   704 	BRW	TRANSFR			;TRY FUNCTION AGAIN
+                          FF42   31  026D   705 50$:	BRW	CHECKRETRY		;TRY DATA CHECK AGAIN
+                                     0270   706  
+                                     0270   707 ;
+                                     0270   708 ; RETRIABLE ERROR
+                                     0270   709 ;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  15
+01              START I/O OPERATION                                                                                              (1)
+
+                                     0270   710  
+                                     0270   711 RETRYERR:				;RETRIABLE ERROR
+                       70 A5     97  0270   712 	DECB	UCB$B_ERTCNT(R5)	;ANY RETRIES LEFT?
+                          16     13  0273   713 	BEQL	FATALERR		;IF EQL NO
+            53       2002 8F     B3  0275   714 	BITW	#RK_ER_M_OPI!-		;OPERATION INCOMPLETE OR,
+                                     027A   715 		RK_ER_M_SKI,R3		;SEEK INCOMPLETE?
+                          07     13  027A   716 	BEQL	10$			;IF EQL NO
+                                     027C   717 	EXFUNCH	FATALERR,F_RECAL	;RECALIBRATE DRIVE
+                          FEA2   31  0283   718 10$:	BRW	FDISPATCH		;
+                                     0286   719  
+                                     0286   720 ;
+                                     0286   721 ; ALL OFFSETS TRIED - RETRIEVE FINAL TRANSFER STATUS
+                                     0286   722 ;
+                                     0286   723  
+                                     0286   724 OFFSETERR:				;OFFSET RECOVERY ERROR
+            51       0096 C5     3C  0286   725 	MOVZWL	UCB$W_DM_CS1(R5),R1	;RETRIEVE CONTROL STATUS REGISTER 1
+                                     028B   726  
+                                     028B   727 ;
+                                     028B   728 ; FATAL CONTROLLER/DRIVE ERROR, ERROR RETRY COUNT EXHAUSTED, ERROR RETRY
+                                     028B   729 ; INHIBITED, OR FINAL OFFSET TRIED
+                                     028B   730 ;
+                                     028B   731  
+                                     028B   732 FATALERR:				;FATAL ERROR - SET STATUS
+            50       0000'8F     3C  028B   733 	MOVZWL	#SS$_VOLINV,R0		;SET VOLUME INVALID STATUS
+       00A0 C5            06     E1  0290   734 	BBC	#RK_DS_V_VV,UCB$W_DM_DS(R5),FUNCXT ;IF CLR, VOLUME INVALID
+                          62         0295       
+            50       0000'8F     3C  0296   735 	MOVZWL	#SS$_UNSAFE,R0		;SET DRIVE UNSAFE STATUS
+            53            0E     E0  029B   736 	BBS	#RK_ER_V_UNS,R3,FUNCXT	;IF SET, DRIVE UNSAFE
+                          59         029E       
+            50       0000'8F     3C  029F   737 	MOVZWL	#SS$_FORMAT,R0		;SET FORMAT ERROR STATUS
+            53            30     B3  02A4   738 	BITW	#RK_ER_M_DTYE!-		;DRIVE TYPE ERROR OR,
+                                     02A7   739 		RK_ER_M_FMTE,R3		;FORMAT ERROR?
+                          4F     12  02A7   740 	BNEQ	FUNCXT			;IF NEQ YES
+            50       0000'8F     3C  02A9   741 	MOVZWL	#SS$_WRITLCK,R0		;SET WRITE LOCK ERROR
+            53            0B     E0  02AE   742 	BBS	#RK_ER_V_WLE,R3,FUNCXT	;IF SET, WRITE LOCK ERROR
+                          46         02B1       
+            50       0000'8F     3C  02B2   743 	MOVZWL	#SS$_IVADDR,R0		;SET INVALID DISK ADDRESS STATUS
+            53       0600 8F     B3  02B7   744 	BITW	#RK_ER_M_COE!-		;CYLINDER ADDRESS OVERFLOW OR,
+                                     02BC   745 		RK_ER_M_IDAE,R3		;INVALID DISK ADDRESS ERROR?
+                          3A     12  02BC   746 	BNEQ	FUNCXT			;IF NEQ YES
+            50       0000'8F     3C  02BE   747 	MOVZWL	#SS$_DRVERR,R0		;SET DRIVE ERROR STATUS
+            53       3087 8F     B3  02C3   748 	BITW	#RK_ER_M_BSE!-		;BAD SECTOR ERROR OR,
+                                     02C8   749 		RK_ER_M_DTE!-		;DRIVE TIMING ERROR OR,
+                                     02C8   750 		RK_ER_M_ILF!-		;ILLEGAL FUNCTION OR,
+                                     02C8   751 		RK_ER_M_NXF!-		;NONEXECUTABLE FUNCTION OR,
+                                     02C8   752 		RK_ER_M_OPI!-		;OPERATION INCOMPLETE OR,
+                                     02C8   753 		RK_ER_M_SKI,R3		;SEEK INCOMPLETE?
+                          2E     12  02C8   754 	BNEQ	FUNCXT			;IF NEQ YES
+            50       0000'8F     3C  02CA   755 	MOVZWL	#SS$_PARITY,R0		;SET PARITY ERROR STATUS
+            53       8148 8F     B3  02CF   756 	BITW	#RK_ER_M_DCK!-		;DATA CHECK ERROR OR,
+                                     02D4   757 		RK_ER_M_DRPAR!-		;DRIVE PARITY ERROR OR,
+                                     02D4   758 		RK_ER_M_ECH!-		;ECC HARD ERROR OR,
+                                     02D4   759 		RK_ER_M_HVRC,R3		;HEADER VRC ERROR?
+                          22     12  02D4   760 	BNEQ	FUNCXT			;IF NEQ YES
+            51       2020 8F     B3  02D6   761 	BITW	#RK_CS1_M_DPPE!-	;DATAPATH PURGE ERROR OR,
+                                     02DB   762 		RK_CS1_M_SPAR,R1	;SERIAL BUS PARITY ERROR?
+                          1B     12  02DB   763 	BNEQ	FUNCXT			;IF NEQ YES
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  16
+01              START I/O OPERATION                                                                                              (1)
+
+            52            0D     E0  02DD   764 	BBS	#RK_CS2_V_UPE,R2,FUNCXT	;IF SET, UNIBUS PARITY ERROR
+                          17         02E0       
+            50       0000'8F     3C  02E1   765 	MOVZWL	#SS$_DATACHECK,R0	;SET DATA CHECK ERROR STATUS
+            52            0E     E0  02E6   766 	BBS	#RK_CS2_V_WCE,R2,FUNCXT	;IF SET, WRITE CHECK ERROR
+                          0E         02E9       
+            50       0000'8F     3C  02EA   767 	MOVZWL	#SS$_NONEXDRV,R0	;SET NONEXISTENT DRIVE STATUS
+            52            0C     E0  02EF   768 	BBS	#RK_CS2_V_NED,R2,FUNCXT	;IF SET, NONEXISTENT DRIVE
+                          05         02F2       
+            50       0000'8F     3C  02F3   769 	MOVZWL	#SS$_CTRLERR,R0		;SET CONTROLLER ERROR STATUS
+                                     02F8   770  
+                                     02F8   771 ;
+                                     02F8   772 ; FUNCTION COMPLETION COMMON EXIT
+                                     02F8   773 ;
+                                     02F8   774  
+                                     02F8   775 FUNCXT:					;FUNCTION EXIT
+                          50     DD  02F8   776 	PUSHL	R0			;SAVE FINAL REQUEST STATUS
+                 00000000'GF     16  02FA   777 	JSB	G^IOC$DIAGBUFILL	;FILL DIAGNOSTIC BUFFER IF PRESENT
+         76 A5            0A     91  0300   778 	CMPB	#CDF_WRITECHECK,UCB$B_FEX(R5) ;DRIVE RELATED FUNCTION?
+                          0C     1A  0304   779 	BGTRU	10$			;IF GTRU YES
+            53         4C A5     D0  0306   780 	MOVL	UCB$L_IRP(R5),R3	;RETRIEVE ADDRESS OF IRP
+         32 A3       0092 C5     A1  030A   781 	ADDW3	UCB$W_BCR(R5),IRP$W_BCNT(R3),2(SP) ;CALCULATE BYTES TRANSFERED
+                       02 AE         0310       
+                          51     D4  0312   782 10$:	CLRL	R1			;CLEAR SECOND STATUS LONGWORD
+                          50   8ED0  0314   783 	POPL	R0			;RETRIEVE FINAL REQUEST STATUS
+                                     0317   784 	REQCOM				;COMPLETE REQUEST
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  17
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     031A   786 	.SBTTL	RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION
+                                     031A   787 ;
+                                     031A   788 ; FEXH - RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION (HIGH PRIORITY)
+                                     031A   789 ; FEXL - RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION (LOW PRIORITY)
+                                     031A   790 ;
+                                     031A   791 ; THIS ROUTINE IS CALLED VIA A BSB WITH A BYTE IMMEDIATELY FOLLOWING THAT
+                                     031A   792 ; SPECIFIES THE ADDRESS OF AN ERROR ROUTINE. ALL DATA IS ASSUMED TO HAVE BEEN
+                                     031A   793 ; SET UP IN THE UCB BEFORE THE CALL. THE APPROPRIATE PARAMETERS ARE LOADED
+                                     031A   794 ; INTO DEVICE REGISTERS AND THE FUNCTION IS INITIATED. THE RETURN ADDRESS
+                                     031A   795 ; IS STORED IN THE UCB AND A WAITFOR INTERRUPT IS EXECUTED. WHEN THE INTER-
+                                     031A   796 ; RUPT OCCURS, CONTROL IS RETURNED TO THE CALLER.
+                                     031A   797 ;
+                                     031A   798 ; INPUTS:
+                                     031A   799 ;
+                                     031A   800 ;	R3 = FUNCTION TABLE DISPATCH INDEX.
+                                     031A   801 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     031A   802 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     031A   803 ;
+                                     031A   804 ;	00(SP) = RETURN ADDRESS OF CALLER.
+                                     031A   805 ;	04(SP) = RETURN ADDRESS OF CALLER'S CALLER.
+                                     031A   806 ;
+                                     031A   807 ;	IMMEDIATELY FOLLOWING INLINE AT THE CALL SITE IS A BYTE WHICH CONTAINS
+                                     031A   808 ;	A BRANCH DESTINATION TO AN ERROR RETRY ROUTINE.
+                                     031A   809 ;
+                                     031A   810 ; OUTPUTS:
+                                     031A   811 ;
+                                     031A   812 ;	THERE ARE FOUR EXITS FROM THIS ROUTINE:
+                                     031A   813 ;
+                                     031A   814 ;	1. SPECIAL CONDITION - THIS EXIT IS TAKEN IF A POWER FAILURE OCCURS
+                                     031A   815 ;		OR THE OPERATION TIMES OUT. IT IS A JUMP TO THE APPROPRIATE
+                                     031A   816 ;		ERROR ROUTINE.
+                                     031A   817 ;
+                                     031A   818 ;	2. FATAL ERROR - THIS EXIT IS TAKEN IF A FATAL CONTROLLER OR DRIVE
+                                     031A   819 ;		ERROR OCCURS OR IF ANY ERROR OCCURS AND ERROR RETRY IS
+                                     031A   820 ;		INHIBITED. IT IS A JUMP TO THE FATAL ERROR EXIT ROUTINE.
+                                     031A   821 ;
+                                     031A   822 ;	3. RETRIABLE ERROR - THIS EXIT IS TAKEN IF A RETRIABLE CONTROLLER
+                                     031A   823 ;		OR DRIVE ERROR OCCURS AND ERROR RETRY IS NOT INHIBITED.
+                                     031A   824 ;		IT CONSISTS OF TAKING THE ERROR BRANCH EXIT.
+                                     031A   825 ;
+                                     031A   826 ;	4. SUCCESSFUL OPERATION - THIS EXIT IS TAKEN IF NO ERROR OCCURS
+                                     031A   827 ;		DURING THE OPERATION. IT CONSISTS OF A RETURN INLINE.
+                                     031A   828 ;
+                                     031A   829 ;	IN ALL CASES IF AN ERROR OCCURS, AN ATTEMPT IS MADE TO LOG THE ERROR.
+                                     031A   830 ;
+                                     031A   831 ;	IN ALL CASES FINAL DRIVE AND CONTROLLER REGISTERS ARE RETURNED VIA
+                                     031A   832 ;	THE GENERAL REGISTERS R1, R2, AND R3, AND THE UCB.
+                                     031A   833 ;
+                                     031A   834 ;	R1 = CONTROL STATUS REGISTER 1.
+                                     031A   835 ;	R2 = CONTROL STATUS REGISTER 2.
+                                     031A   836 ;	R3 = ERROR REGISTER.
+                                     031A   837 ;
+                                     031A   838 ;	UCB$W_EC1(R5) = ECC POSITION REGISTER.
+                                     031A   839 ;	UCB$W_EC2(R5) = ECC PATTERN REGISTER.
+                                     031A   840 ;	UCB$W_BCR(R5) = BYTE COUNT REGISTER.
+                                     031A   841 ;
+                                     031A   842  
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  18
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     031A   843 	.ENABL	LSB
+                                     031A   844 FEXH:					;FUNCTION EXECUTOR (HIGH PRIORITY)
+            52   00000000'GF     9E  031A   845 	MOVAB	G^IOC$REQPCHANH,R2	;SET ADDRESS OF REQUEST CHANNEL ROUTINE
+                          07     11  0321   846 	BRB	10$			;
+                                     0323   847 FEXL:					;FUNCTION EXECUTOR (LOW PRIORITY)
+            52   00000000'GF     9E  0323   848 	MOVAB	G^IOC$REQPCHANL,R2	;SET ADDRESS OF REQUEST CHANNEL ROUTINE
+                       7C A5   8ED0  032A   849 10$:	POPL	UCB$L_DPC(R5)		;SAVE DRIVER PC VALUE
+         77 A5            53     90  032E   850 	MOVB	R3,UCB$B_CEX(R5)	;SAVE CASE INDEX
+                          62     16  0332   851 	JSB	(R2)			;REQUEST CHANNEL
+            52         48 A5     3C  0334   852 	MOVZWL	UCB$W_UNIT(R5),R2	;GET DEVICE UNIT NUMBER
+                                     0338   853 	CASE	R3,<-			;DISPATCH TO PROPER FUNCTION ROUTINE
+                                     0338   854 		IMMED,-			;NO OPERATION
+                                     0338   855 		IMMED,-			;UNLOAD VOLUME
+                                     0338   856 		POSIT,-			;SEEK CYLINDER
+                                     0338   857 		POSIT,-			;RECALIBRATE
+                                     0338   858 		IMMED,-			;DRIVE CLEAR
+                                     0338   859 		RELES,-			;RELEASE DRIVE
+                                     0338   860 		POSIT,-			;OFFSET HEADS
+                                     0338   861 		POSIT,-			;RETURN TO CENTERLINE
+                                     0338   862 		IMMED,-			;PACK ACKNOWLEDGE
+                                     0338   863 		IMMED,-			;START SPINDLE
+                                     0338   864 		>			;
+                          007E   31  0350   865 	BRW	XFER			;TRANSFER FUNCTION
+                                     0353   866 	.DSABL	LSB
+                                     0353   867  
+                                     0353   868 ;
+                                     0353   869 ; IMMEDIATE FUNCTION EXECUTION
+                                     0353   870 ;
+                                     0353   871 ;	FUNCTIONS INCLUDE:
+                                     0353   872 ;
+                                     0353   873 ;		NO OPERATION,
+                                     0353   874 ;		UNLOAD VOLUME,
+                                     0353   875 ;		DRIVE CLEAR,
+                                     0353   876 ;		RELEASE PORT,
+                                     0353   877 ;		PACK ACKNOWLEDGE, AND
+                                     0353   878 ;		START SPINDLE.
+                                     0353   879 ;
+                                     0353   880 ; INTERRUPTS ARE LOCKED OUT, THE APPROPRIATE FUNCTION IS INITIATED WITH
+                                     0353   881 ; INTERRUPT ENABLE, AND A WAITFOR INTERRUPT AND KEEP CHANNEL IS EXECUTED.
+                                     0353   882 ;
+                                     0353   883 ; THESE FUNCTIONS ALL EXECUTE WITHIN A VERY SHORT TIME (15 US), BUT ARE
+                                     0353   884 ; VERY INFREQUENT AND THEREFORE ARE DONE WITH INTERRUPTS TO AVOID AN EXTRA
+                                     0353   885 ; SET OF REGISTER SAVE LOGIC.
+                                     0353   886 ;
+                                     0353   887  
+                                     0353   888 RELES:					;RELEASE PORT
+            52            08     A8  0353   889 	BISW	#RK_CS2_M_RLS,R2	;SET PORT RELEASE BIT
+                                     0356   890 IMMED:					;IMMEDIATE FUNCTION EXECUTION
+                                     0356   891 	DSBINT				;DISABLE INTERRUPTS
+         58 A5            05     E0  035C   892 	BBS	#UCB$V_POWER,UCB$W_STS(R5),ENBXIT ;IF SET, POWER HAS FAILED
+                          6A         0360       
+         08 A4            52     B0  0361   893 	MOVW	R2,RK_CS2(R4)		;SET UNIT NUMBER
+       FCAF CF43     0094 C5     A9  0365   894 	BISW3	UCB$W_DM_DTYP(R5),FTAB[R3],RK_CS1(R4) ;EXECUTE FUNCTION
+                          64         036D       
+                                     036E   895 	WFIKPCH	RLSCHN,#2		;WAITFOR INTERRUPT
+                                     0375   896 	IOFORK				;CREATE FORK PROCESS
+                          0177   31  0378   897 	BRW	RLSCHN			;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  19
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     037B   898  
+                                     037B   899 ;
+                                     037B   900 ; POSITIONING FUNCTION EXECUTION
+                                     037B   901 ;
+                                     037B   902 ;	FUNCTIONS INCLUDE:
+                                     037B   903 ;
+                                     037B   904 ;		SEEK CYLINDER,
+                                     037B   905 ;		RECALIBRATE,
+                                     037B   906 ;		OFFSET HEADS, AND
+                                     037B   907 ;		RETURN HEADS TO CENTERLINE.
+                                     037B   908 ;
+                                     037B   909 ; THE OFFSET REGISTER AND CYLINDER ADDRESS REGISTERS ARE LOADED, INTERRUPTS
+                                     037B   910 ; ARE LOCKED OUT, AND THE APPROPRIATE POSITIONING FUNCTION IS INITIATED
+                                     037B   911 ; WITHOUT INTERRUPT ENABLE. THE CONTROLLER IS THEN POLLED FOR READY, DEVICE
+                                     037B   912 ; INTERRUPTS ARE ENABLED, AND A WAITFOR INTERRUPT AND RELEASE CHANNEL IS
+                                     037B   913 ; EXECUTED.
+                                     037B   914 ;
+                                     037B   915  
+                                     037B   916 	.ENABL	LSB
+                                     037B   917 POSIT:					;POSITIONING FUNCTION
+                                     037B   918 	DSBINT				;DISABLE INTERRUPTS
+         58 A5            05     E0  0381   919 	BBS	#UCB$V_POWER,UCB$W_STS(R5),ENBXIT ;IF SET, POWER HAS FAILED
+                          45         0385       
+         0E A4       0086 C5     B0  0386   920 	MOVW	UCB$W_OFFSET(R5),RK_AS(R4) ;SET OFFSET VALUE
+         10 A4       008A C5     B0  038C   921 	MOVW	UCB$W_DC(R5),RK_DC(R4)	;SET DESIRED CYLINDER ADDRESS
+         08 A4            52     B0  0392   922 	MOVW	R2,RK_CS2(R4)		;SET UNIT NUMBER
+       FC7E CF43     0094 C5     A9  0396   923 	BISW3	UCB$W_DM_DTYP(R5),FTAB[R3],RK_CS1(R4) ;EXECUTE FUNCTION
+                          64         039E       
+                                     039F   924 	WFIRLCH	RETREG,#6		;WAITFOR INTERRUPT AND RELEASE CHANNEL
+         0A A4       0080 8F     B3  03A6   925 	BITW	#RK_DS_M_DRDY,RK_DS(R4)	;DRIVE READY?
+                          18     12  03AC   926 	BNEQ	20$			;IF NEQ YES
+                                     03AE   927 	DSBINT				;DISABLE INTERRUPTS FOR SECOND WAIT
+         58 A5            05     E0  03B4   928 	BBS	#UCB$V_POWER,UCB$W_STS(R5),10$ ;IF SET, POWER HAS FAILED
+                          0A         03B8       
+                                     03B9   929 	WFIKPCH	RETREG,#6		;WAITFOR INTERRUPT AND KEEP CHANNEL
+                                     03C0   930 	SAVIPL				;SAVE CURRENT IPL
+                                     03C3   931 10$:	ENBINT				;ENABLE INTERRUPTS
+                                     03C6   932 20$:	IOFORK				;CREATE FORK PROCESS
+                          03     11  03C9   933 	BRB	30$			;
+                                     03CB   934 ENBXIT:					;
+                                     03CB   935 	ENBINT				;
+                          0124   31  03CE   936 30$:	BRW	RETREG			;
+                                     03D1   937 	.DSABL	LSB
+                                     03D1   938  
+                                     03D1   939 ;
+                                     03D1   940 ; TRANSFER FUNCTION EXECUTION
+                                     03D1   941 ;
+                                     03D1   942 ;	FUNCTIONS INCLUDE:
+                                     03D1   943 ;
+                                     03D1   944 ;		WRITE CHECK,
+                                     03D1   945 ;		WRITE DATA,
+                                     03D1   946 ;		WRITE HEADERS,
+                                     03D1   947 ;		READ DATA, AND
+                                     03D1   948 ;		READ HEADER.
+                                     03D1   949 ;
+                                     03D1   950 ; A UNIBUS DATAPATH IS REQUESTED FOLLOWED BY THE APPROPRIATE NUMBER OF MAP
+                                     03D1   951 ; REGISTERS REQUIRED FOR THE TRANSFER. THE TRANSFER PARAMETERS ARE LOADED  
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  20
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     03D1   952 ; INTO THE DEVICE REGISTERS, INTERRUPTS ARE LOCKED OUT, THE FUNCTION IS
+                                     03D1   953 ; INITIATED, AND A WAITFOR INTERRUPT AND KEEP CHANNEL IS EXECUTED.
+                                     03D1   954 ;
+                                     03D1   955  
+                                     03D1   956 XFER:					;TRANSFER FUNCTION EXECUTION
+                                     03D1   957 	REQDPR				;REQUEST DATAPATH
+                                     03D4   958 	REQMPR				;REQUEST MAP REGISTERS
+                                     03D7   959 	LOADUBA				;LOAD UNIBUS MAP REGISTERS
+            50         6E A5     3C  03DA   960 	MOVZWL	UCB$W_BCNT(R5),R0	;GET TRANSFER BYTE COUNT
+            50            02     C6  03DE   961 	DIVL	#2,R0			;CALCULATE TRANSFER WORD COUNT
+                                     03E1   962 	DSBINT	UCB$B_DIPL(R5)		;DISABLE DEVICE INTERRUPTS
+         02 A4            50     AE  03E8   963 	MNEGW	R0,RK_WC(R4)		;SET TRANSFER WORD COUNT
+            50         6C A5     3C  03EC   964 	MOVZWL	UCB$W_BOFF(R5),R0	;GET BYTE OFFSET IN PAGE
+            51         20 A5     D0  03F0   965 	MOVL	UCB$L_CRB(R5),R1	;GET ADDRESS OF CRB
+            09         24 A1     F0  03F4   966 	INSV	CRB$L_INTD+VEC$W_MAPREG(R1),#9,#7,R0 ;INSERT HIGH 7 BITS OF ADDRESS
+            50            07         03F8       
+         04 A4            50     B0  03FA   967 	MOVW	R0,RK_BA(R4)		;SET BUFFER ADDRESS
+            02            07     EF  03FE   968 	EXTZV	#7,#2,CRB$L_INTD+VEC$W_MAPREG(R1),R0 ;GET MEMORY EXTENSION BITS
+            50         24 A1         0401       
+            50            08     78  0404   969 	ASHL	#8,R0,R0		;SHIFT LEFT ONE BYTE
+                          50         0407       
+            50       FC0F CF43   A8  0408   970 	BISW	FTAB[R3],R0		;MERGE FUNCTION CODE
+         06 A4       0088 C5     B0  040E   971 	MOVW	UCB$W_DA(R5),RK_DA(R4)	;SET DESIRED TRACK AND SECTOR ADDRESS
+         10 A4       008A C5     B0  0414   972 	MOVW	UCB$W_DC(R5),RK_DC(R4)	;SET DESIRED CYLINDER ADDRESS
+         08 A4         48 A5     B0  041A   973 	MOVW	UCB$W_UNIT(R5),RK_CS2(R4) ;SET UNIT NUMBER
+                                     041F   974 	SETIPL	#31			;DISABLE INTERRUPTS
+         58 A5            05     E1  0422   975 	BBC	#UCB$V_POWER,UCB$W_STS(R5),10$ ;IF CLR, NO POWER FAILURE
+                          06         0426       
+                                     0427   976 	ENBINT				;ENABLE INTERRUPTS
+                          00BF   31  042A   977 	BRW	60$			;
+            50       0094 C5     A9  042D   978 10$:	BISW3	UCB$W_DM_DTYP(R5),R0,RK_CS1(R4) ;EXECUTE FUNCTION
+                          64         0432       
+                                     0433   979 	WFIKPCH	60$,#6			;WAITFOR INTERRUPT AND KEEP CHANNEL
+                                     043A   980 	IOFORK				;CREATE FORK PROCESS
+            53         20 A5     D0  043D   981 	MOVL	UCB$L_CRB(R5),R3	;GET ADDRESS OF CRB
+            52         28 B3     D0  0441   982 	MOVL	@CRB$L_INTD+VEC$L_ADP(R3),R2 ;GET ADDRESS OF CONFIGURATION REGISTER
+                          00     EF  0445   983 	EXTZV	#VEC$V_DATAPATH,#VEC$S_DATAPATH,- ;EXTRACT DATAPATH NUMBER
+         27 A3            07         0447   984 		CRB$L_INTD+VEC$B_DATAPATH(R3),R1 ;
+                          51         044A       
+            01            1F     78  044B   985 	ASHL	#UBA$V_DPR_BNE,#1,UBA$L_DPR(R2)[R1] ;PURGE DATAPATH
+                       40 A241       044E       
+         40 A241          01     78  0451   986 	ASHL	#31-UBA$V_DPR_XMTER,UBA$L_DPR(R2)[R1],R0 ;ANY TRANSMISSION ERROR?
+                          50         0456       
+                          16     18  0457   987 	BGEQ	20$			;IF GEQ NO
+       0096 C5       8020 8F     A8  0459   988 	BISW	#RK_CS1_M_CERR!-	;SET CONTROLLER ERROR AND,
+                                     0460   989 		RK_CS1_M_DPPE,UCB$W_DM_CS1(R5) ;DATAPATH PURGE ERROR
+                     009E C5     B4  0460   990 	CLRW	UCB$W_DM_CS2(R5)	;CLEAR CONTROL STATUS REGISTER 2
+                     00A2 C5     B4  0464   991 	CLRW	UCB$W_DM_ER(R5)		;CLEAR ERROR REGISTER
+       00A0 C5       FFBF 8F     AA  0468   992 	BICW	#^C<RK_DS_M_VV>,UCB$W_DM_DS(R5) ;CLEAR ALL BUT VOLUME VALID
+       0096 C5            0F     E0  046F   993 20$:	BBS	#RK_CS1_V_CERR,UCB$W_DM_CS1(R5),30$ ;IF SET , DEVICE ERRORS
+                          05         0474       
+         5A A5            01     E1  0475   994 	BBC	#UCB$V_DIAGBUF,UCB$W_DEVSTS(R5),40$ ;IF CLR, NO DIAGNOSTIC BUFFER
+                          38         0479       
+       00AE C5            51     B0  047A   995 30$:	MOVW	R1,UCB$W_DM_DPN(R5)	;SAVE DATAPATH NUMBER
+       00B0 C5         40 A241   D0  047F   996 	MOVL	UBA$L_DPR(R2)[R1],UCB$L_DM_DPR(R5) ;SAVE DATAPATH REGISTER
+            07            09     EF  0486   997 	EXTZV	#9,#7,UCB$W_DM_BA(R5),R0 ;GET LOW BITS OF FINAL MAP REGISTER NUMBER
+            50       009A C5         0489       
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  21
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+            07       0097 C5     F0  048D   998 	INSV	UCB$W_DM_CS1+1(R5),#7,#2,R0 ;INSERT HIGH BITS OF FINAL MAP REGISTER
+            50            02         0492       
+       00B4 C5       0800 C240   D0  0494   999 	MOVL	UBA$L_MAP(R2)[R0],UCB$L_DM_FMPR(R5) ;SAVE FINAL MAP REGISTER
+                     00B8 C5     D4  049C  1000 	CLRL	UCB$L_DM_PMPR(R5)	;CLEAR PREVIOUS MAP REGISTER CONTENTS
+                          50     D7  04A0  1001 	DECL	R0			;CALCULATE PREVIOUS MAP REGISTER NUMBER
+                          00     EC  04A2  1002 	CMPV	#VEC$V_MAPREG,#VEC$S_MAPREG,- ;ANY PREVIOUS MAP REGISTER?
+         24 A3            0F         04A4  1003 		CRB$L_INTD+VEC$W_MAPREG(R3),R0 ;
+                          50         04A7       
+                          08     14  04A8  1004 	BGTR	40$			;IF GTR NO
+       00B8 C5       0800 C240   D0  04AA  1005 	MOVL	UBA$L_MAP(R2)[R0],UCB$L_DM_PMPR(R5) ;SAVE PREVIOUS MAP REGISTER
+       0098 C5            02     A5  04B2  1006 40$:	MULW3	#2,UCB$W_DM_WC(R5),UCB$W_BCR(R5) ;CONVERT WORD COUNT TO BYTE COUNT
+                     0092 C5         04B7       
+       0096 C5            0F     E0  04BA  1007 	BBS	#RK_CS1_V_CERR,UCB$W_DM_CS1(R5),60$ ;IF SET, DEVICE ERRORS
+                          2C         04BF       
+         77 A5            0E     91  04C0  1008 	CMPB	#CDF_READHEAD,UCB$B_CEX(R5) ;READ HEADER FUNCTION?
+                          26     12  04C4  1009 	BNEQ	60$			;IF NEQ NO
+                       68 A5     DD  04C6  1010 	PUSHL	UCB$L_SVAPTE(R5)	;SAVE ADDRESS OF PTE
+            51       00BC C5     9E  04C9  1011 	MOVAB	UCB$W_DM_DB(R5),R1	;SET ADDRESS OF INTERNAL BUFFER
+            52            06     D0  04CE  1012 	MOVL	#6,R2			;SET NUMBER OF BYTES TO MOVE
+         6E A5            52     B1  04D1  1013 	CMPW	R2,UCB$W_BCNT(R5)	;ROOM FOR FULL HEADER?
+                          04     1F  04D5  1014 	BLSSU	50$			;IF LSSU YES
+            52         6E A5     3C  04D7  1015 	MOVZWL	UCB$W_BCNT(R5),R2	;SET LENGTH OF PARTIAL HEADER
+            52         6E A5     A3  04DB  1016 50$:	SUBW3	UCB$W_BCNT(R5),R2,UCB$W_BCR(R5) ;CALCULATE TRANSFER BYTE COUNT
+                     0092 C5         04DF       
+                 00000000'GF     16  04E2  1017 	JSB	G^IOC$MOVTOUSER		;MOVE HEADER TO USER BUFFER
+                       68 A5   8ED0  04E8  1018 	POPL	UCB$L_SVAPTE(R5)	;RESTORE ADDRESS OF PTE
+                                     04EC  1019 60$:	RELDPR				;RELEASE DATA PATH
+                                     04EF  1020 	RELMPR				;RELEASE MAP REGISTERS
+                                     04F2  1021 RLSCHN:					;
+                                     04F2  1022 	RELCHAN				;RELEASE CHANNEL
+                                     04F5  1023  
+                                     04F5  1024 ;
+                                     04F5  1025 ; RETURN REGISTERS
+                                     04F5  1026 ;
+                                     04F5  1027  
+                                     04F5  1028 	.ENABL	LSB
+                                     04F5  1029 RETREG:					;RETURN FINAL DEVICE REGISTERS
+            51       0096 C5     3C  04F5  1030 	MOVZWL	UCB$W_DM_CS1(R5),R1	;RETRIEVE CONTROL STATUS REGISTER 1
+            52       009E C5     3C  04FA  1031 	MOVZWL	UCB$W_DM_CS2(R5),R2	;RETRIEVE CONTROL STATUS REGISTER 2
+            53       00A2 C5     3C  04FF  1032 	MOVZWL	UCB$W_DM_ER(R5),R3	;RETRIEVE ERROR REGISTER
+         58 A5       0060 8F     B3  0504  1033 	BITW	#UCB$M_POWER!-		;POWER FAIL OR DEVICE TIMEOUT?
+                                     050A  1034 		UCB$M_TIMOUT,UCB$W_STS(R5) ;
+                          35     12  050A  1035 	BNEQ	30$			;IF NEQ YES - SPECIAL CONDITION
+            51            0F     E1  050C  1036 	BBC	#RK_CS1_V_CERR,R1,10$	;IF CLR, NO ERRORS
+                          28         050F       
+                 00000000'GF     16  0510  1037 	JSB	G^ERL$DEVICERR		;ALLOCATE AND FILL ERROR MESSAGE BUFFER
+       0084 C5            0F     E0  0516  1038 	BBS	#IO$V_INHRETRY,UCB$W_FUNC(R5),20$ ;IF SET, RETRY INHIBITED
+                          22         051B       
+            52       1700 8F     B3  051C  1039 	BITW	#RK_CS2_M_MDS!-		;MULTIPLE DRIVE SELECT OR,
+                                     0521  1040 		RK_CS2_M_NED!-		;NONEXISTENT DISK OR,
+                                     0521  1041 		RK_CS2_M_PGE!-		;PROGRAMMING ERROR OR,
+                                     0521  1042 		RK_CS2_M_UFE,R2		;UNIT FIELD ERROR?
+                          1B     12  0521  1043 	BNEQ	20$			;IF NEQ YES
+            53       4EB5 8F     B3  0523  1044 	BITW	#RK_ER_M_BSE!-		;BAD SECTOR ERROR OR,
+                                     0528  1045 		RK_ER_M_COE!-		;CYLINDER ADDRESS OVERFLOW OR,
+                                     0528  1046 		RK_ER_M_DTYE!-		;DRIVE TYPE ERROR OR,
+                                     0528  1047 		RK_ER_M_FMTE!-		;FORMAT ERROR OR,
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  22
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     0528  1048 		RK_ER_M_IDAE!-		;INVALID DISK ADDRESS ERROR OR,
+                                     0528  1049 		RK_ER_M_ILF!-		;ILLEGAL FUNCTION OR,
+                                     0528  1050 		RK_ER_M_NXF!-		;NONEXECUTABLE FUNCTION OR,
+                                     0528  1051 		RK_ER_M_UNS!-		;DRIVE UNSAFE OR,
+                                     0528  1052 		RK_ER_M_WLE,R3		;WRITE LOCK ERROR?
+                          14     12  0528  1053 	BNEQ	20$			;IF NEQ YES
+       00A0 C5            06     E1  052A  1054 	BBC	#RK_DS_V_VV,UCB$W_DM_DS(R5),20$ ;IF CLR, VOLUME INVALID
+                          0E         052F       
+                                     0530  1055  
+                                     0530  1056 ;
+                                     0530  1057 ; RETRIABLE ERROR EXIT
+                                     0530  1058 ;
+                                     0530  1059  
+            7E         7C B5     98  0530  1060 	CVTBL	@UCB$L_DPC(R5),-(SP)	;GET BRANCH DISPLACEMENT
+         7C A5            8E     C0  0534  1061 	ADDL	(SP)+,UCB$L_DPC(R5)	;CALCULATE RETURN ADDRESS - 1
+                       7C A5     D6  0538  1062 10$:	INCL	UCB$L_DPC(R5)		;ADJUST TO CORRECT RETURN ADDRESS
+                       7C B5     17  053B  1063 	JMP	@UCB$L_DPC(R5)		;RETURN TO DRIVER
+                                     053E  1064  
+                                     053E  1065 ;
+                                     053E  1066 ; FATAL CONTROLLER OR DRIVE ERROR EXIT
+                                     053E  1067 ;
+                                     053E  1068  
+                          FD4A   31  053E  1069 20$:	BRW	FATALERR		;
+                                     0541  1070  
+                                     0541  1071 ;
+                                     0541  1072 ; SPECIAL CONDITION (POWER FAILURE OR DEVICE TIME OUT)
+                                     0541  1073 ;
+                                     0541  1074  
+         58 A5            05     E4  0541  1075 30$:	BBSC	#UCB$V_POWER,UCB$W_STS(R5),50$ ;IF SET, POWER FAILURE
+                          3D         0545       
+                                     0546  1076  
+                                     0546  1077 ;
+                                     0546  1078 ; DEVICE TIME OUT
+                                     0546  1079 ;
+                                     0546  1080  
+                 00000000'GF     16  0546  1081 	JSB	G^ERL$DEVICTMO		;LOG DEVICE TIME OUT
+            53         20 A5     D0  054C  1082 	MOVL	UCB$L_CRB(R5),R3	;GET ADDRESS OF CRB
+            53         1C A3     D0  0550  1083 	MOVL	CRB$L_INTD+VEC$L_IDB(R3),R3 ;GET ADDRESS OF IDB
+         04 A3            55     D1  0554  1084 	CMPL	R5,IDB$L_OWNER(R3)	;DEVICE OWN CONTROLLER?
+                          08     12  0558  1085 	BNEQ	40$			;IF NEQ NO
+         08 A4            20     B0  055A  1086 	MOVW	#RK_CS2_M_SCLR,RK_CS2(R4) ;CLEAR ENTIRE RK611 SUBSYSTEM
+            64         40 8F     9B  055E  1087 	MOVZBW	#RK_CS1_M_IE,RK_CS1(R4)	;ENABLE DEVICE INTERRUPTS
+                                     0562  1088 40$:	SETIPL	UCB$B_FIPL(R5)		;LOWER TO FORK LEVEL
+            50       0000'8F     3C  0566  1089 	MOVZWL	#SS$_TIMEOUT,R0		;SET DEVICE TIMEOUT STATUS
+                       70 A5     97  056B  1090 	DECB	UCB$B_ERTCNT(R5)	;ANY ERROR RETRIES REMAINING?
+                          06     13  056E  1091 	BEQL	RESETXFR		;IF EQL NO
+                                     0570  1092 	RELCHAN				;RELEASE CHANNEL IF OWNED
+                          FBB2   31  0573  1093 	BRW	FDISPATCH		;
+                                     0576  1094  
+                                     0576  1095 ;
+                                     0576  1096 ; RESET TRANSFER BYTE COUNT TO ZERO
+                                     0576  1097 ;
+                                     0576  1098  
+                                     0576  1099 RESETXFR:				;
+            53         4C A5     D0  0576  1100 	MOVL	UCB$L_IRP(R5),R3	;RETRIEVE ADDRESS OF I/O PACKET
+       0092 C5         32 A3     AE  057A  1101 	MNEGW	IRP$W_BCNT(R3),UCB$W_BCR(R5) ;RESET TRANSFER BYTE COUNT
+                          FD75   31  0580  1102 	BRW	FUNCXT			;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  23
+01              RK611-RK06/RK07 HARDWARE FUNCTION EXECUTION                                                                      (1)
+
+                                     0583  1103  
+                                     0583  1104 ;
+                                     0583  1105 ; POWER FAILURE
+                                     0583  1106 ;
+                                     0583  1107  
+                                     0583  1108 50$:	RELCHAN				;RELEASE CHANNEL IF OWNED
+            53         4C A5     D0  0586  1109 	MOVL	UCB$L_IRP(R5),R3	;RETRIEVE ADDRESS OF I/O PACKET
+         68 A5         2C A3     7D  058A  1110 	MOVQ	IRP$L_SVAPTE(R3),UCB$L_SVAPTE(R5) ;RESTORE TRANSFER PARAMETERS
+                          FB44   31  058F  1111 	BRW	DM_STARTIO		;
+                                     0592  1112 	.DSABL	LSB
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  24
+01              RK611-RK06/RK07 CLASSIFY DRIVE TYPE AND SET PAR                                                                  (1)
+
+                                     0592  1114 	.SBTTL	RK611-RK06/RK07 CLASSIFY DRIVE TYPE AND SET PARAMETERS
+                                     0592  1115 ;
+                                     0592  1116 ; DM_DTYPE - RK611-RK06/RK07 CLASSIFY DRIVE TYPE AND SET PARAMETERS
+                                     0592  1117 ;
+                                     0592  1118 ; THIS ROUTINE IS CALLED WHEN AN UNSOLICITED INTERRUPT OCCURS ON A DRIVE, DURING
+                                     0592  1119 ; SYSTEM INITIALIZATION, AND AT POWER RECOVERY TO DETERMINE THE DRIVE TYPE AND
+                                     0592  1120 ; SET UNIT PARAMETERS.
+                                     0592  1121 ;
+                                     0592  1122 ; INPUTS:
+                                     0592  1123 ;
+                                     0592  1124 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     0592  1125 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     0592  1126 ;
+                                     0592  1127 ; OUTPUTS:
+                                     0592  1128 ;
+                                     0592  1129 ;	THE DRIVE STATUS REGISTER IS INTERROGATED AND UNIT PARAMETERS ARE SET.
+                                     0592  1130 ;
+                                     0592  1131  
+                                     0592  1132 DM_DTYPE:				;CLASSIFY DRIVE TYPE AND SET UNIT PARAMETERS
+         39 A5            08     90  0592  1133 	MOVB	#DT$_RK06,UCB$B_DEVTYPE(R5) ;SET RK06 DEVICE TYPE
+         3E A5       019B 8F     B0  0596  1134 	MOVW	#411,UCB$W_CYLINDERS(R5) ;SET NUMBER OF RK06 CYLINDERS
+       0080 C5       69F6 8F     3C  059C  1135 	MOVZWL	#411*3*22,UCB$L_MAXBLOCK(R5) ;SET MAXIMUM BLOCK NUMBER
+                     0094 C5     B4  05A3  1136 	CLRW	UCB$W_DM_DTYP(R5)	;SET RK06 CONTROLLER DRIVE TYPE
+         0A A4       0100 8F     B3  05A7  1137 	BITW	#RK_DS_M_DDT,RK_DS(R4)	;RK06 DRIVE?
+                          19     13  05AD  1138 	BEQL	10$			;IF EQL YES
+         39 A5         00'8F     90  05AF  1139 	MOVB	#DT$_RK07,UCB$B_DEVTYPE(R5) ;SET RK07 DEVICE TYPE
+         3E A5       032F 8F     B0  05B4  1140 	MOVW	#815,UCB$W_CYLINDERS(R5) ;SET NUMBER OF RK07 CYLINDERS
+       0080 C5       D21E 8F     3C  05BA  1141 	MOVZWL	#815*3*22,UCB$L_MAXBLOCK(R5) ;SET MAXIMUM BLOCK NUMBER
+       0094 C5       0400 8F     A8  05C1  1142 	BISW	#RK_CS1_M_CDT,UCB$W_DM_DTYP(R5) ;SET RK07 CONTROLLER DRIVE TYPE
+                                 05  05C8  1143 10$:	RSB				;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  25
+01              RK611-RK06/RK07 REGISTER DUMP ROUTINE                                                                            (1)
+
+                                     05C9  1145 	.SBTTL	RK611-RK06/RK07 REGISTER DUMP ROUTINE
+                                     05C9  1146 ;
+                                     05C9  1147 ; DM_REGDUMP - RK611-RK06/RK07 REGISTER DUMP ROUTINE
+                                     05C9  1148 ;
+                                     05C9  1149 ; THIS ROUTINE IS CALLED TO SAVE THE CONTROLLER AND DRIVE REGISTERS IN A
+                                     05C9  1150 ; SPECIFIED BUFFER. IT IS CALLED FROM THE DEVICE ERROR LOGGING ROUTINE AND
+                                     05C9  1151 ; FROM THE DIAGNOSTIC BUFFER FILL ROUTINE.
+                                     05C9  1152 ;
+                                     05C9  1153 ; INPUTS:
+                                     05C9  1154 ;
+                                     05C9  1155 ;	R0 = ADDRESS OF REGISTER SAVE BUFFER.
+                                     05C9  1156 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     05C9  1157 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     05C9  1158 ;
+                                     05C9  1159 ; OUTPUTS:
+                                     05C9  1160 ;
+                                     05C9  1161 ;	THE CONTROLLER AND DRIVE REGISTERS ARE SAVED IN THE SPECIFIED BUFFER.
+                                     05C9  1162 ;
+                                     05C9  1163  
+                                     05C9  1164 DM_REGDUMP:				;RK611-RK06/RK07 REGISTER DUMP ROUTINE
+            80            12     D0  05C9  1165 	MOVL	#<RK_MR3+2-4+8>/2,(R0)+	;INSERT NUMBER OF DEVICE REGISTERS
+            51       0096 C5     DE  05CC  1166 	MOVAL	UCB$W_DM_CS1(R5),R1	;GET ADDRESS OF SAVED DEVICE REGISTERS
+            52            0A     D0  05D1  1167 	MOVL	#<RK_MR1+2-4>/2,R2	;SET NUMBER OF REGISTERS TO MOVE
+            80            81     3C  05D4  1168 10$:	MOVZWL	(R1)+,(R0)+		;MOVE REGISTER TO BUFFER
+            FA            52     F5  05D7  1169 	SOBGTR	R2,10$			;ANY MORE TO MOVE?
+            80       008C C5     3C  05DA  1170 	MOVZWL	UCB$W_EC1(R5),(R0)+	;INSERT ECC POSITION REGISTER
+            80       008E C5     3C  05DF  1171 	MOVZWL	UCB$W_EC2(R5),(R0)+	;INSERT ECC PATTERN REGISTER
+            80            81     3C  05E4  1172 	MOVZWL	(R1)+,(R0)+		;INSERT MAINTENANCE REGISTER 2
+            80            81     3C  05E7  1173 	MOVZWL	(R1)+,(R0)+		;INSERT MAINTENANCE REGISTER 3
+            80            81     3C  05EA  1174 	MOVZWL	(R1)+,(R0)+		;INSERT DATAPATH NUMBER
+            80            81     D0  05ED  1175 	MOVL	(R1)+,(R0)+		;INSERT DATAPATH REGISTER
+            80            81     D0  05F0  1176 	MOVL	(R1)+,(R0)+		;INSERT FINAL MAP REGISTER
+            80            61     D0  05F3  1177 	MOVL	(R1),(R0)+		;INSERT PREVIOUS MAP REGISTER
+                                 05  05F6  1178 	RSB				;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  26
+01              RK06/RK07 DISK DRIVE INITIALIZATION                                                                              (1)
+
+                                     05F7  1180 	.SBTTL	RK06/RK07 DISK DRIVE INITIALIZATION
+                                     05F7  1181 ;
+                                     05F7  1182 ; DM_RK0X_INIT - RK06/RK07 DISK DRIVE INITIALIZATION
+                                     05F7  1183 ;
+                                     05F7  1184 ; THIS ROUTINE IS CALLED AT SYSTEM INITIALIZATION AND AT POWER RECOVERY TO SET
+                                     05F7  1185 ; DRIVE PARAMETERS AND TO WAIT FOR ONLINE DRIVES TO SPIN UP.
+                                     05F7  1186 ;
+                                     05F7  1187 ; INPUTS:
+                                     05F7  1188 ;
+                                     05F7  1189 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     05F7  1190 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     05F7  1191 ;
+                                     05F7  1192 ; OUTPUTS:
+                                     05F7  1193 ;
+                                     05F7  1194 ;	UNIT PARAMETERS ARE ESTABLISHED AND THE DRIVE IS SPUN UP IF IT WAS ONLINE.
+                                     05F7  1195 ;
+                                     05F7  1196  
+                                     05F7  1197 DM_RK0X_INIT:				;RK06/RK07 UNIT INITIALIZATION
+            64       8000 8F     B0  05F7  1198 	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER ERRORS
+         08 A4         48 A5     B0  05FC  1199 	MOVW	UCB$W_UNIT(R5),RK_CS2(R4) ;SET UNIT NUMBER
+            64            05     B0  0601  1200 	MOVW	#F_DRVCLR!1,RK_CS1(R4)	;CLEAR DRIVE AND OBTAIN STATUS
+                          008A   30  0604  1201 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+                          FF88   30  0607  1202 	BSBW	DM_DTYPE		;CLASSIFY DRIVE TYPE
+            53         58 A5     3C  060A  1203 	MOVZWL	UCB$W_STS(R5),R3	;SAVE CURRENT UNIT STATUS
+         58 A5       0810 8F     AA  060E  1204 	BICW	#UCB$M_ONLINE!UCB$M_VALID,UCB$W_STS(R5) ;SET UNIT OFFLINE/INVALID
+         08 A4       1000 8F     B3  0614  1205 	BITW	#RK_CS2_M_NED,RK_CS2(R4) ;NONEXISTENT DISK?
+                          55     12  061A  1206 	BNEQ	50$			;IF NEQ YES
+         58 A5            10     A8  061C  1207 	BISW	#UCB$M_ONLINE,UCB$W_STS(R5) ;SET UNIT ONLINE
+            53            0B     E1  0620  1208 	BBC	#UCB$V_VALID,R3,40$	;IF CLR, VOLUME SOFTWARE INVALID
+                          3A         0623       
+            64       8000 8F     B0  0624  1209 10$:	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER ERRORS
+         08 A4         48 A5     B0  0629  1210 	MOVW	UCB$W_UNIT(R5),RK_CS2(R4) ;SET UNIT NUMBER
+            05       0094 C5     A9  062E  1211 	BISW3	UCB$W_DM_DTYP(R5),#F_DRVCLR!1,RK_CS1(R4) ;CLEAR DRIVE
+                          64         0633       
+                          005A   30  0634  1212 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+            64       8000 8F     B3  0637  1213 	BITW	#RK_CS1_M_CERR,RK_CS1(R4) ;ANY CONTROLLER ERRORS?
+                          08     12  063C  1214 	BNEQ	20$			;IF NEQ YES
+         0A A4       0080 8F     B3  063E  1215 	BITW	#RK_DS_M_DRDY,RK_DS(R4)	;DRIVE READY?
+                          02     12  0644  1216 	BNEQ	30$			;IF NEQ YES
+                          DC     11  0646  1217 20$:	BRB	10$			;******TEMP******
+            03       0094 C5     A9  0648  1218 30$:	BISW3	UCB$W_DM_DTYP(R5),#F_PACKACK!1,RK_CS1(R4) ;ACKNOWLEDGE PACK
+                          64         064D       
+                          0040   30  064E  1219 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+            64       8000 8F     B3  0651  1220 	BITW	#RK_CS1_M_CERR,RK_CS1(R4) ;ANY CONTROLLER ERRORS?
+                          06     12  0656  1221 	BNEQ	40$			;IF NEQ YES
+         58 A5       0800 8F     A8  0658  1222 	BISW	#UCB$M_VALID,UCB$W_STS(R5) ;SET VOLUME SOFTWARE VALID
+            64       8000 8F     B0  065E  1223 40$:	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER ERRORS
+         08 A4         48 A5     B0  0663  1224 	MOVW	UCB$W_UNIT(R5),RK_CS2(R4) ;SET UNIT NUMBER
+            05       0094 C5     A9  0668  1225 	BISW3	UCB$W_DM_DTYP(R5),#F_DRVCLR!1,RK_CS1(R4) ;CLEAR DRIVE
+                          64         066D       
+                          0020   30  066E  1226 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+            64       8000 8F     B0  0671  1227 50$:	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER ERRORS
+            64         40 8F     9B  0676  1228 	MOVZBW	#RK_CS1_M_IE,RK_CS1(R4)	;ENABLE DEVICE INTERRUPTS
+                                 05  067A  1229 	RSB				;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  27
+01              RK611-RK06/RK07 UNSOLICITED INTERRUPT ROUTINE                                                                    (1)
+
+                                     067B  1231 	.SBTTL	RK611-RK06/RK07 UNSOLICITED INTERRUPT ROUTINE
+                                     067B  1232 ;
+                                     067B  1233 ; DM_UNSOLNT - RK611-RK06/RK07 UNSOLICITED INTERRUPT ROUTINE
+                                     067B  1234 ;
+                                     067B  1235 ; THIS ROUTINE IS CALLED WHEN AN UNSOLICITED ATTENTION CONDITION IS DETECTED FOR
+                                     067B  1236 ; AN RK06 OR RK07 DRIVE.
+                                     067B  1237 ;
+                                     067B  1238 ; INPUTS:
+                                     067B  1239 ;
+                                     067B  1240 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     067B  1241 ;	R5 = DEVICE UNIT UCB ADDRESS.
+                                     067B  1242 ;
+                                     067B  1243 ; OUTPUTS:
+                                     067B  1244 ;
+                                     067B  1245 ;	IF VOLUME VALID IS CLEAR, THEN SOFTWARE VOLUME VALID IS CLEARED. THE
+                                     067B  1246 ;	UNIT STATUS IS CHANGED TO ONLINE AND THE DRIVE TYPE AND PARAMETERS ARE
+                                     067B  1247 ;	CLASSIFIED.
+                                     067B  1248 ;
+                                     067B  1249  
+                                     067B  1250 DM_UNSOLNT:				;RK611-RK06/RK07 UNSOLICITED INTERRUPT
+         58 A5            10     A8  067B  1251 	BISW	#UCB$M_ONLINE,UCB$W_STS(R5) ;SET UNIT ONLINE
+                          FF10   30  067F  1252 	BSBW	DM_DTYPE		;CLASSIFY DRIVE TYPE
+         0A A4       0040 8F     B3  0682  1253 	BITW	#RK_DS_M_VV,RK_DS(R4)	;VOLUME VALID?
+                          06     12  0688  1254 	BNEQ	10$			;IF NEQ YES
+         58 A5       0800 8F     AA  068A  1255 	BICW	#UCB$M_VALID,UCB$W_STS(R5) ;CLEAR SOFTWARE VOLUME VALID
+                                 05  0690  1256 10$:	RSB				;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  28
+01              WAIT FOR CONTROLLER READY                                                                                        (1)
+
+                                     0691  1258 	.SBTTL	WAIT FOR CONTROLLER READY
+                                     0691  1259 ;
+                                     0691  1260 ; DM_WAIT - WAIT FOR CONTROLLER READY
+                                     0691  1261 ;
+                                     0691  1262 ; THIS SUBROUTINE IS CALLED TO POLL THE RK611 CONTROLLER FOR READY. A MAX-
+                                     0691  1263 ; IMUM OF APPROXIMATELY 20 US ELAPSES BEFORE CONTROL IS RETURNED TO THE
+                                     0691  1264 ; CALLER.
+                                     0691  1265 ;
+                                     0691  1266  
+                                     0691  1267 DM_WAIT:					;WAIT FOR CONTROLLER READY
+                          52     DD  0691  1268 	PUSHL	R2			;SAVE REGISTER
+                                     0693  1269 	DSBINT				;DISABLE INTERRUPTS
+            52            1A     DB  0699  1270 	MFPR	#PR$_ICR,R2		;READ INTERVAL COUNT REGISTER
+            52            14     C0  069C  1271 	ADDL	#20,R2			;CALCULATE EXPIRATION TIME
+                          11     19  069F  1272 	BLSS	20$			;IF LSS NO WRAP AROUND
+            52       D8F0 C2     3E  06A1  1273 	MOVAW	-10000(R2),R2		;CALCULATE WRAP AROUND VALUE
+                          64     95  06A6  1274 10$:	TSTB	RK_CS1(R4)		;CONTROLLER READY?
+                          14     19  06A8  1275 	BLSS	30$			;IF LSS YES
+            7E            1A     DB  06AA  1276 	MFPR	#PR$_ICR,-(SP)		;READ INTERVAL COUNT REGISTER
+            52            8E     D1  06AD  1277 	CMPL	(SP)+,R2		;TIME TO WRAP AROUND?
+                          F4     14  06B0  1278 	BGTR	10$			;IF GTR NO
+                          64     95  06B2  1279 20$:	TSTB	RK_CS1(R4)		;CONTROL READY?
+                          08     19  06B4  1280 	BLSS	30$			;IF LSS YES
+            7E            1A     DB  06B6  1281 	MFPR	#PR$_ICR,-(SP)		;READ INTERVAL COUNT REGISTER
+            52            8E     D1  06B9  1282 	CMPL	(SP)+,R2		;TIME EXPIRE YET?
+                          F4     19  06BC  1283 	BLSS	20$			;IF LSS NO
+                                     06BE  1284 30$:	ENBINT				;ENABLE INTERRUPTS
+                          52   8ED0  06C1  1285 	POPL	R2			;RESTORE REGISTER
+                                 05  06C4  1286 	RSB				;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  29
+01              RK611 DISK CONTROLLER INTERRUPT DISPATCHER                                                                       (1)
+
+                                     06C5  1288 	.SBTTL	RK611 DISK CONTROLLER INTERRUPT DISPATCHER
+                                     06C5  1289 ;+
+                                     06C5  1290 ; DM$INT - RK611 DISK CONTROLLER INTERRUPT DISPATCHER
+                                     06C5  1291 ;
+                                     06C5  1292 ; THIS ROUTINE IS ENTERED VIA A JSB INSTRUCTION WHEN AN INTERRUPT OCCURS
+                                     06C5  1293 ; ON AN RK611 DISK CONTROLLER. THE STATE OF THE STACK ON ENTRY IS:
+                                     06C5  1294 ;
+                                     06C5  1295 ;	00(SP) = ADDRESS OF IDB ADDRESS.
+                                     06C5  1296 ;	04(SP) = SAVED R2.
+                                     06C5  1297 ;	08(SP) = SAVED R3.
+                                     06C5  1298 ;	12(SP) = SAVED R4.
+                                     06C5  1299 ;	16(SP) = SAVED R5.
+                                     06C5  1300 ;	20(SP) = INTERRUPT PC.
+                                     06C5  1301 ;	24(SP) = INTERRUPT PSL.
+                                     06C5  1302 ;
+                                     06C5  1303 ; INTERRUPT DISPATCHING OCCURS AS FOLLOWS:
+                                     06C5  1304 ;
+                                     06C5  1305 ;	IF THE INTERRUPTING CONTROLLER IS CURRENTLY OWNED AND THE OWNER
+                                     06C5  1306 ;	UNIT IS EXPECTING AN INTERRUPT, THEN THAT UNIT IS DISPATCHED FIRST.
+                                     06C5  1307 ;	ALL OTHER UNITS ARE DISPATCHED BY READING THE ATTENTION SUMMARY
+                                     06C5  1308 ;	REGISTER AND SCANNING FOR UNITS THAT HAVE ATTENTION SET. AS EACH
+                                     06C5  1309 ;	UNIT IS FOUND,  A TEST IS MADE TO DETERMINE IF AN INTERRUPT IS
+                                     06C5  1310 ;	EXPECTED ON THE UNIT. IF YES, THEN THE DRIVER IS CALLED AT ITS
+                                     06C5  1311 ;	INTERRUPT RETURN ADDRESS. ELSE THE DRIVER IS CALLED AT ITS UNSOL-
+                                     06C5  1312 ;	ICITED INTERRUPT ADDRESS. AS EACH CALL TO THE DRIVER RETURNS, THE
+                                     06C5  1313 ;	ATTENTION SUMMARY REGISTER IS REREAD AND AN ATTEMPT IS MADE TO FIND
+                                     06C5  1314 ;	ANOTHER UNIT TO DISPATCH. WHEN NO UNITS REQUESTING ATTENTION REMAIN,
+                                     06C5  1315 ;	THE INTERRUPT IS DISMISSED.
+                                     06C5  1316 ;
+                                     06C5  1317 ; TWO CONDITIONS CAUSE ERROR LOG ENTRIES:
+                                     06C5  1318 ;
+                                     06C5  1319 ;	1. A NONEXISTENT (AS FAR AS SOFTWARE IS CONCERNED) UNIT REQUESTS
+                                     06C5  1320 ;	   ATTENTION.
+                                     06C5  1321 ;
+                                     06C5  1322 ;	2. NO UNITS ARE REQUESTING ATTENTION AND THE CONTROLLER IS NOT OWNED
+                                     06C5  1323 ;	   OR THE OWNER UNIT IS NOT EXPECTING AN INTERRUPT.
+                                     06C5  1324 ;-
+                                     06C5  1325  
+                                     06C5  1326 DM$INT::				;RK611 DISK CONTROLLER INTERRUPT DISPATCHER
+            53         00 BE     D0  06C5  1327 	MOVL	@(SP),R3		;GET ADDRESS OF IDB
+            54            63     D0  06C9  1328 	MOVL	IDB$L_CSR(R3),R4	;GET ADDRESS OF CONTROL STATUS REGISTER 1
+            55         04 A3     D0  06CC  1329 	MOVL	IDB$L_OWNER(R3),R5	;GET OWNER UNIT UCB ADDRESS
+                          05     13  06D0  1330 	BEQL	10$			;IF EQL NO OWNER
+         58 A5            01     E4  06D2  1331 	BBSC	#UCB$V_INT,UCB$W_STS(R5),30$ ;IF SET, INTERRUPT EXPECTED
+                          3D         06D6       
+            64       8000 8F     B0  06D7  1332 10$:	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER
+            52         0E A4     3C  06DC  1333 	MOVZWL	RK_AS(R4),R2		;READ ATTENTION SUMMARY REGISTER
+            08            08     EA  06E0  1334 	FFS	#8,#8,R2,R2		;FIND FIRST UNIT REQUESTING ATTENTION
+            52            52         06E3       
+                          11     12  06E5  1335 	BNEQ	20$			;IF NEQ UNIT FOUND
+            64         40 8F     9B  06E7  1336 	MOVZBW	#RK_CS1_M_IE,RK_CS1(R4)	;ENABLE DEVICE INTERRUPTS
+            5E            04     C0  06EB  1337 	ADDL	#4,SP			;CLEAN STACK
+            50            8E     7D  06EE  1338 	MOVQ	(SP)+,R0		;RESTORE REGISTERS
+            52            8E     7D  06F1  1339 	MOVQ	(SP)+,R2		;
+            54            8E     7D  06F4  1340 	MOVQ	(SP)+,R4		;
+                                 02  06F7  1341 	REI				;
+            52            08     C2  06F8  1342 20$:	SUBL	#8,R2			;CALCULATE UNIT NUMBER
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  30
+01              RK611 DISK CONTROLLER INTERRUPT DISPATCHER                                                                       (1)
+
+         08 A4            52     B0  06FB  1343 	MOVW	R2,RK_CS2(R4)		;SET UNIT NUMBER
+            55         10 A342   D0  06FF  1344 	MOVL	IDB$L_UCBLST(R3)[R2],R5	;GET ADDRESS OF UCB
+                          7F     13  0704  1345 	BEQL	80$			;IF EQL NO CORRESPONDING UNIT
+            01       0094 C5     A9  0706  1346 	BISW3	UCB$W_DM_DTYP(R5),#F_NOP!1,RK_CS1(R4) ;SELECT DRIVE AND GET STATUS
+                          64         070B       
+                          FF82   30  070C  1347 	BSBW	DM_WAIT			;WAIT FOR CONTROLLER READY
+         58 A5            01     E5  070F  1348 	BBCC	#UCB$V_INT,UCB$W_STS(R5),70$ ;IF CLR, INTERRUPT NOT EXPECTED
+                          51         0713       
+         77 A5            0E     91  0714  1349 30$:	CMPB	#CDF_READHEAD,UCB$B_CEX(R5) ;READ HEADER FUNCTION?
+                          12     12  0718  1350 	BNEQ	40$			;IF NEQ NO
+       00BC C5         14 A4     B0  071A  1351 	MOVW	RK_DB(R4),UCB$W_DM_DB(R5) ;SAVE SECTOR HEADER INFORMATION
+       00BE C5         14 A4     B0  0720  1352 	MOVW	RK_DB(R4),UCB$W_DM_DB+2(R5) ;
+       00C0 C5         14 A4     B0  0726  1353 	MOVW	RK_DB(R4),UCB$W_DM_DB+4(R5) ;
+            52            64     9E  072C  1354 40$:	MOVAB	RK_CS1(R4),R2		;GET ADDRESS OF CONTROL STATUS REGISTER 1
+            53       0096 C5     9E  072F  1355 	MOVAB	UCB$W_DM_CS1(R5),R3	;GET ADDRESS OF REGISTER SAVE AREA
+            83            82     B0  0734  1356 	MOVW	(R2)+,(R3)+		;SAVE CONTROL STATUS REGISTER 1
+                          6A     19  0737  1357 	BLSS	100$			;IF LSS ERROR ENCOUNTERED
+         5A A5            01     E0  0739  1358 	BBS	#UCB$V_DIAGBUF,UCB$W_DEVSTS(R5),100$ ;IF SET, DIAGNOSTIC BUFFER
+                          65         073D       
+            63            62     B0  073E  1359 	MOVW	(R2),(R3)		;SAVE WORD COUNT REGISTER
+            53         10 A5     7D  0741  1360 50$:	MOVQ	UCB$L_FR3(R5),R3	;RESTORE DRIVER CONTEXT
+                       0C B5     16  0745  1361 	JSB	@UCB$L_FPC(R5)		;CALL DRIVER AT INTERRUPT RETURN ADDRESS
+            53         00 BE     D0  0748  1362 	MOVL	@(SP),R3		;GET ADDRESS OF IDB
+            54            63     D0  074C  1363 	MOVL	IDB$L_CSR(R3),R4	;GET ADDRESS OF CONTROL STATUS REGISTER 1
+            64       8000 8F     B0  074F  1364 60$:	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER
+         08 A4         48 A5     B0  0754  1365 	MOVW	UCB$W_UNIT(R5),RK_CS2(R4) ;SET UNIT NUMBER
+            05       0094 C5     A9  0759  1366 	BISW3	UCB$W_DM_DTYP(R5),#F_DRVCLR!1,RK_CS1(R4) ;CLEAR DRIVE ERRORS
+                          64         075E       
+                          FF2F   30  075F  1367 	BSBW	DM_WAIT			;WAIT FOR CONTROLLER READY
+                          FF72   31  0762  1368 	BRW	10$			;
+            53         24 A5     D0  0765  1369 70$:	MOVL	UCB$L_DDB(R5),R3	;GET ADDRESS OF DDB
+            53         0C A3     D0  0769  1370 	MOVL	DDB$L_DDT(R3),R3	;GET ADDRESS OF DDT
+                       04 B3     16  076D  1371 	JSB	@DDT$L_UNSOLINT(R3)	;CALL DRIVER AT UNSOLICITED INTERRUPT ADDRESS
+            53         00 BE     D0  0770  1372 	MOVL	@(SP),R3		;GET ADDRESS OF IDB
+            54            63     D0  0774  1373 	MOVL	IDB$L_CSR(R3),R4	;GET ADDRESS OF CONTROL STATUS REGISTER 1
+            64       8000 8F     B3  0777  1374 	BITW	#RK_CS1_M_CERR,RK_CS1(R4) ;ANY ERROR CONDITION PRESENT?
+                          D1     13  077C  1375 	BEQL	60$			;IF EQL NO
+         08 A4            20     B0  077E  1376 	MOVW	#RK_CS2_M_SCLR,RK_CS2(R4) ;CLEAR ENTIRE RK611 SUBSYSTEM
+                          FF52   31  0782  1377 	BRW	10$			;
+            64       0405 8F     B0  0785  1378 80$:	MOVW	#RK_CS1_M_CDT!F_DRVCLR!1,RK_CS1(R4) ;CLEAR RK07 DRIVE
+                          FF04   30  078A  1379 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+                          64     B5  078D  1380 	TSTW	RK_CS1(R4)		;SUCCESSFUL COMPLETION?
+                          0F     18  078F  1381 	BGEQ	90$			;IF GEQ YES
+            64       8000 8F     B0  0791  1382 	MOVW	#RK_CS1_M_CERR,RK_CS1(R4) ;CLEAR CONTROLLER
+         08 A4            52     B0  0796  1383 	MOVW	R2,RK_CS2(R4)		;SET UNIT NUMBER
+            64            05     B0  079A  1384 	MOVW	#F_DRVCLR!1,RK_CS1(R4)	;CLEAR RK06 DRIVE
+                          FEF1   30  079D  1385 	BSBW	DM_WAIT			;WAIT FOR FUNCTION TO COMPLETE
+                          FF34   31  07A0  1386 90$:	BRW	10$			;
+            83            82     B0  07A3  1387 100$:	MOVW	(R2)+,(R3)+		;SAVE WORD COUNT REGISTER
+            83            82     B0  07A6  1388 	MOVW	(R2)+,(R3)+		;SAVE BUFFER ADDRESS REGISTER
+            83            82     B0  07A9  1389 	MOVW	(R2)+,(R3)+		;SAVE DESIRED SECTOR/TRACK ADDRESS REGISTER
+            83            82     B0  07AC  1390 	MOVW	(R2)+,(R3)+		;SAVE CONTROL STATUS REGISTER 2
+            83            82     B0  07AF  1391 	MOVW	(R2)+,(R3)+		;SAVE DRIVE STATUS REGISTER
+            83            82     B0  07B2  1392 	MOVW	(R2)+,(R3)+		;SAVE ERROR REGISTER
+            83            82     B0  07B5  1393 	MOVW	(R2)+,(R3)+		;SAVE ATTENTION SUMMARY/OFFSET REGISTER
+            83            82     B0  07B8  1394 	MOVW	(R2)+,(R3)+		;SAVE DESIRED CYLINDER ADDRESS REGISTER
+            52            04     C0  07BB  1395 	ADDL	#4,R2			;POINT TO MAINTENANCE REGISTER 1
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  31
+01              RK611 DISK CONTROLLER INTERRUPT DISPATCHER                                                                       (1)
+
+            83            82     B0  07BE  1396 	MOVW	(R2)+,(R3)+		;SAVE MAINTENANCE REGISTER 1
+       008C C5            82     B0  07C1  1397 	MOVW	(R2)+,UCB$W_EC1(R5)	;SAVE ECC POSITION REGISTER
+       008E C5            82     B0  07C6  1398 	MOVW	(R2)+,UCB$W_EC2(R5)	;SAVE ECC PATTERN REGISTER
+            83            82     B0  07CB  1399 	MOVW	(R2)+,(R3)+		;SAVE MAINTENANCE REGISTER 2
+            63            62     B0  07CE  1400 	MOVW	(R2),(R3)		;SAVE MAINTENANCE REGISTER 3
+       009E C5            09     E1  07D1  1401 	BBC	#RK_CS2_V_MDS,UCB$W_DM_CS2(R5),110$ ;IF CLR, NO MULTI-DRIVE SELECT
+                          04         07D6       
+         08 A4            20     B0  07D7  1402 	MOVW	#RK_CS2_M_SCLR,RK_CS2(R4) ;CLEAR ENTIRE SUBSYSTEM
+                          FF63   31  07DB  1403 110$:	BRW	50$			;
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  32
+01              RK611 DISK CONTROLLER INITIALIZATION                                                                             (1)
+
+                                     07DE  1405 	.SBTTL	RK611 DISK CONTROLLER INITIALIZATION
+                                     07DE  1406 ;+
+                                     07DE  1407 ; DM$RK611_INIT - RK611 DISK CONTROLLER INITIALIZATION
+                                     07DE  1408 ;
+                                     07DE  1409 ; THIS ROUTINE IS CALLED VIA A JSB INSTRUCTION AT SYSTEM STARTUP AND AFTER
+                                     07DE  1410 ; A POWER RECOVERY RESTART TO ALLOW INITIALIZATION OF RK611 DISK CONTROLLERS.
+                                     07DE  1411 ; 
+                                     07DE  1412 ; INPUTS:
+                                     07DE  1413 ;
+                                     07DE  1414 ;	R0 = SCRATCH.
+                                     07DE  1415 ;	R1 = SCRATCH.
+                                     07DE  1416 ;	R2 = SCRATCH.
+                                     07DE  1417 ;	R3 = SCRATCH.
+                                     07DE  1418 ;	R4 = ADDRESS OF CONTROL STATUS REGISTER 1.
+                                     07DE  1419 ;	R5 = ADDRESS OF CONTROLLER IDB.
+                                     07DE  1420 ;	R6 = ADDRESS OF DEVICE DDB.
+                                     07DE  1421 ;
+                                     07DE  1422 ;	ALL INTERRUPTS ARE LOCKED OUT.
+                                     07DE  1423 ;
+                                     07DE  1424 ; OUTPUTS:
+                                     07DE  1425 ;
+                                     07DE  1426 ;	THE RK611 CONTROLLER IS INITIALIZED AND INTERRUPTS ARE ENABLED.
+                                     07DE  1427 ;-
+                                     07DE  1428  
+                                     07DE  1429 DM$RK611_INIT::				;RK611 DISK CONTROLLER INITIALIZATION
+         08 A4            20     B0  07DE  1430 	MOVW	#RK_CS2_M_SCLR,RK_CS2(R4) ;CLEAR CONTROLLER AND ALL DRIVES
+            64         40 8F     9B  07E2  1431 	MOVZBW	#RK_CS1_M_IE,RK_CS1(R4)	;ENABLE DEVICE INTERRUPTS
+                          64     B5  07E6  1432 	TSTW	RK_CS1(R4)		;SYNCHRONIZE UBA ACCESS
+                                 05  07E8  1433 	RSB				;
+                                     07E9  1434  
+                                     07E9  1435 	.END
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  33
+SYMBOL TABLE                                                                                                                     (1)
+
+ACP$ACCESS       ********   X   03   DC$_TAPE       = 00000002            EMB$C_DE       = 00000001            
+ACP$DEACCESS     ********   X   03   DC$_TERM       = 00000042            EMB$C_DT       = 00000096            
+ACP$MODIFY       ********   X   03   DDB$B_ACPCLASS   00000013            EMB$C_LENGTH     00000004            
+ACP$MOUNT        ********   X   03   DDB$B_TYPE       0000000A            EMB$C_OM       = 00000028            
+ACP$READBLK      ********   X   03   DDB$C_LENGTH     00000014            EMB$C_SS       = 00000027            
+ACP$WRITEBLK     ********   X   03   DDB$K_LENGTH     00000014            EMB$C_SS_LENGTH  00000012            
+ADP$B_TYPE       0000000A            DDB$L_ACPD       00000010            EMB$C_TS       = 00000026            
+ADP$C_NUMDATAP = 00000010            DDB$L_DDT        0000000C            EMB$C_TS_LENGTH  00000010            
+ADP$L_DPQBL      00000010            DDB$L_LINK       00000000            EMB$C_UI       = 00000061            
+ADP$L_DPQFL      0000000C            DDB$L_UCB        00000004            EMB$C_VD       = 00000041            
+ADP$L_INTD       0000005C            DDB$T_NAME       00000014            EMB$C_VM       = 00000040            
+ADP$L_LINK       00000004            DDB$W_SIZE       00000008            EMB$C_WS       = 00000024            
+ADP$L_MRQBL      00000018            DDT$L_CANCEL     0000000C            EMB$K_BC_LENGTH  0000006E            
+ADP$L_MRQFL      00000014            DDT$L_FDT        00000008            EMB$K_CR       = 00000025            
+ADP$L_UBACSR     00000000            DDT$L_INIT       00000018            EMB$K_CR_LENGTH  000000FA            
+ADP$W_DPBITMAP   0000001C            DDT$L_REGDUMP    00000010            EMB$K_LENGTH     00000004            
+ADP$W_MRBITMAP   0000001E            DDT$L_START      00000000            EMB$K_MC       = 00000002            
+ADP$W_SIZE       00000008            DDT$L_UNSOLINT   00000004            EMB$K_SBC      = 00000028            
+BIT...         = 00000002            DDT$W_DIAGBUF    00000014            EMB$K_SS_LENGTH  00000012            
+CDF_DRVCLR     = 00000004            DDT$W_ERRORBUF   00000016            EMB$K_TS_LENGTH  00000010            
+CDF_NOP        = 00000000            DM$DDT           00000000 RG    03   EMB$K_UBC      = 00000080            
+CDF_OFFSET     = 00000006            DM$INT           000006C5 RG    03   EMB$L_BC_AP      00000054            
+CDF_PACKACK    = 00000008            DM$RK611_INIT    000007DE RG    03   EMB$L_BC_CODE    00000068            
+CDF_READDATA   = 0000000C            DM_ALIGN         00000000 R     04   EMB$L_BC_ESP     00000014            
+CDF_READHEAD   = 0000000E            DM_DTYPE         00000592 R     03   EMB$L_BC_FP      00000058            
+CDF_RECAL      = 00000003            DM_FUNCTABLE     00000042 R     03   EMB$L_BC_ISP     00000020            
+CDF_RELEASE    = 00000005            DM_M_DCK       = 00000002            EMB$L_BC_KSP     00000010            
+CDF_RETCENTER  = 00000007            DM_M_ECI       = 00000001            EMB$L_BC_PC      00000060            
+CDF_SEEK       = 00000002            DM_REGDUMP       000005C9 R     03   EMB$L_BC_PSL     00000064            
+CDF_STARTSPNDL = 00000009            DM_RK0X_INIT     000005F7 R     03   EMB$L_BC_R0      00000024            
+CDF_UNLOAD     = 00000001            DM_STARTIO       000000D6 R     03   EMB$L_BC_R1      00000028            
+CDF_WRITECHECK = 0000000A            DM_UNSOLNT       0000067B R     03   EMB$L_BC_R10     0000004C            
+CDF_WRITEDATA  = 0000000B            DM_V_DCK       = 00000001            EMB$L_BC_R11     00000050            
+CDF_WRITEHEAD  = 0000000D            DM_V_ECI       = 00000000            EMB$L_BC_R2      0000002C            
+CHECKRETRY       000001B2 R     03   DM_WAIT          00000691 R     03   EMB$L_BC_R3      00000030            
+CHECKXT          000001BC R     03   DRVCLR           0000015D R     03   EMB$L_BC_R4      00000034            
+CRB$B_MASK       0000000E            DT$_RK06       = 00000008            EMB$L_BC_R5      00000038            
+CRB$B_TT_ATTN    00000004            DT$_RK07         ********   X   03   EMB$L_BC_R6      0000003C            
+CRB$B_TT_EXPEC   00000005            DT$_RP04       = 00000006            EMB$L_BC_R7      00000040            
+CRB$B_TYPE       0000000A            DT$_RP05       = 00000009            EMB$L_BC_R8      00000044            
+CRB$C_LENGTH     00000028            DT$_RP06       = 0000000A            EMB$L_BC_R9      00000048            
+CRB$K_LENGTH     00000028            DT$_TE16       = 00000006            EMB$L_BC_SP      0000005C            
+CRB$L_INTD       00000014            DT$_TU77       = 00000005            EMB$L_BC_SSP     00000018            
+CRB$L_LINK       00000010            ECC              000001E3 R     03   EMB$L_BC_USP     0000001C            
+CRB$L_TT_DIAL    00000000            EMB$B_BC_PCB     0000006E            EMB$L_CR_ACCS    0000009C            
+CRB$L_WQBL       00000004            EMB$B_BUFIND     00000002            EMB$L_CR_AP      00000054            
+CRB$L_WQFL       00000000            EMB$B_DV_CLASS   00000012            EMB$L_CR_ASTLVL  00000088            
+CRB$M_BSY      = 00000001            EMB$B_DV_ERTCNT  00000006            EMB$L_CR_CODE    000000F4            
+CRB$V_BSY      = 00000000            EMB$B_DV_ERTMAX  00000007            EMB$L_CR_ESP     00000014            
+CRB$W_REFC       0000000C            EMB$B_DV_SLAVE   0000003C            EMB$L_CR_FP      00000058            
+CRB$W_SIZE       00000008            EMB$B_DV_TYPE    00000013            EMB$L_CR_ICCS    00000090            
+DATACHECK        00000184 R     03   EMB$B_SS_MSGTXT  00000012            EMB$L_CR_ICR     00000094            
+DC$_CARD       = 00000041            EMB$B_VALID      00000003            EMB$L_CR_ISP     00000020            
+DC$_DISK       = 00000001            EMB$C_BC_LENGTH  0000006E            EMB$L_CR_KSP     00000010            
+DC$_LP         = 00000043            EMB$C_BE       = 00000004            EMB$L_CR_P0BR    00000068            
+DC$_MAILBOX    = 000000A0            EMB$C_CR_LENGTH  000000FA            EMB$L_CR_P0LR    0000006C            
+DC$_SCOM       = 00000020            EMB$C_CS       = 00000020            EMB$L_CR_P1BR    00000070            
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  34
+SYMBOL TABLE                                                                                                                     (1)
+
+EMB$L_CR_P1LR    00000074            EMB$W_SIZE       00000000            IO$M_DATACHECK = 00004000            
+EMB$L_CR_PC      00000060            EMB$W_SS_ENTRY   00000004            IO$M_DELETE    = 00000100            
+EMB$L_CR_PCBB    00000080            EMB$W_SS_ERRSEQ  0000000E            IO$M_DMOUNT    = 00000400            
+EMB$L_CR_PSL     00000064            EMB$W_SS_MSGSZ   00000010            IO$M_DSABLMBX  = 00000400            
+EMB$L_CR_R0      00000024            EMB$W_TS_ENTRY   00000004            IO$M_ENABLMBX  = 00000080            
+EMB$L_CR_R1      00000028            EMB$W_TS_ERRSEQ  0000000E            IO$M_FCODE     = 0000003F            
+EMB$L_CR_R10     0000004C            ENBXIT           000003CB R     03   IO$M_HANGUP    = 00000200            
+EMB$L_CR_R11     00000050            ERL$DEVICERR     ********   X   03   IO$M_INHERLOG  = 00000800            
+EMB$L_CR_R2      0000002C            ERL$DEVICTMO     ********   X   03   IO$M_INHEXTGAP = 00001000            
+EMB$L_CR_R3      00000030            EXE$ABORTIO      ********   X   04   IO$M_INHRETRY  = 00008000            
+EMB$L_CR_R4      00000034            EXE$IOFORK       ********   X   03   IO$M_INHSEEK   = 00001000            
+EMB$L_CR_R5      00000038            EXE$ONEPARM      ********   X   03   IO$M_INTERRUPT = 00000040            
+EMB$L_CR_R6      0000003C            EXE$SENSEMODE    ********   X   03   IO$M_MOUNT     = 00000200            
+EMB$L_CR_R7      00000040            EXE$SETCHAR      ********   X   03   IO$M_NOECHO    = 00000040            
+EMB$L_CR_R8      00000044            EXE$ZEROPARM     ********   X   03   IO$M_NOFILTR   = 00000200            
+EMB$L_CR_R9      00000048            FATALERR         0000028B R     03   IO$M_NOFORMAT  = 00000100            
+EMB$L_CR_SBIER   000000AC            FDISPATCH        00000128 R     03   IO$M_NOW       = 00000040            
+EMB$L_CR_SBIFS   000000A0            FEXH             0000031A R     03   IO$M_NOWAIT    = 00000080            
+EMB$L_CR_SBIMT   000000A8            FEXL             00000323 R     03   IO$M_PACKED    = 00000080            
+EMB$L_CR_SBIS    000000B4            FTAB             0000001C R     03   IO$M_PURGE     = 00000800            
+EMB$L_CR_SBISC   000000A4            FUNCXT           000002F8 R     03   IO$M_READATTN  = 00000080            
+EMB$L_CR_SBITA   000000B0            F_DRVCLR       = 00000004            IO$M_REVERSE   = 00000040            
+EMB$L_CR_SBR     00000078            F_NOP          = 00000000            IO$M_SHUTDOWN  = 00000080            
+EMB$L_CR_SCBB    00000084            F_OFFSET       = 0000000C            IO$M_STARTUP   = 00000040            
+EMB$L_CR_SISR    0000008C            F_PACKACK      = 00000002            IO$M_SYNCH     = 00000200            
+EMB$L_CR_SLR     0000007C            F_READDATA     = 00000010            IO$M_TIMED     = 00000080            
+EMB$L_CR_SP      0000005C            F_READHEAD     = 00000014            IO$M_TRMNOECHO = 00001000            
+EMB$L_CR_SSP     00000018            F_RECAL        = 0000000A            IO$M_WRTATTN   = 00000100            
+EMB$L_CR_TODR    00000098            F_RELEASE      = 00000000            IO$S_FCODE     = 00000006            
+EMB$L_CR_USP     0000001C            F_RETCENTER    = 0000000C            IO$V_ABORT     = 00000008            
+EMB$L_DV_CHAR    00000038            F_SEEK         = 0000000E            IO$V_ACCESS    = 00000006            
+EMB$L_DV_ERRSEQ  0000001C            F_STARTSPNDL   = 00000008            IO$V_ATTNAST   = 00000008            
+EMB$L_DV_MEDIA   00000028            F_UNLOAD       = 00000006            IO$V_BINARY    = 00000006            
+EMB$L_DV_OPCNT   00000030            F_WRITECHECK   = 00000018            IO$V_CANCTRLO  = 00000006            
+EMB$L_DV_OWNUIC  00000034            F_WRITEDATA    = 00000012            IO$V_COMMOD    = 00000006            
+EMB$L_DV_REGSAV  00000050            F_WRITEHEAD    = 00000016            IO$V_CREATE    = 00000007            
+EMB$L_DV_RQPID   00000020            GBL...         = 00000000            IO$V_CTRLCAST  = 00000008            
+EMB$Q_BC_TIME    00000006            IDB$B_TYPE       0000000A            IO$V_CTRLYAST  = 00000007            
+EMB$Q_CR_TIME    00000006            IDB$B_UNITS      0000000B            IO$V_CVTLOW    = 00000008            
+EMB$Q_DV_ERTIME  00000014            IDB$C_LENGTH     00000014            IO$V_DATACHECK = 0000000E            
+EMB$Q_DV_IOSB    00000008            IDB$K_LENGTH     00000014            IO$V_DELETE    = 00000008            
+EMB$Q_SS_TIME    00000006            IDB$L_ADP        0000000C            IO$V_DMOUNT    = 0000000A            
+EMB$Q_TS_TIME    00000006            IDB$L_CSR        00000000            IO$V_DSABLMBX  = 0000000A            
+EMB$T_DV_NAME    00000040            IDB$L_OWNER      00000004            IO$V_ENABLMBX  = 00000007            
+EMB$W_BC_ENTRY   00000004            IDB$L_UCBLST     00000010            IO$V_FCODE     = 00000000            
+EMB$W_BC_ERRSEQ  0000000E            IDB$W_SIZE       00000008            IO$V_HANGUP    = 00000009            
+EMB$W_BC_PCBSZ   0000006C            IMMED            00000356 R     03   IO$V_INHERLOG  = 0000000B            
+EMB$W_CR_ENTRY   00000004            IO$M_ABORT     = 00000100            IO$V_INHEXTGAP = 0000000C            
+EMB$W_CR_ERRSEQ  0000000E            IO$M_ACCESS    = 00000040            IO$V_INHRETRY  = 0000000F            
+EMB$W_CR_PCBSZ   000000F8            IO$M_ATTNAST   = 00000100            IO$V_INHSEEK   = 0000000C            
+EMB$W_DV_BCNT    00000026            IO$M_BINARY    = 00000040            IO$V_INTERRUPT = 00000006            
+EMB$W_DV_BOFF    00000024            IO$M_CANCTRLO  = 00000040            IO$V_MOUNT     = 00000009            
+EMB$W_DV_DEVSTS  00000010            IO$M_COMMOD    = 00000040            IO$V_NOECHO    = 00000006            
+EMB$W_DV_ENTRY   00000004            IO$M_CREATE    = 00000080            IO$V_NOFILTR   = 00000009            
+EMB$W_DV_ERRCNT  0000002E            IO$M_CTRLCAST  = 00000100            IO$V_NOFORMAT  = 00000008            
+EMB$W_DV_FUNC    0000003E            IO$M_CTRLYAST  = 00000080            IO$V_NOW       = 00000006            
+EMB$W_DV_UNIT    0000002C            IO$M_CVTLOW    = 00000100            IO$V_NOWAIT    = 00000007            
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  35
+SYMBOL TABLE                                                                                                                     (1)
+
+IO$V_PACKED    = 00000007            IO$_WRITETRACKD= 0000000F            IRP$V_FCODE    = 00000000            
+IO$V_PURGE     = 0000000B            IO$_WRITEVBLK  = 00000030            IRP$V_FMOD     = 00000006            
+IO$V_READATTN  = 00000007            IOC$APPLYECC     ********   X   03   IRP$V_FUNC     = 00000001            
+IO$V_REVERSE   = 00000006            IOC$DIAGBUFILL   ********   X   03   IRP$V_MODE     = 00000000            
+IO$V_SHUTDOWN  = 00000007            IOC$LOADUBAMAP   ********   X   03   IRP$V_PAGIO    = 00000002            
+IO$V_STARTUP   = 00000006            IOC$MOVTOUSER    ********   X   03   IRP$V_PHYSIO   = 00000008            
+IO$V_SYNCH     = 00000009            IOC$RELCHAN      ********   X   03   IRP$V_PRIVIO   = 00000009            
+IO$V_TIMED     = 00000007            IOC$RELDATAP     ********   X   03   IRP$V_SWAPIO   = 00000006            
+IO$V_TRMNOECHO = 0000000C            IOC$RELMAPREG    ********   X   03   IRP$V_VIRTUAL  = 00000004            
+IO$V_WRTATTN   = 00000008            IOC$REQCOM       ********   X   03   IRP$W_ABCNT      0000003C            
+IO$_ACCESS     = 00000032            IOC$REQDATAP     ********   X   03   IRP$W_BCNT       00000032            
+IO$_ACPCONTROL = 00000038            IOC$REQMAPREG    ********   X   03   IRP$W_BOFF       00000030            
+IO$_CREATE     = 00000033            IOC$REQPCHANH    ********   X   03   IRP$W_CHAN       00000028            
+IO$_DEACCESS   = 00000034            IOC$REQPCHANL    ********   X   03   IRP$W_FUNC       00000020            
+IO$_DELETE     = 00000035            IOC$UPDATRANSP   ********   X   03   IRP$W_OBCNT      0000003E            
+IO$_DIAGNOSE   = 0000001D            IOC$WFIKPCH      ********   X   03   IRP$W_SIZE       00000008            
+IO$_DRVCLR     = 00000004            IOC$WFIRLCH      ********   X   03   IRP$W_STS        0000002A            
+IO$_ERASETAPE  = 00000006            IRP$B_CARCON     00000038            IRP$W_TT_PRMPT   0000003C            
+IO$_LOGICAL    = 0000002F            IRP$B_EFN        00000022            MASKH          = 00000008            
+IO$_MODIFY     = 00000036            IRP$B_PRI        00000023            MASKL          = 04000000            
+IO$_MOUNT      = 00000039            IRP$B_RMOD       0000000B            NOP              0000015D R     03   
+IO$_NOP        = 00000000            IRP$B_TYPE       0000000A            NORMAL           000001B9 R     03   
+IO$_OFFSET     = 00000006            IRP$C_LENGTH     0000004C            OFF              00000225 R     03   
+IO$_PACKACK    = 00000008            IRP$K_LENGTH     0000004C            OFFSET           0000015D R     03   
+IO$_PHYSICAL   = 0000001F            IRP$L_AST        00000010            OFFSETERR        00000286 R     03   
+IO$_READHEAD   = 0000000E            IRP$L_ASTPRM     00000014            OFFSIZ         = 00000008            
+IO$_READLBLK   = 00000021            IRP$L_DIAGBUF    00000044            OFFTAB           0000003A R     03   
+IO$_READPBLK   = 0000000C            IRP$L_IOQBL      00000004            PACKACK          0000015D R     03   
+IO$_READPRESET = 00000019            IRP$L_IOQFL      00000000            POSIT            0000037B R     03   
+IO$_READPROMPT = 00000037            IRP$L_IOSB       00000024            PR$_ACCR       = 00000029            
+IO$_READTRACKD = 00000010            IRP$L_IOST1      00000034            PR$_ACCS       = 00000028            
+IO$_READVBLK   = 00000031            IRP$L_IOST2      00000038            PR$_ASTLVL     = 00000013            
+IO$_RECAL      = 00000003            IRP$L_MEDIA      00000034            PR$_ESP        = 00000001            
+IO$_RELEASE    = 00000005            IRP$L_PID        0000000C            PR$_ICCS       = 00000018            
+IO$_RETCENTER  = 00000007            IRP$L_SEGVBN     00000040            PR$_ICR        = 0000001A            
+IO$_REWIND     = 00000024            IRP$L_SEQNUM     00000048            PR$_IPL        = 00000012            
+IO$_REWINDOFF  = 00000022            IRP$L_SVAPTE     0000002C            PR$_ISP        = 00000004            
+IO$_SEARCH     = 00000009            IRP$L_TT_TERM    00000038            PR$_KSP        = 00000000            
+IO$_SEEK       = 00000002            IRP$L_UCB        0000001C            PR$_MAPEN      = 00000038            
+IO$_SENSECHAR  = 0000001B            IRP$L_WIND       00000018            PR$_NICR       = 00000019            
+IO$_SENSEMODE  = 00000027            IRP$M_BUFIO    = 00000001            PR$_P0BR       = 00000008            
+IO$_SETCHAR    = 0000001A            IRP$M_CHAINED  = 00000020            PR$_P0LR       = 00000009            
+IO$_SETMODE    = 00000023            IRP$M_COMPLX   = 00000008            PR$_P1BR       = 0000000A            
+IO$_SKIPFILE   = 00000025            IRP$M_DIAGBUF  = 00000080            PR$_P1LR       = 0000000B            
+IO$_SKIPRECORD = 00000026            IRP$M_FUNC     = 00000002            PR$_PCBB       = 00000010            
+IO$_SPACEFILE  = 00000002            IRP$M_PAGIO    = 00000004            PR$_RXCS       = 00000020            
+IO$_SPACERECORD= 00000009            IRP$M_PHYSIO   = 00000100            PR$_RXDB       = 00000021            
+IO$_STARTSPNDL = 00000019            IRP$M_PRIVIO   = 00000200            PR$_SBIER      = 00000034            
+IO$_UNLOAD     = 00000001            IRP$M_SWAPIO   = 00000040            PR$_SBIFS      = 00000030            
+IO$_VIRTUAL    = 0000003F            IRP$M_VIRTUAL  = 00000010            PR$_SBIMT      = 00000033            
+IO$_WRITECHECK = 0000000A            IRP$S_FCODE    = 00000006            PR$_SBIQC      = 00000036            
+IO$_WRITECHECKH= 00000018            IRP$S_FMOD     = 0000000A            PR$_SBIS       = 00000031            
+IO$_WRITEHEAD  = 0000000D            IRP$S_MODE     = 00000002            PR$_SBISC      = 00000032            
+IO$_WRITELBLK  = 00000020            IRP$V_BUFIO    = 00000000            PR$_SBITA      = 00000035            
+IO$_WRITEMARK  = 0000001C            IRP$V_CHAINED  = 00000005            PR$_SBR        = 0000000C            
+IO$_WRITEOF    = 00000028            IRP$V_COMPLX   = 00000003            PR$_SCBB       = 00000011            
+IO$_WRITEPBLK  = 0000000B            IRP$V_DIAGBUF  = 00000007            PR$_SID        = 0000003E            
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  36
+SYMBOL TABLE                                                                                                                     (1)
+
+PR$_SIRR       = 00000014            RK_CS2_M_IR    = 00000040            RK_DS_V_WRL    = 0000000B            
+PR$_SISR       = 00000015            RK_CS2_M_MDS   = 00000200            RK_EC1           00000018            
+PR$_SLR        = 0000000D            RK_CS2_M_NED   = 00001000            RK_EC1_S_EPS   = 0000000D            
+PR$_SSP        = 00000002            RK_CS2_M_NEM   = 00000800            RK_EC1_V_EPS   = 00000000            
+PR$_TBIA       = 00000039            RK_CS2_M_OR    = 00000080            RK_EC2           0000001A            
+PR$_TBIS       = 0000003A            RK_CS2_M_PGE   = 00000400            RK_EC2_S_EPT   = 0000000B            
+PR$_TODR       = 0000001B            RK_CS2_M_RLS   = 00000008            RK_EC2_V_EPT   = 00000000            
+PR$_TXCS       = 00000022            RK_CS2_M_SCLR  = 00000020            RK_ER            0000000C            
+PR$_TXDB       = 00000023            RK_CS2_M_UFE   = 00000100            RK_ER_M_BSE    = 00000080            
+PR$_USP        = 00000003            RK_CS2_M_UPE   = 00002000            RK_ER_M_COE    = 00000200            
+PR$_WCSA       = 0000002C            RK_CS2_M_WCE   = 00004000            RK_ER_M_DCK    = 00008000            
+PR$_WCSD       = 0000002D            RK_CS2_S_DS    = 00000003            RK_ER_M_DRPAR  = 00000008            
+READDATA         0000016F R     03   RK_CS2_V_BAI   = 00000004            RK_ER_M_DTE    = 00001000            
+READHEAD         00000163 R     03   RK_CS2_V_DLT   = 0000000F            RK_ER_M_DTYE   = 00000020            
+RECAL            0000015D R     03   RK_CS2_V_DS    = 00000000            RK_ER_M_ECH    = 00000040            
+RELEASE          0000015D R     03   RK_CS2_V_IR    = 00000006            RK_ER_M_FMTE   = 00000010            
+RELES            00000353 R     03   RK_CS2_V_MDS   = 00000009            RK_ER_M_HVRC   = 00000100            
+RESETXFR         00000576 R     03   RK_CS2_V_NED   = 0000000C            RK_ER_M_IDAE   = 00000400            
+RETCENTER        0000015D R     03   RK_CS2_V_NEM   = 0000000B            RK_ER_M_ILF    = 00000001            
+RETREG           000004F5 R     03   RK_CS2_V_OR    = 00000007            RK_ER_M_NXF    = 00000004            
+RETRY            000001E0 R     03   RK_CS2_V_PGE   = 0000000A            RK_ER_M_OPI    = 00002000            
+RETRYERR         00000270 R     03   RK_CS2_V_RLS   = 00000003            RK_ER_M_SKI    = 00000002            
+RK_AS            0000000E            RK_CS2_V_SCLR  = 00000005            RK_ER_M_UNS    = 00004000            
+RK_AS_M_ATTN   = 0000FF00            RK_CS2_V_UFE   = 00000008            RK_ER_M_WLE    = 00000800            
+RK_AS_S_ATTN   = 00000008            RK_CS2_V_UPE   = 0000000D            RK_ER_V_BSE    = 00000007            
+RK_AS_S_OF     = 00000007            RK_CS2_V_WCE   = 0000000E            RK_ER_V_COE    = 00000009            
+RK_AS_V_ATTN   = 00000008            RK_DA            00000006            RK_ER_V_DCK    = 0000000F            
+RK_AS_V_OF     = 00000000            RK_DA_S_SA     = 00000005            RK_ER_V_DRPAR  = 00000003            
+RK_BA            00000004            RK_DA_S_TA     = 00000003            RK_ER_V_DTE    = 0000000C            
+RK_CS1           00000000            RK_DA_V_SA     = 00000000            RK_ER_V_DTYE   = 00000005            
+RK_CS1_M_CDT   = 00000400            RK_DA_V_TA     = 00000008            RK_ER_V_ECH    = 00000006            
+RK_CS1_M_CERR  = 00008000            RK_DB            00000014            RK_ER_V_FMTE   = 00000004            
+RK_CS1_M_CFMT  = 00001000            RK_DC            00000010            RK_ER_V_HVRC   = 00000008            
+RK_CS1_M_CTO   = 00000800            RK_DS            0000000A            RK_ER_V_IDAE   = 0000000A            
+RK_CS1_M_DI    = 00004000            RK_DS_M_ACLO   = 00000008            RK_ER_V_ILF    = 00000000            
+RK_CS1_M_DPPE  = 00000020            RK_DS_M_DCLO   = 00000010            RK_ER_V_NXF    = 00000002            
+RK_CS1_M_GO    = 00000001            RK_DS_M_DDT    = 00000100            RK_ER_V_OPI    = 0000000D            
+RK_CS1_M_IE    = 00000040            RK_DS_M_DRA    = 00000001            RK_ER_V_SKI    = 00000001            
+RK_CS1_M_RDY   = 00000080            RK_DS_M_DRDY   = 00000080            RK_ER_V_UNS    = 0000000E            
+RK_CS1_M_SPAR  = 00002000            RK_DS_M_DROT   = 00000020            RK_ER_V_WLE    = 0000000B            
+RK_CS1_S_FCODE = 00000004            RK_DS_M_DSC    = 00004000            RK_MR1           00000016            
+RK_CS1_S_MEX   = 00000002            RK_DS_M_OFST   = 00000004            RK_MR1_S_MS    = 00000003            
+RK_CS1_V_CDT   = 0000000A            RK_DS_M_PIP    = 00002000            RK_MR1_V_MS    = 00000000            
+RK_CS1_V_CERR  = 0000000F            RK_DS_M_SVAL   = 00008000            RK_MR2           0000001C            
+RK_CS1_V_CFMT  = 0000000C            RK_DS_M_VV     = 00000040            RK_MR3           0000001E            
+RK_CS1_V_CTO   = 0000000B            RK_DS_M_WRL    = 00000800            RK_SPR           00000012            
+RK_CS1_V_DI    = 0000000E            RK_DS_V_ACLO   = 00000003            RK_WC            00000002            
+RK_CS1_V_DPPE  = 00000005            RK_DS_V_DCLO   = 00000004            RLSCHN           000004F2 R     03   
+RK_CS1_V_FCODE = 00000001            RK_DS_V_DDT    = 00000008            SEEK             0000015D R     03   
+RK_CS1_V_GO    = 00000000            RK_DS_V_DRA    = 00000000            SS$_BUFBYTALI    ********   X   04   
+RK_CS1_V_IE    = 00000006            RK_DS_V_DRDY   = 00000007            SS$_CTRLERR      ********   X   03   
+RK_CS1_V_MEX   = 00000008            RK_DS_V_DROT   = 00000005            SS$_DATACHECK    ********   X   03   
+RK_CS1_V_RDY   = 00000007            RK_DS_V_DSC    = 0000000E            SS$_DRVERR       ********   X   03   
+RK_CS1_V_SPAR  = 0000000D            RK_DS_V_OFST   = 00000002            SS$_FORMAT       ********   X   03   
+RK_CS2           00000008            RK_DS_V_PIP    = 0000000D            SS$_IVADDR       ********   X   03   
+RK_CS2_M_BAI   = 00000010            RK_DS_V_SVAL   = 0000000F            SS$_NONEXDRV     ********   X   03   
+RK_CS2_M_DLT   = 00008000            RK_DS_V_VV     = 00000006            SS$_NORMAL       ********   X   03   
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  37
+SYMBOL TABLE                                                                                                                     (1)
+
+SS$_PARITY       ********   X   03   UBA$M_SR_SSYNC = 00000001            UBA$V_SR_LER   = 00000002            
+SS$_TIMEOUT      ********   X   03   UBA$M_SR_UBIFS = 40000000            UBA$V_SR_MRPE  = 00000003            
+SS$_UNSAFE       ********   X   03   UBA$M_SR_UBSTO = 00000002            UBA$V_SR_RDS   = 00000009            
+SS$_VOLINV       ********   X   03   UBA$S_BRRVR_IVA= 00000010            UBA$V_SR_RDTO  = 0000000A            
+SS$_WASECC       ********   X   03   UBA$S_CR_ARLVL = 00000002            UBA$V_SR_RIE   = 0000001D            
+SS$_WRITLCK      ********   X   03   UBA$S_CR_MRDSB = 00000005            UBA$V_SR_SSYNC = 00000000            
+STARTSPNDL       0000015D R     03   UBA$S_CSR_ADCOD= 00000008            UBA$V_SR_UBIFS = 0000001E            
+TRANSFR          0000017C R     03   UBA$S_DPR_ADDR = 00000010            UBA$V_SR_UBSTO = 00000001            
+TRANXT           000001BF R     03   UBA$S_DPR_STATE= 00000008            UCB$B_AMOD       00000053            
+UBA$L_BRRVR      00000030            UBA$S_FMER_MRN = 00000009            UCB$B_CEX        00000077            
+UBA$L_BRSVR      00000020            UBA$S_FUBAR_ADR= 00000012            UCB$B_CM1        0000004A            
+UBA$L_CR         00000004            UBA$S_MAP_ADDR = 00000015            UCB$B_CM2        0000004B            
+UBA$L_CSR        00000000            UBA$S_MAP_DPD  = 00000004            UCB$B_DEVCLASS   00000038            
+UBA$L_DCR        0000000C            UBA$S_SR_BRRVF = 00000004            UCB$B_DEVTYPE    00000039            
+UBA$L_DPR        00000040            UBA$V_BRRVR_AIR= 0000001F            UCB$B_DIPL       00000052            
+UBA$L_FMER       00000010            UBA$V_BRRVR_IVA= 00000000            UCB$B_DX_SCTCNT  FFFFFFFE            
+UBA$L_FUBAR      00000014            UBA$V_CR_ARLVL = 00000007            UCB$B_DX_SPARE   FFFFFFFF            
+UBA$L_MAP        00000800            UBA$V_CR_BRIE  = 00000005            UCB$B_ERTCNT     00000070            
+UBA$L_SR         00000008            UBA$V_CR_CNFIE = 00000002            UCB$B_ERTMAX     00000071            
+UBA$M_BRRVR_AIR= 80000000            UBA$V_CR_IFSIE = 00000006            UCB$B_ESCAPE     0000004B            
+UBA$M_CR_ARLVL = 00000180            UBA$V_CR_INIT  = 00000000            UCB$B_FEX        00000076            
+UBA$M_CR_BRIE  = 00000020            UBA$V_CR_MRDSB = 0000001A            UCB$B_FIPL       0000000B            
+UBA$M_CR_CNFIE = 00000004            UBA$V_CR_SUEFIE= 00000003            UCB$B_LOCSRV     0000003C            
+UBA$M_CR_IFSIE = 00000040            UBA$V_CR_UBPF  = 00000001            UCB$B_OFFNDX     00000090            
+UBA$M_CR_INIT  = 00000001            UBA$V_CR_USEFIE= 00000004            UCB$B_OFFRTC     00000091            
+UBA$M_CR_SUEFIE= 00000008            UBA$V_CSR_ADCOD= 00000000            UCB$B_REMSRV     0000003D            
+UBA$M_CR_UBPF  = 00000002            UBA$V_CSR_IS   = 0000001C            UCB$B_SECTORS    0000003C            
+UBA$M_CR_USEFIE= 00000010            UBA$V_CSR_MT   = 0000001B            UCB$B_SLAVE      00000074            
+UBA$M_CSR_IS   = 10000000            UBA$V_CSR_OT   = 00000015            UCB$B_SPR        00000075            
+UBA$M_CSR_MT   = 08000000            UBA$V_CSR_PD   = 00000017            UCB$B_STATE      00000052            
+UBA$M_CSR_OT   = 00200000            UBA$V_CSR_PE   = 0000001F            UCB$B_TRACKS     0000003D            
+UBA$M_CSR_PD   = 00800000            UBA$V_CSR_PU   = 00000016            UCB$B_TYPE       0000000A            
+UBA$M_CSR_PE   = 80000000            UBA$V_CSR_UBIC = 00000010            UCB$B_VERTSZ     0000003F            
+UBA$M_CSR_PU   = 00400000            UBA$V_CSR_UBIIP= 00000012            UCB$C_LENGTH     00000074            
+UBA$M_CSR_UBIC = 00010000            UBA$V_CSR_UBPDN= 00000011            UCB$C_LOGLNK   = 00000001            
+UBA$M_CSR_UBIIP= 00040000            UBA$V_CSR_URD  = 0000001D            UCB$K_LENGTH     00000074            
+UBA$M_CSR_UBPDN= 00020000            UBA$V_CSR_WS   = 0000001E            UCB$L_AMB        00000054            
+UBA$M_CSR_URD  = 20000000            UBA$V_CSR_XMFLT= 0000001A            UCB$L_ASTQBL     00000010            
+UBA$M_CSR_WS   = 40000000            UBA$V_DPR_ADDR = 00000000            UCB$L_ASTQFL     0000000C            
+UBA$M_CSR_XMFLT= 04000000            UBA$V_DPR_BNE  = 0000001F            UCB$L_CPID       0000005C            
+UBA$M_DPR_BNE  = 80000000            UBA$V_DPR_DPF  = 0000001D            UCB$L_CRB        00000020            
+UBA$M_DPR_DPF  = 20000000            UBA$V_DPR_STATE= 00000010            UCB$L_DDB        00000024            
+UBA$M_DPR_XMTER= 40000000            UBA$V_DPR_XMTER= 0000001E            UCB$L_DEVCHAR    00000034            
+UBA$M_MAP_BO   = 02000000            UBA$V_FMER_MRN = 00000000            UCB$L_DEVDEPEND  0000003C            
+UBA$M_MAP_VALID= 80000000            UBA$V_FUBAR_ADR= 00000000            UCB$L_DM_DPR     000000B0            
+UBA$M_SR_BRID  = 00000800            UBA$V_MAP_ADDR = 00000000            UCB$L_DM_FMPR    000000B4            
+UBA$M_SR_BRSVF = 10000000            UBA$V_MAP_BO   = 00000019            UCB$L_DM_PMPR    000000B8            
+UBA$M_SR_CRD   = 00000100            UBA$V_MAP_DPD  = 00000015            UCB$L_DPC        0000007C            
+UBA$M_SR_CXTER = 00000080            UBA$V_MAP_VALID= 0000001F            UCB$L_DUETIM     0000005C            
+UBA$M_SR_CXTMO = 00000040            UBA$V_SR_BRID  = 0000000B            UCB$L_DX_BFPNT   FFFFFFF4            
+UBA$M_SR_DPPE  = 00000020            UBA$V_SR_BRRVF = 00000018            UCB$L_DX_BUF     FFFFFFF0            
+UBA$M_SR_IVMR  = 00000010            UBA$V_SR_BRSVF = 0000001C            UCB$L_DX_RXDB    FFFFFFF8            
+UBA$M_SR_LER   = 00000004            UBA$V_SR_CRD   = 00000008            UCB$L_EMB        00000078            
+UBA$M_SR_MRPE  = 00000008            UBA$V_SR_CXTER = 00000007            UCB$L_FIRST      00000014            
+UBA$M_SR_RDS   = 00000200            UBA$V_SR_CXTMO = 00000006            UCB$L_FPC        0000000C            
+UBA$M_SR_RDTO  = 00000400            UBA$V_SR_DPPE  = 00000005            UCB$L_FQBL       00000004            
+UBA$M_SR_RIE   = 20000000            UBA$V_SR_IVMR  = 00000004            UCB$L_FQFL       00000000            
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  38
+SYMBOL TABLE                                                                                                                     (1)
+
+UCB$L_FR3        00000010            UCB$V_ERLOGIP  = 00000002            UCB$W_MSGCNT     00000016            
+UCB$L_FR4        00000014            UCB$V_INT      = 00000001            UCB$W_MSGMAX     00000014            
+UCB$L_IOQBL      00000044            UCB$V_INTTYPE  = 00000007            UCB$W_NT_CHAN    0000007C            
+UCB$L_IOQFL      00000040            UCB$V_JOB      = 00000000            UCB$W_OFFSET     00000086            
+UCB$L_IRP        0000004C            UCB$V_LNKPRI   = 00000006            UCB$W_REFC       00000050            
+UCB$L_LINK       0000002C            UCB$V_LTYPE    = 00000000            UCB$W_SIZE       00000008            
+UCB$L_LOGADR     00000064            UCB$V_MOUNTING = 00000009            UCB$W_SRCADDR    0000001A            
+UCB$L_MAXBLOCK   00000080            UCB$V_MSGACK   = 00000004            UCB$W_STS        00000058            
+UCB$L_MEDIA      00000088            UCB$V_MSGFLO   = 00000003            UCB$W_UNIT       00000048            
+UCB$L_NT_DATSSB  00000074            UCB$V_NOCNVRT  = 00000002            UCB$W_VPROT      0000001A            
+UCB$L_NT_INTSSB  00000078            UCB$V_NT_BFROVF= 00000002            UNLOAD           0000015D R     03   
+UCB$L_OPCNT      00000060            UCB$V_NT_BREAK = 00000005            VEC$B_DATAPATH   00000013            
+UCB$L_OWNUIC     0000001C            UCB$V_NT_NAME  = 00000004            VEC$B_NUMREG     00000012            
+UCB$L_PID        00000028            UCB$V_NT_NONTR = 00000006            VEC$L_ADP        00000014            
+UCB$L_RQBL       00000004            UCB$V_NT_SDP   = 00000003            VEC$L_IDB        00000008            
+UCB$L_RQFL       00000000            UCB$V_ONLINE   = 00000004            VEC$L_INITIAL    0000000C            
+UCB$L_SVAPTE     00000068            UCB$V_POWER    = 00000005            VEC$L_TT_DISC    00000020            
+UCB$L_SVPN       00000064            UCB$V_PRMMBX   = 00000000            VEC$L_TT_ILINE   00000018            
+UCB$L_TTCHAR     0000003C            UCB$V_SEGFLO   = 00000002            VEC$L_TT_STRTIO  0000001C            
+UCB$L_VCB        00000030            UCB$V_TIM      = 00000000            VEC$M_MAPLOCK  = 00008000            
+UCB$M_BSY      = 00000100            UCB$V_TIMOUT   = 00000006            VEC$M_PATHLOCK = 00000080            
+UCB$M_CANCEL   = 00000008            UCB$V_TT_NOTIF = 00000002            VEC$Q_DISPATCH   00000000            
+UCB$M_DEADMO   = 00000400            UCB$V_TT_TIMO  = 00000001            VEC$S_DATAPATH = 00000007            
+UCB$M_DELMBX   = 00000002            UCB$V_VALID    = 0000000B            VEC$S_MAPREG   = 0000000F            
+UCB$M_DIAGBUF  = 00000002            UCB$W_BCNT       0000006E            VEC$V_DATAPATH = 00000000            
+UCB$M_DX_WRITE = 00000008            UCB$W_BCR        00000092            VEC$V_MAPLOCK  = 0000000F            
+UCB$M_ECC      = 00000001            UCB$W_BOFF       0000006C            VEC$V_MAPREG   = 00000000            
+UCB$M_ERLOGIP  = 00000004            UCB$W_BUFQUO     00000018            VEC$V_PATHLOCK = 00000007            
+UCB$M_INT      = 00000002            UCB$W_BYTESTOGO  0000003E            VEC$W_MAPREG     00000010            
+UCB$M_INTTYPE  = 00000080            UCB$W_CHARGE     0000004A            WRITECHECK       00000163 R     03   
+UCB$M_JOB      = 00000001            UCB$W_CYLINDERS  0000003E            WRITEDATA        0000016A R     03   
+UCB$M_MOUNTING = 00000200            UCB$W_DA         00000088            WRITEHEAD        00000163 R     03   
+UCB$M_NOCNVRT  = 00000004            UCB$W_DC         0000008A            XFER             000003D1 R     03   
+UCB$M_NT_BFROVF= 00000004            UCB$W_DEVBUFSIZ  0000003A            
+UCB$M_NT_BREAK = 00000020            UCB$W_DEVSTS     0000005A            
+UCB$M_NT_NAME  = 00000010            UCB$W_DM_AS      000000A4            
+UCB$M_NT_NONTR = 00000040            UCB$W_DM_BA      0000009A            
+UCB$M_NT_SDP   = 00000008            UCB$W_DM_CS1     00000096            
+UCB$M_ONLINE   = 00000010            UCB$W_DM_CS2     0000009E            
+UCB$M_POWER    = 00000020            UCB$W_DM_DA      0000009C            
+UCB$M_PRMMBX   = 00000001            UCB$W_DM_DB      000000BC            
+UCB$M_TIM      = 00000001            UCB$W_DM_DC      000000A6            
+UCB$M_TIMOUT   = 00000040            UCB$W_DM_DPN     000000AE            
+UCB$M_TT_NOTIF = 00000004            UCB$W_DM_DS      000000A0            
+UCB$M_TT_TIMO  = 00000002            UCB$W_DM_DTYP    00000094            
+UCB$M_VALID    = 00000800            UCB$W_DM_ER      000000A2            
+UCB$S_LNKPRI   = 00000002            UCB$W_DM_MR1     000000A8            
+UCB$S_LTYPE    = 00000002            UCB$W_DM_MR2     000000AA            
+UCB$T_PARTNER    0000000C            UCB$W_DM_MR3     000000AC            
+UCB$V_BACKP    = 00000005            UCB$W_DM_WC      00000098            
+UCB$V_BSY      = 00000008            UCB$W_DSTADDR    00000018            
+UCB$V_CANCEL   = 00000003            UCB$W_DX_BCR     FFFFFFFC            
+UCB$V_DEADMO   = 0000000A            UCB$W_EC1        0000008C            
+UCB$V_DELMBX   = 00000001            UCB$W_EC2        0000008E            
+UCB$V_DIAGBUF  = 00000001            UCB$W_ERRCNT     00000072            
+UCB$V_DX_WRITE = 00000003            UCB$W_FUNC       00000084            
+UCB$V_ECC      = 00000000            UCB$W_MB_SEED    FFFFFFFC            
+DMDRIVER        - RK611-RK06/RK07 DISK DRIVER                    21-AUG-1978 23:51:02   VAX-11 MACRO X0.3-11               Page  39
+PROGRAM SECTION SYNOPSIS                                                                                                         (1)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            FFFFFFFF      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+$$$102_DRIVER    000007E9      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+Y$EXEPAGED       00000011      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+1612. BYTES LEFT IN FREE MEMORY POOL.
+30. BYTES OF RECLAIMED MEMORY.
+OBJ$:DMDRIVER,LIS$:DMDRIVER/-SP=LIB$:LIB/ML,SRC$:DMDRIVER
+25 MLB DIR RDS - 1221 GETS TO DEFINE 39 MACROS. 120 INTER. FILE WRITES. 

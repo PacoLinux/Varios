@@ -1,0 +1,952 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE delecli (   ! Declarations of CLI data structures for the DELETE and PURGE commands
+;	0002	                    LANGUAGE (BLISS32),
+;	0003	                    IDENT = 'X00001'
+;	0004	                    ) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1978
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	! FACILITY:	File Handling Utilities
+;	0028	!
+;	0029	! ABSTRACT:
+;	0030	!
+;	0031	!	This module contains declarations of the RMS data storage areas needed
+;	0032	!	for handling input file specifications.
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	VAX/VMS operating system, unprivileged user mode utility,
+;	0037	!	operates at non-AST level.
+;	0038	!
+;	0039	!--
+;	0040	!++
+;	0041	!
+;	0042	! AUTHOR:	Carol Peters,	CREATION DATE:	03 May 1978 09:59
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 2
+; Digital Equipment Corporation
+;
+;	0047	!
+;	0048	! Table of contents
+;	0049	!
+;	0050	
+;	0051	FORWARD ROUTINE
+;	0052	    del$get_cmdqual	: NOVALUE,			! Retrieve command level qualifiers from CLI
+;	0053	    cli_error		: NOVALUE,			! CLI error routine
+;	0054	    date_parse		: NOVALUE,			! Retrieve and convert date specification
+;	0055	    keep_val_parse	: NOVALUE;			! Saves number specified for versions to retain.
+;	0056	
+;	0057	!
+;	0058	! Include files
+;	0059	!
+;	0060	
+;	0061	LIBRARY 'SYS$LIBRARY:STARLET.L32';			! Common system definitions
+;	0062	
+;	0063	LIBRARY 'SYS$LIBRARY:CLIMAC.L32';			! CLI definitions
+;	0064	
+;	0065	REQUIRE 'SRC$:DELETE.REQ';				! Common definitions for DELETE utility
+;	0153	
+;	0154	REQUIRE 'SRC$:DELEMSG.REQ';				! Message reporting macros for DELETE utility
+;	0202	
+;	0203	!
+;	0204	! External declarations
+;	0205	!
+;	0206	
+;	0207	EXTERNAL
+;	0208	    del$cli_status	: BITVECTOR,			! Status bits for DELETE and PURGE commands
+;	0209	    del$before_date	: BLOCK [, BYTE],		! Holds /BEFORE date in 64-bit system format
+;	0210	    del$keepver_val,					! Number of most recent versions to retain.
+;	0211	    del$since_date	: BLOCK [, BYTE];		! Holds /SINCE date in 64-bit system format
+;	0212	
+;	0213	EXTERNAL ROUTINE
+;	0214	    lib$cvt_time;					! Converts ASCII time to 64-bit system time format
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 3
+; Digital Equipment Corporation
+;
+;	0215	!
+;	0216	! Global variables
+;	0217	!
+;	0218	
+;	0219	GLOBAL
+;	0220	
+;	0221	!
+;	0222	! CLI Control blocks and work areas used by both the DELETE and the PURGE commands.
+;	0223	!
+;	0224	
+;	0225	    initial_desc:					! CLI initialization descriptor:
+;	0226			$CLIREQDESC (rqtype = initprs,		!    Initialization indicator
+;     P 0227				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0228				     erract = cli_error),	!    Address of error action routine
+;	0229	
+;	0230	    cmd_name_desc:					! Command line request descriptor:
+;	0231			$CLIREQDESC (rqtype = getcmd,		!    Command-line (i.e., name) indicator
+;     P 0232				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0233				     erract = cli_error),	!    Address of error action routine
+;	0234	
+;	0235	    cmd_desc:						! Command qualifiers request descriptor:
+;	0236			$CLIREQDESC (rqtype = getqual,		!    Command-level qualifiers request
+;     P 0237				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0238				     erract = cli_error,	!    Address of error action routine
+;     P 0239				     qualst = 0),		!    Address of qualifier descriptors
+;	0240								!    supplied at execution time.
+;	0241	
+;	0242	    infile_desc:					! Input file request descriptor:
+;	0243			$CLIREQDESC (rqtype = input1,		!    Primary input indicator
+;     P 0244				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0245				     erract = cli_error,	!    Address of error action routine
+;     P 0246				     qualst = 0),		!    Address of qualifier descriptors
+;	0247								!    supplied at execution time.
+;	0248	
+;	0249	    cleanup_desc:					! Parameter "cleanup" request descriptor:
+;	0250			$CLIREQDESC (rqtype = endprm1,		!    Parameter cleanup indicator
+;     P 0251				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0252				     erract = cli_error),	!    CLI error action routine
+;	0253	
+;	0254	    numb_parse_desc:					! Decimal value parse request descriptor:
+;	0255			$CLIREQDESC (rqtype = numerval,		!    Numeric value parse indicator
+;     P 0256				     rqflgs = <lastval, absadr>,!    Single value and absolute address indicators
+;     P 0257				     erract = cli_error),	!    Address of error action routine
+;	0258	
+;	0259	    str_parse_desc:					! ASCII string value parse request descriptor:
+;	0260			$CLIREQDESC (rqtype = asciival,		!    ASCII string value parse indicator
+;     P 0261				     rqflgs = absadr,		!    Absolute address indicator
+;     P 0262				     erract = cli_error),	!    Address of error action routine
+;	0263	
+;	0264	    cli_work_area:  VECTOR [cli$c_workarea, BYTE];	! CLI work area
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 4
+; Digital Equipment Corporation
+;
+;	0265	!
+;	0266	! DELETE-specific Command Language Interpreter control Blocks
+;	0267	!
+;	0268	
+;	0269	    $CLIQUALCODES (delete,				! Define the DELETE qualifier codes
+;     P 0270	                    before,
+;     P 0271	                    confirm,
+;     P 0272	                    create,
+;     P 0273	                    expire,
+;     P 0274	                    log,
+;     P 0275	                    modify,
+;     P 0276	                    since);
+;	0277	
+;	0278	GLOBAL
+;	0279	
+;	0280	!
+;	0281	! Command Qualifier Descriptors
+;	0282	!
+;	0283	
+;	0284	    dele_befo_qual:					! before qualifier
+;	0285	                $CLIQUALDESC (qdcode = before,
+;     P 0286	                              truact = date_parse,
+;     P 0287	                              setlst = before_bit),
+;	0288	
+;	0289	    dele_conf_qual:					! confirm qualifier
+;	0290			$CLIQUALDESC (qdcode = confirm,
+;     P 0291				      setlst = confirm_bit),
+;	0292	
+;	0293	    dele_crea_qual:					! create qualifier
+;	0294	                $CLIQUALDESC (qdcode = create,
+;     P 0295	                              setlst = create_bit),
+;	0296	
+;	0297	    dele_expi_qual:
+;	0298	                $CLIQUALDESC (qdcode = expire,
+;     P 0299	                              setlst = expire_bit),
+;	0300	
+;	0301	    dele_log_qual:					! log qualifier
+;	0302			$CLIQUALDESC (qdcode = log,
+;     P 0303				      setlst = log_msg_bit),
+;	0304	
+;	0305	    dele_modi_qual:
+;	0306	                $CLIQUALDESC (qdcode = modify,
+;     P 0307	                              setlst = modify_bit),
+;	0308	
+;	0309	    dele_sinc_qual:
+;	0310	                $CLIQUALDESC (qdcode = since,
+;     P 0311	                              truact = date_parse,
+;     P 0312	                              setlst = since_bit),
+;	0313	
+;	0314	    dele_qual_end:					! End of command qualifier descriptors
+;	0315			$CLIQUALEND;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 5
+; Digital Equipment Corporation
+;
+;	0316	!
+;	0317	! PURGE-specific Command Language Interpreter control Blocks
+;	0318	!
+;	0319	
+;	0320	    $CLIQUALCODES (purge,				! Define the purge qualifier codes
+;     P 0321	                        keep,
+;     P 0322	                        log);
+;	0323	
+;	0324	GLOBAL
+;	0325	
+;	0326	!
+;	0327	! Command Qualifier Descriptors
+;	0328	!
+;	0329	
+;	0330	    purg_keep_qual:					! keep qualifier
+;	0331			$CLIQUALDESC (qdcode = keep,
+;     P 0332	                              truact = keep_val_parse,
+;     P 0333				      setlst = keep_bit),
+;	0334	
+;	0335	    purg_log_qual:
+;	0336	                $CLIQUALDESC (qdcode = log,		! log qualifier
+;     P 0337	                              setlst = log_msg_bit),
+;	0338	
+;	0339	    purg_qual_end:					! End of command qualifier descriptors
+;	0340			$CLIQUALEND;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6
+; Digital Equipment Corporation
+;
+;	0341	GLOBAL ROUTINE del$get_cmdqual :  NOVALUE =		! Retrieve command-level qualifiers from the CLI
+;	0342	
+;	0343	!++
+;	0344	! Functional description
+;	0345	!
+;	0346	!	This routine calls CLI to obtain the command line and then
+;	0347	!	completes all CLI request descriptors. Then the routine
+;	0348	!	obtains the command-level qualifiers (i.e., options) from the
+;	0349	!	Command Language Interpreter.
+;	0350	!
+;	0351	! Calling sequence:
+;	0352	!
+;	0353	!	del$get_cmdqual ()
+;	0354	!
+;	0355	! Input parameters
+;	0356	!
+;	0357	!	none
+;	0358	!
+;	0359	! Implicit inputs
+;	0360	!
+;	0361	!	CMD_NAME_DESC - Command name request descriptor
+;	0362	!
+;	0363	!	The starting address of the CLI qualifier lists for command qualifiers. These are:
+;	0364	!
+;	0365	!		dele_befo_qual	- DELETE command qualifier list head
+;	0366	!		purg_keep_qual	- PURGE command qualifier list head
+;	0367	!
+;	0368	! Output parameters
+;	0369	!
+;	0370	!	none
+;	0371	!
+;	0372	! Implicit outputs
+;	0373	!
+;	0374	!	DEL$CLI_STATUS	- Relevant command and qualifier indicators set by CLI.
+;	0375	!			  PURGE_CMD_BIT set if this was a PURGE command.
+;	0376	!	CMD_DESC	- Qualifier list address set
+;	0377	!
+;	0378	! Routine value
+;	0379	!
+;	0380	!	novalue
+;	0381	!
+;	0382	! Side effects
+;	0383	!
+;	0384	!	none
+;	0385	!
+;	0386	!--
+;	0387	
+;	0388	    BEGIN
+;	0389	
+;	0390	!
+;	0391	! Determine whether this is a DELETE command or a PURGE command.
+;	0392	!
+;	0393	
+;	0394	    call_cli (						! Call the CLI with the following arguments:
+;	0395			cmd_name_desc,				!    Command line request descriptor address
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6-1
+; Digital Equipment Corporation
+;
+;	0396			cli_work_area,				!    CLI work area address
+;	0397			del$cli_status);			!    DELETE status bit vector address
+;	0398	
+;	0399	    IF .cmd_name_desc [cli$b_rqstat] EQL		! If this is a DELETE command,
+;	0400	            cli$k_verb_dele
+;	0401	    THEN						! setup the address of the DELETE qualifier
+;	0402		cmd_desc [cli$a_qualst] = dele_befo_qual	!    Command qualifier request descriptor
+;	0403	    ELSE						! Otherwise, set up the address of the purge
+;	0404	        BEGIN
+;	0405		cmd_desc [cli$a_qualst] = purg_keep_qual;	!    command qualifier request descriptor.
+;	0406	        del$cli_status [purge_cmd_bit] = TRUE;		! Also set bit that says this is PURGE command.
+;	0407	        END;
+;	0408	
+;	0409	!
+;	0410	! Get the command-level qualifiers from the Command Language Interpreter.
+;	0411	!
+;	0412	
+;	0413	    call_cli (						! Call the CLI with the following arguments:
+;	0414			cmd_desc,				!    Command qualifiers request descriptor address
+;	0415			cli_work_area,				!    CLI work area address
+;	0416			del$cli_status);			!    DELETE status bit vector address
+;	0417	
+;	0418	!
+;	0419	! If a /BEFORE or /SINCE qualifier was given, and no /CREATE, /MODIFY, or /EXPIRE
+;	0420	! qualifier was given, then default to /CREATE.
+;	0421	!
+;	0422	
+;	0423	    IF (.del$cli_status [before_bit] OR			! If the user specified /BEFORE
+;	0424	        .del$cli_status [since_bit])			!    or /SINCE
+;	0425	        AND (NOT .del$cli_status [create_bit])		!    and didn't specify /CREATE,
+;	0426	        AND (NOT .del$cli_status [modify_bit])		!    /MODIFY,
+;	0427	        AND (NOT .del$cli_status [expire_bit])		!    or /EXPIRE,
+;	0428	    THEN
+;	0429	        del$cli_status [create_bit] = TRUE;		!    then default to /CREATE.
+;	0430	
+;	0431	    END;
+
+
+							    .TITLE  DELECLI
+							    .IDENT  \X00001\
+
+							    .PSECT  $GLOBAL$,NOEXE,2
+
+					      00000 INITIAL_DESC::
+							    .BYTE   0							      ;
+					      00001 	    .BYTE   0							      ;
+					      00002 	    .BYTE   2							      ;
+					      00003 	    .BYTE   0							      ;
+					      00004 	    .ADDRESS  CLI_ERROR						      ;
+					      00008 	    .LONG   0, 0						      ;
+					      00010 	    .LONG   0							      ;
+					      00014 	    .LONG   0							      ;
+					      00018 	    .LONG   0							      ;
+					      0001C CMD_NAME_DESC::
+							    .BYTE   1							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6-2
+; Digital Equipment Corporation
+;
+					      0001D 	    .BYTE   0							      ;
+					      0001E 	    .BYTE   2							      ;
+					      0001F 	    .BYTE   0							      ;
+					      00020 	    .ADDRESS  CLI_ERROR						      ;
+					      00024 	    .LONG   0, 0						      ;
+					      0002C 	    .LONG   0							      ;
+					      00030 	    .LONG   0							      ;
+					      00034 	    .LONG   0							      ;
+					      00038 CMD_DESC::
+							    .BYTE   2							      ;
+					      00039 	    .BYTE   0							      ;
+					      0003A 	    .BYTE   2							      ;
+					      0003B 	    .BYTE   0							      ;
+					      0003C 	    .ADDRESS  CLI_ERROR						      ;
+					      00040 	    .LONG   0, 0						      ;
+					      00048 	    .LONG   0							      ;
+					      0004C 	    .LONG   0							      ;
+					      00050 	    .LONG   0							      ;
+					      00054 INFILE_DESC::
+							    .BYTE   16							      ;
+					      00055 	    .BYTE   0							      ;
+					      00056 	    .BYTE   2							      ;
+					      00057 	    .BYTE   0							      ;
+					      00058 	    .ADDRESS  CLI_ERROR						      ;
+					      0005C 	    .LONG   0, 0						      ;
+					      00064 	    .LONG   0							      ;
+					      00068 	    .LONG   0							      ;
+					      0006C 	    .LONG   0							      ;
+					      00070 CLEANUP_DESC::
+							    .BYTE   48							      ;
+					      00071 	    .BYTE   0							      ;
+					      00072 	    .BYTE   2							      ;
+					      00073 	    .BYTE   0							      ;
+					      00074 	    .ADDRESS  CLI_ERROR						      ;
+					      00078 	    .LONG   0, 0						      ;
+					      00080 	    .LONG   0							      ;
+					      00084 	    .LONG   0							      ;
+					      00088 	    .LONG   0							      ;
+					      0008C NUMB_PARSE_DESC::
+							    .BYTE   64							      ;
+					      0008D 	    .BYTE   0							      ;
+					      0008E 	    .BYTE   3							      ;
+					      0008F 	    .BYTE   0							      ;
+					      00090 	    .ADDRESS  CLI_ERROR						      ;
+					      00094 	    .LONG   0, 0						      ;
+					      0009C 	    .LONG   0							      ;
+					      000A0 	    .LONG   0							      ;
+					      000A4 	    .LONG   0							      ;
+					      000A8 STR_PARSE_DESC::
+							    .BYTE   65							      ;
+					      000A9 	    .BYTE   0							      ;
+					      000AA 	    .BYTE   2							      ;
+					      000AB 	    .BYTE   0							      ;
+					      000AC 	    .ADDRESS  CLI_ERROR						      ;
+					      000B0 	    .LONG   0, 0						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6-3
+; Digital Equipment Corporation
+;
+					      000B8 	    .LONG   0							      ;
+					      000BC 	    .LONG   0							      ;
+					      000C0 	    .LONG   0							      ;
+					      000C4 CLI_WORK_AREA::
+							    .BLKB   128
+					      00144 DELE_BEFO_QUAL::
+							    .BYTE   24							      ;
+					      00145 	    .BYTE    CLI$K_DELE_BEFO					      ;
+					      00146 	    .BYTE   0							      ;
+					      00147 	    .BYTE   0							      ;
+					      00148 	    .LONG   0, 0						      ;
+					      00150 	    .ADDRESS  DATE_PARSE					      ;
+					      00154 	    .LONG   0							      ;
+					      00158 	    .BYTE   0							      ;
+					      00159 	    .BYTE   1, 7						      ;
+					      0015B 	    .BYTE   0							      ;
+					      0015C DELE_CONF_QUAL::
+							    .BYTE   24							      ;
+					      0015D 	    .BYTE    CLI$K_DELE_CONF					      ;
+					      0015E 	    .BYTE   0							      ;
+					      0015F 	    .BYTE   0							      ;
+					      00160 	    .LONG   0, 0						      ;
+					      00168 	    .LONG   0							      ;
+					      0016C 	    .LONG   0							      ;
+					      00170 	    .BYTE   0							      ;
+					      00171 	    .BYTE   1, 2						      ;
+					      00173 	    .BYTE   0							      ;
+					      00174 DELE_CREA_QUAL::
+							    .BYTE   24							      ;
+					      00175 	    .BYTE    CLI$K_DELE_CREA					      ;
+					      00176 	    .BYTE   0							      ;
+					      00177 	    .BYTE   0							      ;
+					      00178 	    .LONG   0, 0						      ;
+					      00180 	    .LONG   0							      ;
+					      00184 	    .LONG   0							      ;
+					      00188 	    .BYTE   0							      ;
+					      00189 	    .BYTE   1, 8						      ;
+					      0018B 	    .BYTE   0							      ;
+					      0018C DELE_EXPI_QUAL::
+							    .BYTE   24							      ;
+					      0018D 	    .BYTE    CLI$K_DELE_EXPI					      ;
+					      0018E 	    .BYTE   0							      ;
+					      0018F 	    .BYTE   0							      ;
+					      00190 	    .LONG   0, 0						      ;
+					      00198 	    .LONG   0							      ;
+					      0019C 	    .LONG   0							      ;
+					      001A0 	    .BYTE   0							      ;
+					      001A1 	    .BYTE   1, 9						      ;
+					      001A3 	    .BYTE   0							      ;
+					      001A4 DELE_LOG_QUAL::
+							    .BYTE   24							      ;
+					      001A5 	    .BYTE    CLI$K_DELE_LOG					      ;
+					      001A6 	    .BYTE   0							      ;
+					      001A7 	    .BYTE   0							      ;
+					      001A8 	    .LONG   0, 0						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6-4
+; Digital Equipment Corporation
+;
+					      001B0 	    .LONG   0							      ;
+					      001B4 	    .LONG   0							      ;
+					      001B8 	    .BYTE   0							      ;
+					      001B9 	    .BYTE   1, 1						      ;
+					      001BB 	    .BYTE   0							      ;
+					      001BC DELE_MODI_QUAL::
+							    .BYTE   24							      ;
+					      001BD 	    .BYTE    CLI$K_DELE_MODI					      ;
+					      001BE 	    .BYTE   0							      ;
+					      001BF 	    .BYTE   0							      ;
+					      001C0 	    .LONG   0, 0						      ;
+					      001C8 	    .LONG   0							      ;
+					      001CC 	    .LONG   0							      ;
+					      001D0 	    .BYTE   0							      ;
+					      001D1 	    .BYTE   1, 10						      ;
+					      001D3 	    .BYTE   0							      ;
+					      001D4 DELE_SINC_QUAL::
+							    .BYTE   24							      ;
+					      001D5 	    .BYTE    CLI$K_DELE_SINC					      ;
+					      001D6 	    .BYTE   0							      ;
+					      001D7 	    .BYTE   0							      ;
+					      001D8 	    .LONG   0, 0						      ;
+					      001E0 	    .ADDRESS  DATE_PARSE					      ;
+					      001E4 	    .LONG   0							      ;
+					      001E8 	    .BYTE   0							      ;
+					      001E9 	    .BYTE   1, 6						      ;
+					      001EB 	    .BYTE   0							      ;
+					      001EC DELE_QUAL_END::
+							    .BYTE   0							      ;
+					      001ED PURG_KEEP_QUAL::
+							    .BYTE   24							      ;
+					      001EE 	    .BYTE    CLI$K_PURG_KEEP					      ;
+					      001EF 	    .BYTE   0							      ;
+					      001F0 	    .BYTE   0							      ;
+					      001F1 	    .LONG   0, 0						      ;
+					      001F9 	    .ADDRESS  KEEP_VAL_PARSE					      ;
+					      001FD 	    .LONG   0							      ;
+					      00201 	    .BYTE   0							      ;
+					      00202 	    .BYTE   1, 3						      ;
+					      00204 	    .BYTE   0							      ;
+					      00205 PURG_LOG_QUAL::
+							    .BYTE   24							      ;
+					      00206 	    .BYTE    CLI$K_PURG_LOG					      ;
+					      00207 	    .BYTE   0							      ;
+					      00208 	    .BYTE   0							      ;
+					      00209 	    .LONG   0, 0						      ;
+					      00211 	    .LONG   0							      ;
+					      00215 	    .LONG   0							      ;
+					      00219 	    .BYTE   0							      ;
+					      0021A 	    .BYTE   1, 1						      ;
+					      0021C 	    .BYTE   0							      ;
+					      0021D PURG_QUAL_END::
+							    .BYTE   0							      ;
+
+							    .GLOBL  DEL$CLI_RESULT, DEL$MSG_NUMBER, DEL$CLI_STATUS
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 6-5
+; Digital Equipment Corporation
+;
+							    .GLOBL  DEL$BEFORE_DATE, DEL$KEEPVER_VAL, DEL$SINCE_DATE
+							    .GLOBL  LIB$CVT_TIME, CLI$K_DELE_BEFO, CLI$K_DELE_CONF
+							    .GLOBL  CLI$K_DELE_CREA, CLI$K_DELE_EXPI, CLI$K_DELE_LOG
+							    .GLOBL  CLI$K_DELE_MODI, CLI$K_DELE_SINC, CLI$K_PURG_KEEP
+							    .GLOBL  CLI$K_PURG_LOG
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0C00 00000 	    .ENTRY  DEL$GET_CMDQUAL, Save R10,R11			      ; 0341
+		         5A	0000G  CF  9E 00002 	    MOVAB   DEL$CLI_STATUS, R10					      ;
+		         5B	0000'  CF  9E 00007 	    MOVAB   CLI_WORK_AREA, R11					      ;
+				       5A  DD 0000C 	    PUSHL   R10							      ; 0394
+				       5B  DD 0000E 	    PUSHL   R11							      ;
+				FF58   CB  9F 00010 	    PUSHAB  CMD_NAME_DESC					      ;
+		  0000G  DF	       03  FB 00014 	    CALLS   #3, @DEL$CLI_RESULT					      ;
+		         0F	FF5B   CB  91 00019 	    CMPB    CMD_NAME_DESC+3, #15				      ; 0399
+				       08  12 0001E 	    BNEQ    1$							      ;
+		    8C   AB	0080   CB  9E 00020 	    MOVAB   DELE_BEFO_QUAL, CMD_DESC+24				      ; 0402
+				       09  11 00026 	    BRB     2$							      ; 0399
+		    8C   AB	0129   CB  9E 00028 1$:     MOVAB   PURG_KEEP_QUAL, CMD_DESC+24				      ; 0405
+		         6A	       20  88 0002E 	    BISB2   #32, DEL$CLI_STATUS					      ; 0406
+				       5A  DD 00031 2$:     PUSHL   R10							      ; 0413
+				       5B  DD 00033 	    PUSHL   R11							      ;
+				FF74   CB  9F 00035 	    PUSHAB  CMD_DESC						      ;
+		  0000G  DF	       03  FB 00039 	    CALLS   #3, @DEL$CLI_RESULT					      ;
+	   04	         6A	       07  E0 0003E 	    BBS     #7, DEL$CLI_STATUS, 3$				      ; 0423
+	   12	         6A	       06  E1 00042 	    BBC     #6, DEL$CLI_STATUS, 4$				      ; 0424
+		         0E	  01   AA  E8 00046 3$:     BLBS    DEL$CLI_STATUS+1, 4$				      ; 0425
+	   09	    01   AA	       02  E0 0004A 	    BBS     #2, DEL$CLI_STATUS+1, 4$				      ; 0426
+	   04	    01   AA	       01  E0 0004F 	    BBS     #1, DEL$CLI_STATUS+1, 4$				      ; 0427
+		    01   AA	       01  88 00054 	    BISB2   #1, DEL$CLI_STATUS+1				      ; 0429
+					   04 00058 4$:     RET     							      ; 0341
+
+; Routine Size:  89 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 7
+; Digital Equipment Corporation
+;
+;	0432	ROUTINE cli_error (cb_address, error_number) : NOVALUE =
+;	0433								! CLI error action routine
+;	0434	
+;	0435	!++
+;	0436	! Functional description
+;	0437	!
+;	0438	!	This CLI error action routine sends a CLI error message to the user.
+;	0439	!
+;	0440	! Input parameters
+;	0441	!
+;	0442	!	cb_address.ra.v		- Address of the associated CLI control block
+;	0443	!	error_number.rlu.v	- CLI error number
+;	0444	!
+;	0445	! Implicit inputs
+;	0446	!
+;	0447	!	none
+;	0448	!
+;	0449	! Output parameters
+;	0450	!
+;	0451	!	none
+;	0452	!
+;	0453	! Implicit outputs
+;	0454	!
+;	0455	!	none
+;	0456	!
+;	0457	! Routine value
+;	0458	!
+;	0459	!	novalue
+;	0460	!
+;	0461	! Side effects
+;	0462	!
+;	0463	!	none
+;	0464	!
+;	0465	!--
+;	0466	
+;	0467	    BEGIN
+;	0468	
+;	0469	    BIND
+;	0470		control_block =
+;	0471			.cb_address	:  BLOCK [,BYTE];	! Define the format of the input argument
+;	0472	
+;	0473	!
+;	0474	! Call FAO to format the error message in the message buffer.
+;	0475	!
+;	0476	
+;	0477	    put_message (msg$_syntax,				! Signal "syntax error" with the following arguments:
+;     P 0478	                    1,					!    Number of message arguments
+;     P 0479	                    control_block [cli$q_rqdesc],	!    Address of current element descriptor
+;     P 0480	                    .error_number);			!    CLI error number (secondary message)
+;	0481	
+;	0482	!
+;	0483	! Return to the caller.
+;	0484	!
+;	0485	
+;	0486	    RETURN;						! Return to the caller.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 7-1
+; Digital Equipment Corporation
+;
+;	0487	
+;	0488	    END;
+
+
+
+
+
+					 0000 00059 CLI_ERROR:
+							    .WORD   Save nothing					      ; 0432
+		         50	  04   AC  D0 0005B 	    MOVL    CB_ADDRESS, R0					      ; 0467
+				  08   AC  DD 0005F 	    PUSHL   ERROR_NUMBER					      ; 0480
+				  08   A0  9F 00062 	    PUSHAB  8(R0)						      ;
+				       01  DD 00065 	    PUSHL   #1							      ;
+		         7E	10FC   8F  3C 00067 	    MOVZWL  #4348, -(SP)					      ;
+		  0000G  CF	       01  FB 0006C 	    CALLS   #1, DEL$MSG_NUMBER					      ;
+				       50  DD 00071 	    PUSHL   R0							      ;
+	      00000000G  00	       04  FB 00073 	    CALLS   #4, LIB$STOP					      ;
+					   04 0007A 	    RET     							      ; 0432
+
+; Routine Size:  34 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 8
+; Digital Equipment Corporation
+;
+;	0489	ROUTINE date_parse (qual_desc_addr) : NOVALUE =		! /BEFORE and /SINCE qualifier parse routine
+;	0490	
+;	0491	!++
+;	0492	! Functional description
+;	0493	!
+;	0494	!	This routine determines whether the user has specified a date value for the
+;	0495	!	/BEFORE and /SINCE qualifiers. If one is present, this routine converts the ASCII
+;	0496	!	date string to a 64-bit system date value. The value can be an ASCII date string of
+;	0497	!	the form normally accepted by CLI (such as dd-mmm-yyyy hh:mm:ss.s, or as the keywords
+;	0498	!	YESTERDAY or TODAY).
+;	0499	!
+;	0500	!	If a qualifier value is not specified, this routine defaults the value to TODAY for
+;	0501	!	the /BEFORE qualifier, and YESTERDAY for the /SINCE qualifier.
+;	0502	!
+;	0503	! Calling sequence
+;	0504	!
+;	0505	!	date_parse (qual_desc_addr.rd)
+;	0506	!
+;	0507	! Input parameters
+;	0508	!
+;	0509	!	qual_desc_addr	- Address of the qualifier descriptor of the qualifier whose
+;	0510	!			  value must be parsed.
+;	0511	!
+;	0512	! Implicit inputs
+;	0513	!
+;	0514	!	STR_PARSE_DESC	- the ASCII string parse request descriptor address
+;	0515	!	CLI_WORK_AREA	- the CLI dynamic work area
+;	0516	!
+;	0517	!	If no value is given, YESTERDAY or TODAY, depending on the qualifier.
+;	0518	!
+;	0519	! Output parameters
+;	0520	!
+;	0521	!	none
+;	0522	!
+;	0523	! Implicit outputs
+;	0524	!
+;	0525	!	DEL$BEFORE_DATE	- the /BEFORE date value in 64-bit system format
+;	0526	!	DEL$SINCE_DATE	- the /SINCE date value in 64-bit system format
+;	0527	!
+;	0528	! Routine value
+;	0529	!
+;	0530	!	novalue
+;	0531	!
+;	0532	! Side effects
+;	0533	!
+;	0534	!	The keyword value is parsed by CLI. The defaults for keyword values are applied
+;	0535	!	if necessary.
+;	0536	!
+;	0537	!--
+;	0538	
+;	0539	    BEGIN
+;	0540	
+;	0541	    MAP
+;	0542	        qual_desc_addr	: REF BLOCK [, BYTE];
+;	0543	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 8-1
+; Digital Equipment Corporation
+;
+;	0544	    LOCAL
+;	0545	        status;						! Holds status from time conversion routine
+;	0546	
+;	0547	!
+;	0548	! See whether a qualifier was specified at all.
+;	0549	!
+;	0550	
+;	0551	    IF .qual_desc_addr [cli$w_qdvalsiz] EQL 0		! If no qualifier is specified,
+;	0552	    THEN
+;	0553	        BEGIN
+;	0554	        IF .qual_desc_addr [cli$b_qdcode] EQL		!    then if /SINCE is being processed here,
+;	0555	                cli$k_dele_sinc
+;	0556	        THEN
+;	0557	            BEGIN
+;	0558	            str_parse_desc [cli$w_rqsize] = 9;		! Length of keyword "YESTERDAY".
+;	0559	            str_parse_desc [cli$a_rqaddr] = 		! Specify the address of an ASCII
+;	0560	                    UPLIT BYTE (%ASCII 'YESTERDAY');	!    string representing "YESTERDAY".
+;	0561	            END
+;	0562	        ELSE						! Otherwise, use "TODAY" for /BEFORE.
+;	0563	            BEGIN
+;	0564	            str_parse_desc [cli$w_rqsize] = 5;		! Length of keyword "TODAY".
+;	0565	            str_parse_desc [cli$a_rqaddr] =		! Specify the address of an ASCII
+;	0566	                    UPLIT BYTE (%ASCII 'TODAY');	!    string representing "TODAY".
+;	0567	            END;
+;	0568	        END
+;	0569	
+;	0570	!
+;	0571	! Otherwise, the user specified a date value. Collect the ASCII string representing
+;	0572	! this date value from CLI and then call a library routine to convert the string into 64-bit system date format.
+;	0573	!
+;	0574	
+;	0575	    ELSE
+;	0576	        call_cli (					! Call CLI with the address of an ASCII
+;	0577	                    str_parse_desc,			!    string request descriptor,
+;	0578	                    cli_work_area,			!    the address of a work area,
+;	0579	                    .qual_desc_addr);			!    and the qualifier descriptor block.
+;	0580	
+;	0581	!
+;	0582	! Wherever the ASCII time string came from is now irrelevant. Convert it to a 64-bit
+;	0583	! system time value.
+;	0584	!
+;	0585	
+;	0586	    status = lib$cvt_time (				! Convert the string to 64-bit date format.
+;	0587	                            str_parse_desc [cli$w_rqsize],
+;	0588	                            (IF .qual_desc_addr [cli$b_qdcode] EQL cli$k_dele_sinc
+;	0589	                             THEN
+;	0590	                                 del$since_date		!    If processing /SINCE, specify address of
+;	0591	                             ELSE			!    since date; otherwise,
+;	0592	                                 del$before_date)	!    address of before date.
+;	0593	                            );
+;	0594	
+;	0595	    IF NOT .status					! If the conversion fails,
+;	0596	    THEN
+;	0597	        SIGNAL_STOP (					!    then signal a severe error.
+;	0598	                        .status);			!    Specify the status from LIB$CVT_TIME.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 8-2
+; Digital Equipment Corporation
+;
+;	0599	
+;	0600	    END;
+
+
+
+							    .PSECT  $PLIT$,NOWRT,NOEXE,2
+
+					      00000 P.AAA:  .ASCII  \YESTERDAY\						      ;
+					      00009	    .BLKB   3
+					      0000C P.AAB:  .ASCII  \TODAY\						      ;
+					      00011	    .BLKB   3
+
+
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0C04 0007B DATE_PARSE:
+							    .WORD   Save R2,R10,R11					      ; 0489
+		         5A 00000000G  8F  D0 0007D 	    MOVL    #CLI$K_DELE_SINC, R10				      ;
+		         5B	0000'  CF  9E 00084 	    MOVAB   STR_PARSE_DESC+8, R11				      ;
+		         52	  04   AC  D0 00089 	    MOVL    QUAL_DESC_ADDR, R2					      ; 0551
+				  04   A2  B5 0008D 	    TSTW    4(R2)						      ;
+				       1E  12 00090 	    BNEQ    2$							      ;
+      01   A2	         08	       00  ED 00092 	    CMPZV   #0, #8, 1(R2), R10					      ; 0554
+				       5A     00097									      ;
+				       0B  12 00098 	    BNEQ    1$							      ;
+		         6B	       09  B0 0009A 	    MOVW    #9, STR_PARSE_DESC+8				      ; 0558
+		    04   AB	0000'  CF  9E 0009D 	    MOVAB   P.AAA, STR_PARSE_DESC+12				      ; 0560
+				       18  11 000A3 	    BRB     3$							      ; 0554
+		         6B	       05  B0 000A5 1$:     MOVW    #5, STR_PARSE_DESC+8				      ; 0564
+		    04   AB	0000'  CF  9E 000A8 	    MOVAB   P.AAB, STR_PARSE_DESC+12				      ; 0566
+				       0D  11 000AE 	    BRB     3$							      ; 0551
+				       52  DD 000B0 2$:     PUSHL   R2							      ; 0576
+				  14   AB  9F 000B2 	    PUSHAB  CLI_WORK_AREA					      ;
+				  F8   AB  9F 000B5 	    PUSHAB  STR_PARSE_DESC					      ;
+		  0000G  DF	       03  FB 000B8 	    CALLS   #3, @DEL$CLI_RESULT					      ;
+      01   A2	         08	       00  ED 000BD 3$:     CMPZV   #0, #8, 1(R2), R10					      ; 0588
+				       5A     000C2									      ;
+				       07  12 000C3 	    BNEQ    4$							      ;
+		         50	0000G  CF  9E 000C5 	    MOVAB   DEL$SINCE_DATE, R0					      ;
+				       05  11 000CA 	    BRB     5$							      ;
+		         50	0000G  CF  9E 000CC 4$:     MOVAB   DEL$BEFORE_DATE, R0					      ;
+				       50  DD 000D1 5$:     PUSHL   R0							      ;
+				       5B  DD 000D3 	    PUSHL   R11							      ; 0587
+		  0000G  CF	       02  FB 000D5 	    CALLS   #2, LIB$CVT_TIME					      ; 0586
+		         09	       50  E8 000DA 	    BLBS    STATUS, 6$						      ; 0595
+				       50  DD 000DD 	    PUSHL   STATUS						      ; 0597
+	      00000000G  00	       01  FB 000DF 	    CALLS   #1, LIB$STOP					      ;
+					   04 000E6 6$:     RET     							      ; 0489
+
+; Routine Size:  108 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 9
+; Digital Equipment Corporation
+;
+;	0601	ROUTINE keep_val_parse (qual_desc_addr) : NOVALUE =	! /KEEP qualifier value parse routine
+;	0602	
+;	0603	!++
+;	0604	! Functional description
+;	0605	!
+;	0606	!	This routine obtains from CLI the value specified with the /KEEP qualifier
+;	0607	!	and stores it in a global variable.
+;	0608	!
+;	0609	!	The syntax that causes this routine to be called is
+;	0610	!
+;	0611	!		/KEEP = <number>
+;	0612	!
+;	0613	!	CLI assures that one and only one number is specified, and it does the
+;	0614	!	conversion from an ASCII string to a binary value.
+;	0615	!
+;	0616	! Calling sequence
+;	0617	!
+;	0618	!	keep_val_parse (qual_desc_addr.rd)
+;	0619	!
+;	0620	! Input parameters
+;	0621	!
+;	0622	!	qual_desc_addr	- Address of the qualifier descriptor containing the
+;	0623	!			  value to be parsed.
+;	0624	!
+;	0625	! Implicit inputs
+;	0626	!
+;	0627	!	NUMB_PARSE_DESC	- the numeric parse request descriptor address
+;	0628	!	CLI_WORK_AREA	- the CLI dynamic work area
+;	0629	!
+;	0630	! Output parameters
+;	0631	!
+;	0632	!	none
+;	0633	!
+;	0634	! Implicit outputs
+;	0635	!
+;	0636	!	DEL$KEEPVER_VAL	- the number of versions of each file to retain
+;	0637	!
+;	0638	! Routine value
+;	0639	!
+;	0640	!	novalue
+;	0641	!
+;	0642	! Side effects
+;	0643	!
+;	0644	!	none
+;	0645	!
+;	0646	!--
+;	0647	
+;	0648	    BEGIN
+;	0649	
+;	0650	!
+;	0651	! Call the CLI callback routine to obtain the numeric value in binary form.
+;	0652	!
+;	0653	
+;	0654	    call_cli (						! Call the CLI callback, specifying
+;	0655	                numb_parse_desc,			!    the numeric parse request descriptor address,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 9-1
+; Digital Equipment Corporation
+;
+;	0656	                cli_work_area,				!    the CLI work area address,
+;	0657	                .qual_desc_addr);			!    and the qualifier descriptor address.
+;	0658	
+;	0659	!
+;	0660	! Store the number away for future use.
+;	0661	!
+;	0662	
+;	0663	    del$keepver_val = .numb_parse_desc [cli$l_rqvalu];	! Store the value in a global variable.
+;	0664	
+;	0665	    END;
+
+
+
+
+
+					 0000 000E7 KEEP_VAL_PARSE:
+							    .WORD   Save nothing					      ; 0601
+				  04   AC  DD 000E9 	    PUSHL   QUAL_DESC_ADDR					      ; 0654
+				0000'  CF  9F 000EC 	    PUSHAB  CLI_WORK_AREA					      ;
+				0000'  CF  9F 000F0 	    PUSHAB  NUMB_PARSE_DESC					      ;
+		  0000G  DF	       03  FB 000F4 	    CALLS   #3, @DEL$CLI_RESULT					      ;
+		  0000G  CF	0000'  CF  D0 000F9 	    MOVL    NUMB_PARSE_DESC+12, DEL$KEEPVER_VAL			      ; 0663
+					   04 00100 	    RET     							      ; 0601
+
+; Routine Size:  26 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 03:51:26	DBB3:[DELETE.SRC]DELECLI.B32;31					Page 10
+; Digital Equipment Corporation
+;
+;	0666	END
+;	0667	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$STOP
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $GLOBAL$       	   542    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $CODE$         	   257  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $PLIT$         	    20  NOWRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688        39         1       127
+;  DBA4:[SYSLIB]CLIMAC.L32;1		        14        14       100        14
+;  DBB3:[DELETE.SRC]VMSMAC.L32;1	         6         3        50         4
+
+
+
+
+
+; Size:		257 code + 562 data bytes
+; Run Time:	00:19.3
+; Elapsed Time:	00:39.1
+; Memory Used:	181 pages
+; Compilation Complete

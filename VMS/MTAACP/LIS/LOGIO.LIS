@@ -1,0 +1,1056 @@
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE LOGIO (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0004A'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! COPYRIGHT (C) 1977
+;	0009	! DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+;	0010	!
+;	0011	! THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+;	0012	! COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+;	0013	! ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+;	0014	! MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+;	0015	! EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+;	0016	! TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+;	0017	! REMAIN IN DEC.
+;	0018	!
+;	0019	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+;	0020	! AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+;	0021	! CORPORATION.
+;	0022	!
+;	0023	! DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+;	0024	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  MTAACP
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!	THIS MODULE HANDLES LOGICAL IO
+;	0032	!
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET OPERATING SYSTEM, INCLUDING PRIVILEGED SYSTEM SERVICES
+;	0037	!	AND INTERNAL EXEC ROUTINES.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  D. H. GILLESPIE,	 CREATION DATE:  14-JUL-1977  
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   D. H. Gillespie, 10-Jan-1978  11:36
+;	0047	!   X0002 - CORRECT REPOSITION BUG
+;	0048	!
+;	0049	!   D. H. Gillespie, 12-May-78  14:06
+;	0050	!   A0001 - change CURRENT_VCB to a register
+;	0051	!
+;	0052	!   D. H. Gillespie, 19-May-78  12:59
+;	0053	!   A0002 - add common subroutine to do I/O
+;	0054	!
+;	0055	!   D. H. Gillespie, 14-Jun-78  13:17
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!   A0003 - add IO$M_INTSKIP to IO$_SKIPRECORD function
+;	0057	!
+;	0058	!   D. H. Gillespie, 26-Jul-78  18:02
+;	0059	!   A0004 - correct repositioning bug
+;	0060	!
+;	0061	!**
+;	0062	
+;	0063	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0064	REQUIRE	'LIBD$:[VMSLIB.OBJ]MOUNTMSG.B32';
+;	0164	REQUIRE 'SRC$:MTADEF.B32';
+;	0460	
+;	0461	
+;	0462	FORWARD ROUTINE
+;	0463		ADJTM		: COMMON_CALL NOVALUE,	!ADJUST TM COUNT
+;	0464		ISSUE_IO	: L$ISSUE_IO,		!ISSUE IO
+;	0465		READ_BLOCK	: COMMON_CALL,		!READ LOGICAL BLOCK
+;	0466		REPOSITION	: L$REPOSITION NOVALUE,	!REPOSITION TAPE
+;	0467		RESTORE_POS	: NOVALUE COMMON_CALL,
+;	0468		SPACE		: COMMON_CALL,		!SPACE BLOCKS
+;	0469		SPACE_TM	: COMMON_CALL NOVALUE,	!SPACE TM
+;	0470		WRITE_BLOCK	: COMMON_CALL NOVALUE,	!WRITE LOGICAL BLOCK
+;	0471		WRITE_TM	: NOVALUE L$WRITE_TM;	!WRITE TM
+;	0472	
+;	0473	
+;	0474	EXTERNAL
+;	0475		CURRENT_UCB	: REF BBLOCK,		!ADDRESS OF CURRENT UNIT CONTROL BLOCK
+;	0476		IO_CHANNEL,				!ADDRESS OF IO CHANNEL
+;	0477		IO_STATUS,				!IO STATUS
+;	0478		USER_STATUS;				!USER STATUS
+;	0479	
+;	0480	EXTERNAL ROUTINE
+;	0481		MOUNT_VOL,				!MOUNT VOLUME
+;	0482		PRINT_OPR_MSG	: L$PRINT_OPR_MSG,	!PRINT AN OPERATOR MESSAGE
+;	0483		RESET_UNIT,
+;	0484		SYS$QIOW	: ADDRESSING_MODE(ABSOLUTE);	!QUEUE IO REQUEST
+;	0485	
+;	0486	EXTERNAL LITERAL
+;	0487		UCB$L_MT_RECORD;			!GLOBAL DISPLACEMENT INTO UCB
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 2
+; Digital Equipment Corporation
+;
+;	0488	GLOBAL ROUTINE READ_BLOCK(ADDR,LEN) : COMMON_CALL    =
+;	0489	
+;	0490	!++
+;	0491	!
+;	0492	! FUNCTIONAL DESCRIPTION:
+;	0493	!	THIS ROUTINE READ A LOGICAL RECORD FROM MAGNETIC TAPE
+;	0494	!
+;	0495	! CALLING SEQUENCE:
+;	0496	!	READ_BLOCK(ARG1,ARG2)
+;	0497	!
+;	0498	! INPUT PARAMETERS:
+;	0499	!	ARG1 - ADDRESS FOR DATA
+;	0500	!	ARG2 - LENGTH TO READ
+;	0501	!
+;	0502	! IMPLICIT INPUTS:
+;	0503	!	IO_CHANNEL
+;	0504	!
+;	0505	! OUTPUT PARAMETERS:
+;	0506	!	ARG1 - ADDRESS FOR DATA
+;	0507	!
+;	0508	! IMPLICIT OUTPUTS:
+;	0509	!	USER_STATUS, IO_STATUS
+;	0510	!
+;	0511	! ROUTINE VALUE:
+;	0512	!	0 - TM ENCOUNTERED
+;	0513	!	1 - SUCCESSFUL READ
+;	0514	!
+;	0515	! SIDE EFFECTS:
+;	0516	!	NONE
+;	0517	!
+;	0518	! ERRORS:
+;	0519	!	PRIMARY STATUS IS I/O ERROR RETURNED FROM DRIVER
+;	0520	!	SS$_FCPREADERR - READ FAILURE
+;	0521	!
+;	0522	!--
+;	0523	
+;	0524	BEGIN
+;	0525	
+;	0526	EXTERNAL REGISTER
+;	0527		COMMON_REG;
+;	0528	
+;	0529	
+;	0530	LOCAL
+;	0531		STATUS;					!IO STATUS
+;	0532	
+;	0533	STATUS =
+;	0534	    ISSUE_IO(IO$_READLBLK,.ADDR,.LEN);
+;	0535	IF .STATUS
+;	0536	OR .STATUS<0,16> EQLU SS$_DATAOVERUN
+;	0537	OR .STATUS<0,16> EQLU SS$_ENDOFTAPE THEN RETURN 1;
+;	0538	
+;	0539	IF .STATUS<0,16> NEQU SS$_ENDOFFILE THEN
+;	0540	    BEGIN
+;	0541	    USER_STATUS = .STATUS;
+;	0542	    USER_STATUS+4 = SS$_FCPREADERR;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 2-1
+; Digital Equipment Corporation
+;
+;	0543	    ERR_EXIT();
+;	0544	    END;
+;	0545	
+;	0546	KERNEL_CALL(ADJTM,1);
+;	0547	RETURN 0;					!TM ENCOUNTERED
+;	0548	END;						!END OF ROUTINE
+
+
+							    .TITLE  LOGIO
+							    .IDENT  \A0004A\
+
+							    .GLOBL  CURRENT_UCB, IO_CHANNEL, IO_STATUS, USER_STATUS
+							    .GLOBL  MOUNT_VOL, PRINT_OPR_MSG, RESET_UNIT, SYS$QIOW
+							    .GLOBL  UCB$L_MT_RECORD, SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0000 00000 	    .ENTRY  READ_BLOCK, Save nothing				      ; 0488
+		         7E	  04   AC  7D 00002 	    MOVQ    ADDR, -(SP)						      ; 0534
+				       21  DD 00006 	    PUSHL   #33							      ;
+				     0000  30 00008 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 0000B 	    ADDL2   #12, SP						      ;
+		         0E	       50  E8 0000E 	    BLBS    STATUS, 1$						      ; 0535
+		  0838   8F	       50  B1 00011 	    CMPW    STATUS, #2104					      ; 0536
+				       07  13 00016 	    BEQL    1$							      ;
+		  0878   8F	       50  B1 00018 	    CMPW    STATUS, #2168					      ; 0537
+				       04  12 0001D 	    BNEQ    2$							      ;
+		         50	       01  D0 0001F 1$:     MOVL    #1, R0						      ;
+					   04 00022 	    RET     							      ;
+		  0870   8F	       50  B1 00023 2$:     CMPW    STATUS, #2160					      ; 0539
+				       0E  13 00028 	    BEQL    3$							      ;
+		  0000G  CF	       50  D0 0002A 	    MOVL    STATUS, USER_STATUS					      ; 0541
+		  0000G  CF	0888   8F  3C 0002F 	    MOVZWL  #2184, USER_STATUS+4				      ; 0542
+				       00  BF 00036 	    CHMU    #0							      ; 0543
+				       01  DD 00038 3$:     PUSHL   #1							      ; 0546
+				       01  DD 0003A 	    PUSHL   #1							      ;
+				       5E  DD 0003C 	    PUSHL   SP							      ;
+				0000V  CF  9F 0003E 	    PUSHAB  ADJTM						      ;
+	      00000000G  9F	       04  FB 00042 	    CALLS   #4, @#SYS$CMKRNL					      ;
+				       50  D4 00049 	    CLRL    R0							      ; 0547
+					   04 0004B 	    RET     							      ; 0488
+
+; Routine Size:  76 bytes
+
+
+;	0549	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 3
+; Digital Equipment Corporation
+;
+;	0550	GLOBAL ROUTINE WRITE_BLOCK(ADDR,LEN) : COMMON_CALL NOVALUE  =
+;	0551	
+;	0552	!++
+;	0553	!
+;	0554	! FUNCTIONAL DESCRIPTION:
+;	0555	!	THIS ROUTINE WRITES ONE LOGICAL BLOCK
+;	0556	!
+;	0557	! CALLING SEQUENCE:
+;	0558	!	WRITE_BLOCK(ARG1,ARG2)
+;	0559	!
+;	0560	! INPUT PARAMETERS:
+;	0561	!	ARG1 - ADDRESS OF DATA BLOCK TO WRITE
+;	0562	!	ARG2 - LENGTH OF DATA BLOCK TO WRITE
+;	0563	!
+;	0564	! IMPLICIT INPUTS:
+;	0565	!	IO_CHANNEL
+;	0566	!
+;	0567	! OUTPUT PARAMETERS:
+;	0568	!	ONE BLOCK WRITTEN
+;	0569	!
+;	0570	! IMPLICIT OUTPUTS:
+;	0571	!	IO_STATUS, USER_STATUS
+;	0572	!
+;	0573	! ROUTINE VALUE:
+;	0574	!	NONE
+;	0575	!
+;	0576	! SIDE EFFECTS:
+;	0577	!	SS$_FCPWRITERR - WRITE FAILURE
+;	0578	!
+;	0579	!--
+;	0580	
+;	0581	BEGIN
+;	0582	
+;	0583	EXTERNAL REGISTER
+;	0584		COMMON_REG;
+;	0585	
+;	0586	
+;	0587	LOCAL
+;	0588		STATUS;					!IO STATUS
+;	0589	
+;	0590	STATUS = ISSUE_IO(IO$_WRITELBLK,.ADDR,.LEN);
+;	0591	IF NOT .STATUS AND .STATUS<0,16> NEQ SS$_ENDOFTAPE THEN
+;	0592	    BEGIN
+;	0593	    USER_STATUS = .STATUS;
+;	0594	    USER_STATUS + 4 = SS$_FCPWRITERR;
+;	0595	    ERR_EXIT();
+;	0596	    END;
+;	0597	
+;	0598	END;						!END OF ROUTINE
+
+
+
+
+
+					 0000 0004C 	    .ENTRY  WRITE_BLOCK, Save nothing				      ; 0550
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 3-1
+; Digital Equipment Corporation
+;
+		         7E	  04   AC  7D 0004E 	    MOVQ    ADDR, -(SP)						      ; 0590
+				       20  DD 00052 	    PUSHL   #32							      ;
+				     0000  30 00054 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 00057 	    ADDL2   #12, SP						      ;
+		         15	       50  E8 0005A 	    BLBS    STATUS, 1$						      ; 0591
+		  0878   8F	       50  B1 0005D 	    CMPW    STATUS, #2168					      ;
+				       0E  13 00062 	    BEQL    1$							      ;
+		  0000G  CF	       50  D0 00064 	    MOVL    STATUS, USER_STATUS					      ; 0593
+		  0000G  CF	08A0   8F  3C 00069 	    MOVZWL  #2208, USER_STATUS+4				      ; 0594
+				       00  BF 00070 	    CHMU    #0							      ; 0595
+					   04 00072 1$:     RET     							      ; 0550
+
+; Routine Size:  39 bytes
+
+
+;	0599	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 4
+; Digital Equipment Corporation
+;
+;	0600	GLOBAL ROUTINE SPACE(NUMBER) : COMMON_CALL  =
+;	0601	
+;	0602	!++
+;	0603	!
+;	0604	! FUNCTIONAL DESCRIPTION:
+;	0605	!	THIS ROUTINE SPACES A GIVEN NUMBER OF RECORDS IN EITHER DIRECTION
+;	0606	!
+;	0607	! CALLING SEQUENCE:
+;	0608	!	SPACE(ARG1)
+;	0609	!
+;	0610	! INPUT PARAMETERS:
+;	0611	!	ARG1 - NUMBER OF RECORDS TO SPACE
+;	0612	!	( POS MEANS FORWARD SPACE, NEG MEANS BACKSPACE)
+;	0613	!
+;	0614	! IMPLICIT INPUTS:
+;	0615	!	IO_CHANNEL
+;	0616	!
+;	0617	! OUTPUT PARAMETERS:
+;	0618	!	NONE
+;	0619	!
+;	0620	! IMPLICIT OUTPUTS:
+;	0621	!	IO_STATUS, USER_STATUS
+;	0622	!	TAPE POSITIONED ACCORDINGLY
+;	0623	!
+;	0624	! ROUTINE VALUE:
+;	0625	!	0 - END OF FILE
+;	0626	!	1 - SUCCESSFUL
+;	0627	!
+;	0628	! SIDE EFFECTS:
+;	0629	!	SS$_FCPSPACERR - SPACE FAILURE
+;	0630	!
+;	0631	!--
+;	0632	
+;	0633	BEGIN
+;	0634	
+;	0635	EXTERNAL REGISTER
+;	0636		COMMON_REG;
+;	0637	
+;	0638	
+;	0639	LOCAL
+;	0640		TM,					!NUMBER OF TAPE MARKS
+;	0641		STATUS;					!IO STATUS
+;	0642	
+;	0643	
+;	0644	STATUS = ISSUE_IO(IO$_SKIPRECORD OR IO$M_INTSKIP, .NUMBER, 0);
+;	0645	
+;	0646	IF NOT .STATUS THEN
+;	0647	    BEGIN
+;	0648	    IF .STATUS<0,16> EQL SS$_ENDOFFILE THEN
+;	0649		BEGIN
+;	0650		TM = 1;					!ENCOUNTERED ONE SPACING FORWARD
+;	0651		IF .NUMBER LSS 0 THEN TM = -1;		!ENCOUNTERED ONE BACKSPACING
+;	0652		KERNEL_CALL(ADJTM,.TM);			!END OF FILE INDICATES TAPE MARK ENCOUNTERED
+;	0653		RETURN 0;
+;	0654		END;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 4-1
+; Digital Equipment Corporation
+;
+;	0655	    IF .STATUS<0,16> EQL SS$_ENDOFTAPE THEN RETURN 1;
+;	0656	    USER_STATUS = .STATUS;
+;	0657	    USER_STATUS + 4 = SS$_FCPSPACERR;
+;	0658	    ERR_EXIT();
+;	0659	    END;
+;	0660	RETURN 1;
+;	0661	
+;	0662	END;						!END OF ROUTINE
+
+
+
+
+
+					 0004 00073 	    .ENTRY  SPACE, Save R2					      ; 0600
+				       7E  D4 00075 	    CLRL    -(SP)						      ; 0644
+				  04   AC  DD 00077 	    PUSHL   NUMBER						      ;
+		         7E	0126   8F  3C 0007A 	    MOVZWL  #294, -(SP)						      ;
+				     0000  30 0007F 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 00082 	    ADDL2   #12, SP						      ;
+		         52	       50  D0 00085 	    MOVL    R0, STATUS						      ;
+		         3A	       52  E8 00088 	    BLBS    STATUS, 3$						      ; 0646
+		  0870   8F	       52  B1 0008B 	    CMPW    STATUS, #2160					      ; 0648
+				       1E  12 00090 	    BNEQ    2$							      ;
+		         50	       01  D0 00092 	    MOVL    #1, TM						      ; 0650
+				  04   AC  D5 00095 	    TSTL    NUMBER						      ; 0651
+				       03  18 00098 	    BGEQ    1$							      ;
+		         50	       01  CE 0009A 	    MNEGL   #1, TM						      ;
+				       50  DD 0009D 1$:     PUSHL   TM							      ; 0652
+				       01  DD 0009F 	    PUSHL   #1							      ;
+				       5E  DD 000A1 	    PUSHL   SP							      ;
+				0000V  CF  9F 000A3 	    PUSHAB  ADJTM						      ;
+	      00000000G  9F	       04  FB 000A7 	    CALLS   #4, @#SYS$CMKRNL					      ;
+				       19  11 000AE 	    BRB     4$							      ; 0653
+		  0878   8F	       52  B1 000B0 2$:     CMPW    STATUS, #2168					      ; 0655
+				       0E  13 000B5 	    BEQL    3$							      ;
+		  0000G  CF	       52  D0 000B7 	    MOVL    STATUS, USER_STATUS					      ; 0656
+		  0000G  CF	0898   8F  3C 000BC 	    MOVZWL  #2200, USER_STATUS+4				      ; 0657
+				       00  BF 000C3 	    CHMU    #0							      ; 0658
+		         50	       01  D0 000C5 3$:     MOVL    #1, R0						      ; 0660
+					   04 000C8 	    RET     							      ;
+				       50  D4 000C9 4$:     CLRL    R0							      ; 0600
+					   04 000CB 	    RET     							      ;
+
+; Routine Size:  89 bytes
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 5
+; Digital Equipment Corporation
+;
+;	0663	GLOBAL ROUTINE WRITE_TM : NOVALUE L$WRITE_TM  =
+;	0664	
+;	0665	!++
+;	0666	!
+;	0667	! FUNCTIONAL DESCRIPTION:
+;	0668	!	THIS ROUTINE WRITES ONE TAPE MARK
+;	0669	!
+;	0670	! CALLING SEQUENCE:
+;	0671	!	WRITE_TM()
+;	0672	!
+;	0673	! INPUT PARAMETERS:
+;	0674	!	NONE
+;	0675	!
+;	0676	! IMPLICIT INPUTS:
+;	0677	!	IO_CHANNEL
+;	0678	!
+;	0679	! OUTPUT PARAMETERS:
+;	0680	!	NONE
+;	0681	!
+;	0682	! IMPLICIT OUTPUTS:
+;	0683	!	IO_STATUS, USER_STATUS
+;	0684	!	TAPE MARK WRITTEN, TM COUNT INCREMENTED
+;	0685	!
+;	0686	! ROUTINE VALUE:
+;	0687	!	NONE
+;	0688	!
+;	0689	! SIDE EFFECTS:
+;	0690	!	SS$_FCPWRITERR - WRITE FAILURE
+;	0691	!
+;	0692	!--
+;	0693	
+;	0694	BEGIN
+;	0695	
+;	0696	EXTERNAL REGISTER
+;	0697		COMMON_REG;
+;	0698	
+;	0699	
+;	0700	LOCAL
+;	0701		STATUS;					!IO STATUS
+;	0702	
+;	0703	STATUS = ISSUE_IO(IO$_WRITEOF,0,0);
+;	0704	IF NOT .STATUS AND .STATUS<0,16> NEQ SS$_ENDOFTAPE THEN
+;	0705	    BEGIN
+;	0706	    USER_STATUS = .STATUS;
+;	0707	    USER_STATUS + 4 = SS$_FCPWRITERR;
+;	0708	    ERR_EXIT();
+;	0709	    END;
+;	0710	KERNEL_CALL(ADJTM,1);
+;	0711	
+;	0712	END;						!END OF ROUTINE
+
+
+
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 5-1
+; Digital Equipment Corporation
+;
+				       7E  7C 000CC WRITE_TM::
+							    CLRQ    -(SP)						      ; 0703
+				       28  DD 000CE 	    PUSHL   #40							      ;
+				     0000  30 000D0 	    BSBW    ISSUE_IO						      ;
+		         5E	       0C  C0 000D3 	    ADDL2   #12, SP						      ;
+		         15	       50  E8 000D6 	    BLBS    STATUS, 1$						      ; 0704
+		  0878   8F	       50  B1 000D9 	    CMPW    STATUS, #2168					      ;
+				       0E  13 000DE 	    BEQL    1$							      ;
+		  0000G  CF	       50  D0 000E0 	    MOVL    STATUS, USER_STATUS					      ; 0706
+		  0000G  CF	08A0   8F  3C 000E5 	    MOVZWL  #2208, USER_STATUS+4				      ; 0707
+				       00  BF 000EC 	    CHMU    #0							      ; 0708
+				       01  DD 000EE 1$:     PUSHL   #1							      ; 0710
+				       01  DD 000F0 	    PUSHL   #1							      ;
+				       5E  DD 000F2 	    PUSHL   SP							      ;
+				0000V  CF  9F 000F4 	    PUSHAB  ADJTM						      ;
+	      00000000G  9F	       04  FB 000F8 	    CALLS   #4, @#SYS$CMKRNL					      ;
+					   05 000FF 	    RSB     							      ; 0663
+
+; Routine Size:  52 bytes
+
+
+;	0713	
+;	0714	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 6
+; Digital Equipment Corporation
+;
+;	0715	GLOBAL ROUTINE ADJTM(NUMBER) : COMMON_CALL NOVALUE  =
+;	0716	
+;	0717	!++
+;	0718	!
+;	0719	! FUNCTIONAL DESCRIPTION:
+;	0720	!	THIS ROUTINE ADJUSTS THE TM COUNT BY THE GIVEN NUMBER
+;	0721	!
+;	0722	! CALLING SEQUENCE:
+;	0723	!	ADJTM(ARG1), CALLED IN KERNEL MODE
+;	0724	!
+;	0725	! INPUT PARAMETERS:
+;	0726	!	ARG1 - SIGNED NUMBER TO ADJUST COUNT BY
+;	0727	!
+;	0728	! IMPLICIT INPUTS:
+;	0729	!	CURRENT_VCB[VCB$B_TM]
+;	0730	!
+;	0731	! OUTPUT PARAMETERS:
+;	0732	!	NONE
+;	0733	!
+;	0734	! IMPLICIT OUTPUTS:
+;	0735	!	CURRENT_VCB[VCB$B_TM]
+;	0736	!	CURRENT_VCB[VCB$L_ST_RECORD]
+;	0737	!
+;	0738	! ROUTINE VALUE:
+;	0739	!	NONE
+;	0740	!
+;	0741	! SIDE EFFECTS:
+;	0742	!	NONE
+;	0743	!
+;	0744	!--
+;	0745	
+;	0746	BEGIN
+;	0747	
+;	0748	EXTERNAL REGISTER
+;	0749		COMMON_REG;
+;	0750	
+;	0751	
+;	0752	LOCAL
+;	0753		TM;					!NUMBER OF TM'S
+;	0754	
+;	0755	TM = .CURRENT_VCB[VCB$B_TM];
+;	0756	TM = .TM + .NUMBER;
+;	0757	
+;	0758	! NOW ADJUST NUMBER SO IT IS A NUMBER BETWEEN 0 AND 2
+;	0759	IF .TM GEQ 3 THEN TM = .TM - 3;
+;	0760	IF .TM LSS 0 THEN TM = .TM + 3;
+;	0761	CURRENT_VCB[VCB$B_TM] = .TM;
+;	0762	CURRENT_VCB[VCB$L_ST_RECORD] = .(.CURRENT_UCB + UCB$L_MT_RECORD)<0,32>;
+;	0763	
+;	0764	END;						!END OF ROUTINE
+
+
+
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 6-1
+; Digital Equipment Corporation
+;
+					 0000 00100 	    .ENTRY  ADJTM, Save nothing					      ; 0715
+		         50	  2E   AB  9A 00102 	    MOVZBL  46(CURRENT_VCB), TM					      ; 0755
+		         50	  04   AC  C0 00106 	    ADDL2   NUMBER, TM						      ; 0756
+		         03	       50  D1 0010A 	    CMPL    TM, #3						      ; 0759
+				       03  19 0010D 	    BLSS    1$							      ;
+		         50	       03  C2 0010F 	    SUBL2   #3, TM						      ;
+				       50  D5 00112 1$:     TSTL    TM							      ; 0760
+				       03  18 00114 	    BGEQ    2$							      ;
+		         50	       03  C0 00116 	    ADDL2   #3, TM						      ;
+		    2E   AB	       50  90 00119 2$:     MOVB    TM, 46(CURRENT_VCB)					      ; 0761
+	   50	  0000G  CF 00000000G  8F  C1 0011D 	    ADDL3   #UCB$L_MT_RECORD, CURRENT_UCB, R0			      ; 0762
+		    30   AB	       60  D0 00127 	    MOVL    (R0), 48(CURRENT_VCB)				      ;
+					   04 0012B 	    RET     							      ; 0715
+
+; Routine Size:  44 bytes
+
+
+;	0765	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 7
+; Digital Equipment Corporation
+;
+;	0766	GLOBAL ROUTINE ISSUE_IO (FUNCTION,P1,P2) : L$ISSUE_IO =
+;	0767	
+;	0768	!++
+;	0769	!
+;	0770	! FUNCTIONAL DESCRIPTION:
+;	0771	!	This routine issues the I/O and if the device is offline or
+;	0772	!	the volume is invalid it repositions it.
+;	0773	!
+;	0774	!
+;	0775	! CALLING SEQUENCE:
+;	0776	!	ISSUE_IO(FUNCTION,P1,P2)
+;	0777	!
+;	0778	! INPUT PARAMETERS:
+;	0779	!	ARG1 - function code
+;	0780	!	ARG2 - P1 parameter
+;	0781	!	ARG3 - P2 parameter
+;	0782	!
+;	0783	! IMPLICIT INPUTS:
+;	0784	!	NONE
+;	0785	!
+;	0786	! OUTPUT PARAMETERS:
+;	0787	!	NONE
+;	0788	!
+;	0789	! IMPLICIT OUTPUTS:
+;	0790	!	NONE
+;	0791	!
+;	0792	! ROUTINE VALUE:
+;	0793	!	I/O STATUS
+;	0794	!
+;	0795	! SIDE EFFECTS:
+;	0796	!	NONE
+;	0797	!
+;	0798	!--
+;	0799	BEGIN
+;	0800	EXTERNAL REGISTER
+;	0801		COMMON_REG;
+;	0802			
+;	0803	LOCAL
+;	0804		CUR_RECORD;
+;	0805	
+;	0806	CUR_RECORD = .(.CURRENT_UCB + UCB$L_MT_RECORD)<0,32>;
+;	0807	
+;	0808	WHILE 1 DO
+;	0809	    BEGIN
+;	0810	    (LOCAL STATUS;
+;	0811	    STATUS =
+;	0812	    $QIOW	(
+;     P 0813			EFN = EFN,
+;     P 0814			CHAN = .IO_CHANNEL,
+;     P 0815			FUNC = .FUNCTION,
+;     P 0816			IOSB = IO_STATUS,
+;     P 0817			P1   = .P1,
+;     P 0818			P2   = .P2);
+;	0819	    IF NOT .STATUS THEN IO_STATUS = .STATUS);
+;	0820	    IF .IO_STATUS NEQ SS$_MEDOFL
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 7-1
+; Digital Equipment Corporation
+;
+;	0821	    AND .IO_STATUS NEQ SS$_VOLINV THEN RETURN .IO_STATUS;
+;	0822	    REPOSITION(.CUR_RECORD);
+;	0823	    END;
+;	0824	
+;	0825	END;				! end of routine ISSUE_IO
+
+
+
+
+
+	   50	  0000G  CF 00000000G  8F  C1 0012C ISSUE_IO::
+							    ADDL3   #UCB$L_MT_RECORD, CURRENT_UCB, R0			      ; 0806
+				       60  DD 00136 	    PUSHL   (R0)						      ;
+				       7E  7C 00138 1$:     CLRQ    -(SP)						      ; 0818
+				       7E  7C 0013A 	    CLRQ    -(SP)						      ;
+				  20   AE  DD 0013C 	    PUSHL   P2							      ;
+				  20   AE  DD 0013F 	    PUSHL   P1							      ;
+				       7E  7C 00142 	    CLRQ    -(SP)						      ;
+				0000G  CF  9F 00144 	    PUSHAB  IO_STATUS						      ;
+				  2C   AE  DD 00148 	    PUSHL   FUNCTION						      ;
+				0000G  CF  DD 0014B 	    PUSHL   IO_CHANNEL						      ;
+				       01  DD 0014F 	    PUSHL   #1							      ;
+	      00000000G  9F	       0C  FB 00151 	    CALLS   #12, @#SYS$QIOW					      ;
+		         05	       50  E8 00158 	    BLBS    STATUS, 2$						      ; 0819
+		  0000G  CF	       50  D0 0015B 	    MOVL    STATUS, IO_STATUS					      ;
+		         50	0000G  CF  D0 00160 2$:     MOVL    IO_STATUS, R0					      ; 0820
+	      000001A4   8F	       50  D1 00165 	    CMPL    R0, #420						      ;
+				       09  13 0016C 	    BEQL    3$							      ;
+	      00000254   8F	       50  D1 0016E 	    CMPL    R0, #596						      ; 0821
+				       0A  12 00175 	    BNEQ    4$							      ;
+				       6E  DD 00177 3$:     PUSHL   CUR_RECORD						      ; 0822
+				     0000  30 00179 	    BSBW    REPOSITION						      ;
+		         5E	       04  C0 0017C 	    ADDL2   #4, SP						      ;
+				       B7  11 0017F 	    BRB     1$							      ; 0808
+		         5E	       04  C0 00181 4$:     ADDL2   #4, SP						      ; 0766
+					   05 00184 	    RSB     							      ;
+
+; Routine Size:  89 bytes
+
+
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 8
+; Digital Equipment Corporation
+;
+;	0826	GLOBAL ROUTINE SPACE_TM(NUMBER) : COMMON_CALL NOVALUE  =
+;	0827	
+;	0828	!++
+;	0829	!
+;	0830	! FUNCTIONAL DESCRIPTION:
+;	0831	!	THIS ROUTINE SPACES  A GIVEN NUMBER OF TM'S IN EITHER DIRECTION
+;	0832	!
+;	0833	! CALLING SEQUENCE:
+;	0834	!	SPACE_TM(NUMBER)
+;	0835	!
+;	0836	! INPUT PARAMETERS:
+;	0837	!	ARG1 - NUMBER OF TM'S TO  SPACE
+;	0838	!		(IF NEGATIVE, SPACE BACKWARD. IF POSITIVE, SPACE FORWARD.)
+;	0839	!
+;	0840	! IMPLICIT INPUTS:
+;	0841	!	IO_CHANNEL
+;	0842	!
+;	0843	! OUTPUT PARAMETERS:
+;	0844	!	NONE
+;	0845	!
+;	0846	! IMPLICIT OUTPUTS:
+;	0847	!	TM COUNT INCREMENTED TO REFLECT TAPE POSTIONED BEYOND THE TM SPECIFIED
+;	0848	!	IO_STATUS, USER_STATUS
+;	0849	!
+;	0850	! ROUTINE VALUE:
+;	0851	!	NONE
+;	0852	!
+;	0853	! SIDE EFFECTS:
+;	0854	!	SS$_FCPSPACERR - SPACE FAILURE
+;	0855	!
+;	0856	!--
+;	0857	
+;	0858	BEGIN
+;	0859	
+;	0860	EXTERNAL REGISTER
+;	0861		COMMON_REG;
+;	0862	
+;	0863	EXTERNAL ROUTINE
+;	0864		BLOCK,
+;	0865		REQUEST_UNBLOCK,
+;	0866		SYS$QIO			: ADDRESSING_MODE(ABSOLUTE);
+;	0867	LOCAL
+;	0868		CUR_RECORD,				!CURRENT POSITION OF TAPE
+;	0869		STATUS;					!IO STATUS
+;	0870	
+;	0871	CUR_RECORD = .(.CURRENT_UCB + UCB$L_MT_RECORD)<0,32>;
+;	0872	WHILE 1 DO
+;	0873	    BEGIN
+;	0874	    SYS$QIO(,.IO_CHANNEL,IO$_SKIPFILE,
+;	0875		BBLOCK[.CURRENT_VCB[VCB$L_VPFL],VVP$L_STATUS],REQUEST_UNBLOCK,.CURRENT_VCB, .NUMBER,,,,,);
+;	0876	    BLOCK($FIELDMASK(VCB$V_WAIREWIND));	!REALLY FOR ANY TAPE MOVEMENT
+;	0877	    STATUS = .BBLOCK[.CURRENT_VCB[VCB$L_VPFL],VVP$L_STATUS];
+;	0878	    IF .STATUS NEQ SS$_MEDOFL AND .STATUS NEQ SS$_VOLINV THEN EXITLOOP;
+;	0879	    REPOSITION(.CUR_RECORD);
+;	0880	    END;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 8-1
+; Digital Equipment Corporation
+;
+;	0881	
+;	0882	IF NOT .STATUS AND .STATUS<0,16> NEQ SS$_ENDOFTAPE THEN
+;	0883	    BEGIN
+;	0884	    USER_STATUS = .STATUS;
+;	0885	    USER_STATUS+4 = SS$_FCPSPACERR;
+;	0886	    ERR_EXIT();
+;	0887	    END;
+;	0888	KERNEL_CALL(ADJTM,.NUMBER);
+;	0889	
+;	0890	END;						!END OF ROUTINE
+
+
+
+							    .GLOBL  BLOCK, REQUEST_UNBLOCK, SYS$QIO
+
+					 001C 00185 	    .ENTRY  SPACE_TM, Save R2,R3,R4				      ; 0826
+	   50	  0000G  CF 00000000G  8F  C1 00187 	    ADDL3   #UCB$L_MT_RECORD, CURRENT_UCB, R0			      ; 0871
+		         54	       60  D0 00191 	    MOVL    (R0), CUR_RECORD					      ;
+				       7E  7C 00194 1$:     CLRQ    -(SP)						      ; 0874
+				       7E  7C 00196 	    CLRQ    -(SP)						      ;
+				       7E  D4 00198 	    CLRL    -(SP)						      ;
+				  04   AC  DD 0019A 	    PUSHL   NUMBER						      ;
+				       5B  DD 0019D 	    PUSHL   CURRENT_VCB						      ;
+				0000G  CF  9F 0019F 	    PUSHAB  REQUEST_UNBLOCK					      ;
+	   52	    3C   AB 000000FC   8F  C1 001A3 	    ADDL3   #252, 60(CURRENT_VCB), R2				      ; 0875
+				       52  DD 001AC 	    PUSHL   R2							      ; 0874
+				       25  DD 001AE 	    PUSHL   #37							      ;
+				0000G  CF  DD 001B0 	    PUSHL   IO_CHANNEL						      ;
+				       7E  D4 001B4 	    CLRL    -(SP)						      ;
+	      00000000G  9F	       0C  FB 001B6 	    CALLS   #12, @#SYS$QIO					      ;
+				       08  DD 001BD 	    PUSHL   #8							      ; 0876
+		  0000G  CF	       01  FB 001BF 	    CALLS   #1, BLOCK						      ;
+		         53	       62  D0 001C4 	    MOVL    (R2), STATUS					      ; 0877
+	      000001A4   8F	       53  D1 001C7 	    CMPL    STATUS, #420					      ; 0878
+				       09  13 001CE 	    BEQL    2$							      ;
+	      00000254   8F	       53  D1 001D0 	    CMPL    STATUS, #596					      ;
+				       0A  12 001D7 	    BNEQ    3$							      ;
+				       54  DD 001D9 2$:     PUSHL   CUR_RECORD						      ; 0879
+				     0000  30 001DB 	    BSBW    REPOSITION						      ;
+		         5E	       04  C0 001DE 	    ADDL2   #4, SP						      ;
+				       B1  11 001E1 	    BRB     1$							      ; 0872
+		         15	       53  E8 001E3 3$:     BLBS    STATUS, 4$						      ; 0882
+		  0878   8F	       53  B1 001E6 	    CMPW    STATUS, #2168					      ;
+				       0E  13 001EB 	    BEQL    4$							      ;
+		  0000G  CF	       53  D0 001ED 	    MOVL    STATUS, USER_STATUS					      ; 0884
+		  0000G  CF	0898   8F  3C 001F2 	    MOVZWL  #2200, USER_STATUS+4				      ; 0885
+				       00  BF 001F9 	    CHMU    #0							      ; 0886
+				  04   AC  DD 001FB 4$:     PUSHL   NUMBER						      ; 0888
+				       01  DD 001FE 	    PUSHL   #1							      ;
+				       5E  DD 00200 	    PUSHL   SP							      ;
+				FEFA   CF  9F 00202 	    PUSHAB  ADJTM						      ;
+	      00000000G  9F	       04  FB 00206 	    CALLS   #4, @#SYS$CMKRNL					      ;
+					   04 0020D 	    RET     							      ; 0826
+
+; Routine Size:  137 bytes
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 8-2
+; Digital Equipment Corporation
+;
+
+
+;	0891	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 9
+; Digital Equipment Corporation
+;
+;	0892	GLOBAL ROUTINE REPOSITION(NO_RECORD) : L$REPOSITION NOVALUE  =
+;	0893	
+;	0894	!++
+;	0895	!
+;	0896	! FUNCTIONAL DESCRIPTION:
+;	0897	!	THIS ROUTINE MOUNTS THE DEVICE THAT'S OFFLINE AND REPOSITIONS
+;	0898	!	TO THE CURRENT POSITION
+;	0899	!
+;	0900	! CALLING SEQUENCE:
+;	0901	!	REPOSITION(ARG1)
+;	0902	!
+;	0903	! INPUT PARAMETERS:
+;	0904	!	ARG1 - NUMBER OF RECORD TO POSITION TO
+;	0905	!
+;	0906	! IMPLICIT INPUTS:
+;	0907	!	CURRENT_UCB - ADDRESS OF CURRENT UNIT CONTROL BLOCK
+;	0908	!	CURRENT_VCB - ADDRESS OF CURRENT VOLUME CONTROL BLOCK
+;	0909	!
+;	0910	! OUTPUT PARAMETERS:
+;	0911	!	NONE
+;	0912	!
+;	0913	! IMPLICIT OUTPUTS:
+;	0914	!	NONE
+;	0915	!
+;	0916	! ROUTINE VALUE:
+;	0917	!	NONE
+;	0918	!
+;	0919	! SIDE EFFECTS:
+;	0920	!	NONE
+;	0921	!
+;	0922	! USER ERRORS:
+;	0923	!	NONE
+;	0924	!
+;	0925	!--
+;	0926	
+;	0927	BEGIN
+;	0928	
+;	0929	EXTERNAL REGISTER
+;	0930		COMMON_REG;
+;	0931	LABEL OFFLINE;
+;	0932	
+;	0933	
+;	0934	LOCAL
+;	0935		SAV_TM,
+;	0936		SAV_ST_REC,
+;	0937		MVL_ENTRY,				!ADDRESS OF CUR VOLUME MVL ENTRY
+;	0938		VOL;					!CURRENT VOLUME
+;	0939	
+;	0940	VOL = .CURRENT_VCB[VCB$B_CUR_RVN];
+;	0941	SAV_TM = .CURRENT_VCB[VCB$B_TM];
+;	0942	SAV_ST_REC = .CURRENT_VCB[VCB$L_ST_RECORD];
+;	0943	
+;	0944	! SET DEVICE NOT MOUNTED SINCE REWIND DOES NOT CURRENTLY RECOGNIZE DEVICE OFFLINE
+;	0945	MVL_ENTRY = .CURRENT_VCB[VCB$L_MVL] + MVL$K_FIXLEN + ((.VOL-1) * MVL$K_LENGTH);
+;	0946	OFFLINE:
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 9-1
+; Digital Equipment Corporation
+;
+;	0947	BEGIN
+;	0948	WHILE 1 DO
+;	0949	
+;	0950	    BEGIN
+;	0951	    PRINT_OPR_MSG(MOUN$_OFFLINE,0,BBLOCK[.CURRENT_UCB[UCB$L_DDB],DDB$T_NAME],
+;	0952			.CURRENT_UCB[UCB$W_UNIT]);
+;	0953	    KERNEL_CALL(RESET_UNIT);
+;	0954	    MOUNT_VOL(.VOL,$FIELDMASK(MOU$V_REWIND) + $FIELDMASK(MOU$V_LBLCHECK) + $FIELDMASK(MOU$V_MOUNTERR));	!MOUNT VOLUM
+;	0955	    WHILE 1 DO
+;	0956		BEGIN
+;	0957		(LOCAL STATUS;
+;	0958		STATUS = SYS$QIOW(EFN,.IO_CHANNEL,IO$_SKIPRECORD,IO_STATUS,,,
+;	0959		.NO_RECORD - .(.CURRENT_UCB + UCB$L_MT_RECORD)<0,32>,,,,,);	!NUMBER LEFT TO SPACE
+;	0960		IF NOT .STATUS THEN .IO_STATUS = .STATUS);			!DIRECTIVE STATUS
+;	0961		IF .NO_RECORD EQL .(.CURRENT_UCB + UCB$L_MT_RECORD)<0,32> THEN LEAVE OFFLINE;	!DONE SPACING
+;	0962		IF .IO_STATUS EQL SS$_MEDOFL
+;	0963		OR .IO_STATUS EQL SS$_VOLINV
+;	0964		OR .(.CURRENT_UCB + UCB$L_MT_RECORD) <0,32> GEQ .NO_RECORD
+;	0965		THEN EXITLOOP
+;	0966		ELSE
+;	0967		    IF .IO_STATUS<0,16> NEQ SS$_ENDOFFILE THEN
+;	0968		        BEGIN
+;	0969		        USER_STATUS = .IO_STATUS;
+;	0970		        USER_STATUS + 4 = SS$_FCPREPSTN;
+;	0971		        ERR_EXIT();
+;	0972		        END;
+;	0973		END;
+;	0974	    END;
+;	0975	END;						!END OFFLINE
+;	0976	KERNEL_CALL(RESTORE_POS,.SAV_TM,.SAV_ST_REC);
+;	0977	END;						!END OF ROUTINE
+
+
+
+
+
+		         5E	       08  C2 0020E REPOSITION::
+							    SUBL2   #8, SP						      ; 0892
+		         7E	  2F   AB  9A 00211 	    MOVZBL  47(CURRENT_VCB), VOL				      ; 0940
+		    04   AE	  2E   AB  9A 00215 	    MOVZBL  46(CURRENT_VCB), SAV_TM				      ; 0941
+		    08   AE	  30   AB  D0 0021A 	    MOVL    48(CURRENT_VCB), SAV_ST_REC				      ; 0942
+		         51	       6E  D0 0021F 	    MOVL    VOL, R1						      ; 0945
+		         50	  34 BB41  7E 00222 	    MOVAQ   @52(CURRENT_VCB)[R1], MVL_ENTRY			      ;
+		         50	       04  C0 00227 	    ADDL2   #4, MVL_ENTRY					      ;
+		         50	0000G  CF  D0 0022A 1$:     MOVL    CURRENT_UCB, R0					      ; 0952
+		         7E	  48   A0  3C 0022F 	    MOVZWL  72(R0), -(SP)					      ; 0951
+	   7E	    24   A0	       14  C1 00233 	    ADDL3   #20, 36(R0), -(SP)					      ;
+				       7E  D4 00238 	    CLRL    -(SP)						      ;
+			    0072811C   8F  DD 0023A 	    PUSHL   #7504156						      ;
+				     0000  30 00240 	    BSBW    PRINT_OPR_MSG					      ;
+		         5E	       0C  C0 00243 	    ADDL2   #12, SP						      ;
+				       6E  D4 00246 	    CLRL    (SP)						      ; 0953
+				       5E  DD 00248 	    PUSHL   SP							      ;
+				0000G  CF  9F 0024A 	    PUSHAB  RESET_UNIT						      ;
+	      00000000G  9F	       03  FB 0024E 	    CALLS   #3, @#SYS$CMKRNL					      ;
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 9-2
+; Digital Equipment Corporation
+;
+				       0B  DD 00255 	    PUSHL   #11							      ; 0954
+				  04   AE  DD 00257 	    PUSHL   VOL							      ;
+		  0000G  CF	       02  FB 0025A 	    CALLS   #2, MOUNT_VOL					      ;
+				       7E  7C 0025F 2$:     CLRQ    -(SP)						      ; 0958
+				       7E  7C 00261 	    CLRQ    -(SP)						      ;
+				       7E  D4 00263 	    CLRL    -(SP)						      ;
+	   50	  0000G  CF 00000000G  8F  C1 00265 	    ADDL3   #UCB$L_MT_RECORD, CURRENT_UCB, R0			      ; 0959
+	   7E	    24   AE	       60  C3 0026F 	    SUBL3   (R0), NO_RECORD, -(SP)				      ;
+				       7E  7C 00274 	    CLRQ    -(SP)						      ; 0958
+				0000G  CF  9F 00276 	    PUSHAB  IO_STATUS						      ;
+				       26  DD 0027A 	    PUSHL   #38							      ;
+				0000G  CF  DD 0027C 	    PUSHL   IO_CHANNEL						      ;
+				       01  DD 00280 	    PUSHL   #1							      ;
+	      00000000G  9F	       0C  FB 00282 	    CALLS   #12, @#SYS$QIOW					      ;
+		         05	       50  E8 00289 	    BLBS    STATUS, 3$						      ; 0960
+		  0000G  DF	       50  D0 0028C 	    MOVL    STATUS, @IO_STATUS					      ;
+	   51	  0000G  CF 00000000G  8F  C1 00291 3$:     ADDL3   #UCB$L_MT_RECORD, CURRENT_UCB, R1			      ; 0961
+		         61	  10   AE  D1 0029B 	    CMPL    NO_RECORD, (R1)					      ;
+				       39  13 0029F 	    BEQL    6$							      ;
+		         50	0000G  CF  D0 002A1 	    MOVL    IO_STATUS, R0					      ; 0962
+	      000001A4   8F	       50  D1 002A6 	    CMPL    R0, #420						      ;
+				       0F  13 002AD 	    BEQL    4$							      ;
+	      00000254   8F	       50  D1 002AF 	    CMPL    R0, #596						      ; 0963
+				       06  13 002B6 	    BEQL    4$							      ;
+		    10   AE	       61  D1 002B8 	    CMPL    (R1), NO_RECORD					      ; 0964
+				       03  19 002BC 	    BLSS    5$							      ;
+				     FF69  31 002BE 4$:     BRW     1$							      ;
+		  0870   8F	0000G  CF  B1 002C1 5$:     CMPW    IO_STATUS, #2160					      ; 0967
+				       95  13 002C8 	    BEQL    2$							      ;
+		  0000G  CF	       50  D0 002CA 	    MOVL    R0, USER_STATUS					      ; 0969
+		  0000G  CF	0988   8F  3C 002CF 	    MOVZWL  #2440, USER_STATUS+4				      ; 0970
+				       00  BF 002D6 	    CHMU    #0							      ; 0971
+				       85  11 002D8 	    BRB     2$							      ; 0955
+				  08   AE  DD 002DA 6$:     PUSHL   SAV_ST_REC						      ; 0976
+				  08   AE  DD 002DD 	    PUSHL   SAV_TM						      ;
+				       02  DD 002E0 	    PUSHL   #2							      ;
+				       5E  DD 002E2 	    PUSHL   SP							      ;
+				0000V  CF  9F 002E4 	    PUSHAB  RESTORE_POS						      ;
+	      00000000G  9F	       05  FB 002E8 	    CALLS   #5, @#SYS$CMKRNL					      ;
+		         5E	       0C  C0 002EF 	    ADDL2   #12, SP						      ; 0892
+					   05 002F2 	    RSB     							      ;
+
+; Routine Size:  229 bytes
+
+
+;	0978	
+;	0979	
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 10
+; Digital Equipment Corporation
+;
+;	0980	ROUTINE RESTORE_POS (TM,REC) : COMMON_CALL NOVALUE  =
+;	0981	
+;	0982	!++
+;	0983	!
+;	0984	! FUNCTIONAL DESCRIPTION:
+;	0985	!	This routine restores the tape position info destroyed by ASSUME_MOUNTED
+;	0986	!
+;	0987	!
+;	0988	!
+;	0989	! CALLING SEQUENCE:
+;	0990	!
+;	0991	! INPUT PARAMETERS:
+;	0992	!	NONE
+;	0993	!
+;	0994	! IMPLICIT INPUTS:
+;	0995	!	NONE
+;	0996	!
+;	0997	! OUTPUT PARAMETERS:
+;	0998	!	NONE
+;	0999	!
+;	1000	! IMPLICIT OUTPUTS:
+;	1001	!	NONE
+;	1002	!
+;	1003	! ROUTINE VALUE:
+;	1004	!	NONE
+;	1005	!
+;	1006	! SIDE EFFECTS:
+;	1007	!	NONE
+;	1008	!
+;	1009	!--
+;	1010	
+;	1011	BEGIN
+;	1012	EXTERNAL REGISTER
+;	1013		COMMON_REG;
+;	1014	
+;	1015	CURRENT_VCB[VCB$B_TM] = .TM;
+;	1016	CURRENT_VCB[VCB$L_ST_RECORD] = .REC;
+;	1017	END;
+
+
+
+
+
+					 0000 002F3 RESTORE_POS:
+							    .WORD   Save nothing					      ; 0980
+		    2E   AB	  04   AC  90 002F5 	    MOVB    TM, 46(CURRENT_VCB)					      ; 1015
+		    30   AB	  08   AC  D0 002FA 	    MOVL    REC, 48(CURRENT_VCB)				      ; 1016
+					   04 002FF 	    RET     							      ; 0980
+
+; Routine Size:  13 bytes
+
+
+;	1018	
+;	1019	END
+;	1020	ELUDOM
+
+; Bliss-32 7.352	Saturday 21-AUG-1978 23:36:25	DBB3:[MTAACP.SRC]LOGIO.B32;42					Page 10-1
+; Digital Equipment Corporation
+;
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   768  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        37         0       248
+
+
+
+
+
+; Size:		768 code + 0 data bytes
+; Run Time:	00:22.9
+; Elapsed Time:	00:49.3
+; Memory Used:	312 pages
+; Compilation Complete

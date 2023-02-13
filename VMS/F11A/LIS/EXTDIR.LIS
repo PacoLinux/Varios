@@ -1,0 +1,594 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 1
+;
+;	0001	MODULE EXTDIR (
+;	0002			NOSAFE,
+;	0003			LANGUAGE (BLISS32),
+;	0004			IDENT = 'A0007'
+;	0005			) =
+;	0006	BEGIN
+;	0007	
+;	0008	!
+;	0009	! Copyright (c) 1977
+;	0010	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0011	!
+;	0012	! This software is furnished  under a license for use only on a single
+;	0013	! computer  system and  may be  copied only with  the inclusion of the
+;	0014	! above copyright notice.  This software, or any other copies thereof,
+;	0015	! may not be provided or  otherwise made available to any other person
+;	0016	! except for use on such system and to one who agrees to these license
+;	0017	! terms.  Title to and  ownership of the  software  shall at all times
+;	0018	! remain in DEC.
+;	0019	!
+;	0020	! The information in this software is subject to change without notice
+;	0021	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0022	! Corporation.
+;	0023	!
+;	0024	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0025	! software on equipment which is not supplied by DEC.
+;	0026	
+;	0027	!++
+;	0028	!
+;	0029	! FACILITY:  F11ACP Structure Level 1
+;	0030	!
+;	0031	! ABSTRACT:
+;	0032	!
+;	0033	!	This routine extends a directory file.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines.
+;	0039	!
+;	0040	!--
+;	0041	!
+;	0042	!
+;	0043	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  15-Apr-1977  13:25
+;	0044	!
+;	0045	! REVISION HISTORY:
+;	0046	!
+;	0047	!   Andrew C. Goldstein, 11-Aug-1977  21:55
+;	0048	!   X0002 - Rework error recovery, add size limit up front
+;	0049	!
+;	0050	!   Andrew C. Goldstein, 10-Oct-1977  16:35
+;	0051	!   X0003 - Update HIBLK in record attributes after extend
+;	0052	!
+;	0053	!   Andrew C. Goldstein, 12-Nov-1977  21:18
+;	0054	!   X0004 - Remove directory EOF update (done by INIFCB)
+;	0055	!
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 1-1
+;
+;	0056	!   Andrew C. Goldstein, 12-Dec-1977  13:37
+;	0057	!   X0005 - file ID interface changes
+;	0058	!
+;	0059	!   Andrew C. Goldstein, 19-Jan-1978  21:35
+;	0060	!   X0006 - Fix arg in call to SYS$UNWIND
+;	0061	!
+;	0062	!   Andrew C. Goldstein, 2-May-78  10:53
+;	0063	!   A0007 - Proceed after truncate failure even if write error
+;	0064	!
+;	0065	!**
+;	0066	
+;	0067	
+;	0068	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0069	REQUIRE 'SRC$:FCPDEF.B32';
+;	0388	
+;	0389	
+;	0390	FORWARD ROUTINE
+;	0391		EXTEND_DIR,			! extend directory file
+;	0392		HANDLER;			! local condition handler
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2
+;
+;	0393	GLOBAL ROUTINE EXTEND_DIR =
+;	0394	
+;	0395	!++
+;	0396	!
+;	0397	! FUNCTIONAL DESCRIPTION:
+;	0398	!
+;	0399	!	This routine extends a directory file. If allocated but unused space is
+;	0400	!	present, this means simply pushing back the EOF and materializing a
+;	0401	!	block of zeroes. If the file is to be physically extended, it is
+;	0402	!	copied to a new location on the disk to keep it contiguous. Note
+;	0403	!	this routine will not do a non-contiguous extend if the above fails,
+;	0404	!	nor does it implement the automatic conversion of non-contiguous
+;	0405	!	directories found in RSX-11. The frequency of use of these is deemed
+;	0406	!	too low to be worthwhile.
+;	0407	!
+;	0408	! CALLING SEQUENCE:
+;	0409	!	EXTEND_DIR ()
+;	0410	!
+;	0411	! INPUT PARAMETERS:
+;	0412	!	NONE
+;	0413	!
+;	0414	! IMPLICIT INPUTS:
+;	0415	!	DIR_FCB: FCB of directory file
+;	0416	!	DIR_WINDOW: window of directory
+;	0417	!
+;	0418	! OUTPUT PARAMETERS:
+;	0419	!	NONE
+;	0420	!
+;	0421	! IMPLICIT OUTPUTS:
+;	0422	!	DIR_RECORD: record number of first available record created
+;	0423	!
+;	0424	! ROUTINE VALUE:
+;	0425	!	address of next directory record to use
+;	0426	!
+;	0427	! SIDE EFFECTS:
+;	0428	!	directory extended, storage map altered, directory FCB & windows altered
+;	0429	!
+;	0430	!--
+;	0431	
+;	0432	BEGIN
+;	0433	
+;	0434	BUILTIN
+;	0435		FP;
+;	0436	
+;	0437	LOCAL
+;	0438		FIB		: REF BBLOCK,	! address of FIB for this operation
+;	0439		FCB		: REF BBLOCK,	! address of FCB for directory
+;	0440		HEADER		: REF BBLOCK,	! address of directory file header
+;	0441		NEXT_VBN,			! next directory VBN to use
+;	0442		NEW_SIZE,			! size to extend directory to
+;	0443		NEW_LBN,			! starting LBN of new space
+;	0444		LBN,				! current LBN in copy
+;	0445		BUFFER,				! buffer address of current directory block
+;	0446		MAP_AREA	: REF BBLOCK,	! address of file header map area
+;	0447		MAP_POINTER	: REF BBLOCK,	! pointer to current retrieval pointer
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-1
+;
+;	0448		NEXT_LBN;			! LBN of next block to use
+;	0449	
+;	0450	EXTERNAL
+;	0451		CONTEXT_START,			! start of context area
+;	0452		CONTEXT_SAVE,			! start of context save area
+;	0453		CURRENT_FIB	: REF BBLOCK,	! address of FIB in use
+;	0454		LOCAL_FIB	: BBLOCK,	! FIB for main file operation
+;	0455		SECOND_FIB	: BBLOCK,	! FIB for secondary operations
+;	0456		DIR_FCB		: REF BBLOCK,	! address of directory FCB
+;	0457		DIR_WINDOW	: REF BBLOCK,	! address of directory window
+;	0458		PRIMARY_FCB	: REF BBLOCK,	! FCB of file in process
+;	0459		UNREC_COUNT,			! count of unrecorded blocks
+;	0460		UNREC_LBN,			! starting LBN of unrecorded blocks
+;	0461		DIR_RECORD;			! record number of directory entry
+;	0462	
+;	0463	EXTERNAL LITERAL
+;	0464		CONTEXT_SIZE;			! length of context area
+;	0465	
+;	0466	EXTERNAL ROUTINE
+;	0467		READ_HEADER,			! read file header
+;	0468		ALLOC_BLOCKS,			! allocate blocks from storage map
+;	0469		RETURN_BLOCKS,			! return blocks to storage map
+;	0470		MAP_VBN,			! map virtual to logical
+;	0471		READ_BLOCK,			! read a disk block
+;	0472		RESET_LBN,			! assign new LBN to buffer
+;	0473		WRITE_BLOCK,			! write block to disk
+;	0474		CREATE_BLOCK,			! fabricate a block buffer
+;	0475		INVALIDATE,			! invalidate a buffer
+;	0476		TRUNCATE_HEADER,		! truncate file header
+;	0477		CHECKSUM,			! compute file header checksum
+;	0478		WRITE_HEADER,			! write file header
+;	0479		INIT_FCB,			! update file control block
+;	0480		ZERO_WINDOWS;			! invalidate related file windows
+;	0481	
+;	0482	
+;	0483	! First save the current context, since this is a secondary file operation.
+;	0484	! Set up the secondary context pointers. Then read the directory file header.
+;	0485	!
+;	0486	
+;	0487	CH$MOVE (CONTEXT_SIZE, CONTEXT_START, CONTEXT_SAVE);
+;	0488	CH$FILL (0, CONTEXT_SIZE, CONTEXT_START);
+;	0489	
+;	0490	PRIMARY_FCB = FCB = .DIR_FCB;
+;	0491	CURRENT_FIB = FIB = SECOND_FIB;
+;	0492	CH$FILL (0, FIB$C_LENGTH, .FIB);
+;	0493	CH$MOVE (FIB$S_FID, LOCAL_FIB[FIB$W_DID], FIB[FIB$W_FID]);
+;	0494	
+;	0495	HEADER = READ_HEADER (0, .FCB);
+;	0496	
+;	0497	! The next VBN to use is the current directory eof block number. If the block
+;	0498	! is not present in the file, the directory must be physically extended.
+;	0499	!
+;	0500	
+;	0501	NEXT_VBN = .FCB[FCB$L_EFBLK] + 1;
+;	0502	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-2
+;
+;	0503	IF .NEXT_VBN GTRU .FCB[FCB$L_FILESIZE]
+;	0504	THEN
+;	0505	    BEGIN
+;	0506	
+;	0507	! Compute the number of blocks needed (50% of the current directory size)
+;	0508	! and allocate the new space contiguously. Limit the number of blocks
+;	0509	! allocated to what will fit in the map area of the header.
+;	0510	!
+;	0511	
+;	0512	    MAP_AREA = .HEADER + .HEADER[FH1$B_MPOFFSET]*2;
+;	0513	    NEW_SIZE = .FCB[FCB$L_FILESIZE] + MAXU (.FCB[FCB$L_FILESIZE]/2, 1);
+;	0514	    IF .FCB[FCB$L_FILESIZE] GEQU 2048 THEN ERR_EXIT (SS$_DIRFULL);
+;	0515	    IF .NEW_SIZE GTRU 2048 THEN NEW_SIZE = 2048;
+;	0516	
+;	0517	    FIB[FIB$V_ALCON] = 1;
+;	0518	    FIB[FIB$V_FILCON] = 1;
+;	0519	    ALLOC_BLOCKS (.FIB, .NEW_SIZE, NEW_LBN, NEW_SIZE);
+;	0520	    UNREC_COUNT = .NEW_SIZE;
+;	0521	    UNREC_LBN = .NEW_LBN;
+;	0522	
+;	0523	! Now copy the directory data from the old directory file to the newly
+;	0524	! allocated space.
+;	0525	!
+;	0526	
+;	0527	    INCR VBN FROM 1 TO .FCB[FCB$L_FILESIZE] DO
+;	0528		BEGIN
+;	0529		IF .FCB[FCB$L_STLBN] NEQ 0
+;	0530		THEN LBN = .VBN + .FCB[FCB$L_STLBN] - 1
+;	0531		ELSE LBN = MAP_VBN (.VBN, .DIR_WINDOW);
+;	0532	
+;	0533		BUFFER = READ_BLOCK (.LBN, 1, DIRECTORY_TYPE);
+;	0534		RESET_LBN (.BUFFER, .VBN + .NEW_LBN - 1);
+;	0535		WRITE_BLOCK (.BUFFER);
+;	0536		END;
+;	0537	
+;	0538	! Now deallocate the old directory blocks. Then build retrieval pointers
+;	0539	! for the new blocks in the file header. Do the truncation with a local
+;	0540	! condition handler enabled for special error recovery.
+;	0541	!
+;	0542	
+;	0543	    .FP = HANDLER;
+;	0544	    TRUNCATE_HEADER (.FIB, .HEADER, DEALLOC_BLOCKS);
+;	0545	    .FP = 0;
+;	0546	
+;	0547	    MAP_POINTER = .MAP_AREA + FM1$C_POINTERS;
+;	0548	
+;	0549	    DO
+;	0550		BEGIN
+;	0551		MAP_AREA[FM1$B_INUSE] = .MAP_AREA[FM1$B_INUSE] + 2;
+;	0552	
+;	0553		MAP_POINTER[FM1$B_HIGHLBN] = .NEW_LBN<16,8>;
+;	0554		MAP_POINTER[FM1$B_COUNT] = MIN (.NEW_SIZE, 256) - 1;
+;	0555		MAP_POINTER[FM1$W_LOWLBN] = .NEW_LBN<0,16>;
+;	0556		MAP_POINTER = .MAP_POINTER + 4;
+;	0557	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-3
+;
+;	0558		NEW_LBN = .NEW_LBN + MIN (.NEW_SIZE, 256);
+;	0559		NEW_SIZE = .NEW_SIZE - MIN (.NEW_SIZE, 256);
+;	0560		END
+;	0561	    UNTIL .NEW_SIZE EQL 0;
+;	0562	
+;	0563	    UNREC_COUNT = 0;
+;	0564	    HEADER[FH1$V_CONTIG] = 1;		! mark file contiguous
+;	0565	    KERNEL_CALL (ZERO_WINDOWS, .FCB);
+;	0566	    END;				! end of directory extension
+;	0567	
+;	0568	! Now that we have enough space in the directory, push the end of file
+;	0569	! mark back one block and materialize the new block in memory. Also
+;	0570	! update the FCB and flush any windows on it.
+;	0571	!
+;	0572	
+;	0573	BBLOCK [HEADER[FH1$W_RECATTR], FAT$W_EFBLKL] = .NEXT_VBN + 1;
+;	0574	BBLOCK [HEADER[FH1$W_RECATTR], FAT$W_FFBYTE] = 0;
+;	0575	KERNEL_CALL (INIT_FCB, .FCB, .HEADER);
+;	0576	BBLOCK [HEADER[FH1$W_RECATTR], FAT$W_HIBLKL] = .FCB[FCB$L_FILESIZE];
+;	0577	CHECKSUM (.HEADER);
+;	0578	WRITE_HEADER ();
+;	0579	
+;	0580	NEXT_LBN = (
+;	0581	    IF .FCB[FCB$L_STLBN] NEQ 0
+;	0582	    THEN .FCB[FCB$L_STLBN] + .NEXT_VBN - 1
+;	0583	    ELSE MAP_VBN (.NEXT_VBN, .DIR_WINDOW)
+;	0584	    );
+;	0585	BUFFER = CREATE_BLOCK (.NEXT_LBN, 1, DIRECTORY_TYPE);
+;	0586	DIR_RECORD = (.NEXT_VBN - 1) * 32 + 1;
+;	0587	
+;	0588	! Finally switch back to primary context.
+;	0589	!
+;	0590	
+;	0591	CH$MOVE (CONTEXT_SIZE, CONTEXT_SAVE, CONTEXT_START);
+;	0592	CONTEXT_SAVE = 0;
+;	0593	
+;	0594	RETURN .BUFFER;
+;	0595	
+;	0596	END;					! end of routine EXTEND_DIR
+
+
+							    .TITLE  EXTDIR
+							    .IDENT  \A0007\
+
+							    .EXTRN  CONTEXT_START, CONTEXT_SAVE, CURRENT_FIB, LOCAL_FIB
+							    .EXTRN  SECOND_FIB, DIR_FCB, DIR_WINDOW, PRIMARY_FCB, UNREC_COUNT
+							    .EXTRN  UNREC_LBN, DIR_RECORD, CONTEXT_SIZE, READ_HEADER
+							    .EXTRN  ALLOC_BLOCKS, RETURN_BLOCKS, MAP_VBN, READ_BLOCK
+							    .EXTRN  RESET_LBN, WRITE_BLOCK, CREATE_BLOCK, INVALIDATE
+							    .EXTRN  TRUNCATE_HEADER, CHECKSUM, WRITE_HEADER, INIT_FCB
+							    .EXTRN  ZERO_WINDOWS, SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00000 	    .ENTRY  EXTEND_DIR, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0393
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-4
+;
+		         5B 00000000G  8F  D0 00002 	    MOVL    #CONTEXT_SIZE, R11					      ;
+		         5E 	       08  C2 00009 	    SUBL2   #8, SP						      ;
+    0000G  CF	  0000G  CF	       5B  28 0000C 	    MOVC3   R11, CONTEXT_START, CONTEXT_SAVE			      ; 0487
+	   00 	         6E 	       00  2C 00014 	    MOVC5   #0, (SP), #0, R11, CONTEXT_START			      ; 0488
+		  0000G  CF	       5B     00018									      ;
+		         56 	0000G  CF  D0 0001C 	    MOVL    DIR_FCB, FCB					      ; 0490
+		  0000G  CF	       56  D0 00021 	    MOVL    FCB, PRIMARY_FCB					      ;
+		         57 	0000G  CF  9E 00026 	    MOVAB   SECOND_FIB, FIB					      ; 0491
+		  0000G  CF	       57  D0 0002B 	    MOVL    FIB, CURRENT_FIB					      ;
+	   00 	         6E 	       00  2C 00030 	    MOVC5   #0, (SP), #0, #44, (FIB)				      ; 0492
+		         67 	       2C     00034									      ;
+      04   A7	  0000G  CF	       06  28 00036 	    MOVC3   #6, LOCAL_FIB+10, 4(FIB)				      ; 0493
+				       56  DD 0003D 	    PUSHL   FCB							      ; 0495
+				       7E  D4 0003F 	    CLRL    -(SP)						      ;
+		  0000G  CF	       02  FB 00041 	    CALLS   #2, READ_HEADER					      ;
+		         52 	       50  D0 00046 	    MOVL    R0, HEADER						      ;
+	   58 	    40   A6	       01  C1 00049 	    ADDL3   #1, 64(FCB), NEXT_VBN				      ; 0501
+		    34   A6	       58  D1 0004E 	    CMPL    NEXT_VBN, 52(FCB)					      ; 0503
+				       03  1A 00052 	    BGTRU   1$							      ;
+				     0116  31 00054 	    BRW     12$							      ;
+		         50 	  01   A2  9A 00057 1$:     MOVZBL  1(HEADER), R0					      ; 0512
+		         53 	     6240  3E 0005B 	    MOVAW   (HEADER)[R0], MAP_AREA				      ;
+	   50 	    34   A6	       02  C7 0005F 	    DIVL3   #2, 52(FCB), R0					      ; 0513
+		         01 	       50  D1 00064 	    CMPL    R0, #1						      ;
+				       03  1E 00067 	    BGEQU   2$							      ;
+		         50 	       01  D0 00069 	    MOVL    #1, R0						      ;
+		    04   AE	  34 B640  9E 0006C 2$:     MOVAB   @52(FCB)[R0], NEW_SIZE				      ;
+	      00000800   8F	  34   A6  D1 00072 	    CMPL    52(FCB), #2048					      ; 0514
+				       04  1F 0007A 	    BLSSU   3$							      ;
+				0860   8F  BF 0007C 	    CHMU    #2144						      ;
+	      00000800   8F	  04   AE  D1 00080 3$:     CMPL    NEW_SIZE, #2048					      ; 0515
+				       06  1B 00088 	    BLEQU   4$							      ;
+		    04   AE	0800   8F  3C 0008A 	    MOVZWL  #2048, NEW_SIZE					      ;
+		    16   A7	       05  88 00090 4$:     BISB2   #5, 22(FIB)						      ; 0518
+				  04   AE  9F 00094 	    PUSHAB  NEW_SIZE						      ; 0519
+				  04   AE  9F 00097 	    PUSHAB  NEW_LBN						      ;
+				  0C   AE  DD 0009A 	    PUSHL   NEW_SIZE						      ;
+				       57  DD 0009D 	    PUSHL   FIB							      ;
+		  0000G  CF	       04  FB 0009F 	    CALLS   #4, ALLOC_BLOCKS					      ;
+		  0000G  CF	  04   AE  D0 000A4 	    MOVL    NEW_SIZE, UNREC_COUNT				      ; 0520
+		  0000G  CF	       6E  D0 000AA 	    MOVL    NEW_LBN, UNREC_LBN					      ; 0521
+		         59 	  34   A6  D0 000AF 	    MOVL    52(FCB), R9						      ; 0527
+				       54  D4 000B3 	    CLRL    VBN							      ;
+				       41  11 000B5 	    BRB     8$							      ;
+				  2C   A6  D5 000B7 5$:     TSTL    44(FCB)						      ; 0529
+				       0B  13 000BA 	    BEQL    6$							      ;
+	   50 	         54 	  2C   A6  C1 000BC 	    ADDL3   44(FCB), VBN, R0					      ; 0530
+		         55 	  FF   A0  9E 000C1 	    MOVAB   -1(R0), LBN						      ;
+				       0E  11 000C5 	    BRB     7$							      ; 0529
+				0000G  CF  DD 000C7 6$:     PUSHL   DIR_WINDOW						      ; 0531
+				       54  DD 000CB 	    PUSHL   VBN							      ;
+		  0000G  CF	       02  FB 000CD 	    CALLS   #2, MAP_VBN						      ;
+		         55 	       50  D0 000D2 	    MOVL    R0, LBN						      ;
+				       02  DD 000D5 7$:     PUSHL   #2							      ; 0533
+				       01  DD 000D7 	    PUSHL   #1							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-5
+;
+				       55  DD 000D9 	    PUSHL   LBN							      ;
+		  0000G  CF	       03  FB 000DB 	    CALLS   #3, READ_BLOCK					      ;
+		         5A 	       50  D0 000E0 	    MOVL    R0, BUFFER						      ;
+	   50 	         54 	       6E  C1 000E3 	    ADDL3   NEW_LBN, VBN, R0					      ; 0534
+				  FF   A0  9F 000E7 	    PUSHAB  -1(R0)						      ;
+				       5A  DD 000EA 	    PUSHL   BUFFER						      ;
+		  0000G  CF	       02  FB 000EC 	    CALLS   #2, RESET_LBN					      ;
+				       5A  DD 000F1 	    PUSHL   BUFFER						      ; 0535
+		  0000G  CF	       01  FB 000F3 	    CALLS   #1, WRITE_BLOCK					      ;
+	   BB 	         54 	       59  F3 000F8 8$:     AOBLEQ  R9, VBN, 5$						      ; 0527
+		         6D 	0000V  CF  9E 000FC 	    MOVAB   HANDLER, (FP)					      ; 0543
+				       01  DD 00101 	    PUSHL   #1							      ; 0544
+				       52  DD 00103 	    PUSHL   HEADER						      ;
+				       57  DD 00105 	    PUSHL   FIB							      ;
+		  0000G  CF	       03  FB 00107 	    CALLS   #3, TRUNCATE_HEADER					      ;
+				       6D  D4 0010C 	    CLRL    (FP)						      ; 0545
+		         50 	  0A   A3  9E 0010E 	    MOVAB   10(R3), MAP_POINTER					      ; 0547
+		    08   A3	       02  80 00112 9$:     ADDB2   #2, 8(MAP_AREA)					      ; 0551
+		         60 	  02   AE  90 00116 	    MOVB    NEW_LBN+2, (MAP_POINTER)				      ; 0553
+		         51 	  04   AE  D0 0011A 	    MOVL    NEW_SIZE, R1					      ; 0554
+	      00000100   8F	       51  D1 0011E 	    CMPL    R1, #256						      ;
+				       05  15 00125 	    BLEQ    10$							      ;
+		         51 	0100   8F  3C 00127 	    MOVZWL  #256, R1						      ;
+      01   A0	         51 	       01  83 0012C 10$:    SUBB3   #1, R1, 1(MAP_POINTER)				      ;
+		    02   A0	       6E  B0 00131 	    MOVW    NEW_LBN, 2(MAP_POINTER)				      ; 0555
+		         50 	       04  C0 00135 	    ADDL2   #4, MAP_POINTER					      ; 0556
+		         51 	  04   AE  D0 00138 	    MOVL    NEW_SIZE, R1					      ; 0558
+	      00000100   8F	       51  D1 0013C 	    CMPL    R1, #256						      ;
+				       05  15 00143 	    BLEQ    11$							      ;
+		         51 	0100   8F  3C 00145 	    MOVZWL  #256, R1						      ;
+		         6E 	       51  C0 0014A 11$:    ADDL2   R1, NEW_LBN						      ;
+		    04   AE	       51  C2 0014D 	    SUBL2   R1, NEW_SIZE					      ; 0559
+				       BF  12 00151 	    BNEQ    9$							      ; 0561
+				0000G  CF  D4 00153 	    CLRL    UNREC_COUNT						      ; 0563
+		    0C   A2	  80   8F  88 00157 	    BISB2   #128, 12(HEADER)					      ; 0564
+				       56  DD 0015C 	    PUSHL   FCB							      ; 0565
+				       01  DD 0015E 	    PUSHL   #1							      ;
+				       5E  DD 00160 	    PUSHL   SP							      ;
+				0000G  CF  9F 00162 	    PUSHAB  ZERO_WINDOWS					      ;
+	      00000000G  9F	       04  FB 00166 	    CALLS   #4, @#SYS$CMKRNL					      ;
+      18   A2	         58 	       01  A1 0016D 12$:    ADDW3   #1, NEXT_VBN, 24(HEADER)				      ; 0573
+				  1A   A2  B4 00172 	    CLRW    26(HEADER)						      ; 0574
+				       52  DD 00175 	    PUSHL   HEADER						      ; 0575
+				       56  DD 00177 	    PUSHL   FCB							      ;
+				       02  DD 00179 	    PUSHL   #2							      ;
+				       5E  DD 0017B 	    PUSHL   SP							      ;
+				0000G  CF  9F 0017D 	    PUSHAB  INIT_FCB						      ;
+	      00000000G  9F	       05  FB 00181 	    CALLS   #5, @#SYS$CMKRNL					      ;
+		    14   A2	  34   A6  B0 00188 	    MOVW    52(FCB), 20(HEADER)					      ; 0576
+				       52  DD 0018D 	    PUSHL   HEADER						      ; 0577
+		  0000G  CF	       01  FB 0018F 	    CALLS   #1, CHECKSUM					      ;
+		  0000G  CF	       00  FB 00194 	    CALLS   #0, WRITE_HEADER					      ; 0578
+				  2C   A6  D5 00199 	    TSTL    44(FCB)						      ; 0581
+				       0B  13 0019C 	    BEQL    13$							      ;
+	   50 	         58 	  2C   A6  C1 0019E 	    ADDL3   44(FCB), NEXT_VBN, R0				      ; 0582
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 2-6
+;
+		         53 	  FF   A0  9E 001A3 	    MOVAB   -1(R0), NEXT_LBN					      ;
+				       0E  11 001A7 	    BRB     14$							      ; 0580
+				0000G  CF  DD 001A9 13$:    PUSHL   DIR_WINDOW						      ; 0583
+				       58  DD 001AD 	    PUSHL   NEXT_VBN						      ;
+		  0000G  CF	       02  FB 001AF 	    CALLS   #2, MAP_VBN						      ;
+		         53 	       50  D0 001B4 	    MOVL    R0, NEXT_LBN					      ;
+				       02  DD 001B7 14$:    PUSHL   #2							      ; 0585
+				       01  DD 001B9 	    PUSHL   #1							      ;
+				       53  DD 001BB 	    PUSHL   NEXT_LBN						      ;
+		  0000G  CF	       03  FB 001BD 	    CALLS   #3, CREATE_BLOCK					      ;
+		         5A 	       50  D0 001C2 	    MOVL    R0, BUFFER						      ;
+	   50 	         58 	       05  78 001C5 	    ASHL    #5, NEXT_VBN, R0					      ; 0586
+		  0000G  CF	  E1   A0  9E 001C9 	    MOVAB   -31(R0), DIR_RECORD					      ;
+    0000G  CF	  0000G  CF	       5B  28 001CF 	    MOVC3   R11, CONTEXT_SAVE, CONTEXT_START			      ; 0591
+				0000G  CF  D4 001D7 	    CLRL    CONTEXT_SAVE					      ; 0592
+		         50 	       5A  D0 001DB 	    MOVL    BUFFER, R0						      ; 0594
+					   04 001DE 	    RET     							      ; 0393
+
+; Routine Size:  479 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 3
+;
+;	0597	ROUTINE HANDLER (SIGNAL, MECHANISM) =
+;	0598	
+;	0599	!++
+;	0600	!
+;	0601	! FUNCTIONAL DESCRIPTION:
+;	0602	!
+;	0603	!	This routine is the condition handler for directory extension. It is
+;	0604	!	enabled only during the truncate call (deallocating the old directory
+;	0605	!	blocks). Normal error handling would cause the entire directory to
+;	0606	!	be dropped on the floor. Since we already have a new good copy, we
+;	0607	!	should forge ahead. Note that no error status is returned to the user,
+;	0608	!	although we will log a system error.
+;	0609	!
+;	0610	!
+;	0611	! CALLING SEQUENCE:
+;	0612	!	HANDLER (ARG1, ARG2)
+;	0613	!
+;	0614	! INPUT PARAMETERS:
+;	0615	!	ARG1: address of signal array
+;	0616	!	ARG2: address of mechanism array
+;	0617	!
+;	0618	! IMPLICIT INPUTS:
+;	0619	!	FILE_HEADER: address of directory file header
+;	0620	!
+;	0621	! OUTPUT PARAMETERS:
+;	0622	!	NONE
+;	0623	!
+;	0624	! IMPLICIT OUTPUTS:
+;	0625	!	NONE
+;	0626	!
+;	0627	! ROUTINE VALUE:
+;	0628	!	SS$_RESIGNAL or none if unwind
+;	0629	!
+;	0630	! SIDE EFFECTS:
+;	0631	!	file header map area cleaned out
+;	0632	!
+;	0633	!--
+;	0634	
+;	0635	BEGIN
+;	0636	
+;	0637	MAP
+;	0638		SIGNAL		: REF BBLOCK,	! signal array arg
+;	0639		MECHANISM	: REF BBLOCK;	! mechanism array arg
+;	0640	
+;	0641	LOCAL
+;	0642		MAP_AREA	: REF BBLOCK;	! address of header map area
+;	0643	
+;	0644	EXTERNAL
+;	0645		FILE_HEADER	: REF BBLOCK;	! address of directory file header
+;	0646	
+;	0647	EXTERNAL ROUTINE
+;	0648		SYS$UNWIND	: ADDRESSING_MODE (ABSOLUTE);
+;	0649						! system unwind service
+;	0650	
+;	0651	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 3-1
+;
+;	0652	! Check the condition code for FCP error exit and check that it is not a
+;	0653	! write error. Then initialize the header's map area and unwind. On other
+;	0654	! signals we simply resignal.
+;	0655	!
+;	0656	
+;	0657	IF .SIGNAL[CHF$L_SIG_NAME] EQL SS$_CMODUSER
+;	0658	THEN
+;	0659	    BEGIN
+;	0660	    MAP_AREA = .FILE_HEADER + .FILE_HEADER[FH1$B_MPOFFSET]*2;
+;	0661	    MAP_AREA[FM1$B_INUSE] = 0;
+;	0662	    CH$FILL (0, .MAP_AREA[FM1$B_AVAIL]*2, .MAP_AREA + FM1$C_POINTERS);
+;	0663	
+;	0664	    SYS$UNWIND (MECHANISM[CHF$L_MCH_DEPTH], 0);
+;	0665	    END;
+;	0666	
+;	0667	RETURN SS$_RESIGNAL;			! status is irrelevant if unwind
+;	0668	
+;	0669	END;					! end of routine handler
+
+
+
+							    .EXTRN  FILE_HEADER, SYS$UNWIND
+
+					 003C 001DF HANDLER:.WORD   Save R2,R3,R4,R5					      ; 0597
+		         50 	  04   AC  D0 001E1 	    MOVL    SIGNAL, R0						      ; 0657
+	      00000424   8F	  04   A0  D1 001E5 	    CMPL    4(R0), #1060					      ;
+				       2C  12 001ED 	    BNEQ    1$							      ;
+		         51 	0000G  CF  D0 001EF 	    MOVL    FILE_HEADER, R1					      ; 0660
+		         50 	  01   A1  9A 001F4 	    MOVZBL  1(R1), R0						      ;
+		         50 	     6140  3E 001F8 	    MOVAW   (R1)[R0], MAP_AREA					      ;
+				  08   A0  94 001FC 	    CLRB    8(MAP_AREA)						      ; 0661
+		         51 	  09   A0  9A 001FF 	    MOVZBL  9(MAP_AREA), R1					      ; 0662
+		         51 	       02  C4 00203 	    MULL2   #2, R1						      ;
+	   00 	         6E 	       00  2C 00206 	    MOVC5   #0, (SP), #0, R1, 10(MAP_AREA)			      ;
+		    0A   A0	       51     0020A									      ;
+				       7E  D4 0020D 	    CLRL    -(SP)						      ; 0664
+	   7E 	    08   AC	       08  C1 0020F 	    ADDL3   #8, MECHANISM, -(SP)				      ;
+	      00000000G  9F	       02  FB 00214 	    CALLS   #2, @#SYS$UNWIND					      ;
+		         50 	0918   8F  3C 0021B 1$:     MOVZWL  #2328, R0						      ; 0667
+					   04 00220 	    RET     							      ; 0597
+
+; Routine Size:  66 bytes
+
+
+;	0670	
+;	0671	END
+;	0672	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 22:55:39	DBB3:[F11A.SRC]EXTDIR.B32;8					Page 3-2
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   545  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        27         0       239
+
+
+
+
+
+; Size:		545 code + 0 data bytes
+; Run Time:	00:11.4
+; Elapsed Time:	00:24.9
+; Memory Used:	350 pages
+; Compilation Complete

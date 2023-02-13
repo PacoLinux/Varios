@@ -1,0 +1,786 @@
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   0
+TABLE OF CONTENTS   
+
+   (1)      36  HISTORY			; DETAILED
+   (1)      45  DECLARATIONS
+   (1)     101  SCH$RSE - REPORT SYSTEM EVENT
+   (1)     245  SCH$UNWAIT - DECREMENT COUNT IN WAIT QUEUE
+   (1)     297  SITUATIONAL PRIORITY INCREMENT TABLE
+   (1)     316  SCH$CHSE - CHANGE STATE TO EXECUTABLE
+   (1)     412  SWPO - SWAP OUT SIMPLE NON-EXECUTABLE
+   (1)     425  SCH$QEND - QUANTUM END ROUTINE
+   (1)     469  SCH$WAKE - WAKE PROCESS INTERNAL
+   (1)     507  SCH$SWPWAKE - WAKE SWAPPER PROCESS
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   1
+00.1                                                                                                                             (1)
+
+                                     0000     1 
+                                     0000     2 	.TITLE	RSE - REPORT SYSTEM EVENT
+                                     0000     3 	.IDENT	/00.1/		;
+                                     0000     4 
+                                     0000     5 ;
+                                     0000     6 ; COPYRIGHT (C) 1977
+                                     0000     7 ; DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS 01754
+                                     0000     8 ;
+                                     0000     9 ; THIS SOFTWARE IS FURNISHED  UNDER A LICENSE FOR USE ONLY ON A SINGLE
+                                     0000    10 ; COMPUTER  SYSTEM AND  MAY BE  COPIED ONLY WITH  THE INCLUSION OF THE
+                                     0000    11 ; ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE, OR ANY OTHER COPIES THEREOF,
+                                     0000    12 ; MAY NOT BE PROVIDED OR  OTHERWISE MADE AVAILABLE TO ANY OTHER PERSON
+                                     0000    13 ; EXCEPT FOR USE ON SUCH SYSTEM AND TO ONE WHO AGREES TO THESE LICENSE
+                                     0000    14 ; TERMS.  TITLE TO AND  OWNERSHIP OF THE  SOFTWARE  SHALL AT ALL TIMES
+                                     0000    15 ; REMAIN IN DEC.
+                                     0000    16 ;
+                                     0000    17 ; THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE WITHOUT NOTICE
+                                     0000    18 ; AND SHOULD  NOT BE CONSTRUED  AS A COMMITMENT  BY DIGITAL  EQUIPMENT
+                                     0000    19 ; CORPORATION.
+                                     0000    20 ;
+                                     0000    21 ; DEC ASSUMES  NO  RESPONSIBILITY  FOR  THE USE OR  RELIABILITY OF ITS
+                                     0000    22 ; SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DEC.
+                                     0000    23 
+                                     0000    24 ;++
+                                     0000    25 ; FACILITY: EXECUTIVE, SCHEDULER
+                                     0000    26 ;
+                                     0000    27 ; ABSTRACT:
+                                     0000    28 ;	THIS MODULE CONTAINS THE SYSTEM EVENT REPORTING ROUTINES AND
+                                     0000    29 ;	THEIR SUPPORTING SUBROUTINES.
+                                     0000    30 ;
+                                     0000    31 ; ENVIRONMENT:
+                                     0000    32 ;	MODE = KERNEL	
+                                     0000    33 ;--
+                                     0000    34 ;
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   2
+00.1            HISTORY   ; DETAILED                                                                                             (1)
+
+                                     0000    36 	.SBTTL	HISTORY			; DETAILED
+                                     0000    37 ;
+                                     0000    38 ; AUTHOR:	R. HUSTVEDT	 CREATION DATE: 6-SEP-76
+                                     0000    39 ;
+                                     0000    40 ; MODIFIED BY:
+                                     0000    41 ; C. A. MONIA	, : VERSION 00
+                                     0000    42 ; 01	 -	MODIFIED FOR STAND-ALONE SYSTEM
+                                     0000    43 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   3
+00.1            DECLARATIONS                                                                                                     (1)
+
+                                     0000    45 	.SBTTL	DECLARATIONS
+                                     0000    46 
+                                     0000    47 ;
+                                     0000    48 ; INCLUDE FILES:
+                                     0000    49 ;
+                                     0000    50 	$CEBDEF				; DEFINE COMMON EVENT BLOCK
+                                     0000    51 	$IPLDEF				; IPL DEFINITIONS
+                                     0000    52 	$PCBDEF				; PCB DEFINITIONS
+                                     0000    53 	$PHDDEF				; PROCESS HEADER DEFINITIONS
+                                     0000    54 	$PRDEF				; PROCESSOR REGISTER DEFS
+                                     0000    55 	$PRIDEF				; PRIORITY INCREMENT CLASSES
+                                     0000    56 	$SSDEF				; DEFINE STATUS CODES
+                                     0000    57 	$STATEDEF			; STATE DEFINITIONS
+                                     0000    58 	$WQHDEF				; WAIT QUEUE HEADER DEFINITIONS
+                                     0000    59 ;
+                                     0000    60 ; MACROS:
+                                     0000    61 ;
+                                     0000    62 	.MACRO	EVENT,EVTN,STATLIST,EACTION,CONT=0
+                                     0000    63 	.IF	NB,EVTN
+                                     0000    64 EVT$_'EVTN==EVTCTR
+                                     0000    65 	.ENDC
+                                     0000    66 EVTCTR=EVTCTR+1
+                                     0000    67 	.WORD	EACTION-STACT
+                                     0000    68 RSE...=.
+                                     0000    69 	.PSECT	ASE2,BYTE
+                                     0000    70 STMSK=CONT
+                                     0000    71 	.IRP	ST,<STATLIST>
+                                     0000    72 STMSK=STMSK+<1@SCH$C_'ST>
+                                     0000    73 	.ENDR	
+                                     0000    74 	.LONG	STMSK
+                                     0000    75 	.PSECT	ASE1,BYTE
+                                     0000    76 .=RSE...
+                                     0000    77 	.ENDM	EVENT
+                                     0000    78 
+                                     0000    79 ;
+                                     0000    80 ;	GENERATE MASK FOR WAIT STATES
+                                     0000    81 ;
+                                     0000    82 ;	GMASK	STATENAME
+                                     0000    83 ;
+                                     0000    84 
+                                     0000    85 	.MACRO	GMASK,STATE
+                                     0000    86 ST=SCH$C_'STATE
+                                     0000    87 WAITST=WAITST+<1@ST>
+                                     0000    88 	.ENDM	GMASK
+                                     0000    89 ;
+                                     0000    90 ; EQUATED SYMBOLS:
+                                     0000    91 ;
+                           00000000  0000    92 EVTCTR=0				; INITIALIZE EVENT COUNTER TO 0
+                           00000000  0000    93 WAITST=0				; INITIALIZE WAIT STATE MASK
+                                     0000    94 ;
+                                     0000    95 ; OWN STORAGE:
+                                     0000    96 ;
+                                 00000000    97 	.PSECT	ASE2,BYTE		; STATE EVENT MASK PSECT
+                           00000000  0000    98 STET=	.				; BASE OF STATE EVENT TABLE
+                                 00000000    99 	.PSECT	ASE1,BYTE
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   4
+00.1            SCH$RSE - REPORT SYSTEM EVENT                                                                                    (1)
+
+                                     0000   101 	.SBTTL	SCH$RSE - REPORT SYSTEM EVENT
+                                     0000   102 
+                                     0000   103 ;++
+                                     0000   104 ; FUNCTIONAL DESCRIPTION:
+                                     0000   105 ;	SCH$RSE RECEIVES SYSTEM EVENT REPORTS FROM VARIOUS SOURCES
+                                     0000   106 ;	AND PERFORMS THE APPROPRIATE ACTION FOR THE SPECIFIED PROCESS.
+                                     0000   107 ;	EVENT REPORTING MUST BE PERFORMED WITH IPL=IPL$_SYNCH.
+                                     0000   108 ;	AS A SIDE EFFECT OF AN EVENT REPORT, THE RESCHEDULING INTERRUPT
+                                     0000   109 ;	MAY BE TRIGGERED IF APPROPRIATE.
+                                     0000   110 ;
+                                     0000   111 ; CALLING SEQUENCE:
+                                     0000   112 ;	BSB/JSB	SCH$RSE
+                                     0000   113 ;	.BYTE	EVT$_EVENTNAME
+                                     0000   114 ;
+                                     0000   115 ;	THIS CALLING SEQUENCE IS GENERATED BY THE RPTEVT SYSTEM MACRO
+                                     0000   116 ;	
+                                     0000   117 ;	REPEVT	EVENTNAME
+                                     0000   118 ;
+                                     0000   119 ; INPUT PARAMETERS:
+                                     0000   120 ;	R2 - SITUATIONAL PRIORITY INCREMENT CLASS NUMBER
+                                     0000   121 ;	R4 - PCB ADDRESS OF PROCESS FOR WHICH EVENT IS REPORTED
+                                     0000   122 ;
+                                     0000   123 ;	EVENT NUMBER CONTAINED IN BYTE LOCATED BY ADDRESS AT TOP 
+                                     0000   124 ;	OF STACK.  @(SP)
+                                     0000   125 ;
+                                     0000   126 ; IMPLICIT INPUTS:
+                                     0000   127 ;	SCHEDULER DATA BASE
+                                     0000   128 ;
+                                     0000   129 ; OUTPUT PARAMETERS:
+                                     0000   130 ;	NONE
+                                     0000   131 ;
+                                     0000   132 ; IMPLICIT OUTPUTS:
+                                     0000   133 ;	NONE
+                                     0000   134 ;
+                                     0000   135 ; COMPLETION CODES:
+                                     0000   136 ;	NONE
+                                     0000   137 ;
+                                     0000   138 ; SIDE EFFECTS:
+                                     0000   139 ;	A RESECHEDULING INTERRUPT MAY BE REQUESTED IF THE SPECIFIED
+                                     0000   140 ;	PROCESS IS HIGHER IN PRIORITY THAN THE CURRENT PROCESS.
+                                     0000   141 ;
+                                     0000   142 ;--
+                                     0000   143 
+                                     0000   144 SCH$RSE::				; REPORT SYSTEM EVENT
+            53         00 BE     9A  0000   145 	MOVZBL	@(SP),R3		; GET EVENT NUMBER 
+                          6E     D6  0004   146 	INCL	(SP)			; UPDATE RETURN ADDRESS
+            51         30 A4     3C  0006   147 	MOVZWL	PCB$W_STATE(R4),R1	; GET CURRENT STATE NUMBER
+            50       0000'CF43   D0  000A   148 10$:	MOVL	W^STET[R3],R0		; GET STATE MASK FOR EVENT
+            50            51     E0  0010   149 	BBS	R1,R0,ACTION		; DO ACTION IF STATE BIT SET
+                          06         0013       
+                          53     D6  0014   150 	INCL	R3			; CHECK NEXT ACTION
+            F1            50     E8  0016   151 	BLBS	R0,10$			; IF CONTINUATION
+                                 05  0019   152 	RSB				; OTHERWISE IGNORE EVENT
+                                     001A   153 	
+            00            53     CF  001A   154 ACTION:	CASEL	R3,#0,S^#MAXEVT		; SWITCH ON EVENT NUMBER(UPDATED)
+                          0A'        001D       
+                                     001E   155 STACT:					; BASE OF ACTION TABLE
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   5
+00.1            SCH$RSE - REPORT SYSTEM EVENT                                                                                    (1)
+
+                                     001E   156 	EVENT	AST,<-			; AST EVENT
+                                     001E   157 		CEF,-			; COMMON EVENT FLAG WAIT
+                                     001E   158 		COLPG,-			; COLLIDED PAGE WAIT
+                                     001E   159 		FPG,-			; FREE PAGE WAIT
+                                     001E   160 		HIB,-			; RESIDENT HIBERNATE
+                                     001E   161 		HIBO,-			; NON-RESIDENT HIBERNATE
+                                     001E   162 		LEF,-			; LOCAL EVENT FLAG WAIT
+                                     001E   163 		LEFO,-			; LOCAL EVENT FLAG WAIT (NON-RES)
+                                     001E   164 		MWAIT,-			; MUTEX WAIT
+                                     001E   165 		PFW,-			; PAGE FAULT WAIT
+                                     001E   166 		>,EVENTE		; AST EXECUTABLE STATE CHANGE
+                           00000000  0020   167 EVT$_COLPGA==EVT$_AST			; USE SAME EVENT FOR COLLIDED PAGE AVAIL
+                                     0020   168 
+                                     0020   169 
+                                     0020   170 	EVENT	EVENT,<LEF>,LEFEVT,CONT=1	; EVENT FLAG SETTING
+                                     0022   171 	EVENT	,<CEF>,CEFEVT,CONT=1	; COMMON EVENT FLAG SET
+                                     0024   172 	EVENT	,<LEFO>,EVENTE		; NON-RESIDENT LOCAL EVENT
+                                     0026   173 
+                                     0026   174 	EVENT	FPGA,<-			; FREE PAGE AVAILABLE
+                                     0026   175 		FPG,-			; FREE PAGE WAIT STATE
+                                     0026   176 		>,EVENTF		; EXECUTABLE STATE CHANGE
+                                     0028   177 	EVENT	WAKE,<-			; WAKE EVENT
+                                     0028   178 		HIB,-			; RESIDENT HIBERNATE
+                                     0028   179 		HIBO,-			; NON-RESIDENT HIBERNATE
+                                     0028   180 		>,EVENTE		;
+                                     002A   181 
+                                     002A   182 
+                                     002A   183 	EVENT	RESUME,<-		; RESUME EVENT
+                                     002A   184 		SUSP,-			; RESIDENT SUSPENDED
+                                     002A   185 		SUSPO,-			; NON-RESIDENT SUSPENDED
+                                     002A   186 		>,EVENTE		; EXECUTABLE
+                                     002C   187 
+                                     002C   188 
+                                     002C   189 	EVENT	PFCOM,<-		; PAGE FAULT COMPLETE EVENT
+                                     002C   190 		PFW,-			; PAGE FAULT WAIT
+                                     002C   191 		>,EVENTE		; EXECUTABLE
+                                     002E   192 
+                                     002E   193 	EVENT	SETPRI,<-		; SET PRIORITY EVENT
+                                     002E   194 		COM,-			; RESIDENT COMPUTE
+                                     002E   195 		COMO,-			; NON-RESIDENT COMPUTE
+                                     002E   196 		>,EVENTF		; EXECUTABLE
+                                     0030   197 
+                                     0030   198 	EVENT	SWPOUT,<-		; SWAP OUT EVENT
+                                     0030   199 		HIB,-			; RESIDENT HIBERNATE
+                                     0030   200 		LEF,-			; RESIDENT LOCAL EVENT FLAG WAIT
+                                     0030   201 		SUSP,-			; RESIDENT SUSPENDED
+                                     0030   202 		>,SWPO,CONT=1		; SIMPLE SWAP OUT
+                                     0032   203 	EVENT	,<-			; SWAP OUT EVENT CONINUATION
+                                     0032   204 		COM,-			; RESIDENT COMPUTE
+                                     0032   205 		>,SWPOE			; EXECUTABLE OUTSWAP
+                                     0034   206 
+                                     0034   207 ;
+                                     0034   208 ;	IF CASE FALLS THROUGH, THEN BUGCHECK WITH ILLEGAL EVENT
+                                     0034   209 ;	NUMBER.
+                                     0034   210 ;
+                           0000000A  0034   211 MAXEVT=EVTCTR-1				; MAXIMUM EVENT NUMBER
+                                     0034   212 	BUG_CHECK ILLEVTNUM,FATAL	; ILLEGAL EVENT NUMBER
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   6
+00.1            SCH$RSE - REPORT SYSTEM EVENT                                                                                    (1)
+
+                                     0038   213 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   7
+00.1            SCH$RSE - REPORT SYSTEM EVENT                                                                                    (1)
+
+                                     0038   215 ;
+                                     0038   216 ;	COMMON EVENT FLAG SET
+                                     0038   217 ;
+                                     0038   218 CEFEVT:					;
+            0E         28 A4     E9  0038   219 	BLBC	PCB$L_STS(R4),EVENTE	; BR IF NOT RESIDENT
+                                     003C   220 LEFEVT:					; LOCAL EVENT FLAG SET FOR RESIDENT PROCESS
+            53         64 A4     D0  003C   221 	MOVL	PCB$L_PHD(R4),R3	; POINT TO PHD
+       00C0 C3            04     C0  0040   222 	ADDL	#4,PHD$L_PC(R3)		; SKIP PC OVER CHMK INSTRUCTION
+       0088 C3            01     3C  0045   223 	MOVZWL	#SS$_NORMAL,PHD$L_R0(R3); SET NORMAL COMPLETION FOR WAIT
+                                     004A   224 ;
+                                     004A   225 ;	EVENT EXECUTABLE ACTION ROUTINE
+                                     004A   226 ;
+                                     004A   227 
+                                     004A   228 EVENTE:					; EVENT EXECUTABLE STATE CHANGE
+            28         28 A4     E9  004A   229 	BLBC	PCB$L_STS(R4),20$	; SKIP IF NOT RESIDENT
+         2C A4   00000002'EF     C2  004E   230 	SUBL	EXE$GQ_SYSTIME+2,PCB$L_WTIME(R4) ; COMPUTE WAIT TIME
+                          1E     18  0056   231 	BGEQ	20$			; UNDERFLOW, NO CHARGE
+            53         64 A4     D0  0058   232 	MOVL	PCB$L_PHD(R4),R3	; GET PHD POINTER
+            50         40 A3     32  005C   233 	CVTWL	PHD$W_QUANT(R3),R0	; AND REMAINING QUANTUM
+            50         2C A4     C2  0060   234 	SUBL	PCB$L_WTIME(R4),R0	; CHECK FOR QUANTUM RUNOUT
+                          0C     19  0064   235 	BLSS	10$			; NO
+            50   00000000'EF     B0  0066   236 	MOVW	SCH$GW_QUAN,R0   	; INIT FOR NEW QUAN
+         28 A4            03     E5  006D   237 	BBCC	#PCB$V_INQUAN,PCB$L_STS(R4),10$	; CLEAR INITIAL QUAN FLAG
+                          00         0071       
+         40 A3            50     B0  0072   238 10$:	MOVW	R0,PHD$W_QUANT(R3)	; SET UPDATED QUANTUM
+                                     0076   239 20$:					;
+                                     0076   240 EVENTF:					; ACTIVATE WITH NO WAIT TIME ACCOUNTING
+                       AB'AF     9F  0076   241 	PUSHAB	B^SCH$CHSE		; MAKE UNWAIT EXIT THROUGH CHSE
+                                     0079   242 ;	BRB	SCH$UNWAIT		; AND FALL INTO UNWAIT
+                                     0079   243 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   8
+00.1            SCH$UNWAIT - DECREMENT COUNT IN WAIT QUEUE                                                                       (1)
+
+                                     0079   245 	.SBTTL	SCH$UNWAIT - DECREMENT COUNT IN WAIT QUEUE
+                                     0079   246 ;++
+                                     0079   247 ;
+                                     0079   248 ; FUNCTIONAL DESCRIPTION:
+                                     0079   249 ;	SCH$UNWAIT DECREMENTS THE NUMBER OF PROCESSES IN THE WAIT
+                                     0079   250 ;	QUEUE SELECTED BY THE SPECIFIED PCB AND STATE VALUE.
+                                     0079   251 ;
+                                     0079   252 ; CALLING SEQUENCE:
+                                     0079   253 ;	BSB/JSB	SCH$UNWAIT
+                                     0079   254 ;
+                                     0079   255 ; INPUT PARAMETERS:
+                                     0079   256 ;	R1 - STATE NUMBER (PRESERVED)
+                                     0079   257 ;	R2 - UNUSED	  (PRESERVED)
+                                     0079   258 ;	R4 - PCB ADDRESS  (PRESERVED)
+                                     0079   259 ;
+                                     0079   260 ; IMPLICIT INPUTS:
+                                     0079   261 ;	PCB LOCATED BY ADDRESS IN R4
+                                     0079   262 ;
+                                     0079   263 ; IMPLICIT OUTPUTS:
+                                     0079   264 ;	COUNT IN WAIT QUEUE HEADER IS DECREMENTED IF STATE IS A WAIT
+                                     0079   265 ;	STATE.
+                                     0079   266 ;
+                                     0079   267 ;--
+                                     0079   268 
+                                     0079   269 SCH$UNWAIT::				; DECREMENT PROPER WAIT COUNT
+         9E'AF            51     E1  0079   270 	BBC	R1,B^WAITMSK,20$	; SKIP OUT IF NOT WAIT STATE
+                          11         007D       
+            51            03     B1  007E   271 	CMPW	#SCH$C_CEF,R1		; CHECK FOR COMMON EVENT FLAG WAIT
+                          0D     13  0081   272 	BEQL	30$			; CEF WAIT
+            51            0C     C4  0083   273 	MULL	#WQH$C_LENGTH,R1	; COMPUTE BYTE INDEX TO WQ HDR
+            50       0000'CF41   9E  0086   274 	MOVAB	W^SCH$AQ_WQHDR[R1],R0	; COMPUTE ADDRESS OF WAIT Q HEADER
+                       08 A0     B7  008C   275 10$:	DECW	WQH$W_WQCNT(R0)		; DECREMENT WAIT QUEUE COUNT
+                                 05  008F   276 20$:	RSB				; RETURN
+                                     0090   277 
+            50         32 A4     9A  0090   278 30$:	MOVZBL	PCB$B_WEFC(R4),R0	; WAIT CLUSTER NUMBER
+            50         50 A440   D0  0094   279 	MOVL	PCB$L_EFCS(R4)[R0],R0	; GET CLUSTER ADDRESS
+            50            14     C0  0099   280 	ADDL	#CEB$L_WQFL,R0		; POINT TO WAIT QUEUE HEADER
+                          EE     11  009C   281 	BRB	10$			; GO DECREMENT WAIT COUNT
+                                     009E   282 
+                                     009E   283 	GMASK	CEF			; COMMON EVENT FLAG
+                                     009E   284 	GMASK	LEF			; LOCAL EVENT FLAG WAIT
+                                     009E   285 	GMASK	LEFO			; LOCAL EVENT FLAG WAIT
+                                     009E   286 	GMASK	HIB			; HIBERNAT WAIT
+                                     009E   287 	GMASK	HIBO			; HIBERNATE WAIT
+                                     009E   288 	GMASK	FPG			; FREE PAGE WAIT
+                                     009E   289 	GMASK	COLPG			; COLLISION PAGE WAIT
+                                     009E   290 	GMASK	PFW			; PAGE FAULT WAIT
+                                     009E   291 	GMASK	SUSP			; SUSPENDED WAIT
+                                     009E   292 	GMASK	SUSPO			; SUSPENDED WAIT
+                                     009E   293 	GMASK	MWAIT			; MUTEX WAIT
+                           00000FFE  009E   294 WAITMSK:.LONG	WAITST			; MASK OF WAIT STATES
+                                     00A2   295 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page   9
+00.1            SITUATIONAL PRIORITY INCREMENT TABLE                                                                             (1)
+
+                                     00A2   297 	.SBTTL	SITUATIONAL PRIORITY INCREMENT TABLE
+                                     00A2   298 ;
+                                     00A2   299 ; FIXED DATA:
+                                     00A2   300 ;		SITUATIONAL PRIORITY INCREMENT TABLE
+                                     00A2   301 ;		    (INDEXED BY PRIORITY INCREMENT CLASS)
+                                     00A2   302 ;
+                                     00A2   303 
+                                     00A2   304 B_PINC:					;
+                                 00  00A2   305 	.BYTE	0			; CLASS 0 - NONE
+                                 02  00A3   306 	.BYTE	2			; CLASS 1 - I/O COMPLETE
+                                 03  00A4   307 	.BYTE	3			; CLASS 2 - RESOURCE AVAIL
+                                 04  00A5   308 	.BYTE	4			; CLASS 3 - TERM OUTPUT COMP
+                                 06  00A6   309 	.BYTE	6			; CLASS 4 - TERM INPUT COMP
+                                     00A7   310 
+                                     00A7   311 
+                                     00A7   312 EXESTATE:				; EXECUTABLE STATE MASK
+                           00003000  00A7   313 	.LONG	<1@SCH$C_COM>!<1@SCH$C_COMO>
+                                     00AB   314 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  10
+00.1            SCH$CHSE - CHANGE STATE TO EXECUTABLE                                                                            (1)
+
+                                     00AB   316 	.SBTTL	SCH$CHSE - CHANGE STATE TO EXECUTABLE
+                                     00AB   317 ;++
+                                     00AB   318 ; FUNCTIONAL DESCRIPTION:
+                                     00AB   319 ;	SCH$CHSE CHANGES THE STATE OF A PROCESS, AS REPRESENTED BY
+                                     00AB   320 ;	ITS PCB, TO AN EXECUTABLE STATE.  THE RESCHEDULING INTERRUPT
+                                     00AB   321 ;	WILL BE TRIGGERED IF THE PROCESS IS RESIDENT AND HAS A PRIOITY
+                                     00AB   322 ;	GREATER THAN THAT OF THE CURRENTLY EXECUTING PROCESS.  A 
+                                     00AB   323 ;	PRIORITY INCREMENT CLASS NUMBER SUPPLIED AS A REGISTER CONTAINED
+                                     00AB   324 ;	ARGUMENT IS USED TO COMPUTE THE NEW PROCESS PRIORITY FROM ITS
+                                     00AB   325 ;	BASE PRIORITY.
+                                     00AB   326 ;
+                                     00AB   327 ; CALLING SEQUENCE:
+                                     00AB   328 ;	BSB/JSB	SCH$CHSE	
+                                     00AB   329 ;
+                                     00AB   330 ; INPUT PARAMETERS:
+                                     00AB   331 ;	R0 - NEW PRIORITY	(SCH$CHSEP ONLY)
+                                     00AB   332 ;	R2 - PRIORITY INCREMENT CLASS NUMBER   (SCH$CHSE ONLY)
+                                     00AB   333 ;		0 => NO INCREMENT
+                                     00AB   334 ;		1 => NON-TERMINAL I/O COMPLETION
+                                     00AB   335 ;		2 => RESOURCE AVAILABILITY
+                                     00AB   336 ;		3 => TERMINAL OUTPUT COMPLETION
+                                     00AB   337 ;		4 => TERMINAL INPUT COMPLETION
+                                     00AB   338 ;	R4 - PCB ADDRESS
+                                     00AB   339 ;
+                                     00AB   340 ; IMPLICIT INPUTS:
+                                     00AB   341 ;	SCH$AQ_COMT - COMPUTE QUEUE HEADERS FOR COM,COMO STATES
+                                     00AB   342 ;	SCH$GB_PRI  - CURRENT PROCESS PRIORITY.
+                                     00AB   343 ;
+                                     00AB   344 ;
+                                     00AB   345 ; OUTPUT PARAMETERS:
+                                     00AB   346 ;	R2 - R2 , PRIORITY INCREMENT CLASS NUMBER IF SCH$CHSE. (PRESERVED)
+                                     00AB   347 ;	R3 - R3 (PRESERVED)
+                                     00AB   348 ;
+                                     00AB   349 ; IMPLICIT OUTPUTS:
+                                     00AB   350 ;	SCH$AQ_COMH  -  VECTOR OF COMPUTE QUEUE HEADERS.
+                                     00AB   351 ;	SCH$GL_COMQS -  COMPUTE QUEUE SUMMARY BIT VECTOR.
+                                     00AB   352 ;
+                                     00AB   353 ; COMPLETION CODES:
+                                     00AB   354 ;	NONE
+                                     00AB   355 ;
+                                     00AB   356 ; SIDE EFFECTS:
+                                     00AB   357 ;	THE PCB SPECIFIED IS REMOVED FROM ITS PRESENT STATE QUEUE
+                                     00AB   358 ;	AND INSERTED IN THE APPROPRIATE COMPUTE QUEUE, COM OR COMO,
+                                     00AB   359 ;	AT THE PRIORITY COMPUTED FOR THE SPECIFIED SITUATION CLASS.
+                                     00AB   360 ;	THE SUMMARY BIT FOR THE DESTINATION STATE QUEUE IS SET TO
+                                     00AB   361 ;	NOTE THAT IT IS OCCUPIED.
+                                     00AB   362 ;	IF THE NEW PRIORITY FOR THE PROCESS IS GREATER THAN THAT OF
+                                     00AB   363 ;	CURRENT PROCESS AND IT IS RESIDENT, THE RESCHEDULING INTERRUPT 
+                                     00AB   364 ;	WILL BE TRIGGERED.
+                                     00AB   365 ;
+                                     00AB   366 ;--
+                                     00AB   367 SCH$CHSE::				;CHANGE TO EXECUTABLE STATE
+                          50     D4  00AB   368 	CLRL	R0			; CLEAR HIGH SUM BITS FOR ADDB
+         33 A4         F1 AF42   83  00AD   369 	SUBB3	B_PINC[R2],PCB$B_PRIB(R4),R0	; ADD PRIORITY INCR
+                          50         00B3       
+         0B A4            50     91  00B4   370 	CMPB	R0,PCB$B_PRI(R4)	; CHECK FOR > CURRENT PRI
+                          04     15  00B8   371 	BLEQ	10$			; NO
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  11
+00.1            SCH$CHSE - CHANGE STATE TO EXECUTABLE                                                                            (1)
+
+            50         0B A4     90  00BA   372 	MOVB	PCB$B_PRI(R4),R0	; KEEP CURRENT PRIORITY INSTEAD
+            10            50     91  00BE   373 10$:	CMPB	R0,#16			; CHECK FOR RESULT >15
+                          04     18  00C1   374 	BGEQ	SCH$CHSEP		; YES, USE COMPUTED VALUE
+            50         33 A4     90  00C3   375 	MOVB	PCB$B_PRIB(R4),R0	; KEEP AT BASE IF LESS
+                                     00C7   376 
+                                     00C7   377 ;
+                                     00C7   378 ;	SCH$CHSEP - SUB-ENTRY POINT WITH PRIORITY PRECOMPUTED IN R0
+                                     00C7   379 ;
+                                     00C7   380 
+                                     00C7   381 SCH$CHSEP::				; ENTRY WITH PRIO IN R0
+            51            12     DB  00C7   382 	MFPR	#PR$_IPL,R1		; GET IPL
+            07            51     D1  00CA   383 	CMPL	R1,#IPL$_SYNCH		; MUST BE AT SYNCH OR GREATER
+                          54     19  00CD   384 	BLSS	BADIPL			; NO, FATAL ERROR
+            51            64     0F  00CF   385 	REMQUE	(R4),R1			; REMOVE FROM CURREN QUEUE
+                          1A     12  00D2   386 	BNEQ	10$			; CONTINUE IF QUEUE NOTEMPTY
+            51         30 A4     3C  00D4   387 	MOVZWL	PCB$W_STATE(R4),R1	; GET OLD STATE
+         CB AF            51     E1  00D8   388 	BBC	R1,EXESTATE,10$		; NO SUMMARY BITS
+                          11         00DC       
+            51         0B A4     9A  00DD   389 	MOVZBL	PCB$B_PRI(R4),R1	; GET CURRENT PRI
+            03         30 A4     E9  00E1   390 	BLBC	PCB$W_STATE(R4),5$	; SKIP IF RESIDENT
+            51            20     C0  00E5   391 	ADDL	#32,R1			; MAKE NONRES PRIO
+       0000'CF            51     E5  00E8   392 5$:	BBCC	R1,W^SCH$GL_COMQS,10$	; CLEAR PRESENCE BIT FOR STATE
+                          00         00ED       
+         0B A4            50     90  00EE   393 10$:	MOVB	R0,PCB$B_PRI(R4)	; SAVE NEW PRIO
+            51            0C     D0  00F2   394 	MOVL	#SCH$C_COM,R1		; ASSUME COM STATE
+            0A         28 A4     E8  00F5   395 	BLBS	PCB$L_STS(R4),20$	; CHECK FOR RESIDENCE
+                          51     D6  00F9   396 	INCL	R1			; COMO=COM+1
+            50            20     C0  00FB   397 	ADDL2	#32,R0			; COMO HEADERS FOLLOW COM
+                          0066   30  00FE   398 	BSBW	SCH$SWPWAKE		; WAKE SWAPPER
+                          0A     11  0101   399 	BRB	30$			; COMPLETE STATE CHANGE
+            50       0000'CF     91  0103   400 20$:	CMPB	W^SCH$GB_PRI,R0		; IS PRIO GREATER THAN CURRENT PROCESS
+                          03     15  0108   401 	BLEQ	30$			; NO, DONT RESCHEDULE
+                                     010A   402 	SOFTINT	#IPL$_SCHED		; TRIGGER RESCHEDULE INTERRUPT
+         30 A4            51     B0  010D   403 30$:	MOVW	R1,PCB$W_STATE(R4)	; SET NEW STATE
+            51   00000000'EF40   7E  0111   404 	MOVAQ	L^SCH$AQ_COMT[R0],R1	; COMPUTE HDR ADDR
+       0000'CF            50     E2  0119   405 	BBSS	R0,W^SCH$GL_COMQS,40$	; SET SUMMARY BIT FOR NEW QUEUE
+                          00         011E       
+            91            64     0E  011F   406 40$:	INSQUE	(R4),@(R1)+		; INSERT IN NEW QUEUE
+                                 05  0122   407 	RSB				; RETURN
+                                     0123   408 
+                                     0123   409 BADIPL:	BUG_CHECK BADRSEIPL,FATAL	; BAD IPL AT ENTRANCE TO RSE
+                                     0127   410 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  12
+00.1            SWPO - SWAP OUT SIMPLE NON-EXECUTABLE                                                                            (1)
+
+                                     0127   412 	.SBTTL	SWPO - SWAP OUT SIMPLE NON-EXECUTABLE
+                                     0127   413 ;
+                                     0127   414 ;	SWPO - SWAP OUT ACTION ROUTINE FOR SIMPLE NON-EXECUTABLE STATES
+                                     0127   415 ;
+                                     0127   416 SWPO:					; NON-EXECUTABLE OUTSWAP
+                                     0127   417  
+                                     0127   418 ;
+                                     0127   419 ;	SWPOE - SWAP OUT EXECUTABLE ACTION ROUTINE
+                                     0127   420 ;
+                                     0127   421  
+                                     0127   422 SWPOE:					;
+                                     0127   423 	BUG_CHECK	ILLEVTNUM,FATAL	; ILLEGAL EVENT NUMBER
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  13
+00.1            SCH$QEND - QUANTUM END ROUTINE                                                                                   (1)
+
+                                     012B   425 	.SBTTL	SCH$QEND - QUANTUM END ROUTINE
+                                     012B   426 
+                                     012B   427 ;++
+                                     012B   428 ;
+                                     012B   429 ; FUNCTIONAL DESCRIPTION:
+                                     012B   430 ;	SCH$QEND IS CALLED BY THE TIMER WHEN THE QUANTUM FOR THE CURRENT
+                                     012B   431 ;	PROCESS HAS BEEN EXHAUSTED.  A NEW QUANTUM IS INITIALIZED
+                                     012B   432 ;	THE PROCESS PLACED AT ITS BASE PRIORITY AND THE RESCHEDULING
+                                     012B   433 ;	INTERRUPT TRIGGERED.
+                                     012B   434 ;
+                                     012B   435 ; CALLING SEQUENCE:
+                                     012B   436 ;	BSB/JSB	SCH$QEND
+                                     012B   437 ;
+                                     012B   438 ; INPUT PARAMETERS:
+                                     012B   439 ;	R4 - PCB ADDRESS OF CURRENT PROCESS
+                                     012B   440 ;	R5 - PROCESS HEADER ADDRESS
+                                     012B   441 ;
+                                     012B   442 ; IMPLICIT INPUTS:
+                                     012B   443 ;	PCB OF CURRENT PROCESS
+                                     012B   444 ;	PROCESS HEADER OF CURRENT PROCESS
+                                     012B   445 ;
+                                     012B   446 ; IMPLICIT OUTPUTS:
+                                     012B   447 ;	PHD$W_QUANT - INITIALIZED TO A NEW QUANTUM 
+                                     012B   448 ;	PCB$V_INQUAN - INITIAL QUANTUM FLAG CLEARED
+                                     012B   449 ;
+                                     012B   450 ;--
+                                     012B   451 
+                                     012B   452 SCH$QEND::				; QUANTUM END ROUTINE
+         28 A4            03     E5  012B   453 	BBCC	#PCB$V_INQUAN,PCB$L_STS(R4),10$ ; CLEAR INITIAL QUAN FLAG
+                          00         012F       
+         40 A5   00000000'EF     B0  0130   454 10$:	MOVW	SCH$GW_QUAN,PHD$W_QUANT(R5)   ; SET NEW QUANTUM
+            10         0B A4     91  0138   455 	CMPB	PCB$B_PRI(R4),#16		; CHECK FOR REAL-TIME
+                          03     19  013C   456 	BLSS	50$				; YES
+                                     013E   457 ;***************************************************************
+                                     013E   458 ;
+                                     013E   459 ;	CHECK FOR CPU TIME LIMIT EXPIRATION
+                                     013E   460 ;
+                                     013E   461 ;***************************************************************
+                                     013E   462 
+                                     013E   463 	SOFTINT	#IPL$_SCHED		; TRIGGER RESCHEDULING INT
+                                 05  0141   464 50$:	RSB				; AND RETURN
+                                     0142   465 
+                                     0142   466 
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  14
+00.1            SCH$QEND - QUANTUM END ROUTINE                                                                                   (1)
+
+                                     0142   468 
+                                     0142   469 	.SBTTL	SCH$WAKE - WAKE PROCESS INTERNAL
+                                     0142   470 ;++
+                                     0142   471 ; FUNCTIONAL DESCRIPTION:
+                                     0142   472 ;	SCH$WAKE WAKES THE PROCESS SPECIFIED BY THE PID SUPPLIED.
+                                     0142   473 ;
+                                     0142   474 ; CALLING SEQUENCE:
+                                     0142   475 ;	BSB/JSB	SCH$WAKE
+                                     0142   476 ;
+                                     0142   477 ; INPUT PARAMETERS:
+                                     0142   478 ;	R1 - PID OF PROCESS TO WAKE
+                                     0142   479 ;
+                                     0142   480 ; OUTPUT PARAMETERS:
+                                     0142   481 ;	R0 - COMPLETION STATUS CODE
+                                     0142   482 ;	R4 - PCB ADDRESS OF PROCESS AWAKENED
+                                     0142   483 ;
+                                     0142   484 ; COMPLETION CODES:
+                                     0142   485 ;	SS$_NORMAL  -  NORMAL SUCCESSFUL COMPLETION STATUS
+                                     0142   486 ;	SS$_NONEXPR -  NONEXISTENT PROCESS (INVALID PID)
+                                     0142   487 ;
+                                     0142   488 ; ENVIRONMENT:
+                                     0142   489 ;	IPL = IPL$_SYNCH
+                                     0142   490 ;
+                                     0142   491 ;--
+                                     0142   492 SCH$WAKE::				; WAKE PROCESS INTERNAL
+            54            51     3C  0142   493 	MOVZWL	R1,R4			; GET PROCESS INDEX (PIX)
+            54       0000'CF44   D0  0145   494 	MOVL	W^SCH$AL_PCB[R4],R4	; LOOK UP PCB ADDRESS
+         60 A4            51     D1  014B   495 	CMPL	R1,PCB$L_PID(R4)	; VERIFY PID
+                          10     12  014F   496 	BNEQ	30$			; REPORT ERROR
+         28 A4            0C     E2  0151   497 	BBSS	#PCB$V_WAKEPEN,PCB$L_STS(R4),10$   ; SET WAKE PENDING
+                          00         0155       
+                                     0156   498 10$:					;
+            52            02     9A  0156   499 	MOVZBL	#PRI$_RESAVL,R2		; SET PRIORITY INCREMENT CLASS
+                                     0159   500 	RPTEVT	WAKE			; REPORT WAKE EVENT
+            50            01     3C  015D   501 	MOVZWL	#SS$_NORMAL,R0		; SET SUCCESS CODE
+                                 05  0160   502 20$:	RSB				; RETURN
+                                     0161   503 
+            50       08E8 8F     3C  0161   504 30$:	MOVZWL	#SS$_NONEXPR,R0		; SET NONEXISTENT PROCESS STATUS
+                                 05  0166   505 	RSB				;
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  15
+00.1            SCH$SWPWAKE - WAKE SWAPPER PROCESS                                                                               (1)
+
+                                     0167   507 	.SBTTL	SCH$SWPWAKE - WAKE SWAPPER PROCESS
+                                     0167   508 ;++
+                                     0167   509 ; FUNCTIONAL DESCRIPTION:
+                                     0167   510 ;	SCH$SWPWAKE AWAKENS THE SWAPPER PROCESS TO PERFORM SOME OPERATION.
+                                     0167   511 ;
+                                     0167   512 ; CALLING SEQUENCE:
+                                     0167   513 ;	BSB/JSB	SCH$SWPWAKE
+                                     0167   514 ;
+                                     0167   515 ; INPUT PARAMETERS:
+                                     0167   516 ;	NONE
+                                     0167   517 ;
+                                     0167   518 ; OUTPUT PARAMETERS:
+                                     0167   519 ;	R0-R4 PRESERVED
+                                     0167   520 ;
+                                     0167   521 ; SIDE EFFECTS:
+                                     0167   522 ;	A WAKE EVENT IS GENERATED FOR THE SWAPPER PROCESS WHICH CAN
+                                     0167   523 ;	CAUSE THE PROCESSOR TO BE RESCHEDULED.
+                                     0167   524 ;
+                                     0167   525 ;--
+                                     0167   526 
+                                     0167   527 SCH$SWPWAKE::				; WAKE SWAPPER PROCESS
+                                 05  0167   528 	RSB				; NOP THIS CALL
+                                     0168   529 
+                                     0168   530 	.END
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  16
+SYMBOL TABLE                                                                                                                     (1)
+
+ACTION           0000001A R     04   PCB$C_LENGTH     0000007C            PCB$W_SIZE       00000008            
+BADIPL           00000123 R     04   PCB$K_LENGTH     0000007C            PCB$W_STATE      00000030            
+BIT...         = 0000000F            PCB$L_ASTQBL     00000014            PCB$W_TMBU       00000036            
+BUG$_BADRSEIPL   ********   X   04   PCB$L_ASTQFL     00000010            PCB$W_TQCNT      0000004A            
+BUG$_ILLEVTNUM   ********   X   04   PCB$L_EFC2P      00000058            PHD$B_ASTLVL     000000CF            
+B_PINC           000000A2 R     04   PCB$L_EFC3P      0000005C            PHD$B_DFPFC      00000038            
+CEB$B_STS        0000000B            PCB$L_EFCS       00000050            PHD$B_PAGFIL     0000001F            
+CEB$B_TYPE       0000000A            PCB$L_EFCU       00000054            PHD$C_LENGTH     000000D8            
+CEB$L_CEBBL      00000004            PCB$L_EFWM       0000004C            PHD$K_LENGTH     000000D8            
+CEB$L_CEBFL      00000000            PCB$L_OWNER      0000001C            PHD$L_BIOCNT     00000054            
+CEB$L_EFC        00000010            PCB$L_PHD        00000064            PHD$L_CPULIM     00000058            
+CEB$L_PID        0000000C            PCB$L_PHYPCB     00000018            PHD$L_CPUTIM     0000003C            
+CEB$L_UIC        00000020            PCB$L_PID        00000060            PHD$L_DIOCNT     00000050            
+CEB$L_WQBL       00000018            PCB$L_PQB        0000004C            PHD$L_ESP        0000007C            
+CEB$L_WQFL       00000014            PCB$L_SQBL       00000004            PHD$L_FREP0VA    00000028            
+CEB$T_EFCNAM     00000028            PCB$L_SQFL       00000000            PHD$L_FREP1VA    00000030            
+CEB$V_NOQUOTA  = 00000000            PCB$L_STS        00000028            PHD$L_FREPTECNT  0000002C            
+CEB$V_PERM     = 00000001            PCB$L_UIC        00000020            PHD$L_KSP        00000078            
+CEB$W_GRP        00000022            PCB$L_WSSWP      00000024            PHD$L_P0BR       000000C8            
+CEB$W_PROT       00000024            PCB$L_WTIME      0000002C            PHD$L_P0LRASTL   000000CC            
+CEB$W_REFC       00000026            PCB$T_LNAME      0000006C            PHD$L_P1BR       000000D0            
+CEB$W_SIZE       00000008            PCB$V_ASTPEN   = 00000011            PHD$L_P1LR       000000D4            
+CEB$W_STATE      0000001E            PCB$V_BATCH    = 0000000E            PHD$L_PAGEFLTS   0000004C            
+CEB$W_WQCNT      0000001C            PCB$V_DELPEN   = 00000001            PHD$L_PAGFIL     0000001C            
+CEFEVT           00000038 R     04   PCB$V_FORCPEN  = 00000002            PHD$L_PC         000000C0            
+EVENTE           0000004A R     04   PCB$V_HIBER    = 00000013            PHD$L_PCB        00000078            
+EVENTF           00000076 R     04   PCB$V_INQUAN   = 00000003            PHD$L_PGFLCNT    00000034            
+EVT$_AST       = 00000000  G         PCB$V_LOGIN    = 00000014            PHD$L_PGFLQUOTA  0000005C            
+EVT$_COLPGA    = 00000000  G         PCB$V_NOACNT   = 0000000F            PHD$L_PSL        000000C4            
+EVT$_EVENT     = 00000001  G         PCB$V_PHDRES   = 00000012            PHD$L_PSTBASOFF  00000020            
+EVT$_FPGA      = 00000004  G         PCB$V_PSWAPM   = 00000004            PHD$L_PTWSLELCK  00000064            
+EVT$_PFCOM     = 00000007  G         PCB$V_RES      = 00000000            PHD$L_PTWSLEVAL  00000068            
+EVT$_RESUME    = 00000006  G         PCB$V_RESPEN   = 00000005            PHD$L_R0         00000088            
+EVT$_SETPRI    = 00000008  G         PCB$V_SSFEXC   = 00000006            PHD$L_R1         0000008C            
+EVT$_SWPOUT    = 00000009  G         PCB$V_SSFEXCE  = 00000007            PHD$L_R10        000000B0            
+EVT$_WAKE      = 00000005  G         PCB$V_SSFEXCS  = 00000008            PHD$L_R11        000000B4            
+EVTCTR         = 0000000B            PCB$V_SSFEXCU  = 00000009            PHD$L_R12        000000B8            
+EXE$GQ_SYSTIME   ********   X   04   PCB$V_SSRWAIT  = 0000000A            PHD$L_R13        000000BC            
+EXESTATE         000000A7 R     04   PCB$V_SUSPEN   = 0000000B            PHD$L_R2         00000090            
+GBL...         = 00000000            PCB$V_SWPVBN   = 00000010            PHD$L_R3         00000094            
+IPL$_ASTDEL    = 00000002            PCB$V_WAKEPEN  = 0000000C            PHD$L_R4         00000098            
+IPL$_HWCLK     = 00000018            PCB$V_WALL     = 0000000D            PHD$L_R5         0000009C            
+IPL$_IOPOST    = 00000004            PCB$W_APTCNT     00000034            PHD$L_R6         000000A0            
+IPL$_MAILBOX   = 0000000B            PCB$W_ASTCNT     0000003C            PHD$L_R7         000000A4            
+IPL$_POWER     = 0000001F            PCB$W_BIOCNT     0000003E            PHD$L_R8         000000A8            
+IPL$_QUEUEAST  = 00000006            PCB$W_BIOLM      00000040            PHD$L_R9         000000AC            
+IPL$_SCHED     = 00000003            PCB$W_BYTCNT     00000042            PHD$L_SSP        00000080            
+IPL$_SYNCH     = 00000007            PCB$W_BYTLM      00000068            PHD$L_USP        00000084            
+IPL$_TIMER     = 00000007            PCB$W_DIOCNT     00000044            PHD$L_WSL        000000D8            
+LEFEVT           0000003C R     04   PCB$W_DIOLM      00000046            PHD$M_DALCSTX  = 00000002            
+MAXEVT         = 0000000A            PCB$W_FILCNT     00000048            PHD$M_PFMFLG   = 00000001            
+PCB$B_ASTACT     0000000C            PCB$W_GPGCNT     00000038            PHD$Q_PRIVMSK    00000000            
+PCB$B_ASTEN      0000000D            PCB$W_GRP        00000022            PHD$S_ASTLVL   = 00000008            
+PCB$B_PRI        0000000B            PCB$W_MEM        00000020            PHD$S_P0LR     = 00000018            
+PCB$B_PRIB       00000033            PCB$W_MTXCNT     0000000E            PHD$V_ASTLVL   = 00000018            
+PCB$B_TYPE       0000000A            PCB$W_PPGCNT     0000003A            PHD$V_DALCSTX  = 00000001            
+PCB$B_WEFC       00000032            PCB$W_PRCCNT     0000006A            PHD$V_P0LR     = 00000000            
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  17
+SYMBOL TABLE                                                                                                                     (1)
+
+PHD$V_PFMFLG   = 00000000            PR$_SISR       = 00000015            SS$_BADIRECTORY= 00000828            
+PHD$W_ASTLM      00000044            PR$_SLR        = 0000000D            SS$_BADPARAM   = 00000014            
+PHD$W_BAK        00000048            PR$_SSP        = 00000002            SS$_BADSTACK   = 000002B4            
+PHD$W_DFWSCNT    0000001A            PR$_TBIA       = 00000039            SS$_BEGOFFILE  = 00000938            
+PHD$W_EXTDYNWS   00000076            PR$_TBIS       = 0000003A            SS$_BLOCKCNTERR= 00000940            
+PHD$W_FILLM      00000060            PR$_TODR       = 0000001B            SS$_BREAK      = 00000414            
+PHD$W_FLAGS      0000003A            PR$_TXCS       = 00000022            SS$_BUFFEROVF  = 00000601            
+PHD$W_PFMFLG     0000003A            PR$_TXDB       = 00000023            SS$_BUGCHECK   = 000002A4            
+PHD$W_PHVINDEX   00000046            PR$_USP        = 00000003            SS$_CANCEL     = 00000830            
+PHD$W_PRCLM      00000042            PR$_WCSA       = 0000002C            SS$_CHANINTLK  = 0000004C            
+PHD$W_PST        00000020            PR$_WCSD       = 0000002D            SS$_CLIFRCEXT  = 00000980            
+PHD$W_PSTFREE    00000026            PRI$_IOCOM     = 00000001            SS$_CMODSUPR   = 0000041C            
+PHD$W_PSTLAST    00000024            PRI$_NULL      = 00000000            SS$_CMODUSER   = 00000424            
+PHD$W_PTCNTACT   00000070            PRI$_RESAVL    = 00000002            SS$_COMPAT     = 0000042C            
+PHD$W_PTCNTLCK   0000006C            PRI$_TICOM     = 00000004            SS$_CONTINUE   = 00000001            
+PHD$W_PTCNTMAX   00000072            PRI$_TIMER     = 00000002            SS$_CONTROLC   = 00000651            
+PHD$W_PTCNTVAL   0000006E            PRI$_TOCOM     = 00000003            SS$_CONTROLO   = 00000609            
+PHD$W_QUANT      00000040            RSE...         = 00000034 R     04   SS$_CONTROLY   = 00000611            
+PHD$W_TQLM       00000062            SCH$AL_PCB       ********   X   04   SS$_CREATED    = 00000619            
+PHD$W_WSAUTH     0000000A            SCH$AQ_COMT      ********   X   04   SS$_CTRLERR    = 00000054            
+PHD$W_WSDYN      0000000E            SCH$AQ_WQHDR     ********   X   04   SS$_DATACHECK  = 0000005C            
+PHD$W_WSFLUID    00000074            SCH$CHSE         000000AB RG    04   SS$_DATAOVERUN = 00000838            
+PHD$W_WSLAST     00000012            SCH$CHSEP        000000C7 RG    04   SS$_DEBUG      = 0000046C            
+PHD$W_WSLIST     00000008            SCH$C_CEF      = 00000003            SS$_DEVACTIVE  = 000002C4            
+PHD$W_WSLOCK     0000000C            SCH$C_COLPG    = 00000001            SS$_DEVALLOC   = 00000840            
+PHD$W_WSLX       0000004A            SCH$C_COM      = 0000000C            SS$_DEVALRALLOC= 00000641            
+PHD$W_WSNEXT     00000010            SCH$C_COMO     = 0000000D            SS$_DEVASSIGN  = 00000848            
+PHD$W_WSQUOTA    00000018            SCH$C_CUR      = 0000000E            SS$_DEVFOREIGN = 00000064            
+PR$_ACCR       = 00000029            SCH$C_FPG      = 0000000B            SS$_DEVICEFULL = 00000850            
+PR$_ACCS       = 00000028            SCH$C_HIB      = 00000007            SS$_DEVMOUNT   = 0000006C            
+PR$_ASTLVL     = 00000013            SCH$C_HIBO     = 00000008            SS$_DEVNOTALLOC= 00000858            
+PR$_ESP        = 00000001            SCH$C_LEF      = 00000005            SS$_DEVNOTMBX  = 00000074            
+PR$_ICCS       = 00000018            SCH$C_LEFO     = 00000006            SS$_DEVNOTMOUNT= 0000007C            
+PR$_ICR        = 0000001A            SCH$C_MWAIT    = 00000002            SS$_DEVOFFLINE = 00000084            
+PR$_IPL        = 00000012            SCH$C_PFW      = 00000004            SS$_DIRFULL    = 00000860            
+PR$_ISP        = 00000004            SCH$C_SUSP     = 00000009            SS$_DRVERR     = 0000008C            
+PR$_KSP        = 00000000            SCH$C_SUSPO    = 0000000A            SS$_DUPFILENAME= 00000868            
+PR$_MAPEN      = 00000038            SCH$GB_PRI       ********   X   04   SS$_DUPLNAM    = 00000094            
+PR$_NICR       = 00000019            SCH$GL_COMQS     ********   X   04   SS$_ENDOFFILE  = 00000870            
+PR$_P0BR       = 00000008            SCH$GW_QUAN      ********   X   04   SS$_ENDOFTAPE  = 00000878            
+PR$_P0LR       = 00000009            SCH$QEND         0000012B RG    04   SS$_ENDOFUSRLBL= 00000970            
+PR$_P1BR       = 0000000A            SCH$RSE          00000000 RG    04   SS$_EXQUOTA    = 0000001C            
+PR$_P1LR       = 0000000B            SCH$SWPWAKE      00000167 RG    04   SS$_EXTIDXFILE = 00000880            
+PR$_PCBB       = 00000010            SCH$UNWAIT       00000079 RG    04   SS$_FCPREADERR = 00000888            
+PR$_RXCS       = 00000020            SCH$WAKE         00000142 RG    04   SS$_FCPREPSTN  = 00000988            
+PR$_RXDB       = 00000021            SS$_ABORT      = 0000002C            SS$_FCPREWNDERR= 00000890            
+PR$_SBIER      = 00000034            SS$_ACCONFLICT = 00000800            SS$_FCPSPACERR = 00000898            
+PR$_SBIFS      = 00000030            SS$_ACCVIO     = 0000000C            SS$_FCPWRITERR = 000008A0            
+PR$_SBIMT      = 00000033            SS$_ARITH      = 00000404            SS$_FILACCERR  = 0000009C            
+PR$_SBIQC      = 00000036            SS$_ASTFLT     = 0000040C            SS$_FILALRACC  = 000000A4            
+PR$_SBIS       = 00000031            SS$_BADATTRIB  = 00000034            SS$_FILELOCKED = 000008A8            
+PR$_SBISC      = 00000032            SS$_BADCHKSUM  = 00000808            SS$_FILENUMCHK = 000008B0            
+PR$_SBITA      = 00000035            SS$_BADESCAPE  = 0000003C            SS$_FILESEQCHK = 000008B8            
+PR$_SBR        = 0000000C            SS$_BADFILEHDR = 00000810            SS$_FILESTRUCT = 000008C0            
+PR$_SCBB       = 00000011            SS$_BADFILENAME= 00000818            SS$_FILNOTACC  = 000000AC            
+PR$_SID        = 0000003E            SS$_BADFILEVER = 00000820            SS$_FILNOTCNTG = 000002AC            
+PR$_SIRR       = 00000014            SS$_BADIMGHDR  = 00000044            SS$_FILNOTEXP  = 000000B4            
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  18
+SYMBOL TABLE                                                                                                                     (1)
+
+SS$_FORMAT     = 000000BC            SS$_NOSIGNAL   = 00000900            WQH$K_LENGTH     0000000C            
+SS$_GPTFULL    = 000000C4            SS$_NOSOLICIT  = 00000284            WQH$L_WQBL       00000004            
+SS$_GSDFULL    = 000000CC            SS$_NOSUCHDEV  = 00000908            WQH$L_WQFL       00000000            
+SS$_GSDNOTXXX  = 000000D4            SS$_NOSUCHFILE = 00000910            WQH$W_WQCNT      00000008            
+SS$_HANGUP     = 000002CC            SS$_NOSUCHNODE = 0000028C            WQH$W_WQSTATE    0000000A            
+SS$_HEADERFULL = 000008C8            SS$_NOSUCHSEC  = 00000978            
+SS$_IDXFILEFULL= 000008D0            SS$_NOTAPEOP   = 00000264            
+SS$_ILLBLKNUM  = 000000DC            SS$_NOTFILEDEV = 000001CC            
+SS$_ILLCNTRFUNC= 000000E4            SS$_NOTINTBLSZ = 000001D4            
+SS$_ILLEFC     = 000000EC            SS$_NOTLABELMT = 000001DC            
+SS$_ILLIOFUNC  = 000000F4            SS$_NOTNETDEV  = 000002EC            
+SS$_ILLLBLAST  = 00000968            SS$_NOTRAN     = 00000629            
+SS$_ILLPAGCNT  = 000000FC            SS$_NOTSQDEV   = 000001E4            
+SS$_ILLSEQOP   = 000002DC            SS$_OPCCUS     = 00000434            
+SS$_ILLSER     = 00000104            SS$_OPCDEC     = 0000043C            
+SS$_ILLUSRLBLRD= 00000958            SS$_OPINCOMPL  = 000002D4            
+SS$_ILLUSRLBLWT= 00000960            SS$_PAGOWNVIO  = 000001EC            
+SS$_INCVOLLABEL= 0000010C            SS$_PAGRDERR   = 00000444            
+SS$_INSFARG    = 00000114            SS$_PARITY     = 000001F4            
+SS$_INSFMEM    = 00000124            SS$_PARTESCAPE = 000001FC            
+SS$_INSFRAME   = 0000012C            SS$_PFMBSY     = 00000204            
+SS$_INSFWSL    = 0000011C            SS$_PSTFULL    = 0000020C            
+SS$_IVADDR     = 00000134            SS$_RADRMOD    = 0000044C            
+SS$_IVCHAN     = 0000013C            SS$_REJECT     = 00000294            
+SS$_IVCHNLSEC  = 0000026C            SS$_REMOTE     = 00000649            
+SS$_IVDEVNAM   = 00000144            SS$_RESIGNAL   = 00000918            
+SS$_IVGSDNAM   = 0000014C            SS$_RESULTOVF  = 00000214            
+SS$_IVLOGNAM   = 00000154            SS$_ROPRAND    = 00000454            
+SS$_IVLOGTAB   = 0000015C            SS$_SECTBLFUL  = 0000021C            
+SS$_IVPROTECT  = 000002F4            SS$_SSFAIL     = 0000045C            
+SS$_IVQUOTAL   = 00000164            SS$_SUPERSEDE  = 00000631            
+SS$_IVSECFLG   = 0000016C            SS$_TAPEPOSLOST= 00000224            
+SS$_IVSECIDCTL = 000002E4            SS$_TBIT       = 00000464            
+SS$_IVSSRQ     = 00000174            SS$_TIMEOUT    = 0000022C            
+SS$_IVSTSFLG   = 0000017C            SS$_TOOMANYVER = 00000990            
+SS$_IVTIME     = 00000184            SS$_TOOMUCHDATA= 0000029C            
+SS$_LENVIO     = 0000018C            SS$_UNASEFC    = 00000234            
+SS$_LKWSETFUL  = 00000194            SS$_UNSAFE     = 0000023C            
+SS$_MBFULL     = 000008D8            SS$_UNWIND     = 00000920            
+SS$_MBTOOSML   = 0000019C            SS$_UNWINDING  = 00000928            
+SS$_MCHECK     = 000002BC            SS$_VASFULL    = 00000244            
+SS$_MEDOFL     = 000001A4            SS$_VECINUSE   = 0000024C            
+SS$_MSGNOTFND  = 00000621            SS$_VOLINV     = 00000254            
+SS$_MUSTCLOSEFL= 00000948            SS$_WAITUSRLBL = 00000950            
+SS$_NODATA     = 000001AC            SS$_WASCLR     = 00000001            
+SS$_NOHANDLER  = 000008F8            SS$_WASECC     = 00000639            
+SS$_NOHOMEBLK  = 000008E0            SS$_WASSET     = 00000009            
+SS$_NOIOCHAN   = 000001B4            SS$_WRITLCK    = 0000025C            
+SS$_NOLINKS    = 0000027C            ST             = 00000002            
+SS$_NOLOGNAM   = 000001BC            STACT            0000001E R     04   
+SS$_NOMBX      = 00000274            STET           = 00000000 R     03   
+SS$_NOMOREFILES= 00000930            STMSK          = 00001000            
+SS$_NONEXDRV   = 000001C4            SWPO             00000127 R     04   
+SS$_NONEXPR    = 000008E8            SWPOE            00000127 R     04   
+SS$_NONLOCAL   = 000008F0            WAITMSK          0000009E R     04   
+SS$_NOPRIV     = 00000024            WAITST         = 00000FFE            
+SS$_NORMAL     = 00000001            WQH$C_LENGTH     0000000C            
+RSE             - REPORT SYSTEM EVENT                            22-AUG-1978 00:17:15   VAX-11 MACRO X0.3-11               Page  19
+PROGRAM SECTION SYNOPSIS                                                                                                         (1)
+
+
+
+PROGRAM SECTION SYNOPSIS
+
+.  ABS  .        00000000      00     NOPIC   USR   CON   ABS   LCL NOSHR NOEXE NORD  NOWRT BYTE  
+. BLANK .        00000000      01     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+$ABS$            000000DC      02     NOPIC   USR   CON   ABS   LCL NOSHR   EXE   RD    WRT BYTE  
+ASE2             0000002C      03     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+ASE1             00000168      04     NOPIC   USR   CON   REL   LCL NOSHR   EXE   RD    WRT BYTE  
+
+
+THERE WERE NO ERRORS OR WARNINGS.
+13176. BYTES LEFT IN FREE MEMORY POOL.
+2632. BYTES OF RECLAIMED MEMORY.
+OBJ$:RSE,LIS$:RSE/-SP=LIB$:LIB/ML,SRC$:RSE
+8 MLB DIR RDS - 746 GETS TO DEFINE 21 MACROS. 53 INTER. FILE WRITES. 

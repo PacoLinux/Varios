@@ -1,0 +1,1155 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 1
+;
+;	0001	MODULE RWATTR (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'A0020'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 1
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This module contains the code and tables to process the read
+;	0033	!	and write attributes functions.
+;	0034	!
+;	0035	! ENVIRONMENT:
+;	0036	!
+;	0037	!	STARLET operating system, including privileged system services
+;	0038	!	and internal exec routines. This routine must be executed
+;	0039	!	in kernel mode.
+;	0040	!
+;	0041	!--
+;	0042	!
+;	0043	!
+;	0044	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  6-Jan-1977  21:05
+;	0045	!
+;	0046	! REVISION HISTORY:
+;	0047	!
+;	0048	!   Andrew C. Goldstein, 16-Feb-1977  15:17
+;	0049	!   X0002 - Modify for condition handling
+;	0050	!
+;	0051	!   Andrew C. Goldstein, 3-Mar-1977  13:17
+;	0052	!   X0003 - Remove ERR_EXIT calls and return value instead
+;	0053	!
+;	0054	!   Andrew C. Goldstein, 16-Mar-1977  14:23
+;	0055	!   X0004 - Checksum header after write attributes
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 1-1
+;
+;	0056	!
+;	0057	!   Andrew C. Goldstein, 11-Apr-1977  15:37
+;	0058	!   X0005 - Insert missing length check in statistics block attribute
+;	0059	!
+;	0060	!   Andrew C. Goldstein, 12-Apr-1977  15:39
+;	0061	!   X0006 - Modify for buffer manager
+;	0062	!
+;	0063	!   Andrew C. Goldstein, 3-May-1977  15:18
+;	0064	!   X0007 - Add file protection check
+;	0065	!
+;	0066	!   Andrew C. Goldstein, 10-May-1977  16:16
+;	0067	!   X0008 - Make write of statistics block a nop
+;	0068	!
+;	0069	!   Andrew C. Goldstein, 26-May-1977  10:30
+;	0070	!   X0009 - Move truncation of attribute list on write to I/O done
+;	0071	!
+;	0072	!   Andrew C. Goldstein, 3-Aug-1977  16:47
+;	0073	!   X0010 - Add new attribute codes (thru security mask)
+;	0074	!
+;	0075	!   Andrew C. Goldstein, 10-Aug-1977  15:35
+;	0076	!   X0011 - Update file FCB after write attributes
+;	0077	!
+;	0078	!   Andrew C. Goldstein, 19-Aug-1977  13:10
+;	0079	!   X0012 - Set IRP$V_FUNC to signal valid read attribute buffers
+;	0080	!
+;	0081	!   Andrew C. Goldstein, 22-Aug-1977  17:00
+;	0082	!   X0013 - Make write of statistics block a NOP rather than illegal
+;	0083	!
+;	0084	!   Andrew C. Goldstein, 26-Aug-1977  10:52
+;	0085	!   X0014 - Add performance metering
+;	0086	!
+;	0087	!   Andrew C. Goldstein, 9-Jan-1978  11:58
+;	0088	!   X0015 - Add locked protection, protection changes
+;	0089	!
+;	0090	!   Andrew C. Goldstein, 24-Jan-1978  11:16
+;	0091	!   X0016 - Fix case table on date attributes
+;	0092	!
+;	0093	!   Andrew C. Goldstein, 23-Feb-1978  11:46
+;	0094	!   X0017 - Add read only UIC attribute
+;	0095	!
+;	0096	!   Andrew C. Goldstein, 7-Mar-1978  10:05
+;	0097	!   X0018 - Swap creation and revision date attribute codes
+;	0098	!
+;	0099	!   Andrew C. Goldstein, 14-Mar-1978  20:48
+;	0100	!   X0019 - Correct order in PMS shutoff in READ_ATTRIB
+;	0101	!
+;	0102	!   Andrew C. Goldstein, 21-Jun-78  19:00
+;	0103	!   A0020 - Add FCB address to STAT block, FCB directory sequence count
+;	0104	!
+;	0105	!**
+;	0106	
+;	0107	
+;	0108	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0109	REQUIRE 'SRC$:FCPDEF.B32';
+;	0428	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 1-2
+;
+;	0429	
+;	0430	FORWARD ROUTINE
+;	0431		READ_ATTRIB,			! read attributes
+;	0432		WRITE_ATTRIB	: NOVALUE,	! write attributes
+;	0433		HANDLER		: NOVALUE;	! local condition handler
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 2
+;
+;	0434	!++
+;	0435	!
+;	0436	! Attribute control table. The table is indexed by attribute number.
+;	0437	! Each entry is a longword. The first byte contains random flags and
+;	0438	! the attribute location code in the high 3 bits. The second byte
+;	0439	! contains the maximum size of the attribute. The third byte contains
+;	0440	! the offset of the attribute from its location origin. The fourth
+;	0441	! byte contains the index of the action routine to process the attribute.
+;	0442	!
+;	0443	!--
+;	0444	
+;	0445	! Macros and literals to access the table entries.
+;	0446	!
+;	0447	
+;	0448	MACRO
+;	0449		ATC_READ_ONLY	= 0,0,1,0%,	! read only attribute
+;	0450		ATC_PROTECTED	= 0,1,1,0%,	! writable by file owner only
+;	0451		ATC_LOCKED	= 0,2,1,0%,	! subject to file access locks
+;	0452		ATC_LOCATION	= 0,5,3,0%,	! 3 bit location code
+;	0453		ATC_MAX_SIZE	= 0,8,8,0%,	! max attribute size
+;	0454		ATC_OFFSET	= 0,16,8,0%,	! location offset
+;	0455		ATC_ACTION	= 0,24,8,0%;	! action routine
+;	0456	
+;	0457	
+;	0458	! Masks for the flags.
+;	0459	!
+;	0460	
+;	0461	LITERAL
+;	0462		M_READ_ONLY	= 1,
+;	0463		M_PROTECTED	= 2,
+;	0464		M_LOCKED	= 4;
+;	0465	
+;	0466	
+;	0467	! Attribute location codes.
+;	0468	!
+;	0469	
+;	0470	LITERAL
+;	0471		ATC_ZERO	= 0,		! zero - no location
+;	0472		ATC_FCB		= 1,		! in file control block
+;	0473		ATC_HEADER	= 2,		! file header header area
+;	0474		ATC_IDENT	= 3,		! file header ident area
+;	0475		ATC_MAP		= 4;		! file header map area
+;	0476	
+;	0477	
+;	0478	! Attribute processing action routines.
+;	0479	!
+;	0480	
+;	0481	LITERAL
+;	0482		ACT_NOP		= 0,		! ignore attribute
+;	0483		ACT_ILLEGAL	= 1,		! illegal attribute code
+;	0484		ACT_COPY	= 2,		! simple copy
+;	0485		ACT_STATBLK	= 3,		! build statistics block
+;	0486		ACT_ZERO	= 4,		! zero valued attribute
+;	0487		ACT_BLOCKSIZE	= 5,		! medium block size
+;	0488		ACT_ASCNAME	= 6,		! ASCII file name
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 2-1
+;
+;	0489		ACT_DATIME	= 7,		! 64 bit date and time
+;	0490		ACT_UIC		= 8,		! 4 byte file owner UIC
+;	0491		ACT_UCHAR	= 9,		! user controlled characteristics
+;	0492	
+;	0493		ACT_LASTACT	= 9;		! highest action routine code
+;	0494	
+;	0495	
+;	0496	! Macro to build table entry.
+;	0497	!
+;	0498	
+;	0499	MACRO
+;	0500		ATTRIBUTE (FLAGS, LOC, OFF1, OFF2, OFF3, OFF4, SIZE, ACTION) =
+;     M 0501			FLAGS + LOC^5,
+;     M 0502			SIZE,
+;     M 0503			$BYTEOFFSET (OFF1, OFF2, OFF3, OFF4),
+;     M 0504			ACTION
+;     M 0505			%;
+;	0506	
+;	0507	MACRO
+;	0508		NULL_FIELD	= 0,0,0,0%;
+;	0509	
+;	0510	
+;	0511	! The attribute control table itself.
+;	0512	!
+;	0513	
+;	0514	BIND
+;	0515		ATC	= UPLIT BYTE (
+;	0516	
+;	0517	ATTRIBUTE (M_PROTECTED,	ATC_HEADER,	FH1$W_FILEOWNER,5,	ACT_COPY),	! file owner UIC
+;	0518	ATTRIBUTE (M_PROTECTED,	ATC_HEADER,	FH1$W_FILEPROT,	3,	ACT_COPY),	! file protection code
+;	0519	ATTRIBUTE (M_LOCKED,	ATC_HEADER,	FH1$B_USERCHAR,	4,	ACT_UCHAR),	! user characteristics
+;	0520	ATTRIBUTE (M_LOCKED,	ATC_HEADER,	FH1$W_RECATTR,	32,	ACT_COPY),	! record attributes
+;	0521	ATTRIBUTE (0,		ATC_IDENT,	FI1$W_FILENAME,	10,	ACT_COPY),	! RAD-50 file name
+;	0522	ATTRIBUTE (0,		ATC_IDENT,	FI1$W_FILETYPE,	4,	ACT_COPY),	! RAD-50 file type
+;	0523	ATTRIBUTE (0,		ATC_IDENT,	FI1$W_VERSION,	2,	ACT_COPY),	! binary version number
+;	0524	ATTRIBUTE (M_PROTECTED,	ATC_IDENT,	FI1$T_EXPDATE,	7,	ACT_COPY),	! ASCII expiration date
+;	0525	ATTRIBUTE (M_READ_ONLY,	ATC_FCB,	NULL_FIELD,	14,	ACT_STATBLK),	! statistics block
+;	0526	ATTRIBUTE (M_READ_ONLY,	ATC_HEADER,	NULL_FIELD,	0,	ACT_COPY),	! complete file header
+;	0527	ATTRIBUTE (0,		ATC_ZERO,	NULL_FIELD,	2,	ACT_BLOCKSIZE),	! medium block size
+;	0528	ATTRIBUTE (0,		ATC_ZERO,	NULL_FIELD,	80,	ACT_ZERO),	! user file label
+;	0529	ATTRIBUTE (M_PROTECTED,	ATC_IDENT,	FI1$W_REVISION,	35,	ACT_COPY),	! revision count thru dates
+;	0530	ATTRIBUTE (0,		ATC_ZERO,	NULL_FIELD,	14,	ACT_NOP),	! allocation control data
+;	0531	ATTRIBUTE (0,		ATC_ZERO,	NULL_FIELD,	1,	ACT_NOP),	! end of label processing
+;	0532	ATTRIBUTE (0,		ATC_IDENT,	FI1$W_FILENAME,	20,	ACT_ASCNAME),	! name, type and version in ASCII
+;	0533	ATTRIBUTE (M_PROTECTED,	ATC_IDENT,	FI1$T_CREDATE,	8,	ACT_DATIME),	! 64 bit creation date
+;	0534	ATTRIBUTE (M_PROTECTED,	ATC_IDENT,	FI1$T_REVDATE,	8,	ACT_DATIME),	! 64 bit revision date
+;	0535	ATTRIBUTE (M_PROTECTED,	ATC_IDENT,	FI1$T_EXPDATE,	8,	ACT_DATIME),	! 64 bit expiration date
+;	0536	ATTRIBUTE (M_PROTECTED,	ATC_ZERO,	NULL_FIELD,	8,	ACT_ZERO),	! 64 bit backup date
+;	0537	ATTRIBUTE (M_PROTECTED,	ATC_HEADER,	FH1$W_FILEOWNER,4,	ACT_UIC),	! 4 byte owner UIC
+;	0538	ATTRIBUTE (M_PROTECTED,	ATC_HEADER,	FH1$W_FILEPROT,	2,	ACT_COPY),	! file protection code
+;	0539	ATTRIBUTE (M_PROTECTED,	ATC_ZERO,	NULL_FIELD,	2,	ACT_ZERO),	! record protection
+;	0540	ATTRIBUTE (M_PROTECTED,	ATC_ZERO,	NULL_FIELD,	2,	ACT_ZERO),	! access level
+;	0541	ATTRIBUTE (M_PROTECTED,	ATC_ZERO,	NULL_FIELD,	8,	ACT_ZERO),	! security mask
+;	0542	ATTRIBUTE (M_READ_ONLY,	ATC_HEADER,	FH1$W_FILEOWNER,4,	ACT_UIC),	! 4 byte owner UIC
+;	0543	ATTRIBUTE (M_READ_ONLY,	ATC_ZERO,	NULL_FIELD,	2,	ACT_ZERO)	! FCB directory sequence
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 2-2
+;
+;	0544	
+;	0545			) : BLOCKVECTOR [,1];
+;	0546	
+;	0547	LITERAL
+;	0548		MAX_CODE	= 26;		! highest attribute code
+;	0549	
+;	0550	
+;	0551	! User privilege flag - set if user is allowed to write protected attributes.
+;	0552	!
+;	0553	
+;	0554	OWN
+;	0555		PRIVILEGE	: VOLATILE BITVECTOR [32];
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3
+;
+;	0556	GLOBAL ROUTINE READ_ATTRIB (HEADER, ABD) =
+;	0557	
+;	0558	!++
+;	0559	!
+;	0560	! FUNCTIONAL DESCRIPTION:
+;	0561	!
+;	0562	!	This routine performs the read attributes function. The
+;	0563	!	requested attributes are assembled into the buffer packet.
+;	0564	!
+;	0565	! CALLING SEQUENCE:
+;	0566	!	READ_ATTRIB (ARG1, ARG2)
+;	0567	!
+;	0568	! INPUT PARAMETERS:
+;	0569	!	ARG1: address of file header
+;	0570	!	ARG2: address of buffer descriptors
+;	0571	!
+;	0572	! IMPLICIT INPUTS:
+;	0573	!	IO_PACKET: I/O packet for this operation
+;	0574	!	PRIMARY_FCB: FCB of file
+;	0575	!
+;	0576	! OUTPUT PARAMETERS:
+;	0577	!	ARG2: address of buffer descriptors
+;	0578	!
+;	0579	! IMPLICIT OUTPUTS:
+;	0580	!	NONE
+;	0581	!
+;	0582	! ROUTINE VALUE:
+;	0583	!	1 if successful
+;	0584	!	0 if error
+;	0585	!
+;	0586	! SIDE EFFECTS:
+;	0587	!	attribute data written into buffer packet
+;	0588	!
+;	0589	!--
+;	0590	
+;	0591	BEGIN
+;	0592	
+;	0593	MAP
+;	0594		HEADER		: REF BBLOCK,	! file header arg
+;	0595		ABD		: REF BBLOCKVECTOR [,ABD$C_LENGTH];
+;	0596						! buffer descriptor arg
+;	0597	
+;	0598	LITERAL
+;	0599		DATLEN		= 20;		! length of date string buffer
+;	0600	
+;	0601	LOCAL
+;	0602		P,				! pointer to attribute text
+;	0603		COUNT,				! attribute size desired
+;	0604		ADDRESS		: REF BBLOCK,	! address of attribute
+;	0605		CODE,				! attribute code
+;	0606		MAX_COUNT,			! max size of attribute
+;	0607		DATBUF		: VECTOR [DATLEN, BYTE], ! buffer to build date string
+;	0608		DATDESC		: VECTOR [2],	! string descriptor for date string
+;	0609		ATT_BUFFER	: BBLOCK [20];	! buffer to build reformatted attribute text
+;	0610	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-1
+;
+;	0611	EXTERNAL
+;	0612		IO_PACKET	: REF BBLOCK,	! I/O packet in process
+;	0613		PRIMARY_FCB	: REF BBLOCK;	! FCB of file
+;	0614	
+;	0615	EXTERNAL ROUTINE
+;	0616		PMS_START_SUB,			! start subfunction metering
+;	0617		PMS_END_SUB,			! end subfunction metering
+;	0618		MAKE_STRING,			! convert file name block to string
+;	0619		SYS$BINTIM	: ADDRESSING_MODE (ABSOLUTE);
+;	0620						! convert string to binary time
+;	0621	
+;	0622	
+;	0623	! Start metering for this subfunction.
+;	0624	!
+;	0625	
+;	0626	PMS_START_SUB (PMS_RWATT);
+;	0627	
+;	0628	! Set the buffered read bit in the I/O packet to indicate to IO_DONE that
+;	0629	! the attribute buffers are valid.
+;	0630	!
+;	0631	
+;	0632	IO_PACKET[IRP$V_FUNC] = 1;
+;	0633	
+;	0634	! Scan the buffer packet, picking up each entry. The first byte of the
+;	0635	! text is the attribute code, and must be overwritten with the access
+;	0636	! mode of the request for the I/O completion processing.
+;	0637	!
+;	0638	
+;	0639	INCR I FROM ABD$C_ATTRIB TO .IO_PACKET[IRP$W_BCNT]-1 DO
+;	0640	    BEGIN
+;	0641	    P = .ABD[.I, ABD$W_TEXT] + ABD[.I, ABD$W_TEXT];
+;	0642	    COUNT = .ABD[.I, ABD$W_COUNT];
+;	0643	    CODE = .(.P)<0,8> - 1;
+;	0644	    (.P)<0,8> = .IO_PACKET[IRP$B_RMOD];
+;	0645	    P = .P + 1;
+;	0646	
+;	0647	! Check the attribute code for legality, and then check the requested
+;	0648	! size against the limit. If an error exit is made, first truncate the
+;	0649	! descriptor count to inhibit return of the unprocessed descriptors.
+;	0650	!
+;	0651	
+;	0652	    IF .CODE GTR MAX_CODE - 1
+;	0653	    THEN
+;	0654		BEGIN
+;	0655		IO_PACKET[IRP$W_BCNT] = .I;
+;	0656		(ERR_STATUS (SS$_BADATTRIB); RETURN 0);
+;	0657		END;
+;	0658	
+;	0659	    MAX_COUNT = .ATC[.CODE, ATC_MAX_SIZE];
+;	0660	    IF .MAX_COUNT EQL 0 THEN MAX_COUNT = 512;
+;	0661	    IF .COUNT GTR .MAX_COUNT
+;	0662	    THEN
+;	0663		BEGIN
+;	0664		IO_PACKET[IRP$W_BCNT] = .I;
+;	0665		(ERR_STATUS (SS$_BADATTRIB); RETURN 0);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-2
+;
+;	0666		END;
+;	0667	
+;	0668	
+;	0669	! Compute the address of the attribute.
+;	0670	!
+;	0671	    
+;	0672	    ADDRESS =
+;	0673		(
+;	0674		CASE .ATC[.CODE, ATC_LOCATION] FROM 0 TO 4 OF
+;	0675		    SET
+;	0676		    [ATC_ZERO]:		ATT_BUFFER;
+;	0677		    [ATC_FCB]:		.PRIMARY_FCB;
+;	0678		    [ATC_HEADER]:	.HEADER;
+;	0679		    [ATC_IDENT]:	.HEADER + .HEADER[FH1$B_IDOFFSET]*2;
+;	0680		    [ATC_MAP]:		.HEADER + .HEADER[FH1$B_MPOFFSET]*2;
+;	0681		    TES
+;	0682		)
+;	0683		+ .ATC[.CODE, ATC_OFFSET];
+;	0684	    
+;	0685	    
+;	0686	! Finally execute the action routine.
+;	0687	!
+;	0688	    
+;	0689	    CASE .ATC[.CODE, ATC_ACTION] FROM 0 TO ACT_LASTACT OF
+;	0690		SET
+;	0691	    
+;	0692		[ACT_NOP]:	COUNT = 0;
+;	0693	    
+;	0694		[ACT_ILLEGAL]:	BEGIN
+;	0695				IO_PACKET[IRP$W_BCNT] = .I;
+;	0696				(ERR_STATUS (SS$_BADATTRIB); RETURN 0);
+;	0697				END;
+;	0698	    
+;	0699		[ACT_COPY]:	0;
+;	0700	    
+;	0701		[ACT_UCHAR]:	BEGIN
+;	0702				(ATT_BUFFER)<0,16> = .(.ADDRESS)<0,8>;
+;	0703				(ATT_BUFFER+2)<0,16> = .(.ADDRESS)<8,8>;
+;	0704				ADDRESS = ATT_BUFFER;
+;	0705				END;
+;	0706	
+;	0707		[ACT_STATBLK]:	BEGIN
+;	0708				(ATT_BUFFER+0)<0,32> = ROT (.ADDRESS[FCB$L_STLBN], 16);
+;	0709				(ATT_BUFFER+4)<0,32> = ROT (.ADDRESS[FCB$L_FILESIZE], 16);
+;	0710				(ATT_BUFFER+8)<0,8>  = .ADDRESS[FCB$W_ACNT];
+;	0711				(ATT_BUFFER+9)<0,8>  = .ADDRESS[FCB$W_LCNT];
+;	0712				(ATT_BUFFER+10)<0,32>= .ADDRESS;
+;	0713				ADDRESS = ATT_BUFFER;
+;	0714				END;
+;	0715	    
+;	0716		[ACT_BLOCKSIZE]: ADDRESS = UPLIT (512);
+;	0717	
+;	0718		[ACT_ZERO]:	BEGIN
+;	0719				CH$FILL (0, .COUNT, .P);
+;	0720				COUNT = 0;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-3
+;
+;	0721				END;
+;	0722	
+;	0723		[ACT_UIC]:	BEGIN
+;	0724				MAP ATT_BUFFER : VECTOR [,WORD];
+;	0725				ATT_BUFFER[0] = .(.ADDRESS)<0,8>;
+;	0726				ATT_BUFFER[1] = .(.ADDRESS)<8,8>;
+;	0727				ADDRESS = ATT_BUFFER;
+;	0728				END;
+;	0729	
+;	0730		[ACT_ASCNAME]:	BEGIN
+;	0731				CH$FILL (32, 20, ATT_BUFFER);
+;	0732				MAKE_STRING (.ADDRESS-6, ATT_BUFFER);
+;	0733				ADDRESS = ATT_BUFFER;
+;	0734				END;
+;	0735	
+;	0736		[ACT_DATIME]:	BEGIN
+;	0737				(DATBUF+00)<0,16> = .(.ADDRESS);
+;	0738				(DATBUF+02)<0,8>  = '-';
+;	0739				(DATBUF+03)<0,24> = .(.ADDRESS+2);
+;	0740				(DATBUF+06)<0,24> = '-19';
+;	0741				(DATBUF+09)<0,16> = .(.ADDRESS+5);
+;	0742				(DATBUF+11)<0,8>  = ' ';
+;	0743				IF .(.ADDRESS+7)<0,8> NEQ 0
+;	0744				THEN
+;	0745				    BEGIN
+;	0746				    (DATBUF+12)<0,16> = .(.ADDRESS+7);
+;	0747				    (DATBUF+14)<0,8>  = ':';
+;	0748				    (DATBUF+15)<0,16> = .(.ADDRESS+9);
+;	0749				    (DATBUF+17)<0,8>  = ':';
+;	0750				    (DATBUF+18)<0,16> = .(.ADDRESS+11);
+;	0751				    END
+;	0752				ELSE
+;	0753				    BEGIN
+;	0754				    (DATBUF+12)<0,32> = '00:0';
+;	0755				    (DATBUF+16)<0,32> = '0:00';
+;	0756				    END;
+;	0757				DATDESC[0] = DATLEN;
+;	0758				DATDESC[1] = DATBUF;
+;	0759				SYS$BINTIM (DATDESC, ATT_BUFFER);
+;	0760				ADDRESS = ATT_BUFFER;
+;	0761				END;
+;	0762	
+;	0763		TES;
+;	0764		CH$MOVE (.COUNT, .ADDRESS, .P); ! finally copy the attribute
+;	0765	
+;	0766	
+;	0767	
+;	0768	    END;				! end of loop
+;	0769	
+;	0770	! Stop metering of this subfunction
+;	0771	!
+;	0772	
+;	0773	PMS_END_SUB ();
+;	0774	
+;	0775	RETURN 1;				! return success
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-4
+;
+;	0776	
+;	0777	END;					! end of routine READ_ATTRIB
+
+
+							    .TITLE  RWATTR
+							    .IDENT  \A0020\
+
+							    .PSECT  $CODE$,NOWRT,2
+
+  0C  04  44  02  0A  03  42  02  08  05  42  00000 P.AAA:  .BYTE   66, 5, 8, 2, 66, 3, 10, 2, 68, 4, 12, 9, 68, 32, 14, 2, - ;
+  04  60  02  00  0A  60  02  0E  20  44  09  0000B		    96, 10, 0, 2, 96, 4, 6, 2, 96, 2, 8, 2, 98, 7, 38, 2, -   ;
+  21  02  26  07  62  02  08  02  60  02  06  00016		    33, 14, 0, 3, 65, 0, 0, 2, 0, 2, 0, 5, 0, 80, 0, 4, 98, - ;
+  05  00  02  00  02  00  00  41  03  00  0E  00021		    35, 10, 2, 0, 14, 0, 0, 0, 1, 0, 0, 96, 20, 0, 6, 98, 8, -;
+  00  0E  00  02  0A  23  62  04  00  50  00  0002C		    25, 7, 98, 8, 12, 7, 98, 8, 38, 7, 2, 8, 0, 4, 66, 4, 8, -;
+  08  62  06  00  14  60  00  00  01  00  00  00037		    8, 66, 2, 10, 2, 2, 2, 0, 4, 2, 2, 0, 4, 2, 8, 0, 4, 65, -;
+  02  07  26  08  62  07  0C  08  62  07  19  00042		    4, 8, 8, 1, 2, 0, 4					      ;
+  02  0A  02  42  08  08  04  42  04  00  08  0004D									      ;
+  00  08  02  04  00  02  02  04  00  02  02  00058									      ;
+	  04  00  02  01  08  08  04  41  04  00063									      ;
+				    00000200  0006C P.AAB:  .LONG   512							      ;
+
+							    .PSECT  $LOCKEDD1$,NOEXE,2
+
+					      00000 PRIVILEGE:
+							    .BLKB   4
+
+						    ATC=		P.AAA
+							    .EXTRN  IO_PACKET, PRIMARY_FCB, PMS_START_SUB, PMS_END_SUB
+							    .EXTRN  MAKE_STRING, SYS$BINTIM, USER_STATUS
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 0FFC 00070 	    .ENTRY  READ_ATTRIB, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0556
+		         5E 	       34  C2 00072 	    SUBL2   #52, SP						      ;
+				       09  DD 00075 	    PUSHL   #9							      ; 0626
+		  0000G  CF	       01  FB 00077 	    CALLS   #1, PMS_START_SUB					      ;
+		         50 	0000G  CF  D0 0007C 	    MOVL    IO_PACKET, R0					      ; 0632
+		    2A   A0	       02  88 00081 	    BISB2   #2, 42(R0)						      ;
+		         6E 	  32   A0  3C 00085 	    MOVZWL  50(R0), (SP)					      ; 0639
+		         57 	       04  D0 00089 	    MOVL    #4, I						      ;
+				     0171  31 0008C 	    BRW     26$							      ;
+		         50 	  08 BC47  7E 0008F 1$:     MOVAQ   @ABD[I], R0						      ; 0641
+		         59 	       60  3C 00094 	    MOVZWL  (R0), P						      ;
+		         59 	       50  C0 00097 	    ADDL2   R0, P						      ;
+		         50 	  08 BC47  7E 0009A 	    MOVAQ   @ABD[I], R0						      ; 0642
+		         5A 	  02   A0  3C 0009F 	    MOVZWL  2(R0), COUNT					      ;
+		         58 	       69  9A 000A3 	    MOVZBL  (P), CODE						      ; 0643
+				       58  D7 000A6 	    DECL    CODE						      ;
+		         52 	0000G  CF  D0 000A8 	    MOVL    IO_PACKET, R2					      ; 0644
+		         89 	  0B   A2  90 000AD 	    MOVB    11(R2), (P)+					      ;
+		         19 	       58  D1 000B1 	    CMPL    CODE, #25						      ; 0652
+				       75  14 000B4 	    BGTR    11$							      ;
+		         53 	FF45 CF48  DE 000B6 	    MOVAL   ATC[CODE], R3					      ; 0659
+		         5B 	  01   A3  9A 000BC 	    MOVZBL  1(R3), MAX_COUNT					      ;
+				       05  12 000C0 	    BNEQ    2$							      ; 0660
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-5
+;
+		         5B 	0200   8F  3C 000C2 	    MOVZWL  #512, MAX_COUNT					      ;
+		         5B 	       5A  D1 000C7 2$:     CMPL    COUNT, MAX_COUNT					      ; 0661
+				       5F  14 000CA 	    BGTR    11$							      ;
+	   63 	         03 	       05  EF 000CC 	    EXTZV   #5, #3, (R3), R4					      ; 0673
+				       54     000D0									      ;
+	   04 	         00 	       54  CF 000D1 	    CASEL   R4, #0, #4						      ;
+	 0017 	       0010 	     000A     000D5 3$:     .WORD   4$-3$,-						      ;
+		       0028 	     001D     000DB		    5$-3$,-						      ;
+								    6$-3$,-						      ;
+								    7$-3$,-						      ;
+								    8$-3$						      ;
+		         50 	  04   AE  9E 000DF 4$:     MOVAB   ATT_BUFFER, R0					      ; 0674
+				       24  11 000E3 	    BRB     9$							      ; 0673
+		         50 	0000G  CF  D0 000E5 5$:     MOVL    PRIMARY_FCB, R0					      ;
+				       1D  11 000EA 	    BRB     9$							      ;
+		         50 	  04   AC  D0 000EC 6$:     MOVL    HEADER, R0						      ;
+				       17  11 000F0 	    BRB     9$							      ;
+		         50 	  04   BC  9A 000F2 7$:     MOVZBL  @HEADER, R0						      ; 0679
+		         50 	  04 BC40  3E 000F6 	    MOVAW   @HEADER[R0], R0					      ;
+				       0C  11 000FB 	    BRB     9$							      ; 0673
+		         51 	  04   AC  D0 000FD 8$:     MOVL    HEADER, R1						      ; 0680
+		         50 	  01   A1  9A 00101 	    MOVZBL  1(R1), R0						      ;
+		         50 	     6140  3E 00105 	    MOVAW   (R1)[R0], R0					      ;
+		         56 	  02   A3  9A 00109 9$:     MOVZBL  2(R3), ADDRESS					      ; 0683
+		         56 	       50  C0 0010D 	    ADDL2   R0, ADDRESS						      ;
+	   09 	         00 	  03   A3  8F 00110 	    CASEB   3(R3), #0, #9					      ; 0689
+	 00E7 	       0016 	     0056     00115 10$:    .WORD   16$-10$,-						      ;
+	 0049 	       0050 	     002D     0011B		    11$-10$,-						      ;
+	 005A 	       007D 	     0069     00121		    25$-10$,-						      ;
+				     0022     00127		    13$-10$,-						      ;
+								    15$-10$,-						      ;
+								    14$-10$,-						      ;
+								    19$-10$,-						      ;
+								    21$-10$,-						      ;
+								    17$-10$,-						      ;
+								    12$-10$						      ;
+				       40  11 00129 	    BRB     16$							      ; 0692
+		    32   A2	       57  B0 0012B 11$:    MOVW    I, 50(R2)						      ; 0695
+		  0000G  CF	       34  B0 0012F 	    MOVW    #52, USER_STATUS					      ; 0696
+				     00DB  31 00134 	    BRW     29$							      ;
+		    04   AE	       66  9B 00137 12$:    MOVZBW  (ADDRESS), ATT_BUFFER				      ; 0702
+		    06   AE	  01   A6  9B 0013B 	    MOVZBW  1(ADDRESS), ATT_BUFFER+2				      ; 0703
+				       4E  11 00140 	    BRB     20$							      ; 0704
+      04   AE	    2C   A6	       10  9C 00142 13$:    ROTL    #16, 44(ADDRESS), ATT_BUFFER			      ; 0708
+      08   AE	    34   A6	       10  9C 00148 	    ROTL    #16, 52(ADDRESS), ATT_BUFFER+4			      ; 0709
+		    0C   AE	  18   A6  90 0014E 	    MOVB    24(ADDRESS), ATT_BUFFER+8				      ; 0710
+		    0D   AE	  1A   A6  90 00153 	    MOVB    26(ADDRESS), ATT_BUFFER+9				      ; 0711
+		    0E   AE	       56  D0 00158 	    MOVL    ADDRESS, ATT_BUFFER+10				      ; 0712
+				       32  11 0015C 	    BRB     20$							      ; 0713
+		         56 	FF0A   CF  9E 0015E 14$:    MOVAB   P.AAB, ADDRESS					      ; 0716
+				       17  11 00163 	    BRB     18$							      ; 0689
+	   00 	         6E 	       00  2C 00165 15$:    MOVC5   #0, (SP), #0, COUNT, (P)				      ; 0719
+		         69 	       5A     00169									      ;
+				       5A  D4 0016B 16$:    CLRL    COUNT						      ; 0720
+				       0D  11 0016D 	    BRB     18$							      ; 0689
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 3-6
+;
+		    04   AE	       66  9B 0016F 17$:    MOVZBW  (ADDRESS), ATT_BUFFER				      ; 0725
+		    06   AE	  01   A6  9B 00173 	    MOVZBW  1(ADDRESS), ATT_BUFFER+2				      ; 0726
+		         56 	  04   AE  9E 00178 	    MOVAB   ATT_BUFFER, ADDRESS					      ; 0556
+				       7E  11 0017C 18$:    BRB     25$							      ; 0689
+	   20 	         6E 	       00  2C 0017E 19$:    MOVC5   #0, (SP), #32, #20, ATT_BUFFER			      ; 0731
+		    04   AE	       14     00182									      ;
+				  04   AE  9F 00185 	    PUSHAB  ATT_BUFFER						      ; 0732
+				  FA   A6  9F 00188 	    PUSHAB  -6(ADDRESS)						      ;
+		  0000G  CF	       02  FB 0018B 	    CALLS   #2, MAKE_STRING					      ;
+				       66  11 00190 20$:    BRB     24$							      ; 0733
+		    20   AE	       66  B0 00192 21$:    MOVW    (ADDRESS), DATBUF					      ; 0737
+		    22   AE	       2D  90 00196 	    MOVB    #45, DATBUF+2					      ; 0738
+	   18 	         00 	  02   A6  F0 0019A 	    INSV    2(ADDRESS), #0, #24, DATBUF+3			      ; 0739
+				  23   AE     0019F									      ;
+	   18 	         00 0039312D   8F  F0 001A1 	    INSV    #3748141, #0, #24, DATBUF+6				      ; 0740
+				  26   AE     001A9									      ;
+		    29   AE	  05   A6  B0 001AB 	    MOVW    5(ADDRESS), DATBUF+9				      ; 0741
+		    2B   AE	       20  90 001B0 	    MOVB    #32, DATBUF+11					      ; 0742
+				  07   A6  95 001B4 	    TSTB    7(ADDRESS)						      ; 0743
+				       19  13 001B7 	    BEQL    22$							      ;
+		    2C   AE	  07   A6  B0 001B9 	    MOVW    7(ADDRESS), DATBUF+12				      ; 0746
+		    2E   AE	       3A  90 001BE 	    MOVB    #58, DATBUF+14					      ; 0747
+		    2F   AE	  09   A6  B0 001C2 	    MOVW    9(ADDRESS), DATBUF+15				      ; 0748
+		    31   AE	       3A  90 001C7 	    MOVB    #58, DATBUF+17					      ; 0749
+		    32   AE	  0B   A6  B0 001CB 	    MOVW    11(ADDRESS), DATBUF+18				      ; 0750
+				       10  11 001D0 	    BRB     23$							      ; 0743
+		    2C   AE 303A3030   8F  D0 001D2 22$:    MOVL    #809119792, DATBUF+12				      ; 0754
+		    30   AE 30303A30   8F  D0 001DA 	    MOVL    #808466992, DATBUF+16				      ; 0755
+		    18   AE	       14  D0 001E2 23$:    MOVL    #20, DATDESC					      ; 0757
+		    1C   AE	  20   AE  9E 001E6 	    MOVAB   DATBUF, DATDESC+4					      ; 0758
+				  04   AE  9F 001EB 	    PUSHAB  ATT_BUFFER						      ; 0759
+				  1C   AE  9F 001EE 	    PUSHAB  DATDESC						      ;
+	      00000000G  9F	       02  FB 001F1 	    CALLS   #2, @#SYS$BINTIM					      ;
+		         56 	  04   AE  9E 001F8 24$:    MOVAB   ATT_BUFFER, ADDRESS					      ; 0760
+	   69 	         66 	       5A  28 001FC 25$:    MOVC3   COUNT, (ADDRESS), (P)				      ; 0764
+	   02 	         57 	       6E  F2 00200 26$:    AOBLSS  (SP), I, 27$					      ; 0639
+				       03  11 00204 	    BRB     28$							      ;
+				     FE86  31 00206 27$:    BRW     1$							      ;
+		  0000G  CF	       00  FB 00209 28$:    CALLS   #0, PMS_END_SUB					      ; 0773
+		         50 	       01  D0 0020E 	    MOVL    #1, R0						      ; 0775
+					   04 00211 	    RET     							      ;
+				       50  D4 00212 29$:    CLRL    R0							      ; 0556
+					   04 00214 	    RET     							      ;
+
+; Routine Size:  421 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4
+;
+;	0778	GLOBAL ROUTINE WRITE_ATTRIB (HEADER, ABD) : NOVALUE =
+;	0779	
+;	0780	!++
+;	0781	!
+;	0782	! FUNCTIONAL DESCRIPTION:
+;	0783	!
+;	0784	!	This routine performs the write attributes function. The
+;	0785	!	requested attributes are taken from the buffer packet.
+;	0786	!
+;	0787	! CALLING SEQUENCE:
+;	0788	!	READ_ATTRIB (ARG1, ARG2)
+;	0789	!
+;	0790	! INPUT PARAMETERS:
+;	0791	!	ARG1: address of file header
+;	0792	!	ARG2: address of buffer descriptors
+;	0793	!
+;	0794	! IMPLICIT INPUTS:
+;	0795	!	IO_PACKET: I/O packet for this operation
+;	0796	!	PRIMARY_FCB: FCB of file
+;	0797	!
+;	0798	! OUTPUT PARAMETERS:
+;	0799	!	NONE
+;	0800	!
+;	0801	! IMPLICIT OUTPUTS:
+;	0802	!	NONE
+;	0803	!
+;	0804	! ROUTINE VALUE:
+;	0805	!	NONE
+;	0806	!
+;	0807	! SIDE EFFECTS:
+;	0808	!	attribute data written into appropriate places
+;	0809	!
+;	0810	!--
+;	0811	
+;	0812	BEGIN
+;	0813	
+;	0814	MAP
+;	0815		HEADER		: REF BBLOCK,	! file header arg
+;	0816		ABD		: REF BBLOCKVECTOR [,ABD$C_LENGTH];
+;	0817						! buffer descriptor arg
+;	0818	
+;	0819	BUILTIN
+;	0820		FP;				! frame pointer register
+;	0821	
+;	0822	LOCAL
+;	0823		CONTIG;				! initial state of contiguous bit
+;	0824	
+;	0825	EXTERNAL
+;	0826		USER_STATUS	: VECTOR,	! user request status
+;	0827		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0828		IO_PACKET	: REF BBLOCK,	! I/O packet in process
+;	0829		CURRENT_WINDOW	: REF BBLOCK,	! window of open file
+;	0830		PRIMARY_FCB	: REF BBLOCK;	! FCB of file
+;	0831	
+;	0832	EXTERNAL ROUTINE
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-1
+;
+;	0833		PMS_START_SUB,			! start subfunction metering
+;	0834		PMS_END_SUB,			! end subfunction metering
+;	0835		CHECK_PROTECT,			! check file protection
+;	0836		MARK_DIRTY,			! mark buffer for write-back
+;	0837		MAKE_NAMEBLOCK,			! convert file string to RAD-50 name block
+;	0838		GET_TIME;			! get date/time string
+;	0839	
+;	0840	
+;	0841	! Start metering for this subfunction.
+;	0842	!
+;	0843	
+;	0844	PMS_START_SUB (PMS_RWATT);
+;	0845	
+;	0846	! Run a protection check with a condition handler enabled, so that we
+;	0847	! just save the user's privilege status. If no privilege, the handler
+;	0848	! clears the privilege bit. If the user does not have write attributes
+;	0849	! privilege, check for write access or an open file. Also note if the file
+;	0850	! is locked against writers.
+;	0851	!
+;	0852	
+;	0853	PRIVILEGE = 3;				! assume privilege
+;	0854	.FP = HANDLER;
+;	0855	CHECK_PROTECT (WRATT_ACCESS, .HEADER, 0);
+;	0856	.FP = 0;				! disable condition handler
+;	0857	
+;	0858	IF .CURRENT_WINDOW EQL 0
+;	0859	THEN
+;	0860	    BEGIN
+;	0861	    IF .PRIMARY_FCB NEQ 0
+;	0862	    THEN
+;	0863		IF .PRIMARY_FCB[FCB$V_EXCL]
+;	0864		OR .PRIMARY_FCB[FCB$W_LCNT] NEQ 0
+;	0865		THEN PRIVILEGE[1] = 0;
+;	0866	    IF NOT .PRIVILEGE
+;	0867	    THEN CHECK_PROTECT (WRITE_ACCESS, .HEADER, 0);
+;	0868	    END;
+;	0869	
+;	0870	! Set the appropriate cleanup flags.
+;	0871	!
+;	0872	
+;	0873	MARK_DIRTY (.HEADER);
+;	0874	CLEANUP_FLAGS[CLF_FIXFCB] = 1;
+;	0875	
+;	0876	CONTIG = .HEADER[FH1$V_CONTIG];		! save contiguous bit
+;	0877	
+;	0878	
+;	0879	
+;	0880	! Scan the buffer packet, picking up each entry. The first byte of the
+;	0881	! text is the attribute code.
+;	0882	!
+;	0883	
+;	0884	INCR I FROM ABD$C_ATTRIB TO .IO_PACKET[IRP$W_BCNT]-1 DO
+;	0885	    BEGIN
+;	0886	
+;	0887	    LOCAL
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-2
+;
+;	0888		ACTION		: BYTE,		! action routine code
+;	0889		P,				! pointer to attribute text
+;	0890		COUNT,				! attribute size desired
+;	0891		ADDRESS		: REF BBLOCK,	! address of attribute
+;	0892		CODE,				! attribute code
+;	0893		MAX_COUNT,			! max size of attribute
+;	0894		ATT_BUFFER	: BBLOCK [20],	! attribute copy buffer
+;	0895		DATBUF		: VECTOR [13, BYTE]; ! buffer to build date string
+;	0896	
+;	0897	    P = .ABD[.I, ABD$W_TEXT] + ABD[.I, ABD$W_TEXT];
+;	0898	    COUNT = .ABD[.I, ABD$W_COUNT];
+;	0899	    CODE = .(.P)<0,8> - 1;
+;	0900	    P = .P + 1;
+;	0901	
+;	0902	! Check the attribute code for legality, and then check the requested
+;	0903	! size against the limit.
+;	0904	!
+;	0905	
+;	0906	    IF .CODE GTR MAX_CODE - 1
+;	0907		THEN ERR_EXIT (SS$_BADATTRIB);
+;	0908	
+;	0909	    MAX_COUNT = .ATC[.CODE, ATC_MAX_SIZE];
+;	0910	    IF .MAX_COUNT EQL 0 THEN MAX_COUNT = 512;
+;	0911	    IF .COUNT GTR .MAX_COUNT
+;	0912		THEN ERR_EXIT (SS$_BADATTRIB);
+;	0913	
+;	0914	    IF .ATC[.CODE, ATC_PROTECTED] AND NOT .PRIVILEGE[0]
+;	0915		THEN ERR_EXIT (SS$_NOPRIV);
+;	0916	
+;	0917	    IF .ATC[.CODE, ATC_LOCKED] AND NOT .PRIVILEGE[1]
+;	0918		THEN ERR_EXIT (SS$_ACCONFLICT);
+;	0919	! Compute the action routine code.
+;	0920	!
+;	0921	
+;	0922	    ACTION = .ATC[.CODE, ATC_ACTION];
+;	0923	    IF .ATC[.CODE, ATC_READ_ONLY]
+;	0924	    THEN ACTION = ACT_NOP;
+;	0925	
+;	0926	! Compute the address of the attribute.
+;	0927	!
+;	0928	    
+;	0929	    ADDRESS =
+;	0930		(
+;	0931		CASE .ATC[.CODE, ATC_LOCATION] FROM 0 TO 4 OF
+;	0932		    SET
+;	0933		    [ATC_ZERO]:		ATT_BUFFER;
+;	0934		    [ATC_FCB]:		.PRIMARY_FCB;
+;	0935		    [ATC_HEADER]:	.HEADER;
+;	0936		    [ATC_IDENT]:	.HEADER + .HEADER[FH1$B_IDOFFSET]*2;
+;	0937		    [ATC_MAP]:		.HEADER + .HEADER[FH1$B_MPOFFSET]*2;
+;	0938		    TES
+;	0939		)
+;	0940		+ .ATC[.CODE, ATC_OFFSET];
+;	0941	    
+;	0942	    
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-3
+;
+;	0943	! Finally execute the action routine.
+;	0944	!
+;	0945	    
+;	0946	    CASE .ACTION FROM 0 TO ACT_LASTACT OF
+;	0947		SET
+;	0948	    
+;	0949		[ACT_NOP,
+;	0950		 ACT_BLOCKSIZE,
+;	0951		 ACT_ZERO,
+;	0952		 ACT_STATBLK]:	0;
+;	0953	    
+;	0954		[ACT_ILLEGAL]:	ERR_EXIT (SS$_BADATTRIB);
+;	0955	
+;	0956		[ACT_UIC]:	BEGIN
+;	0957				(.ADDRESS)<0,8> = ..P;
+;	0958				IF .COUNT GTR 2
+;	0959				THEN (.ADDRESS)<8,8> = .(.P+2);
+;	0960				END;
+;	0961	
+;	0962		[ACT_UCHAR]:	BEGIN
+;	0963				(.ADDRESS)<0,8> = ..P;
+;	0964				IF .COUNT GEQ 3
+;	0965				THEN (.ADDRESS)<8,8> = .(.P+2);
+;	0966				END;
+;	0967	
+;	0968		[ACT_ASCNAME]:	BEGIN
+;	0969				MAKE_NAMEBLOCK (.COUNT, .P, ATT_BUFFER);
+;	0970				CH$MOVE (10, ATT_BUFFER[NMB$W_NAME], .ADDRESS);
+;	0971				END;
+;	0972	
+;	0973		[ACT_DATIME]:	BEGIN
+;	0974				CH$COPY (.COUNT, .P, 0, 8, ATT_BUFFER);
+;	0975				GET_TIME (DATBUF, ATT_BUFFER);
+;	0976				COUNT = 
+;	0977				    (CASE .CODE FROM ATR$C_CREDATE-1 TO ATR$C_BAKDATE-1 OF
+;	0978				    SET
+;	0979				    [ATR$C_CREDATE-1]:	13;
+;	0980				    [ATR$C_REVDATE-1]:	13;
+;	0981				    [ATR$C_EXPDATE-1]:	7;
+;	0982				    [ATR$C_BAKDATE-1]:	0;
+;	0983				    TES);
+;	0984				CH$MOVE (.COUNT, DATBUF, .ADDRESS);
+;	0985				END;
+;	0986	
+;	0987		[ACT_COPY]:	CH$MOVE (.COUNT, .P, .ADDRESS);
+;	0988	    
+;	0989		TES;
+;	0990	
+;	0991	    END;				! end of loop
+;	0992	
+;	0993	! Make sure the contiguous bit stays off if it was off to start with.
+;	0994	!
+;	0995	
+;	0996	IF NOT .CONTIG THEN HEADER[FH1$V_CONTIG] = 0;
+;	0997	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-4
+;
+;	0998	! Stop metering of this subfunction
+;	0999	!
+;	1000	
+;	1001	PMS_END_SUB ();
+;	1002	
+;	1003	END;					! end of routine WRITE_ATTRIB
+
+
+
+							    .EXTRN  CLEANUP_FLAGS, CURRENT_WINDOW, CHECK_PROTECT, MARK_DIRTY
+							    .EXTRN  MAKE_NAMEBLOCK, GET_TIME
+
+					 0FFC 00215 	    .ENTRY  WRITE_ATTRIB, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0778
+		         5E 	       28  C2 00217 	    SUBL2   #40, SP						      ;
+				       09  DD 0021A 	    PUSHL   #9							      ; 0844
+		  0000G  CF	       01  FB 0021C 	    CALLS   #1, PMS_START_SUB					      ;
+		  0000'  CF	       03  D0 00221 	    MOVL    #3, PRIVILEGE					      ; 0853
+		         6D 	0000V  CF  9E 00226 	    MOVAB   HANDLER, (FP)					      ; 0854
+				       7E  D4 0022B 	    CLRL    -(SP)						      ; 0855
+		         52 	  04   AC  D0 0022D 	    MOVL    HEADER, R2						      ;
+				       52  DD 00231 	    PUSHL   R2							      ;
+				       05  DD 00233 	    PUSHL   #5							      ;
+		  0000G  CF	       03  FB 00235 	    CALLS   #3, CHECK_PROTECT					      ;
+				       6D  D4 0023A 	    CLRL    (FP)						      ; 0856
+				0000G  CF  D5 0023C 	    TSTL    CURRENT_WINDOW					      ; 0858
+				       26  12 00240 	    BNEQ    3$							      ;
+		         50 	0000G  CF  D0 00242 	    MOVL    PRIMARY_FCB, R0					      ; 0861
+				       0F  13 00247 	    BEQL    2$							      ;
+	   05 	    1E   A0	       03  E0 00249 	    BBS     #3, 30(R0), 1$					      ; 0863
+				  1A   A0  B5 0024E 	    TSTW    26(R0)						      ; 0864
+				       05  13 00251 	    BEQL    2$							      ;
+		  0000'  CF	       02  8A 00253 1$:     BICB2   #2, PRIVILEGE					      ; 0865
+		         0B 	0000'  CF  E8 00258 2$:     BLBS    PRIVILEGE, 3$					      ; 0866
+				       7E  D4 0025D 	    CLRL    -(SP)						      ; 0867
+				       52  DD 0025F 	    PUSHL   R2							      ;
+				       01  DD 00261 	    PUSHL   #1							      ;
+		  0000G  CF	       03  FB 00263 	    CALLS   #3, CHECK_PROTECT					      ;
+				       52  DD 00268 3$:     PUSHL   R2							      ; 0873
+		  0000G  CF	       01  FB 0026A 	    CALLS   #1, MARK_DIRTY					      ;
+		  0000G  CF	       02  88 0026F 	    BISB2   #2, CLEANUP_FLAGS					      ; 0874
+      0C   A2	         01 	       07  EF 00274 	    EXTZV   #7, #1, 12(R2), CONTIG				      ; 0876
+				       5B     00279									      ;
+		         50 	0000G  CF  D0 0027A 	    MOVL    IO_PACKET, R0					      ; 0884
+		         6E 	  32   A0  3C 0027F 	    MOVZWL  50(R0), (SP)					      ;
+		         5A 	       04  D0 00283 	    MOVL    #4, I						      ;
+				     012B  31 00286 	    BRW     31$							      ;
+		         50 	  08 BC4A  7E 00289 4$:     MOVAQ   @ABD[I], R0						      ; 0897
+		         57 	       60  3C 0028E 	    MOVZWL  (R0), P						      ;
+		         57 	       50  C0 00291 	    ADDL2   R0, P						      ;
+		         50 	  08 BC4A  7E 00294 	    MOVAQ   @ABD[I], R0						      ; 0898
+		         59 	  02   A0  3C 00299 	    MOVZWL  2(R0), COUNT					      ;
+		         56 	       87  9A 0029D 	    MOVZBL  (P)+, CODE						      ; 0899
+				       56  D7 002A0 	    DECL    CODE						      ;
+		         19 	       56  D1 002A2 	    CMPL    CODE, #25						      ; 0906
+				       02  15 002A5 	    BLEQ    5$							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-5
+;
+				       34  BF 002A7 	    CHMU    #52							      ; 0907
+				FD53 CF46  DF 002A9 5$:     PUSHAL  ATC+1[CODE]						      ; 0909
+		         50 	       9E  9A 002AE 	    MOVZBL  @(SP)+, MAX_COUNT					      ;
+				       05  12 002B1 	    BNEQ    6$							      ; 0910
+		         50 	0200   8F  3C 002B3 	    MOVZWL  #512, MAX_COUNT					      ;
+		         50 	       59  D1 002B8 6$:     CMPL    COUNT, MAX_COUNT					      ; 0911
+				       02  15 002BB 	    BLEQ    7$							      ;
+				       34  BF 002BD 	    CHMU    #52							      ; 0912
+				FD3C CF46  DF 002BF 7$:     PUSHAL  ATC[CODE]						      ; 0914
+	   07 	         9E 	       01  E1 002C4 	    BBC     #1, @(SP)+, 8$					      ;
+		         02 	0000'  CF  E8 002C8 	    BLBS    PRIVILEGE, 8$					      ;
+				       24  BF 002CD 	    CHMU    #36							      ; 0915
+				FD2C CF46  DF 002CF 8$:     PUSHAL  ATC[CODE]						      ; 0917
+	   0A 	         9E 	       02  E1 002D4 	    BBC     #2, @(SP)+, 9$					      ;
+	   04 	  0000'  CF	       01  E0 002D8 	    BBS     #1, PRIVILEGE, 9$					      ;
+				0800   8F  BF 002DE 	    CHMU    #2048						      ; 0918
+		         52 	FD19 CF46  DE 002E2 9$:     MOVAL   ATC[CODE], R2					      ; 0922
+		         53 	  03   A2  90 002E8 	    MOVB    3(R2), ACTION					      ;
+		         02 	       62  E9 002EC 	    BLBC    (R2), 10$						      ; 0923
+				       53  94 002EF 	    CLRB    ACTION						      ; 0924
+	   62 	         03 	       05  EF 002F1 10$:    EXTZV   #5, #3, (R2), R4					      ; 0930
+				       54     002F5									      ;
+	   04 	         00 	       54  CF 002F6 	    CASEL   R4, #0, #4						      ;
+	 0017 	       0010 	     000A     002FA 11$:    .WORD   12$-11$,-						      ;
+		       0028 	     001D     00300		    13$-11$,-						      ;
+								    14$-11$,-						      ;
+								    15$-11$,-						      ;
+								    16$-11$						      ;
+		         50 	  14   AE  9E 00304 12$:    MOVAB   ATT_BUFFER, R0					      ; 0931
+				       24  11 00308 	    BRB     17$							      ; 0930
+		         50 	0000G  CF  D0 0030A 13$:    MOVL    PRIMARY_FCB, R0					      ;
+				       1D  11 0030F 	    BRB     17$							      ;
+		         50 	  04   AC  D0 00311 14$:    MOVL    HEADER, R0						      ;
+				       17  11 00315 	    BRB     17$							      ;
+		         50 	  04   BC  9A 00317 15$:    MOVZBL  @HEADER, R0						      ; 0936
+		         50 	  04 BC40  3E 0031B 	    MOVAW   @HEADER[R0], R0					      ;
+				       0C  11 00320 	    BRB     17$							      ; 0930
+		         51 	  04   AC  D0 00322 16$:    MOVL    HEADER, R1						      ; 0937
+		         50 	  01   A1  9A 00326 	    MOVZBL  1(R1), R0						      ;
+		         50 	     6140  3E 0032A 	    MOVAW   (R1)[R0], R0					      ;
+		         58 	  02   A2  9A 0032E 17$:    MOVZBL  2(R2), ADDRESS					      ; 0940
+		         58 	       50  C0 00332 	    ADDL2   R0, ADDRESS						      ;
+	   09 	         00 	       53  8F 00335 	    CASEB   ACTION, #0, #9					      ; 0946
+	 0077 	       0016 	     007B     00339 18$:    .WORD   31$-18$,-						      ;
+	 007B 	       007B 	     007B     0033F		    19$-18$,-						      ;
+	 001A 	       0046 	     0033     00345		    30$-18$,-						      ;
+				     0024     0034B		    31$-18$,-						      ;
+								    31$-18$,-						      ;
+								    31$-18$,-						      ;
+								    23$-18$,-						      ;
+								    24$-18$,-						      ;
+								    20$-18$,-						      ;
+								    21$-18$						      ;
+				       65  11 0034D 	    BRB     31$							      ;
+				       34  BF 0034F 19$:    CHMU    #52							      ; 0954
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 4-6
+;
+				       61  11 00351 	    BRB     31$							      ; 0946
+		         68 	       67  90 00353 20$:    MOVB    (P), (ADDRESS)					      ; 0957
+		         02 	       59  D1 00356 	    CMPL    COUNT, #2						      ; 0958
+				       59  15 00359 	    BLEQ    31$							      ;
+				       08  11 0035B 	    BRB     22$							      ; 0959
+		         68 	       67  90 0035D 21$:    MOVB    (P), (ADDRESS)					      ; 0963
+		         03 	       59  D1 00360 	    CMPL    COUNT, #3						      ; 0964
+				       4F  19 00363 	    BLSS    31$							      ;
+		    01   A8	  02   A7  90 00365 22$:    MOVB    2(P), 1(ADDRESS)					      ; 0965
+				       48  11 0036A 	    BRB     31$							      ; 0946
+				  14   AE  9F 0036C 23$:    PUSHAB  ATT_BUFFER						      ; 0969
+				       57  DD 0036F 	    PUSHL   P							      ;
+				       59  DD 00371 	    PUSHL   COUNT						      ;
+		  0000G  CF	       03  FB 00373 	    CALLS   #3, MAKE_NAMEBLOCK					      ;
+	   68 	    1A   AE	       0A  28 00378 	    MOVC3   #10, ATT_BUFFER+6, (ADDRESS)			      ; 0970
+				       35  11 0037D 	    BRB     31$							      ; 0946
+	   00 	         67 	       59  2C 0037F 24$:    MOVC5   COUNT, (P), #0, #8, ATT_BUFFER			      ; 0974
+		    14   AE	       08     00383									      ;
+				  14   AE  9F 00386 	    PUSHAB  ATT_BUFFER						      ; 0975
+				  08   AE  9F 00389 	    PUSHAB  DATBUF						      ;
+		  0000G  CF	       02  FB 0038C 	    CALLS   #2, GET_TIME					      ;
+	   03 	         10 	       56  CF 00391 	    CASEL   CODE, #16, #3					      ; 0977
+	 000D 	       0008 	     0008     00395 25$:    .WORD   26$-25$,-						      ;
+				     0012     0039B		    26$-25$,-						      ;
+								    27$-25$,-						      ;
+								    28$-25$						      ;
+		         59 	       0D  D0 0039D 26$:    MOVL    #13, COUNT						      ;
+				       07  11 003A0 	    BRB     29$							      ;
+		         59 	       07  D0 003A2 27$:    MOVL    #7, COUNT						      ;
+				       02  11 003A5 	    BRB     29$							      ;
+				       59  D4 003A7 28$:    CLRL    COUNT						      ;
+	   68 	    04   AE	       59  28 003A9 29$:    MOVC3   COUNT, DATBUF, (ADDRESS)				      ; 0984
+				       04  11 003AE 	    BRB     31$							      ; 0946
+	   68 	         67 	       59  28 003B0 30$:    MOVC3   COUNT, (P), (ADDRESS)				      ; 0987
+	   02 	         5A 	       6E  F2 003B4 31$:    AOBLSS  (SP), I, 32$					      ; 0884
+				       03  11 003B8 	    BRB     33$							      ;
+				     FECC  31 003BA 32$:    BRW     4$							      ;
+		         09 	       5B  E8 003BD 33$:    BLBS    CONTIG, 34$						      ; 0996
+		         50 	  04   AC  D0 003C0 	    MOVL    HEADER, R0						      ;
+		    0C   A0	  80   8F  8A 003C4 	    BICB2   #128, 12(R0)					      ;
+		  0000G  CF	       00  FB 003C9 34$:    CALLS   #0, PMS_END_SUB					      ; 1001
+					   04 003CE 	    RET     							      ; 0778
+
+; Routine Size:  442 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 5
+;
+;	1004	ROUTINE HANDLER (SIGNAL, MECHANISM) : NOVALUE =
+;	1005	
+;	1006	!++
+;	1007	!
+;	1008	! FUNCTIONAL DESCRIPTION:
+;	1009	!
+;	1010	!	This routine is the special condition handler for the write attributes
+;	1011	!	protection check. If the protection check fails, this routine simply
+;	1012	!	clears the privilege bit in own storage.
+;	1013	!
+;	1014	! CALLING SEQUENCE:
+;	1015	!	HANDLER (ARG1, ARG2)
+;	1016	!
+;	1017	! INPUT PARAMETERS:
+;	1018	!	ARG1: address of signal array
+;	1019	!	ARG2: address of mechanism array
+;	1020	!
+;	1021	! IMPLICIT INPUTS:
+;	1022	!	NONE
+;	1023	!
+;	1024	! OUTPUT PARAMETERS:
+;	1025	!	NONE
+;	1026	!
+;	1027	! IMPLICIT OUTPUTS:
+;	1028	!	PRIVILEGE: cleared if protection check fails
+;	1029	!
+;	1030	! ROUTINE VALUE:
+;	1031	!	NONE
+;	1032	!
+;	1033	! SIDE EFFECTS:
+;	1034	!	NONE
+;	1035	!
+;	1036	!--
+;	1037	
+;	1038	BEGIN
+;	1039	
+;	1040	MAP
+;	1041		SIGNAL		: REF BBLOCK,	! signal array arg
+;	1042		MECHANISM	: REF BBLOCK;	! mechanism array arg
+;	1043	
+;	1044	EXTERNAL ROUTINE
+;	1045		SYS$UNWIND	: ADDRESSING_MODE (ABSOLUTE);
+;	1046						! system unwind stack service
+;	1047	
+;	1048	
+;	1049	PRIVILEGE[0] = 0;
+;	1050	SYS$UNWIND (MECHANISM[CHF$L_MCH_DEPTH], 0);
+;	1051	
+;	1052	END;					! end of routine HANDLER
+
+
+
+							    .EXTRN  SYS$UNWIND
+
+					 0000 003CF HANDLER:.WORD   Save nothing					      ; 1004
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:03:33	DBB3:[F11A.SRC]RWATTR.B32;8					Page 5-1
+;
+		  0000'  CF	       01  8A 003D1 	    BICB2   #1, PRIVILEGE					      ; 1049
+				       7E  D4 003D6 	    CLRL    -(SP)						      ; 1050
+	   7E 	    08   AC	       08  C1 003D8 	    ADDL3   #8, MECHANISM, -(SP)				      ;
+	      00000000G  9F	       02  FB 003DD 	    CALLS   #2, @#SYS$UNWIND					      ;
+					   04 003E4 	    RET     							      ; 1004
+
+; Routine Size:  22 bytes
+
+
+;	1053	
+;	1054	END
+;	1055	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   997  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+;  $LOCKEDD1$     	     4    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        37         0       241
+
+
+
+
+
+; Size:		885 code + 116 data bytes
+; Run Time:	00:20.5
+; Elapsed Time:	00:39.4
+; Memory Used:	370 pages
+; Compilation Complete

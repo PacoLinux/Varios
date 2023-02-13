@@ -1,0 +1,404 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGLST ( ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0002			IDENT = '000013') =
+;	0003	BEGIN
+;	0004	
+;	0005	! Copyright (C) 1976
+;	0006	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0007	!
+;	0008	! This software is furnished under a license for use only on a
+;	0009	! single computer system and may be copied only with the inclusion
+;	0010	! of the above copyright notice. This software, or any
+;	0011	! other copies thereof, may not be provided or otherwise made
+;	0012	! available to any other person except for use on such system
+;	0013	! and to one who agrees to these license terms. Title to and
+;	0014	! ownership of the software shall at all times remain in DEC.
+;	0015	!
+;	0016	! The information in this software is subject to change without
+;	0017	! notice and should not be construed as a commitment by Digital
+;	0018	! Equipment Corporation.
+;	0019	!
+;	0020	! DEC assumes no responsibility for the use or reliability of
+;	0021	! its software on equipment which is not supplied by DEC.
+;	0022	!
+;	0023	! FACILITY:	DEBUG
+;	0024	!
+;	0025	!++
+;	0026	! FUNCTIONAL DESCRIPTION:
+;	0027	!	CREATES AND ADDS ITEMS TO A LINKED LIST
+;	0028	!
+;	0029	! Version:	13
+;	0030	!
+;	0031	! History:
+;	0032	!	Author:
+;	0033	!		Carol Peters, 28 Oct 1976: Version 01
+;	0034	!
+;	0035	!	Modified by:
+;	0036	!		Kevin Pammett, 14-jun-78: Version 13
+;	0037	!
+;	0038	! Revision history:
+;	0039	!	05	29-03-77	CP	deleted routines that called DBG$ADD_ARG
+;	0040	!					to add arguments to the doubly-linked command
+;	0041	!					argument list. put functions directly in
+;	0042	!					the parser in the form of macros.
+;	0043	!	06	08-04-77	CP	add diagnostics to ADD_ARG.
+;	0044	!	07	20-04-77	CP	Add DBGPCT.BEG for declarations
+;	0045	!					of PSECTs.
+;	0046	!	08	29-04-77	CP	Change ADD_ARG so that it does
+;	0047	!					not set PARS_MOR, just returns
+;	0048	!					zero if didn't work.
+;	0049	!	09	11-10-77	CP	Remove all error reports.
+;	0050	!	10	27-10-77	CP	Make tail_lst non-global, instead
+;	0051	!					it is OWN storage.
+;	0052	!	11	27-APR-78	DAR	Modified require and library directives
+;	0053	!					for native build.
+;	0054	!	12	12-jun-78	KGP	-FREE_ARG now knows about a special
+;	0055	!					 field in each list_elem which gives
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	!					 additional storage which must be freed
+;	0057	!					 up when each list_elem is.
+;	0058	!	13	14-jun-78	KGP	-in free_arg, STORE gets freed up 
+;	0059	!					 whether or not EXP1 also contains the
+;	0060	!					 same value.  Bug fix.
+;	0061	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0062	! TABLE OF CONTENTS:
+;	0063	!
+;	0064	FORWARD ROUTINE
+;	0065		DBG$ADD_ARG,		! CREATES A LINKED LIST OR ADDS A NEW ENTRY TO IT
+;	0066		DBG$FREE_ARG : NOVALUE;	! FREES A LINKED LIST
+;	0067	
+;	0068	!
+;	0069	! REQUIRE FILES:
+;	0070	!
+;	0071	%IF %VARIANT		! True for TEN
+;     L 0072	%THEN
+;     U 0073	LIBRARY 'NEW:STARLE';
+;     U 0074	
+;     U 0075	REQUIRE 'DBGPCT.REQ';
+;     U 0076	REQUIRE 'BSTRUC.REQ';
+;     U 0077	REQUIRE 'LISTEL.REQ';
+;     U 0078	REQUIRE 'VXSMAC.REQ';
+;     U 0079	REQUIRE 'DBGRST.REQ';
+;     U 0080	REQUIRE 'SYSSER.REQ';
+;     U 0081	%ELSE
+;	0082	LIBRARY 'SYS$LIBRARY:STARLET.L32';
+;	0083	
+;	0084	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0096	REQUIRE 'SRC$:BSTRUC.REQ';
+;	0147	REQUIRE 'SRC$:LISTEL.REQ';
+;	0181	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0221	REQUIRE 'SRC$:DBGRST.REQ';
+;	1368	REQUIRE 'SRC$:SYSSER.REQ';
+;      R1371	SWITCHES LIST (SOURCE);
+;      R1372	
+;      R1373	EXTERNAL ROUTINE
+;      R1374		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R1375	
+;      R1376	SWITCHES LIST (NOSOURCE);
+;	1421	%FI
+;	1422	
+;	1423	EXTERNAL ROUTINE
+;	1424		DBG$FREEZ,		! GETS A PIECE OF FREE STORAGE
+;	1425		DBG$FREERELEASE;	! RELEASES FREE STORAGE
+;	1426	
+;	1427	EXTERNAL
+;	1428		DBG$GL_HEAD_LST;	! ADDRESS OF HEAD OF LINKED LIST
+;	1429	
+;	1430	OWN
+;	1431		tail_lst;		! ADDRESS OF TAIL OF LINKED LIST
+;	1432	
+;	1433	LITERAL
+;	1434		DBG_LST		= 0,		! for debugging purposes
+;	1435		dbg_lst1	= 0;		! diagnostics in free_arg
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	1436	GLOBAL ROUTINE DBG$ADD_ARG (EXPRESSION) =
+;	1437	
+;	1438	!++
+;	1439	! FUNCTIONAL DESCRIPTION:
+;	1440	!	ADDS AN ELEMENT TO A LINKED LIST OR CREATES A LINKED
+;	1441	!	LIST AND INSERTS THE FIRST ELEMENT.
+;	1442	!	THE ADDRESS OF THE HEAD OF THE LIST IS AT DBG$GL_HEAD_LST
+;	1443	!	AND THE ADDRESS OF THE TAIL AT tail_lst.
+;	1444	!	THIS ROUTINE ONLY PUTS A SINGLE VALUE IN THE LIST ELEMENT,
+;	1445	!	AND IT PUTS IT AT THE LONGWORD AFTER THE POINTER.
+;	1446	!
+;	1447	! CALLING SEQUENCE:
+;	1448	!	DBG$ADD_ARG ()
+;	1449	!
+;	1450	! INPUTS:
+;	1451	!	EXPRESSION	- VALUE TO PUT IN LIST ELEMENT
+;	1452	!
+;	1453	! IMPLICIT INPUTS:
+;	1454	!	THE HEAD AND TAIL OF THE LINKED LIST.
+;	1455	!	THE LENGTH OF A LIST ELEMENT (LIST_ELEM_LEN).
+;	1456	!
+;	1457	! OUTPUTS:
+;	1458	!	THE ADDRESS OF THE NEW ELEMENT IF SPACE FOR THE LIST
+;	1459	!	ELEMENT WAS FOUND. OTHERWISE A ZERO.
+;	1460	!
+;	1461	! IMPLICIT OUTPUTS:
+;	1462	!	NONE
+;	1463	!
+;	1464	! ROUTINE VALUE:
+;	1465	!	THE POINTER TO THE ELEMENT, OR A ZERO IF NO ELEMENT WAS ALLOCATED.
+;	1466	!
+;	1467	! SIDE EFFECTS:
+;	1468	!	THE LIST ELEMENT IS WRITTEN. THE TAIL OF THE LIST IS REWRITTEN.
+;	1469	!	IF THE LIST WAS CREATED, BOTH THE HEAD AND THE TAIL ARE WRITTEN
+;	1470	!	TO THEIR GLOBAL VARIABLE NAMES.
+;	1471	!--
+;	1472	
+;	1473		BEGIN
+;	1474	
+;	1475		LOCAL
+;	1476			POINTER;
+;	1477	
+;	1478	%IF DBG_LST
+;     L 1479	%THEN
+;     U 1480		$FAO_TT_OUT ('!/expression is !XL', .EXPRESSION);
+;     U 1481	%FI
+;	1482		POINTER = DBG$FREEZ (LIST_ELEM_LEN);
+;	1483		IF .DBG$GL_HEAD_LST EQL 0
+;	1484		THEN DBG$GL_HEAD_LST = .POINTER
+;	1485		ELSE LIST_ELEM_FLINK (.tail_lst) = .POINTER;
+;	1486		LIST_ELEM_FLINK (.POINTER) = 0;
+;	1487		tail_lst = .POINTER;
+;	1488		LIST_ELEM_EXP1 (.POINTER) = .EXPRESSION;
+;	1489		RETURN .POINTER
+;	1490		END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+
+
+							    .TITLE  DBGLST
+							    .IDENT  \000013\
+
+							    .PSECT  DBG$OWN,NOEXE,  PIC,2
+
+					      00000 TAIL_LST:
+							    .BLKB   4
+
+							    .GLOBL  DBG$_RST_BEGIN, DBG$FAO_OUT, DBG$FREEZ, DBG$FREERELEASE
+							    .GLOBL  DBG$GL_HEAD_LST
+							    .WEAK   ACCESS_CHECK
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0800 00000 	    .ENTRY  DBG$ADD_ARG, Save R11				      ; 1436
+		         5B 00000000G  EF  9E 00002 	    MOVAB   DBG$GL_HEAD_LST, R11				      ;
+				       06  DD 00009 	    PUSHL   #6							      ; 1482
+	      00000000G  EF	       01  FB 0000B 	    CALLS   #1, DBG$FREEZ					      ;
+				       6B  D5 00012 	    TSTL    DBG$GL_HEAD_LST					      ; 1483
+				       05  12 00014 	    BNEQ    1$							      ;
+		         6B	       50  D0 00016 	    MOVL    POINTER, DBG$GL_HEAD_LST				      ; 1484
+				       07  11 00019 	    BRB     2$							      ; 1483
+	      00000000'  FF	       50  D0 0001B 1$:     MOVL    POINTER, @TAIL_LST					      ; 1485
+				       60  D4 00022 2$:     CLRL    (POINTER)						      ; 1486
+	      00000000'  EF	       50  D0 00024 	    MOVL    POINTER, TAIL_LST					      ; 1487
+		    04   A0	  04   AC  D0 0002B 	    MOVL    EXPRESSION, 4(POINTER)				      ; 1488
+					   04 00030 	    RET     							      ; 1436
+
+; Routine Size:  49 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	1491	GLOBAL ROUTINE DBG$FREE_ARG : NOVALUE =
+;	1492	
+;	1493	!++
+;	1494	! FUNCTIONAL DESCRIPTION:
+;	1495	!	FREES EACH ELEMENT OF A LINKED LIST, AND ZEROES THE
+;	1496	!	POINTER TO THE LIST.  Also looks in each list
+;	1497	!	element for a pointer (STORE) which may also indicate
+;	1498	!	storage which needs to be freed up.  Currently this storage
+;	1499	!	is allocated for quoted strings (ASCII or INSTRUCTION).
+;	1500	!
+;	1501	!	THIS ROUTINE IS INTENDED TO BE CALLED AT THE END OF
+;	1502	!	PROCESSING OF A COMPLETE COMMAND LINE.
+;	1503	!
+;	1504	! CALLING SEQUENCE:
+;	1505	!	DBG$FREE_ARG ()
+;	1506	!
+;	1507	! INPUTS:
+;	1508	!	NONE
+;	1509	!
+;	1510	! IMPLICIT INPUTS:
+;	1511	!	THE HEAD OF THE LINKED LIST.
+;	1512	!	THE LENGTH OF A LIST ELEMENT (LIST_ELEM_LEN).
+;	1513	!	The STORE element which points to associated
+;	1514	!	storage which should be freed up when the
+;	1515	!	list_elem is.
+;	1516	!
+;	1517	! OUTPUTS:
+;	1518	!	NONE
+;	1519	!
+;	1520	! IMPLICIT OUTPUTS:
+;	1521	!	NONE
+;	1522	!
+;	1523	! ROUTINE VALUE:
+;	1524	!	NOVALUE
+;	1525	!
+;	1526	! SIDE EFFECTS:
+;	1527	!	THE ELEMENTS OF THE LIST ARE RETURNED TO THE FREE STORAGE POOL.
+;	1528	!--
+;	1529	
+;	1530	BEGIN
+;	1531		LOCAL
+;	1532			current,
+;	1533			next;
+;	1534	
+;	1535		! Pick up a pointer to the supposed command arg list.
+;	1536		! If this pointer is 0, then it is just that the
+;	1537		! last-executed command did not use an arg list.
+;	1538	
+;	1539		IF (current = .DBG$GL_HEAD_LST) EQL 0
+;	1540		THEN
+;	1541			return;
+;	1542	
+;	1543		! Otherwise skip along the list deleting
+;	1544		! each element of it.
+;	1545	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 4-1
+; Digital Equipment Corporation
+;
+;	1546		DO
+;	1547			BEGIN
+;	1548			LOCAL
+;	1549					! If there is auxiliary storage associated
+;	1550					! with a list_elem, then this storage is
+;	1551					! the address of a counted string which
+;	1552					! tells us how large it is.
+;	1553				cs_ptr : ref vector[,byte];
+;	1554	
+;	1555			! See if there is any storage associated with
+;	1556			! this list element which needs to be freed up.
+;	1557	
+;	1558			if( (cs_ptr = .list_elem_store(.current)) neq 0 )
+;	1559			then
+;	1560				begin
+;	1561	%if dbg_lst1
+;     L 1562	%then
+;     U 1563				$fao_tt_out('free_arg: auxiliary = !XL, bytes = !SB',
+;     U 1564					.list_elem_store(.current),.cs_ptr[0]);
+;     U 1565	%FI
+;	1566				! Release 1 more byte than the string size indicates
+;	1567				! since we allocated space for this size byte too.
+;	1568	
+;	1569				dbg$freerelease(.cs_ptr,RST_UNITS(.cs_ptr[0]+1));
+;	1570				end;
+;	1571	
+;	1572			! Now release the LIST_ELEM itself, having first
+;	1573			! extracted from it the address of the next one.
+;	1574	
+;	1575			next = .LIST_ELEM_FLINK (.current);
+;	1576			DBG$FREERELEASE (.current, LIST_ELEM_LEN);
+;	1577			END
+;	1578		UNTIL (current = .next) EQL 0;
+;	1579	
+;	1580		! Destroy any trace of the command arg list in preparation
+;	1581		! for the next input command.
+;	1582	
+;	1583		DBG$GL_HEAD_LST = 0;
+;	1584	END;
+
+
+
+
+
+					 0C0C 00031 	    .ENTRY  DBG$FREE_ARG, Save R2,R3,R10,R11			      ; 1491
+		         5A 00000000G  EF  9E 00033 	    MOVAB   DBG$GL_HEAD_LST, R10				      ;
+		         5B 00000000G  EF  9E 0003A 	    MOVAB   DBG$FREERELEASE, R11				      ;
+		         52	       6A  D0 00041 	    MOVL    DBG$GL_HEAD_LST, CURRENT				      ; 1539
+				       26  13 00044 	    BEQL    3$							      ;
+		         51	  14   A2  D0 00046 1$:     MOVL    20(CURRENT), CS_PTR					      ; 1558
+				       0F  13 0004A 	    BEQL    2$							      ;
+		         50	       61  9A 0004C 	    MOVZBL  (CS_PTR), R0					      ; 1569
+		         50	       04  C0 0004F 	    ADDL2   #4, R0						      ;
+	   7E	         50	       04  C7 00052 	    DIVL3   #4, R0, -(SP)					      ;
+				       51  DD 00056 	    PUSHL   CS_PTR						      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 4-2
+; Digital Equipment Corporation
+;
+		         6B	       02  FB 00058 	    CALLS   #2, DBG$FREERELEASE					      ;
+		         53	       62  D0 0005B 2$:     MOVL    (CURRENT), NEXT					      ; 1575
+				       06  DD 0005E 	    PUSHL   #6							      ; 1576
+				       52  DD 00060 	    PUSHL   CURRENT						      ;
+		         6B	       02  FB 00062 	    CALLS   #2, DBG$FREERELEASE					      ;
+		         52	       53  D0 00065 	    MOVL    NEXT, CURRENT					      ; 1578
+				       DC  12 00068 	    BNEQ    1$							      ;
+				       6A  D4 0006A 	    CLRL    DBG$GL_HEAD_LST					      ; 1583
+					   04 0006C 3$:     RET     							      ; 1491
+
+; Routine Size:  60 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:25:45	DBB3:[DEBUG.SRC]DBGLST.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	1585	END
+;	1586	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$OWN        	     4    WRT,  RD ,NOEXE,NOSHR,  LCL,  REL,  CON,  PIC,ALIGN(2)
+;  DBG$CODE       	   109  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]STARLET.L32;1		      2688         0         0       107
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      263	00:06.8		00:09.0
+;	FLOWAN	       22	00:00.2		00:00.2
+;	DELAY	       24	00:00.1		00:00.1
+;	TNBIND	       28	00:00.2		00:00.2
+;	CODE	       40	00:00.2		00:00.2
+;	FINAL	       76	00:00.6		00:00.7
+;	Total	      453	00:08.2		00:10.5
+
+; Size:		109 code + 4 data bytes
+; Run Time:	00:08.4
+; Elapsed Time:	00:10.8
+; Memory Used:	164 pages
+; Compilation Complete

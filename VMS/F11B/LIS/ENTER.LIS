@@ -1,0 +1,666 @@
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 1
+;
+;	0001	MODULE ENTER (
+;	0002			LANGUAGE (BLISS32),
+;	0003			IDENT = 'B0008'
+;	0004			) =
+;	0005	BEGIN
+;	0006	
+;	0007	!
+;	0008	! Copyright (c) 1977
+;	0009	! Digital Equipment Corporation, Maynard, Massachusetts 01754
+;	0010	!
+;	0011	! This software is furnished  under a license for use only on a single
+;	0012	! computer  system and  may be  copied only with  the inclusion of the
+;	0013	! above copyright notice.  This software, or any other copies thereof,
+;	0014	! may not be provided or  otherwise made available to any other person
+;	0015	! except for use on such system and to one who agrees to these license
+;	0016	! terms.  Title to and  ownership of the  software  shall at all times
+;	0017	! remain in DEC.
+;	0018	!
+;	0019	! The information in this software is subject to change without notice
+;	0020	! and should  not be construed  as a commitment  by Digital  Equipment
+;	0021	! Corporation.
+;	0022	!
+;	0023	! DEC assumes  no  responsibility  for  the use or  reliability of its
+;	0024	! software on equipment which is not supplied by DEC.
+;	0025	
+;	0026	!++
+;	0027	!
+;	0028	! FACILITY:  F11ACP Structure Level 2
+;	0029	!
+;	0030	! ABSTRACT:
+;	0031	!
+;	0032	!	This routine creates a new directory entry for the given file.
+;	0033	!
+;	0034	! ENVIRONMENT:
+;	0035	!
+;	0036	!	STARLET operating system, including privileged system services
+;	0037	!	and internal exec routines.
+;	0038	!
+;	0039	!--
+;	0040	!
+;	0041	!
+;	0042	! AUTHOR:  Andrew C. Goldstein,	 CREATION DATE:  11-Jan-1978  16:50
+;	0043	!
+;	0044	! REVISION HISTORY:
+;	0045	!
+;	0046	!   Andrew C. Goldstein, 17-Jan-1978  0:25
+;	0047	!   B0002 - Directory structure change
+;	0048	!
+;	0049	!   Andrew C. Goldstein, 22-Jan-1978  20:07
+;	0050	!   B0003 - EXTEND_DIR becomes SHUFFLE_DIR
+;	0051	!
+;	0052	!   Andrew C. Goldstein, 12-Feb-1978  14:24
+;	0053	!   B0004 - Circumvent MOVC microcode bug
+;	0054	!
+;	0055	!   Andrew C. Goldstein, 12-Feb-1978  19:26
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 1-1
+;
+;	0056	!   B0005 - Store correct version in automatic purge code
+;	0057	!
+;	0058	!   Andrew C. Goldstein, 16-May-78  14:58
+;	0059	!   B0006 - Fix computation of max number of versions
+;	0060	!
+;	0061	!   Andrew C. Goldstein, 12-Jul-78  20:13
+;	0062	!   B0007 - Use separate storage for superseded file ID
+;	0063	!
+;	0064	!   Andrew C. Goldstein, 10-Aug-78  14:24
+;	0065	!   B0008 - Remove MOVC kluge
+;	0066	!
+;	0067	!**
+;	0068	
+;	0069	
+;	0070	LIBRARY 'SYS$LIBRARY:LIB.L32';
+;	0071	REQUIRE 'SRC$:FCPDEF.B32';
+;	0420	
+;	0421	
+;	0422	FORWARD ROUTINE
+;	0423		ENTER		: NOVALUE,	! main ENTER routine
+;	0424		MAKE_ENTRY	: NOVALUE;	! build new directory entry
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 2
+;
+;	0425	GLOBAL ROUTINE ENTER (ABD, FIB, RESULT_LENGTH, RESULT) : NOVALUE =
+;	0426	
+;	0427	!++
+;	0428	!
+;	0429	! FUNCTIONAL DESCRIPTION:
+;	0430	!
+;	0431	!	This routine enters the given file name in the specified directory.
+;	0432	!
+;	0433	! CALLING SEQUENCE:
+;	0434	!	ENTER (ARG1, ARG2, ARG3, ARG4)
+;	0435	!
+;	0436	! INPUT PARAMETERS:
+;	0437	!	ARG1: address of buffer descriptor packet
+;	0438	!	ARG2: address of FIB of operation
+;	0439	!
+;	0440	! IMPLICIT INPUTS:
+;	0441	!	NONE
+;	0442	!
+;	0443	! OUTPUT PARAMETERS:
+;	0444	!	ARG3: address of longword to receive length of result string
+;	0445	!	ARG4: address of result string buffer
+;	0446	!
+;	0447	! IMPLICIT OUTPUTS:
+;	0448	!	DIR_RECORD: record number of new directory entry
+;	0449	!	DIR_BUFFER: buffer address of current directory block
+;	0450	!	DIR_ENTRY: address of directory record
+;	0451	!	DIR_VERSION: address of directory version entry
+;	0452	!	DIR_END: end of directory data
+;	0453	!	PREV_VERSION: version number of superseded entry
+;	0454	!
+;	0455	! ROUTINE VALUE:
+;	0456	!	NONE
+;	0457	!
+;	0458	! SIDE EFFECTS:
+;	0459	!	directory altered, result string and length written into buffer packet
+;	0460	!
+;	0461	!--
+;	0462	
+;	0463	BEGIN
+;	0464	
+;	0465	MAP
+;	0466		ABD		: REF BBLOCKVECTOR [,ABD$C_LENGTH],
+;	0467						! descriptor list arg
+;	0468		FIB		: REF BBLOCK,	! FIB argument
+;	0469		RESULT		: REF VECTOR [,BYTE]; ! result string arg
+;	0470	
+;	0471	LOCAL
+;	0472		NAME_DESC	: BBLOCK [FND_LENGTH], ! file name descriptor block
+;	0473		STATUS,				! result of directory search
+;	0474		NAME_LENGTH;			! length of file name, rounded even
+;	0475	
+;	0476	EXTERNAL
+;	0477		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0478		DIR_BUFFER	: REF BBLOCK,	! buffer address of current directory block
+;	0479		DIR_ENTRY	: REF BBLOCK,	! address of directory record
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 2-1
+;
+;	0480		DIR_VERSION	: REF BBLOCK,	! address of directory version entry
+;	0481		DIR_END		: REF BBLOCK,	! end of directory data
+;	0482		PREV_VERSION,			! version number of superseded entry
+;	0483		SUPER_FID	: BBLOCK;	! file ID of superseded file
+;	0484	
+;	0485	EXTERNAL ROUTINE
+;	0486		PMS_START_SUB,			! start subfunction metering
+;	0487		PMS_END_SUB,			! end subfunction metering
+;	0488		DIR_ACCESS,			! access the directory
+;	0489		PARSE_NAME,			! parse file string
+;	0490		DIR_SCAN,			! search the directory
+;	0491		RETURN_DIR,			! return data to buffer packet
+;	0492		WRITE_BLOCK;			! write disk block
+;	0493	
+;	0494	
+;	0495	! Start metering for this subfunction.
+;	0496	!
+;	0497	
+;	0498	PMS_START_SUB (PMS_ENTER);
+;	0499	
+;	0500	! The file ID to be entered must be non-zero
+;	0501	!
+;	0502	
+;	0503	IF .FIB[FIB$W_FID_NUM] EQL 0
+;	0504	THEN ERR_EXIT (SS$_BADPARAM);
+;	0505	
+;	0506	! Find the name string in the buffer packet. Parse the string into the
+;	0507	! name descriptor block. Mask out the wild card bits, since
+;	0508	! they are ignored.
+;	0509	!
+;	0510	
+;	0511	PARSE_NAME (NAME_DESC, .ABD[ABD$C_NAME, ABD$W_COUNT],
+;	0512		    .ABD[ABD$C_NAME, ABD$W_TEXT] + ABD[ABD$C_NAME, ABD$W_TEXT] + 1,
+;	0513		    .FIB[FIB$W_NMCTL] AND FIB$M_NEWVER);
+;	0514	NAME_LENGTH = .NAME_DESC[FND_COUNT] + 1 AND NOT 1;
+;	0515	
+;	0516	! Access the directory.
+;	0517	!
+;	0518	
+;	0519	DIR_ACCESS (.FIB, 1);
+;	0520	
+;	0521	! Search the directory for the indicated name. If the search succeeds, we have a
+;	0522	! duplicate entry. If supersede is enabled, do it; otherwise, take an error exit.
+;	0523	! If the search failed, make a new entry.
+;	0524	!
+;	0525	
+;	0526	STATUS =  DIR_SCAN (NAME_DESC, 0, 0, 0, 0, 63);
+;	0527	IF .STATUS
+;	0528	AND NOT .NAME_DESC[FND_MAX_VER]
+;	0529	AND .NAME_DESC[FND_VERSION] NEQ 0
+;	0530	THEN
+;	0531	    BEGIN
+;	0532	    IF NOT .FIB[FIB$V_SUPERSEDE]
+;	0533	    THEN ERR_EXIT (SS$_DUPFILENAME);
+;	0534	
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 2-2
+;
+;	0535	    DIR_END = .DIR_VERSION;
+;	0536	    PREV_VERSION = .DIR_VERSION[DIR$W_VERSION];
+;	0537	    CH$MOVE (FIB$S_FID, DIR_VERSION[DIR$W_FID], SUPER_FID);
+;	0538	    CH$MOVE (FIB$S_FID, FIB[FIB$W_FID], DIR_VERSION[DIR$W_FID]);
+;	0539	    CLEANUP_FLAGS[CLF_SUPERSEDE] = 1;
+;	0540	    END
+;	0541	
+;	0542	ELSE
+;	0543	    MAKE_ENTRY (NAME_DESC, .FIB);
+;	0544	
+;	0545	! Determine whether higher or lower versions exist of the new entry.
+;	0546	! This is deduced from the relative position of the new version in the record.
+;	0547	!
+;	0548	
+;	0549	IF .DIR_ENTRY[DIR$V_PREVREC]
+;	0550	OR .DIR_VERSION GTRA .DIR_ENTRY + .NAME_LENGTH + DIR$C_LENGTH
+;	0551	THEN FIB[FIB$V_HIGHVER] = 1;
+;	0552	
+;	0553	IF .DIR_ENTRY[DIR$V_NEXTREC]
+;	0554	OR .DIR_VERSION LSSA .DIR_ENTRY + .DIR_ENTRY[DIR$W_SIZE] + 2 - DIR$C_VERSION
+;	0555	THEN FIB[FIB$V_LOWVER] = 1;
+;	0556	
+;	0557	! Write out the modified directory block, set the cleanup flags, and
+;	0558	! return the resultant directory string to the caller.
+;	0559	!
+;	0560	
+;	0561	KERNEL_CALL (RETURN_DIR, .RESULT_LENGTH, .RESULT, .ABD);
+;	0562	
+;	0563	WRITE_BLOCK (.DIR_BUFFER);
+;	0564	CLEANUP_FLAGS[CLF_REMOVE] = 1;
+;	0565	
+;	0566	PMS_END_SUB ();
+;	0567	
+;	0568	END;					! end of routine ENTER
+
+
+							    .TITLE  ENTER
+							    .IDENT  \B0008\
+
+							    .EXTRN  CLEANUP_FLAGS, DIR_BUFFER, DIR_ENTRY, DIR_VERSION
+							    .EXTRN  DIR_END, PREV_VERSION, SUPER_FID, PMS_START_SUB
+							    .EXTRN  PMS_END_SUB, DIR_ACCESS, PARSE_NAME, DIR_SCAN
+							    .EXTRN  RETURN_DIR, WRITE_BLOCK, SYS$CMKRNL
+
+							    .PSECT  $CODE$,NOWRT,2
+
+					 01FC 00000 	    .ENTRY  ENTER, Save R2,R3,R4,R5,R6,R7,R8			      ; 0425
+		         58 	0000G  CF  9E 00002 	    MOVAB   DIR_VERSION, R8					      ;
+		         5E 	       10  C2 00007 	    SUBL2   #16, SP						      ;
+				       07  DD 0000A 	    PUSHL   #7							      ; 0498
+		  0000G  CF	       01  FB 0000C 	    CALLS   #1, PMS_START_SUB					      ;
+		         50 	  08   AC  D0 00011 	    MOVL    FIB, R0						      ; 0503
+				  04   A0  B5 00015 	    TSTW    4(R0)						      ;
+				       03  12 00018 	    BNEQ    1$							      ;
+				       14  BF 0001A 	    CHMU    #20							      ; 0504
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 2-3
+;
+					   04 0001C 	    RET     							      ;
+		         53 	  08   AC  D0 0001D 1$:     MOVL    FIB, R3						      ; 0513
+		         50 	  14   A3  3C 00021 	    MOVZWL  20(R3), R0						      ;
+	   7E 	         50 FFFFFDFF   8F  CB 00025 	    BICL3   #-513, R0, -(SP)					      ;
+		         51 	  04   AC  D0 0002D 	    MOVL    ABD, R1						      ; 0512
+		         52 	  10   A1  9E 00031 	    MOVAB   16(R1), R2						      ;
+		         50 	       62  3C 00035 	    MOVZWL  (R2), R0						      ;
+				  01 A240  9F 00038 	    PUSHAB  1(R2)[R0]						      ;
+		         7E 	  12   A1  3C 0003C 	    MOVZWL  18(R1), -(SP)					      ; 0511
+				  0C   AE  9F 00040 	    PUSHAB  NAME_DESC						      ;
+		  0000G  CF	       04  FB 00043 	    CALLS   #4, PARSE_NAME					      ;
+	   50 	    04   AE	       01  C1 00048 	    ADDL3   #1, NAME_DESC+4, R0					      ; 0514
+	   57 	         50 	       01  CB 0004D 	    BICL3   #1, R0, NAME_LENGTH					      ;
+				       01  DD 00051 	    PUSHL   #1							      ; 0519
+				       53  DD 00053 	    PUSHL   R3							      ;
+		  0000G  CF	       02  FB 00055 	    CALLS   #2, DIR_ACCESS					      ;
+				       3F  DD 0005A 	    PUSHL   #63							      ; 0526
+				       7E  7C 0005C 	    CLRQ    -(SP)						      ;
+				       7E  7C 0005E 	    CLRQ    -(SP)						      ;
+				  14   AE  9F 00060 	    PUSHAB  NAME_DESC						      ;
+		  0000G  CF	       06  FB 00063 	    CALLS   #6, DIR_SCAN					      ;
+		         39 	       50  E9 00068 	    BLBC    STATUS, 3$						      ; 0527
+	   34 	    01   AE	       01  E0 0006B 	    BBS     #1, NAME_DESC+1, 3$					      ; 0528
+				  0C   AE  B5 00070 	    TSTW    NAME_DESC+12					      ; 0529
+				       2F  13 00073 	    BEQL    3$							      ;
+	   05 	    15   A3	       02  E0 00075 	    BBS     #2, 21(R3), 2$					      ; 0532
+				0868   8F  BF 0007A 	    CHMU    #2152						      ; 0533
+					   04 0007E 	    RET     							      ;
+		         56 	       68  D0 0007F 2$:     MOVL    DIR_VERSION, R6					      ; 0535
+		  0000G  CF	       56  D0 00082 	    MOVL    R6, DIR_END						      ;
+		  0000G  CF	       66  32 00087 	    CVTWL   (R6), PREV_VERSION					      ; 0536
+    0000G  CF	    02   A6	       06  28 0008C 	    MOVC3   #6, 2(R6), SUPER_FID				      ; 0537
+		         50 	  08   AC  D0 00093 	    MOVL    FIB, R0						      ; 0538
+      02   A6	    04   A0	       06  28 00097 	    MOVC3   #6, 4(R0), 2(R6)					      ;
+		  0000G  CF	       20  88 0009D 	    BISB2   #32, CLEANUP_FLAGS					      ; 0539
+				       0A  11 000A2 	    BRB     4$							      ; 0527
+				       53  DD 000A4 3$:     PUSHL   R3							      ; 0543
+				  04   AE  9F 000A6 	    PUSHAB  NAME_DESC						      ;
+		  0000V  CF	       02  FB 000A9 	    CALLS   #2, MAKE_ENTRY					      ;
+		         50 	0000G  CF  D0 000AE 4$:     MOVL    DIR_ENTRY, R0					      ; 0549
+	   0A 	    04   A0	       07  E0 000B3 	    BBS     #7, 4(R0), 5$					      ;
+		         51 	  06 A740  9E 000B8 	    MOVAB   6(NAME_LENGTH)[R0], R1				      ; 0550
+		         51 	       68  D1 000BD 	    CMPL    DIR_VERSION, R1					      ;
+				       09  1B 000C0 	    BLEQU   6$							      ;
+		         51 	  08   AC  D0 000C2 5$:     MOVL    FIB, R1						      ; 0551
+		    15   A1	  80   8F  88 000C6 	    BISB2   #128, 21(R1)					      ;
+	   0D 	    04   A0	       06  E0 000CB 6$:     BBS     #6, 4(R0), 7$					      ; 0553
+		         51 	       60  3C 000D0 	    MOVZWL  (R0), R1						      ; 0554
+		         50 	  FA A140  9E 000D3 	    MOVAB   -6(R1)[R0], R0					      ;
+		         50 	       68  D1 000D8 	    CMPL    DIR_VERSION, R0					      ;
+				       09  1E 000DB 	    BGEQU   8$							      ;
+		         50 	  08   AC  D0 000DD 7$:     MOVL    FIB, R0						      ; 0555
+		    15   A0	  40   8F  88 000E1 	    BISB2   #64, 21(R0)						      ;
+				  04   AC  DD 000E6 8$:     PUSHL   ABD							      ; 0561
+		         7E 	  0C   AC  7D 000E9 	    MOVQ    RESULT_LENGTH, -(SP)				      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 2-4
+;
+				       03  DD 000ED 	    PUSHL   #3							      ;
+				       5E  DD 000EF 	    PUSHL   SP							      ;
+				0000G  CF  9F 000F1 	    PUSHAB  RETURN_DIR						      ;
+	      00000000G  9F	       06  FB 000F5 	    CALLS   #6, @#SYS$CMKRNL					      ;
+				0000G  CF  DD 000FC 	    PUSHL   DIR_BUFFER						      ; 0563
+		  0000G  CF	       01  FB 00100 	    CALLS   #1, WRITE_BLOCK					      ;
+		  0000G  CF	  40   8F  88 00105 	    BISB2   #64, CLEANUP_FLAGS+2				      ; 0564
+		  0000G  CF	       00  FB 0010B 	    CALLS   #0, PMS_END_SUB					      ; 0566
+					   04 00110 	    RET     							      ; 0425
+
+; Routine Size:  273 bytes
+
+
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3
+;
+;	0569	GLOBAL ROUTINE MAKE_ENTRY (NAME_DESC, FIB) : NOVALUE =
+;	0570	
+;	0571	!++
+;	0572	!
+;	0573	! FUNCTIONAL DESCRIPTION:
+;	0574	!
+;	0575	!	This routine makes a new directory entry, either for a new file
+;	0576	!	name or for a new version of an existing file.
+;	0577	!
+;	0578	!
+;	0579	! CALLING SEQUENCE:
+;	0580	!	MAKE_ENTRY (ARG1, ARG2)
+;	0581	!
+;	0582	! INPUT PARAMETERS:
+;	0583	!	ARG1: address of file name descriptor block
+;	0584	!	ARG2: address of user FIB
+;	0585	!
+;	0586	! IMPLICIT INPUTS:
+;	0587	!	DIR_VBN: VBN of current directory block
+;	0588	!	DIR_BUFFER: buffer address of current directory block
+;	0589	!	DIR_ENTRY: address of directory record
+;	0590	!	DIR_VERSION: address of directory version entry
+;	0591	!
+;	0592	! OUTPUT PARAMETERS:
+;	0593	!	NONE
+;	0594	!
+;	0595	! IMPLICIT OUTPUTS:
+;	0596	!	DIR_END: end of directory data
+;	0597	!	PREV_VERSION: version number of superseded entry
+;	0598	!
+;	0599	! ROUTINE VALUE:
+;	0600	!	NONE
+;	0601	!
+;	0602	! SIDE EFFECTS:
+;	0603	!	directory buffer altered, directory may be extended
+;	0604	!
+;	0605	!--
+;	0606	
+;	0607	BEGIN
+;	0608	
+;	0609	MAP
+;	0610		NAME_DESC	: REF BBLOCK,	! file name descriptor block
+;	0611		FIB		: REF BBLOCK;	! user FIB
+;	0612	
+;	0613	LOCAL
+;	0614		EOF,				! entering at end of file flag
+;	0615		DN		: REF BBLOCK,	! local pointer to name descriptor
+;	0616		NAME_LENGTH,			! length of file name, rounded even
+;	0617		NEW_SIZE;			! size in bytes of new record
+;	0618	
+;	0619	EXTERNAL
+;	0620		CLEANUP_FLAGS	: BITVECTOR,	! cleanup action flags
+;	0621		DIR_FCB		: REF BBLOCK,	! FCB of directory file
+;	0622		DIR_VBN,			! VBN of last directory block processed
+;	0623		DIR_BUFFER	: REF BBLOCK,	! buffer address of current directory block
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3-1
+;
+;	0624		DIR_ENTRY	: REF BBLOCK,	! address of directory record
+;	0625		DIR_VERSION	: REF BBLOCK,	! address of directory version entry
+;	0626		DIR_END		: REF BBLOCK,	! end of directory data
+;	0627		PREV_VERSION,			! version number of superseded entry
+;	0628		SUPER_FID	: BBLOCK;	! file ID of superseded file
+;	0629	
+;	0630	EXTERNAL ROUTINE
+;	0631		READ_BLOCK,			! read a disk block
+;	0632		SHUFFLE_DIR,			! extend the directory
+;	0633		NEXT_REC,			! get next directory record
+;	0634		UPDATE_IDX;			! update directory FCB index
+;	0635	
+;	0636	
+;	0637	! Set up the position for the insert. If DIR_ENTRY came back zero, we scanned
+;	0638	! off the end of the directory and must read back the last block.
+;	0639	! Scan to the end of the records in the block.
+;	0640	!
+;	0641	
+;	0642	EOF = 0;
+;	0643	DN = .NAME_DESC;
+;	0644	NAME_LENGTH = .DN[FND_COUNT] + 1 AND NOT 1;
+;	0645	DIR_END = .DIR_ENTRY;
+;	0646	IF .DIR_ENTRY EQL 0
+;	0647	THEN
+;	0648	    BEGIN
+;	0649	    EOF = .EOF + 1;
+;	0650	    DIR_VBN = .DIR_VBN - 1;
+;	0651	    DIR_END = DIR_BUFFER = READ_BLOCK (.DIR_VBN+.DIR_FCB[FCB$L_STLBN]-1,
+;	0652						1, DIRECTORY_TYPE);
+;	0653	    END;
+;	0654	
+;	0655	UNTIL .DIR_END[DIR$W_SIZE] EQL 65535
+;	0656	DO DIR_END = NEXT_REC (.DIR_END);
+;	0657	IF .EOF
+;	0658	THEN DIR_ENTRY = .DIR_END;
+;	0659	DIR_END = .DIR_END + 2;
+;	0660	
+;	0661	! If there was not a name match, we are constructing a whole new record.
+;	0662	! Compute the record size and see if there is enough space. If not, extend
+;	0663	! the directory. Then shuffle down the rest of the records and build the
+;	0664	! new entry. We update the directory index if this is a new last record
+;	0665	! in the block.
+;	0666	!
+;	0667	
+;	0668	IF .DIR_VERSION EQL 0
+;	0669	THEN
+;	0670	    BEGIN
+;	0671	    IF .DN[FND_VERSION] EQL 0
+;	0672	    THEN DN[FND_VERSION] = .DN[FND_VERSION] + 1;
+;	0673	
+;	0674	    NEW_SIZE = DIR$C_LENGTH + DIR$C_VERSION + .NAME_LENGTH;
+;	0675	    IF .NEW_SIZE GTRU .DIR_BUFFER + 512 - .DIR_END
+;	0676	    THEN SHUFFLE_DIR (1);
+;	0677	
+;	0678	    IF .DIR_ENTRY[DIR$W_SIZE] EQL 65535
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3-2
+;
+;	0679	    THEN KERNEL_CALL (UPDATE_IDX, .DIR_VBN-1, CH$RCHAR (.DN[FND_STRING]));
+;	0680	    CH$MOVE (.DIR_END-.DIR_ENTRY, .DIR_ENTRY, .DIR_ENTRY+.NEW_SIZE);
+;	0681	
+;	0682	    DIR_ENTRY[DIR$W_SIZE] = .NEW_SIZE - 2;
+;	0683	    DIR_ENTRY[DIR$W_VERLIMIT] = (512+DIR$C_VERSION-2-.NEW_SIZE) / DIR$C_VERSION;
+;	0684	    DIR_ENTRY[DIR$B_FLAGS] = DIR$C_FID;
+;	0685	    DIR_ENTRY[DIR$B_NAMECOUNT] = .DN[FND_COUNT];
+;	0686	    CH$COPY (.DN[FND_COUNT], .DN[FND_STRING],
+;	0687			0, .NAME_LENGTH, DIR_ENTRY[DIR$T_NAME]);
+;	0688	
+;	0689	    DIR_VERSION = .DIR_ENTRY + .NEW_SIZE - DIR$C_VERSION;
+;	0690	    END
+;	0691	
+;	0692	
+;	0693	! Otherwise we are adding a new version to an existing entry. Check for
+;	0694	! version overflow; if so, move out the oldest version to be superseded.
+;	0695	! If version overflow and the new entry is lower than any, give an error.
+;	0696	! Check available space and extend if necessary. Then shuffle the rest of the
+;	0697	! directory down.
+;	0698	!
+;	0699	
+;	0700	ELSE
+;	0701	    BEGIN
+;	0702		SWITCHES NOOPTIMIZE;
+;	0703	    IF  .DN[FND_VERSION] EQL 0
+;	0704	    OR (.DN[FND_MAX_VER] AND .DN[FND_VERSION] LEQU .DIR_VERSION[DIR$W_VERSION])
+;	0705	    THEN DN[FND_VERSION] = .DIR_VERSION[DIR$W_VERSION] + 1;
+;	0706	
+;	0707	    IF (.DIR_ENTRY[DIR$W_SIZE] + 2 - DIR$C_LENGTH - .NAME_LENGTH) / DIR$C_VERSION
+;	0708	    GEQU .DIR_ENTRY[DIR$W_VERLIMIT]
+;	0709	    THEN
+;	0710		BEGIN
+;	0711		DIR_END = .DIR_ENTRY + .DIR_ENTRY[DIR$W_SIZE] + 2 - DIR$C_VERSION;
+;	0712		IF .DIR_VERSION GEQA .DIR_END
+;	0713		THEN ERR_EXIT (SS$_TOOMANYVER);
+;	0714		PREV_VERSION = .DIR_END[DIR$W_VERSION];
+;	0715		CH$MOVE (FIB$S_FID, DIR_END[DIR$W_FID], SUPER_FID);
+;	0716		CLEANUP_FLAGS[CLF_SUPERSEDE] = 1;
+;	0717		END
+;	0718	
+;	0719	     ELSE
+;	0720		BEGIN
+;	0721		IF DIR$C_VERSION GTRU .DIR_BUFFER + 512 - .DIR_END
+;	0722		THEN SHUFFLE_DIR (1);
+;	0723		DIR_ENTRY[DIR$W_SIZE] = .DIR_ENTRY[DIR$W_SIZE] + DIR$C_VERSION;
+;	0724		END;
+;	0725	
+;	0726	    CH$MOVE (.DIR_END-.DIR_VERSION, .DIR_VERSION, .DIR_VERSION+DIR$C_VERSION);
+;	0727	    END;
+;	0728	
+;	0729	! Now insert the version number and file ID into the version slot.
+;	0730	!
+;	0731	
+;	0732	IF .DN[FND_VERSION] LSS 0
+;	0733	THEN ERR_EXIT (SS$_BADFILEVER);
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3-3
+;
+;	0734	DIR_VERSION[DIR$W_VERSION] = .DN[FND_VERSION];
+;	0735	CH$MOVE (FIB$S_FID, FIB[FIB$W_FID], DIR_VERSION[DIR$W_FID]);
+;	0736	
+;	0737	END;				! end of routine MAKE_ENTRY
+
+
+
+							    .EXTRN  DIR_FCB, DIR_VBN, READ_BLOCK, SHUFFLE_DIR, NEXT_REC
+							    .EXTRN  UPDATE_IDX
+
+					 0FFC 00111 	    .ENTRY  MAKE_ENTRY, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11	      ; 0569
+		         5B 	0000G  CF  9E 00113 	    MOVAB   DIR_VERSION, R11					      ;
+		         5A 	0000G  CF  9E 00118 	    MOVAB   DIR_END, R10					      ;
+				       52  D4 0011D 	    CLRL    EOF							      ; 0642
+		         57 	  04   AC  D0 0011F 	    MOVL    NAME_DESC, DN					      ; 0643
+	   50 	    04   A7	       01  C1 00123 	    ADDL3   #1, 4(DN), R0					      ; 0644
+	   59 	         50 	       01  CB 00128 	    BICL3   #1, R0, NAME_LENGTH					      ;
+		         6A 	0000G  CF  D0 0012C 	    MOVL    DIR_ENTRY, DIR_END					      ; 0645
+				       26  12 00131 	    BNEQ    2$							      ; 0646
+				       52  D6 00133 	    INCL    EOF							      ; 0649
+				0000G  CF  D7 00135 	    DECL    DIR_VBN						      ; 0650
+				       02  DD 00139 	    PUSHL   #2							      ; 0651
+				       01  DD 0013B 	    PUSHL   #1							      ;
+		         50 	0000G  CF  D0 0013D 	    MOVL    DIR_FCB, R0						      ;
+	   50 	  0000G  CF	  2C   A0  C1 00142 	    ADDL3   44(R0), DIR_VBN, R0					      ;
+				  FF   A0  9F 00149 	    PUSHAB  -1(R0)						      ;
+		  0000G  CF	       03  FB 0014C 	    CALLS   #3, READ_BLOCK					      ;
+		  0000G  CF	       50  D0 00151 	    MOVL    R0, DIR_BUFFER					      ;
+		         6A 	       50  D0 00156 1$:     MOVL    R0, DIR_END						      ;
+		  FFFF   8F	  00   BA  B1 00159 2$:     CMPW    @DIR_END, #65535					      ; 0655
+				       09  13 0015F 	    BEQL    3$							      ;
+				       6A  DD 00161 	    PUSHL   DIR_END						      ; 0656
+		  0000G  CF	       01  FB 00163 	    CALLS   #1, NEXT_REC					      ;
+				       EC  11 00168 	    BRB     1$							      ;
+		         05 	       52  E9 0016A 3$:     BLBC    EOF, 4$						      ; 0657
+		  0000G  CF	       6A  D0 0016D 	    MOVL    DIR_END, DIR_ENTRY					      ; 0658
+		         6A 	       02  C0 00172 4$:     ADDL2   #2, DIR_END						      ; 0659
+				       6B  D5 00175 	    TSTL    DIR_VERSION						      ; 0668
+				       7C  12 00177 	    BNEQ    8$							      ;
+				  0C   A7  B5 00179 	    TSTW    12(DN)						      ; 0671
+				       03  12 0017C 	    BNEQ    5$							      ;
+				  0C   A7  B6 0017E 	    INCW    12(DN)						      ; 0672
+		         58 	  0E   A9  9E 00181 5$:     MOVAB   14(R9), NEW_SIZE					      ; 0674
+	   50 	  0000G  CF	       6A  C3 00185 	    SUBL3   DIR_END, DIR_BUFFER, R0				      ; 0675
+		         50 	0200   C0  9E 0018B 	    MOVAB   512(R0), R0						      ;
+		         50 	       58  D1 00190 	    CMPL    NEW_SIZE, R0					      ;
+				       07  1B 00193 	    BLEQU   6$							      ;
+				       01  DD 00195 	    PUSHL   #1							      ; 0676
+		  0000G  CF	       01  FB 00197 	    CALLS   #1, SHUFFLE_DIR					      ;
+		  FFFF   8F	0000G  DF  B1 0019C 6$:     CMPW    @DIR_ENTRY, #65535					      ; 0678
+				       19  12 001A3 	    BNEQ    7$							      ;
+		         7E 	  08   B7  9A 001A5 	    MOVZBL  @8(DN), -(SP)					      ; 0679
+	   7E 	  0000G  CF	       01  C3 001A9 	    SUBL3   #1, DIR_VBN, -(SP)					      ;
+				       02  DD 001AF 	    PUSHL   #2							      ;
+				       5E  DD 001B1 	    PUSHL   SP							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3-4
+;
+				0000G  CF  9F 001B3 	    PUSHAB  UPDATE_IDX						      ;
+	      00000000G  9F	       05  FB 001B7 	    CALLS   #5, @#SYS$CMKRNL					      ;
+		         56 	0000G  CF  D0 001BE 7$:     MOVL    DIR_ENTRY, R6					      ; 0680
+	   50 	         6A 	       56  C3 001C3 	    SUBL3   R6, DIR_END, R0					      ;
+	 6846 	         66 	       50  28 001C7 	    MOVC3   R0, (R6), (NEW_SIZE)[R6]				      ;
+	   66 	         58 	       02  A3 001CC 	    SUBW3   #2, NEW_SIZE, (R6)					      ; 0682
+		         50 	FDFA   C8  9E 001D0 	    MOVAB   -518(R8), R0					      ; 0683
+		         50 	       08  C6 001D5 	    DIVL2   #8, R0						      ;
+		    02   A6	       50  AE 001D8 	    MNEGW   R0, 2(R6)						      ;
+				  04   A6  94 001DC 	    CLRB    4(R6)						      ; 0684
+		    05   A6	  04   A7  90 001DF 	    MOVB    4(DN), 5(R6)					      ; 0685
+	   00 	    08   B7	  04   A7  2C 001E4 	    MOVC5   4(DN), @8(DN), #0, NAME_LENGTH, 6(R6)		      ; 0686
+		    06   A6	       59     001EA									      ;
+		         6B 	  F8 A846  9E 001ED 	    MOVAB   -8(NEW_SIZE)[R6], DIR_VERSION			      ; 0689
+				     0089  31 001F2 	    BRW     15$							      ; 0668
+				  0C   A7  B5 001F5 8$:     TSTW    12(DN)						      ; 0703
+				       0B  13 001F8 	    BEQL    9$							      ;
+	   0D 	         67 	       09  E1 001FA 	    BBC     #9, (DN), 10$					      ; 0704
+		    00   BB	  0C   A7  B1 001FE 	    CMPW    12(DN), @DIR_VERSION				      ;
+				       06  1A 00203 	    BGTRU   10$							      ;
+      0C   A7	    00   BB	       01  A1 00205 9$:     ADDW3   #1, @DIR_VERSION, 12(DN)				      ; 0705
+		         50 	0000G  DF  3C 0020B 10$:    MOVZWL  @DIR_ENTRY, R0					      ; 0707
+		         50 	       59  C2 00210 	    SUBL2   NAME_LENGTH, R0					      ;
+		         50 	       04  C2 00213 	    SUBL2   #4, R0						      ;
+		         50 	       08  C6 00216 	    DIVL2   #8, R0						      ;
+		         51 	0000G  CF  D0 00219 	    MOVL    DIR_ENTRY, R1					      ; 0708
+      02   A1	         10 	       00  ED 0021E 	    CMPZV   #0, #16, 2(R1), R0					      ;
+				       50     00223									      ;
+				       2F  1A 00224 	    BGTRU   12$							      ;
+		         50 	0000G  DF  3C 00226 	    MOVZWL  @DIR_ENTRY, R0					      ; 0711
+		         50 	0000G  CF  C0 0022B 	    ADDL2   DIR_ENTRY, R0					      ;
+		         6A 	  FA   A0  9E 00230 	    MOVAB   -6(R0), DIR_END					      ;
+		         6A 	       6B  D1 00234 	    CMPL    DIR_VERSION, DIR_END				      ; 0712
+				       05  1F 00237 	    BLSSU   11$							      ;
+				0990   8F  BF 00239 	    CHMU    #2448						      ; 0713
+					   04 0023D 	    RET     							      ;
+		  0000G  CF	  00   BA  32 0023E 11$:    CVTWL   @DIR_END, PREV_VERSION				      ; 0714
+		         50 	       6A  D0 00244 	    MOVL    DIR_END, R0						      ; 0715
+    0000G  CF	    02   A0	       06  28 00247 	    MOVC3   #6, 2(R0), SUPER_FID				      ;
+		  0000G  CF	       20  88 0024E 	    BISB2   #32, CLEANUP_FLAGS					      ; 0716
+				       1C  11 00253 	    BRB     14$							      ; 0707
+	   50 	  0000G  CF	       6A  C3 00255 12$:    SUBL3   DIR_END, DIR_BUFFER, R0				      ; 0721
+		         50 	0200   C0  9E 0025B 	    MOVAB   512(R0), R0						      ;
+		         08 	       50  D1 00260 	    CMPL    R0, #8						      ;
+				       07  1E 00263 	    BGEQU   13$							      ;
+				       01  DD 00265 	    PUSHL   #1							      ; 0722
+		  0000G  CF	       01  FB 00267 	    CALLS   #1, SHUFFLE_DIR					      ;
+		  0000G  DF	       08  A0 0026C 13$:    ADDW2   #8, @DIR_ENTRY					      ; 0723
+	   51 	         6A 	       6B  C3 00271 14$:    SUBL3   DIR_VERSION, DIR_END, R1				      ; 0726
+		         50 	       6B  D0 00275 	    MOVL    DIR_VERSION, R0					      ;
+      08   A0	    00   BB	       51  28 00278 	    MOVC3   R1, @DIR_VERSION, 8(R0)				      ;
+				  0C   A7  B5 0027E 15$:    TSTW    12(DN)						      ; 0732
+				       05  18 00281 	    BGEQ    16$							      ;
+				0820   8F  BF 00283 	    CHMU    #2080						      ; 0733
+					   04 00287 	    RET     							      ;
+
+; Bliss-32 10.1-416	Monday 21-AUG-1978 23:13:54	DBB3:[F11B.SRC]ENTER.B32;12					Page 3-5
+;
+		         50 	       6B  D0 00288 16$:    MOVL    DIR_VERSION, R0					      ; 0734
+		         60 	  0C   A7  B0 0028B 	    MOVW    12(DN), (R0)					      ;
+		         51 	  08   AC  D0 0028F 	    MOVL    FIB, R1						      ; 0735
+      02   A0	    04   A1	       06  28 00293 	    MOVC3   #6, 4(R1), 2(R0)					      ;
+					   04 00299 	    RET     							      ; 0569
+
+; Routine Size:  393 bytes
+
+
+;	0738	
+;	0739	END
+;	0740	ELUDOM
+
+
+
+
+
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  $CODE$         	   666  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582        36         0       241
+
+
+
+
+
+; Size:		666 code + 0 data bytes
+; Run Time:	00:13.3
+; Elapsed Time:	00:28.9
+; Memory Used:	343 pages
+; Compilation Complete

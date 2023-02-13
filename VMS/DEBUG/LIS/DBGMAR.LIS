@@ -1,0 +1,925 @@
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 1
+; Digital Equipment Corporation
+;
+;	0001	MODULE DBGMAR (	! MACRO lexical routine for DEBUG
+;	0002			ADDRESSING_MODE (EXTERNAL = LONG_RELATIVE),
+;	0003			IDENT = '000025') =
+;	0004	BEGIN
+;	0005	
+;	0006	!
+;	0007	!			  COPYRIGHT (c) 1977 BY
+;	0008	!	      DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS.
+;	0009	!
+;	0010	! THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND  COPIED
+;	0011	! ONLY  IN  ACCORDANCE  WITH  THE  TERMS  OF  SUCH  LICENSE AND WITH THE
+;	0012	! INCLUSION OF THE ABOVE COPYRIGHT NOTICE.  THIS SOFTWARE OR  ANY  OTHER
+;	0013	! COPIES  THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY
+;	0014	! OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE  IS  HEREBY
+;	0015	! TRANSFERRED.
+;	0016	!
+;	0017	! THE INFORMATION IN THIS SOFTWARE IS SUBJECT TO CHANGE  WITHOUT  NOTICE
+;	0018	! AND  SHOULD  NOT  BE  CONSTRUED  AS  A COMMITMENT BY DIGITAL EQUIPMENT
+;	0019	! CORPORATION.
+;	0020	!
+;	0021	! DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE OR  RELIABILITY  OF  ITS
+;	0022	! SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.
+;	0023	!
+;	0024	
+;	0025	!++
+;	0026	! FACILITY:	DEBUG (DBG)
+;	0027	!
+;	0028	! ABSTRACT:
+;	0029	!	This module contains a routine that according to conditional
+;	0030	!	compilation declarations, compiles into a MARS or FORTRAN
+;	0031	!	scanner.
+;	0032	!
+;	0033	! ENVIRONMENT:	STARLET, user mode, interrupts disabled.
+;	0034	!
+;	0035	! Version:	25
+;	0036	!
+;	0037	! History:
+;	0038	!	Author:
+;	0039	!		Carol Peters, 25 July 1977
+;	0040	!
+;	0041	!	Modified by:
+;	0042	!		Dale Roedger, 18 May 1978:	25
+;	0043	!
+;	0044	! 02	04-09-77	CP	Change keyword name list to
+;	0045	!				accommodate SCOPE, GLOBAL, etc.
+;	0046	!	  			Get the keyword require file from
+;	0047	!				[,1327] instead of [,2143].
+;	0048	!	  			Add the keyword MODULE. Remove
+;	0049	!				keyword READ. Add "." as a legal
+;	0050	!	  			component of a symbolic name.
+;	0051	! 03	07-09-77	CP	Change the keyword_table to be a single
+;	0052	!				plit, with a zero byte marking the end.
+;	0053	!				Recode trans_lexeme to dynamically compute
+;	0054	!				the address of each entry. This makes the
+;	0055	!				module PIC.
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 1-1
+; Digital Equipment Corporation
+;
+;	0056	! 04	13-09-77	CP	In collecting numeric input, convert
+;	0057	!				lower case hexadecimal letters to upper
+;	0058	!				case before writing the characters into
+;	0059	!				the input buffer. Get the keyword require
+;	0060	!				file from COMKEY instead of BL4KEY.
+;	0061	! 05	13-09-77	CP	Delete variable dbg_multi_lang. Name
+;	0062	!				the get_a_lexeme routine according to
+;	0063	!				the language variable. It is either
+;	0064	!				dbg$mar_get_lex, dbg$for_get_lex, or
+;	0065	!				dbg$bli_get_lex. In get_a_token, call the
+;	0066	!				appropriate lexeme routine through
+;	0067	!				the variable dbg$gl_get_lex. Make the
+;	0068	!				get_lexeme routines global. Modify
+;	0069	!				get_lexeme to handle FORTRAN radix
+;	0070	!				encoding ('digits'O and 'digits'X) and
+;	0071	!				to convert FORTRAN numbers. Remove routines
+;	0072	!				dbg$get_a_token and trans_lexeme and
+;	0073	!				put them in the new module dbgsca.b32.
+;	0074	!				Add new REQUIRE file declaration for
+;	0075	!				chrkey.beg, defines character mappings,
+;	0076	!				was in COMKEY.
+;	0077	! 06	14-09-77	CP	In lex_typ_tbl, define alpha state as
+;	0078	!				all alphabetic characters, including
+;	0079	!				alpha/hex characters for all languages.
+;	0080	! 07	14-09-77	CP	A leading period in FORTRAN can be the
+;	0081	!				beginning if a keyword operator, of a
+;	0082	!				number, or a standalone term. Correct code
+;	0083	!				to reflect this.
+;	0084	! 08	21-09-77	CP	In the processing of FORTRAN numeric
+;	0085	!				strings, see whether mode %LABEL or %LINE
+;	0086	!				is set, and if so, return an alpha token
+;	0087	!				instead of a converted number.
+;	0088	! 09	04-10-77	CP	Remove external declaration for error_reprt.
+;	0089	!				SIGNAL for invalid characters seen.
+;	0090	!				SIGNAL for truncations, correct numeric
+;	0091	!				processing.
+;	0092	! 10	27-10-77	CP	In the lexical routine, don't read a
+;	0093	!				line if the count field is less than
+;	0094	!				zero. Also, reduce length remaining when
+;	0095	!				an end of line character is seen.
+;	0096	! 11	07-11-77	CP	Change a_longword to 4 and a_byte to 1.
+;	0097	! 12	23-11-77	CP	If collecting a number, and it is a
+;	0098	!				line number of FORTRAN statement number,
+;	0099	!				don't allow special radices or
+;	0100	!				embedded periods. Return alpha token.
+;	0101	! 13	30-11-77	CP	Modify numeric string collection for
+;	0102	!				FORTRAN to handle floating and real
+;	0103	!				strings.
+;	0104	! 14	06-12-77	CP	In FORTRAN number collection, note
+;	0105	!				whether string included an explicit
+;	0106	!				D exponent field, which indicates double
+;	0107	!				precision. Distinguish between single
+;	0108	!				and double precision token in return.
+;	0109	! 15	28-12-77	CP	Redefine grammar tokens.
+;	0110	! 16	05-JAN-78	DAR	Changed require file MARTOK.BEG to COMTER.BEG
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 1-2
+; Digital Equipment Corporation
+;
+;	0111	!				also changed token names to correspond to those
+;	0112	!				in COMTER.BEG
+;	0113	! 17	24-FEB-78	DAR	Removed "SIGNAL(DBG$_NUMTRUNC)" from the
+;	0114	!				numeric_state case in the DBG$xxx_GET_LEX
+;	0115	!				routine.  The error is now signaled in DBG$RADX_
+;	0116	!				CONVRT.
+;	0117	! 18	09-MAR-78	DAR	Modified DBG$FOR_GET_LEX "radix_state" to scan
+;	0118	!				ahead for a radix operator when ' is found.
+;	0119	!				Also cleaned up DBG$MAR_GET_LEX "radix_state"
+;	0120	!				to be more readable.
+;	0121	! 19	29-MAR-78	DAR	Removed require file CHRKEY.BEG and put it in
+;	0122	!				DBGSTO.B32 as CHRKEY.REQ.  Changed the name of
+;	0123	!				"char_type_table" to dbg$char_table.
+;	0124	! 20	30-MAR-78	DAR	Removed the "token_table" to DBGSTO.B32 and
+;	0125	!				renamed it to dbg$token_table.
+;	0126	! 21	13-APR-78	DAR	Made all the require file and library file names
+;	0127	!				uppercase.
+;	0128	! 22	21-APR-78	DAR	split the lexical source into two seperate modules.
+;	0129	! 23	27-APR-78	DAR	Modified the require and library directives
+;	0130	!				for the native build.
+;	0131	! 24	09-MAY-78	DAR	Alpha state returns alpha_str_token instead of
+;	0132	!				"alpha".
+;	0133	! 25	18-MAY-78	DAR	Call to DBG$RADX_CONVRT passes address of string
+;	0134	!				descriptor instead of string's address.
+;	0135	!--
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 2
+; Digital Equipment Corporation
+;
+;	0136	! TABLE OF CONTENTS:
+;	0137	!
+;	0138	FORWARD ROUTINE
+;	0139		dbg$mar_get_lex;	! extracts a MACRO lexeme from the input buffer
+;	0140	
+;	0141	!
+;	0142	! INCLUDE FILES:
+;	0143	!
+;	0144	%IF %VARIANT		! True for TEN.
+;     L 0145	%THEN
+;     U 0146	LIBRARY	'NEW:LIB';
+;     U 0147	
+;     U 0148	REQUIRE 'DBGPCT.REQ';
+;     U 0149	REQUIRE 'VXSMAC.REQ';
+;     U 0150	REQUIRE 'DBGGEN.REQ';
+;     U 0151	REQUIRE 'COMTER.REQ';			
+;     U 0152	REQUIRE 'SCALIT.REQ';
+;     U 0153	REQUIRE 'DBGMSG.REQ';
+;     U 0154	REQUIRE 'SYSSER.REQ';
+;     U 0155	%ELSE
+;	0156	LIBRARY	'SYS$LIBRARY:LIB.L32';
+;	0157	
+;	0158	REQUIRE 'SRC$:DBGPCT.REQ';
+;	0170	REQUIRE 'SRC$:VXSMAC.REQ';
+;	0210	REQUIRE 'SRC$:DBGGEN.REQ';
+;	0460	REQUIRE 'SRC$:COMTER.REQ';			
+;	0552	REQUIRE 'SRC$:SCALIT.REQ';
+;	0590	REQUIRE 'LIB$:DBGMSG.REQ';
+;	0869	REQUIRE 'SRC$:SYSSER.REQ';
+;      R0872	SWITCHES LIST (SOURCE);
+;      R0873	
+;      R0874	EXTERNAL ROUTINE
+;      R0875		dbg$fao_out;				! formats a line and outputs to the terminal
+;      R0876	
+;      R0877	SWITCHES LIST (NOSOURCE);
+;	0922	%FI
+;	0923	
+;	0924	!
+;	0925	! MACROS:
+;	0926	!
+;	0927	
+;	0928	!
+;	0929	! EQUATED SYMBOLS:
+;	0930	!
+;	0931	LITERAL
+;	0932		dbg_lex		= FALSE,	! for debugging
+;	0933		dbg_lex1	= FALSE;	! for debugging
+;	0934	
+;	0935	
+;	0936	!
+;	0937	! OWN STORAGE:
+;	0938	!
+;	0939	
+;	0940	!
+;	0941	! EXTERNAL REFERENCES:
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 2-1
+; Digital Equipment Corporation
+;
+;	0942	!
+;	0943	EXTERNAL ROUTINE
+;	0944		dbg$radx_convrt;			! converts ASCII strings to binary numbers
+;	0945	
+;	0946	EXTERNAL
+;	0947		dbg$char_table : VECTOR [, BYTE],	! Character type table
+;	0948		dbg$token_table : VECTOR [, BYTE],	! Table of token types.
+;	0949		dbg$gb_def_mod : VECTOR [, BYTE],	! mode structure
+;	0950		dbg$gb_mod_ptr : REF VECTOR [, BYTE],	! holds current radix
+;	0951		dbg$gl_get_lex;				! holds name of get lexeme routine
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 3
+; Digital Equipment Corporation
+;
+;	0952	GLOBAL ROUTINE dbg$mar_get_lex (input_stg_desc, lexeme_stg_desc) =
+;	0953	
+;	0954	!++
+;	0955	! Functional description:
+;	0956	!	Using the character pointer for the input line, extracts a lexeme
+;	0957	!	from the input line. A lexeme is defined as an operator, an
+;	0958	!	alphanumeric string, a numeric string, or an
+;	0959	!	illegal string. Blanks and comments are absorbed.
+;	0960	!	The lexeme is returned in the lexeme buffer in the
+;	0961	!	same form as in the input string, except for numeric
+;	0962	!	strings, in which case the string is converted to a
+;	0963	!	binary number and that is returned in the lexeme buffer.
+;	0964	!	A token equivalent of the lexeme is the value of the
+;	0965	!	routine.
+;	0966	!
+;	0967	! Formal parameters:
+;	0968	!	input_stg_desc	- string descriptor to the input buffer.
+;	0969	!	lexeme_stg_desc	- varying string descriptor to the lexeme buffer
+;	0970	!
+;	0971	! Implicit inputs:
+;	0972	!	DBG$CHAR_TABLE	- a 128 byte VECTOR that maps each ascii character
+;	0973	!			  onto a dense list of equivalents.
+;	0974	!	DBG$TOKEN_TABLE	- a 21 byte VECTOR that maps each operator onto
+;	0975	!			  its token equivalent.
+;	0976	!
+;	0977	! Outputs:
+;	0978	!	input_stg_desc	- the field dsc$a_pointer is updated to point to
+;	0979	!			  the next byte to be read in the input stream.
+;	0980	!			  This byte is the delimiter of the lexeme found.
+;	0981	!			  The field dsc$w_length contains the length of
+;	0982	!			  the yet unread input line.
+;	0983	!	lexeme_stg_desc	- the field dsc$w_length holds the actual length
+;	0984	!			  in bytes of the lexeme found. The lexeme buffer
+;	0985	!			  addressed by the field dsc$a_pointer holds the
+;	0986	!			  lexeme string or value.
+;	0987	!
+;	0988	! Implicit outputs:
+;	0989	!	The ASCII representation of the lexeme is written into the
+;	0990	!	string addressed by the dsc$a_pointer field of lexeme_stg_desc.
+;	0991	!
+;	0992	! Routine value:
+;	0993	!	The type of lexeme found, alpha_str_token, digit_str_token,
+;	0994	!	eol_token, or "operator"_token.
+;	0995	!
+;	0996	! Side effects:
+;	0997	!	Signal if an input character is invalid,
+;	0998	!	or the input string length is negative.
+;	0999	!--
+;	1000	
+;	1001		BEGIN
+;	1002	
+;	1003		LITERAL
+;	1004			single_prec	= 1,
+;	1005			double_prec	= 3,
+;	1006			table_offset	= 9,
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 3-1
+; Digital Equipment Corporation
+;
+;	1007			operator_max	= 29;
+;	1008	
+;	1009		LITERAL
+;	1010			max_state_index	= 4,			! index ranges from 0 to 4
+;	1011			invalid_state	= 0,			! invalid character seen
+;	1012			alpha_state	= 1,			! alphabetic string expected
+;	1013			numeric_state	= 2,			! numeric string expected
+;	1014			eocommand_state	= 3,			! logical end of line or error seen
+;	1015			radix_state	= 4,			! radix setting expected
+;	1016			unspec_state	= 5;			! unspecified state, probably special character operator
+;	1017	
+;	1018		BIND
+;	1019			lex_type_tbl	= UPLIT (
+;	1020	
+;	1021			mask (illegal),
+;	1022			mask (alpha, alpha_low, alpha_and_hex, alphalo_and_hex),
+;	1023			mask (numeric),
+;	1024			mask (ind_comment, end_of_line),
+;	1025			mask (up_arrow)
+;	1026	
+;	1027			) : VECTOR;
+;	1028	
+;	1029		BIND
+;	1030			lex_state_tbl	= UPLIT BYTE (
+;	1031	
+;	1032			invalid_state,
+;	1033			alpha_state,
+;	1034			numeric_state,
+;	1035			eocommand_state,
+;	1036			radix_state
+;	1037	
+;	1038			) : VECTOR [, BYTE];
+;	1039	
+;	1040	
+;	1041		MAP
+;	1042			input_stg_desc	: REF BLOCK [, BYTE],	! input string descriptor
+;	1043			lexeme_stg_desc	: REF BLOCK [, BYTE];	! lexeme string descriptor
+;	1044	
+;	1045		LOCAL
+;	1046			input_ptr,				! character pointer for input
+;	1047			lexeme_ptr,				! character pointer for lexeme
+;	1048			previous_radix,				! current local radix
+;	1049			state_index,				! index into lex_state_tbl
+;	1050			state,					! current state of lexical processor
+;	1051			char,					! holds a single character
+;	1052			count;					! counts characters used
+;	1053	
+;	1054		!++
+;	1055		! See whether there is any input line left. If not, signal
+;	1056		! internal error.
+;	1057		!--
+;	1058		IF .input_stg_desc [dsc$w_length] LSS 0
+;	1059		THEN SIGNAL (dbg$_parseerr);
+;	1060	
+;	1061		!++
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 3-2
+; Digital Equipment Corporation
+;
+;	1062		! Make the string pointers into formal BLISS character
+;	1063		! pointers.
+;	1064		!--
+;	1065		input_ptr = ch$ptr (.input_stg_desc [dsc$a_pointer]);
+;	1066		lexeme_ptr = ch$ptr (.lexeme_stg_desc [dsc$a_pointer]);
+;	1067	
+;	1068		!++
+;	1069		! Save the radix in case it changes temporarily.
+;	1070		!--
+;	1071		previous_radix = .dbg$gb_mod_ptr [mode_radix];
+;	1072	
+;	1073	
+;	1074		count = 0;
+;	1075		REPEAT						! skip leading blanks
+;	1076			BEGIN
+;	1077			char = ch$rchar (.input_ptr);
+;	1078			IF .dbg$char_table [.char] NEQ blanks
+;	1079			THEN
+;	1080				BEGIN
+;	1081				input_stg_desc [dsc$w_length] = .input_stg_desc [dsc$w_length] - .count;
+;	1082				EXITLOOP
+;	1083				END
+;	1084			ELSE
+;	1085				BEGIN
+;	1086				input_ptr = ch$plus (.input_ptr, 1);
+;	1087				count = .count + 1;
+;	1088				END;
+;	1089			END;
+;	1090	
+;	1091	%IF dbg_lex
+;     L 1092	%THEN
+;     U 1093		$fao_tt_out ('character is "!AD"', 1, char);
+;     U 1094	%FI
+;	1095	
+;	1096		!++
+;	1097		! Convert the mapping of the first significant character
+;	1098		! into a lexical state. This state drives the later CASE
+;	1099		! processing.
+;	1100		!--
+;	1101		state_index = 0;
+;	1102		REPEAT
+;	1103			BEGIN
+;	1104			IF .lex_type_tbl [.state_index] ^ .dbg$char_table [.char] LSS 0
+;	1105			THEN
+;	1106				BEGIN
+;	1107				state = .lex_state_tbl [.state_index];
+;	1108				EXITLOOP
+;	1109				END
+;	1110			ELSE
+;	1111				BEGIN
+;	1112				state_index = .state_index + 1;
+;	1113				IF .state_index GTR max_state_index
+;	1114				THEN
+;	1115					BEGIN
+;	1116					state = unspec_state;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 3-3
+; Digital Equipment Corporation
+;
+;	1117					EXITLOOP
+;	1118					END;
+;	1119				END;
+;	1120			END;
+;	1121	
+;	1122	%IF dbg_lex
+;     L 1123	%THEN
+;     U 1124		$fao_tt_out ('state is !SL', .state);
+;     U 1125	%FI
+;	1126	
+;	1127		REPEAT CASE .state FROM 0 to max_state_index + 1 OF	! analyze current state
+;	1128	
+;	1129			SET
+;	1130	
+;	1131			[invalid_state]:			! if illegal, just signal
+;	1132				SIGNAL (dbg$_invchar);
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 4
+; Digital Equipment Corporation
+;
+;	1133			[alpha_state]:				! alphanumeric string
+;	1134				BEGIN
+;	1135	
+;	1136				!++
+;	1137				! Now read the input buffer until a non-alpha
+;	1138				! and non-numeric
+;	1139				! character is encountered. Store each
+;	1140				! character found in the buffer for the lexeme
+;	1141				! unless the length of that buffer is expended.
+;	1142				!--
+;	1143	
+;	1144				count = 0;
+;	1145	
+;	1146				DO
+;	1147					BEGIN
+;	1148					IF (.char GEQU %C'a')
+;	1149					THEN char = .char - upper_case_dif;
+;	1150					count = .count + 1;
+;	1151					IF .count LEQ sym_max_length
+;	1152					THEN ch$wchar_a (.char, lexeme_ptr);
+;	1153					char = ch$a_rchar (input_ptr);
+;	1154					END
+;	1155				WHILE	(oneof (.dbg$char_table [.char], alpha, alpha_low, numeric,
+;     P 1156							alpha_and_hex, alphalo_and_hex, period));
+;	1157	
+;	1158				!++
+;	1159				! Return the alpha lexeme.
+;	1160				!--
+;	1161				IF .count GTR sym_max_length
+;	1162				THEN
+;	1163					BEGIN
+;	1164					SIGNAL (dbg$_stgtrunc);
+;	1165					lexeme_stg_desc [dsc$w_length] = sym_max_length;
+;	1166					END
+;	1167				ELSE lexeme_stg_desc [dsc$w_length] = .count;
+;	1168				input_stg_desc [dsc$a_pointer] = .input_ptr;
+;	1169				input_stg_desc [dsc$w_length] = .input_stg_desc [dsc$w_length] - .count;
+;	1170	
+;	1171	%IF dbg_lex
+;     L 1172	%THEN
+;     U 1173				$fao_tt_out ('string is "!AS"', lexeme_stg_desc);
+;     U 1174	%FI
+;	1175	
+;	1176				RETURN alpha_str_token
+;	1177				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 5
+; Digital Equipment Corporation
+;
+;	1178			[numeric_state]:			! numeric string
+;	1179				BEGIN
+;	1180	
+;	1181				!++
+;	1182				! Now read the input buffer until a non-numeric
+;	1183				! character is encountered. Ignore all leading
+;	1184				! zeroes unless a decimal point was present.
+;	1185				! Store each character found in the buffer for
+;	1186				! the lexeme unless the length of that buffer
+;	1187				! is expended.
+;	1188				!--
+;	1189				count = 0;
+;	1190	
+;	1191					WHILE (.char EQL %C'0')
+;	1192					DO
+;	1193						BEGIN
+;	1194						count = .count + 1;
+;	1195						char = ch$a_rchar (input_ptr);
+;	1196						END;
+;	1197	
+;	1198				!++
+;	1199				! If the entire number was zero, put a single
+;	1200				! zero in the lexeme buffer and return.
+;	1201				!--
+;	1202				input_stg_desc [dsc$w_length] = .input_stg_desc [dsc$w_length] - .count;
+;	1203				count = 0;
+;	1204				IF .dbg$char_table [.char] NEQ numeric
+;	1205					AND NOT (oneof (.dbg$char_table [.char], alpha_and_hex, alphalo_and_hex))
+;	1206				THEN
+;	1207					BEGIN
+;	1208	
+;	1209	%IF dbg_lex
+;     L 1210	%THEN
+;     U 1211					$fao_tt_out ('returning a zero');
+;     U 1212	%FI
+;	1213	
+;	1214					ch$wchar (0, .lexeme_ptr);
+;	1215					lexeme_stg_desc [dsc$w_length] = 1;
+;	1216					input_stg_desc [dsc$a_pointer] = .input_ptr;
+;	1217					RETURN digit_str_token
+;	1218					END;
+;	1219	
+;	1220				!++
+;	1221				! This is the normal store and pick up next
+;	1222				! numeric character.
+;	1223				!--
+;	1224					DO
+;	1225						BEGIN
+;	1226						IF .dbg$char_table[.char] EQL alphalo_and_hex
+;	1227						THEN char = .char - upper_case_dif;
+;	1228						count = .count + 1;
+;	1229						IF .count GTR num_max_length
+;	1230						THEN
+;	1231							BEGIN
+;	1232	
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 5-1
+; Digital Equipment Corporation
+;
+;	1233							ch$move (num_max_length - 1,
+;	1234								ch$plus (ch$ptr (.lexeme_stg_desc [dsc$a_pointer]), 1),
+;	1235								ch$ptr (.lexeme_stg_desc [dsc$a_pointer]));
+;	1236							ch$wchar (.char, .lexeme_ptr-1);
+;	1237							END
+;	1238						ELSE ch$wchar_a (.char, lexeme_ptr);
+;	1239						char = ch$a_rchar (input_ptr);
+;	1240	
+;	1241	%IF dbg_lex
+;     L 1242	%THEN
+;     U 1243						$fao_tt_out ('next character is "!AD", type is !SB', 1, char,
+;     U 1244								.dbg$char_table [.char]);
+;     U 1245	%FI
+;	1246	
+;	1247						END
+;	1248					WHILE (oneof (.dbg$char_table [.char], numeric,
+;     P 1249							alpha_and_hex, alphalo_and_hex));
+;	1250	
+;	1251	
+;	1252				!++
+;	1253				! Convert the number, restore the old radix,
+;	1254				! and return the numeric lexeme.
+;	1255				!--
+;	1256	
+;	1257	%IF dbg_lex
+;     L 1258	%THEN
+;     U 1259				$fao_tt_out ('number is "!AD"', .count,
+;     U 1260						.lexeme_stg_desc [dsc$a_pointer]);
+;     U 1261	%FI
+;	1262	
+;	1263	
+;	1264					BEGIN
+;	1265					lexeme_stg_desc[dsc$w_length] = .count;
+;	1266					.lexeme_stg_desc[dsc$a_pointer] = dbg$radx_convrt (.lexeme_stg_desc);
+;	1267					dbg$gb_mod_ptr [mode_radix] = .previous_radix;
+;	1268					lexeme_stg_desc [dsc$w_length] = 4;
+;	1269	
+;	1270	%IF dbg_lex
+;     L 1271	%THEN
+;     U 1272					$fao_tt_out ('number is !SL', .(.lexeme_stg_desc [dsc$a_pointer]));
+;     U 1273	%FI
+;	1274	
+;	1275					END;
+;	1276	
+;	1277				input_stg_desc [dsc$a_pointer] = .input_ptr;
+;	1278				input_stg_desc [dsc$w_length] = .input_stg_desc [dsc$w_length] - .count;
+;	1279				RETURN digit_str_token
+;	1280				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 6
+; Digital Equipment Corporation
+;
+;	1281			[eocommand_state]:			! logical end of line
+;	1282				BEGIN
+;	1283	
+;	1284				!++
+;	1285				! The length of the input line should be set to
+;	1286				! zero here. Reduce it one so that it is less than
+;	1287				! zero. This will cause an error if this same
+;	1288				! input line ever comes back to the lex routine.
+;	1289				!--
+;	1290				lexeme_stg_desc [dsc$w_length] = 0;
+;	1291				input_stg_desc [dsc$a_pointer] = ch$plus (.input_ptr, 1);
+;	1292				input_stg_desc [dsc$w_length] = .input_stg_desc [dsc$w_length] - 1;
+;	1293				RETURN eol_token
+;	1294				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 7
+; Digital Equipment Corporation
+;
+;	1295			[radix_state]:				! up arrow
+;	1296				BEGIN
+;	1297	
+;	1298				!++
+;	1299				! An up arrow can occur as a standalone character,
+;	1300				! meaning previous location, or as an escape
+;	1301				! character that preceeds a radix specifier.  In the
+;	1302				! latter case, the up arrow is followed by one of:
+;	1303				! 'B', 'D', 'O', or 'X'.
+;	1304				!--
+;	1305				LOCAL
+;	1306					radix_flag;
+;	1307	
+;	1308				char = ch$rchar (ch$plus (.input_ptr, 1));
+;	1309				IF (.char GEQU %C'a')		! lower case character
+;	1310				THEN char = .char - upper_case_dif;
+;	1311				SELECTONE .char OF
+;	1312				    SET
+;	1313				    [%C'B']:	BEGIN
+;	1314						dbg$gb_mod_ptr[mode_radix] = binary_radix;
+;	1315						radix_flag = TRUE;
+;	1316						END;
+;	1317				    [%C'D']:	BEGIN
+;	1318						dbg$gb_mod_ptr[mode_radix] = decimal_radix;
+;	1319						radix_flag = TRUE;
+;	1320						END;
+;	1321				    [%C'O']:	BEGIN
+;	1322						dbg$gb_mod_ptr[mode_radix] = octal_radix;
+;	1323						radix_flag = TRUE;
+;	1324						END;
+;	1325				    [%C'X']:	BEGIN
+;	1326						dbg$gb_mod_ptr[mode_radix] = hex_radix;
+;	1327						radix_flag = TRUE;
+;	1328						END;
+;	1329				    [otherwise]: radix_flag = FALSE;
+;	1330				    TES;
+;	1331				IF .radix_flag
+;	1332				THEN
+;	1333					BEGIN
+;	1334					input_ptr = ch$plus (.input_ptr, 2);
+;	1335					char = ch$rchar (.input_ptr);
+;	1336					input_stg_desc[dsc$w_length] = .input_stg_desc[dsc$w_length] - 2;
+;	1337					state = numeric_state;
+;	1338					END
+;	1339				ELSE
+;	1340					BEGIN
+;	1341					char = asc_up_arrow;
+;	1342					state = unspec_state;
+;	1343					END;
+;	1344				END;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 8
+; Digital Equipment Corporation
+;
+;	1345			[unspec_state]:				! special character like operator or illegal
+;	1346				BEGIN
+;	1347	
+;	1348				!++
+;	1349				! Most likely, this is a single character
+;	1350				! operator. Write its ASCII value into the
+;	1351				! lexeme buffer, and return its equivalent
+;	1352				! token.
+;	1353				!--
+;	1354				LOCAL
+;	1355					index;
+;	1356	
+;	1357				index = .dbg$char_table[.char];
+;	1358				IF ((.index GEQ table_offset) AND (.index LEQ operator_max))
+;	1359				THEN
+;	1360					BEGIN
+;	1361					ch$wchar (.char, .lexeme_ptr);
+;	1362					lexeme_stg_desc[dsc$w_length] = 1;
+;	1363					input_stg_desc[dsc$a_pointer] = ch$plus (.input_ptr, 1);
+;	1364					input_stg_desc[dsc$w_length] = .input_stg_desc[dsc$w_length] - 1;
+;	1365					RETURN .dbg$token_table[.index - table_offset]
+;	1366					END;
+;	1367	
+;	1368				!++
+;	1369				! This doesn't seem to be anything about which
+;	1370				! we know. SIGNAL invalid character.
+;	1371				!--
+;	1372				SIGNAL (dbg$_invchar);
+;	1373				END;			! loop back to CASE statement.
+;	1374	
+;	1375			TES;
+;	1376	
+;	1377		END;					! end of dbg$mar_get_lex
+
+
+							    .TITLE  DBGMAR
+							    .IDENT  \000025\
+
+							    .PSECT  DBG$PLIT,NOWRT,  SHR,  PIC,0
+
+					      00000 P.AAA:  .LONG   -2147483648, 1367343104, 536870912, 100663296, 16384      ;
+					      00014 P.AAB:  .BYTE   0, 1, 2, 3, 4					      ;
+					      00019	    .BLKB   3
+
+						    LEX_TYPE_TBL=	P.AAA
+						    LEX_STATE_TBL=	P.AAB
+							    .GLOBL  DBG$FAO_OUT, DBG$RADX_CONVRT, DBG$CHAR_TABLE, DBG$TOKEN_TABLE
+							    .GLOBL  DBG$GB_DEF_MOD, DBG$GB_MOD_PTR, DBG$GL_GET_LEX
+
+							    .PSECT  DBG$CODE,NOWRT,  SHR,  PIC,0
+
+					 0FFC 00000 	    .ENTRY  DBG$MAR_GET_LEX, Save R2,R3,R4,R5,R6,R7,R8,R9,R10,R11     ; 0952
+		         5E	       08  C2 00002 	    SUBL2   #8, SP						      ;
+		         57	  04   AC  D0 00005 	    MOVL    INPUT_STG_DESC, R7					      ; 1058
+				  04   A7  9F 00009 	    PUSHAB  4(R7)						      ; 1065
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 8-1
+; Digital Equipment Corporation
+;
+		         58	  00   BE  D0 0000C 	    MOVL    @0(SP), INPUT_PTR					      ;
+		         5B	  08   AC  D0 00010 	    MOVL    LEXEME_STG_DESC, R11				      ; 1066
+				  04   AB  DD 00014 	    PUSHL   4(R11)						      ;
+				       6E  DD 00017 	    PUSHL   (SP)						      ;
+		    10   AE 00000000G  FF  9A 00019 	    MOVZBL  @DBG$GB_MOD_PTR, PREVIOUS_RADIX			      ; 1071
+				       59  D4 00021 	    CLRL    COUNT						      ; 1074
+		         56	       68  9A 00023 1$:     MOVZBL  (INPUT_PTR), CHAR					      ; 1077
+		         04 00000000GEF46  91 00026 	    CMPB    DBG$CHAR_TABLE[CHAR], #4				      ; 1078
+				       05  13 0002E 	    BEQL    2$							      ;
+		         67	       59  A2 00030 	    SUBW2   COUNT, (R7)						      ; 1081
+				       06  11 00033 	    BRB     3$							      ; 1082
+				       58  D6 00035 2$:     INCL    INPUT_PTR						      ; 1086
+				       59  D6 00037 	    INCL    COUNT						      ; 1087
+				       E8  11 00039 	    BRB     1$							      ; 1074
+				       50  D4 0003B 3$:     CLRL    STATE_INDEX						      ; 1101
+	   51 00000000'EF40 00000000GEF46  78 0003D 4$:     ASHL    DBG$CHAR_TABLE[CHAR], LEX_TYPE_TBL[STATE_INDEX], R1       ; 1104
+				       0B  18 0004B 	    BGEQ    5$							      ;
+		    0C   AE 00000000'EF40  9A 0004D 	    MOVZBL  LEX_STATE_TBL[STATE_INDEX], STATE			      ; 1107
+				       0B  11 00056 	    BRB     7$							      ; 1108
+				       50  D6 00058 5$:     INCL    STATE_INDEX						      ; 1112
+		         04	       50  D1 0005A 	    CMPL    STATE_INDEX, #4					      ; 1113
+				       DE  15 0005D 	    BLEQ    4$							      ;
+		    0C   AE	       05  D0 0005F 6$:     MOVL    #5, STATE						      ; 1116
+	   05	         00	  0C   AE  CF 00063 7$:     CASEL   STATE, #0, #5					      ; 1127
+	 0064	       000F	     01B9     00068 8$:     .WORD   35$-8$,-						      ;
+	 0190	       011A	     010C     0006E		    9$-8$,-						      ;
+								    15$-8$,-						      ;
+								    24$-8$,-						      ;
+								    25$-8$,-						      ;
+								    34$-8$						      ;
+				     01AA  31 00074 	    BRW     35$							      ; 1132
+				       59  D4 00077 9$:     CLRL    COUNT						      ; 1144
+	      00000061   8F	       56  D1 00079 10$:    CMPL    CHAR, #97						      ; 1148
+				       03  1F 00080 	    BLSSU   11$							      ;
+		         56	       20  C2 00082 	    SUBL2   #32, CHAR						      ; 1149
+				       59  D6 00085 11$:    INCL    COUNT						      ; 1150
+		         0F	       59  D1 00087 	    CMPL    COUNT, #15						      ; 1151
+				       06  14 0008A 	    BGTR    12$							      ;
+		    00   BE	       56  90 0008C 	    MOVB    CHAR, @LEXEME_PTR					      ; 1152
+				       6E  D6 00090 	    INCL    LEXEME_PTR						      ;
+				       58  D6 00092 12$:    INCL    INPUT_PTR						      ; 1153
+		         56	       68  9A 00094 	    MOVZBL  (INPUT_PTR), CHAR					      ;
+	   50 71800800   8F 00000000GEF46  78 00097 	    ASHL    DBG$CHAR_TABLE[CHAR], #1904216064, R0		      ; 1156
+				       D3  19 000A4 	    BLSS    10$							      ; 1155
+		         0F	       59  D1 000A6 	    CMPL    COUNT, #15						      ; 1161
+				       12  15 000A9 	    BLEQ    13$							      ;
+			    00028063   8F  DD 000AB 	    PUSHL   #163939						      ; 1164
+	      00000000G  00	       01  FB 000B1 	    CALLS   #1, LIB$SIGNAL					      ;
+		         6B	       0F  B0 000B8 	    MOVW    #15, (R11)						      ; 1165
+				       03  11 000BB 	    BRB     14$							      ; 1161
+		         6B	       59  B0 000BD 13$:    MOVW    COUNT, (R11)					      ; 1167
+		    08   BE	       58  D0 000C0 14$:    MOVL    INPUT_PTR, @8(SP)					      ; 1168
+		         67	       59  A2 000C4 	    SUBW2   COUNT, (R7)						      ; 1169
+		         50	  49   8F  9A 000C7 	    MOVZBL  #73, R0						      ; 1176
+					   04 000CB 	    RET     							      ;
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 8-2
+; Digital Equipment Corporation
+;
+				       59  D4 000CC 15$:    CLRL    COUNT						      ; 1189
+		         30	       56  D1 000CE 16$:    CMPL    CHAR, #48						      ; 1191
+				       09  12 000D1 	    BNEQ    17$							      ;
+				       59  D6 000D3 	    INCL    COUNT						      ; 1194
+				       58  D6 000D5 	    INCL    INPUT_PTR						      ; 1195
+		         56	       68  9A 000D7 	    MOVZBL  (INPUT_PTR), CHAR					      ;
+				       F2  11 000DA 	    BRB     16$							      ; 1191
+		         67	       59  A2 000DC 17$:    SUBW2   COUNT, (R7)						      ; 1202
+				       59  D4 000DF 	    CLRL    COUNT						      ; 1203
+		         02 00000000GEF46  91 000E1 	    CMPB    DBG$CHAR_TABLE[CHAR], #2				      ; 1204
+				       1B  13 000E9 	    BEQL    18$							      ;
+	   50 10800000   8F 00000000GEF46  78 000EB 	    ASHL    DBG$CHAR_TABLE[CHAR], #276824064, R0		      ; 1205
+				       0C  19 000F8 	    BLSS    18$							      ;
+				  00   BE  94 000FA 	    CLRB    @LEXEME_PTR						      ; 1214
+		         6B	       01  B0 000FD 	    MOVW    #1, (R11)						      ; 1215
+		    08   BE	       58  D0 00100 	    MOVL    INPUT_PTR, @8(SP)					      ; 1216
+				       69  11 00104 	    BRB     23$							      ; 1217
+		         5A 00000000GEF46  9E 00106 18$:    MOVAB   DBG$CHAR_TABLE[CHAR], R10				      ; 1226
+		         08	       6A  91 0010E 19$:    CMPB    (R10), #8						      ;
+				       03  12 00111 	    BNEQ    20$							      ;
+		         56	       20  C2 00113 	    SUBL2   #32, CHAR						      ; 1227
+				       59  D6 00116 20$:    INCL    COUNT						      ; 1228
+		         0B	       59  D1 00118 	    CMPL    COUNT, #11						      ; 1229
+				       13  15 0011B 	    BLEQ    21$							      ;
+	   7E	    04   AE	       01  C1 0011D 	    ADDL3   #1, 4(SP), -(SP)					      ; 1233
+      04   BE	         9E	       0A  28 00122 	    MOVC3   #10, @(SP)+, @4(SP)					      ;
+	   50	         6E	       01  C3 00127 	    SUBL3   #1, LEXEME_PTR, R0					      ; 1236
+		         60	       56  90 0012B 	    MOVB    CHAR, (R0)						      ;
+				       06  11 0012E 	    BRB     22$							      ; 1229
+		    00   BE	       56  90 00130 21$:    MOVB    CHAR, @LEXEME_PTR					      ; 1238
+				       6E  D6 00134 	    INCL    LEXEME_PTR						      ;
+				       58  D6 00136 22$:    INCL    INPUT_PTR						      ; 1239
+		         56	       68  9A 00138 	    MOVZBL  (INPUT_PTR), CHAR					      ;
+		         5A 00000000GEF46  9E 0013B 	    MOVAB   DBG$CHAR_TABLE[CHAR], R10				      ; 1249
+	   50 30800000   8F	       6A  78 00143 	    ASHL    (R10), #813694976, R0				      ;
+				       C1  19 0014B 	    BLSS    19$							      ; 1248
+		         6B	       59  B0 0014D 	    MOVW    COUNT, (R11)					      ; 1265
+				       5B  DD 00150 	    PUSHL   R11							      ; 1266
+	      00000000G  EF	       01  FB 00152 	    CALLS   #1, DBG$RADX_CONVRT					      ;
+		    04   BE	       50  D0 00159 	    MOVL    R0, @4(SP)						      ;
+	      00000000G  FF	  10   AE  90 0015D 	    MOVB    PREVIOUS_RADIX, @DBG$GB_MOD_PTR			      ; 1267
+		         6B	       04  B0 00165 	    MOVW    #4, (R11)						      ; 1268
+		    08   BE	       58  D0 00168 	    MOVL    INPUT_PTR, @8(SP)					      ; 1277
+		         67	       59  A2 0016C 	    SUBW2   COUNT, (R7)						      ; 1278
+		         50	  4B   8F  9A 0016F 23$:    MOVZBL  #75, R0						      ; 1279
+					   04 00173 	    RET     							      ;
+				       6B  B4 00174 24$:    CLRW    (R11)						      ; 1290
+      08   BE	         58	       01  C1 00176 	    ADDL3   #1, INPUT_PTR, @8(SP)				      ; 1291
+				       67  B7 0017B 	    DECW    (R7)						      ; 1292
+		         50	  63   8F  9A 0017D 	    MOVZBL  #99, R0						      ; 1293
+					   04 00181 	    RET     							      ;
+		         56	  01   A8  9A 00182 25$:    MOVZBL  1(INPUT_PTR), CHAR					      ; 1308
+	      00000061   8F	       56  D1 00186 	    CMPL    CHAR, #97						      ; 1309
+				       03  1F 0018D 	    BLSSU   26$							      ;
+		         56	       20  C2 0018F 	    SUBL2   #32, CHAR						      ; 1310
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 8-3
+; Digital Equipment Corporation
+;
+	      00000042   8F	       56  D1 00192 26$:    CMPL    CHAR, #66						      ; 1311
+				       09  12 00199 	    BNEQ    27$							      ;
+	      00000000G  FF	       02  90 0019B 	    MOVB    #2, @DBG$GB_MOD_PTR					      ; 1314
+				       34  11 001A2 	    BRB     30$							      ; 1315
+	      00000044   8F	       56  D1 001A4 27$:    CMPL    CHAR, #68						      ; 1311
+				       09  12 001AB 	    BNEQ    28$							      ;
+	      00000000G  FF	       0A  90 001AD 	    MOVB    #10, @DBG$GB_MOD_PTR				      ; 1318
+				       22  11 001B4 	    BRB     30$							      ; 1319
+	      0000004F   8F	       56  D1 001B6 28$:    CMPL    CHAR, #79						      ; 1311
+				       09  12 001BD 	    BNEQ    29$							      ;
+	      00000000G  FF	       08  90 001BF 	    MOVB    #8, @DBG$GB_MOD_PTR					      ; 1322
+				       10  11 001C6 	    BRB     30$							      ; 1323
+	      00000058   8F	       56  D1 001C8 29$:    CMPL    CHAR, #88						      ; 1311
+				       0C  12 001CF 	    BNEQ    31$							      ;
+	      00000000G  FF	       10  90 001D1 	    MOVB    #16, @DBG$GB_MOD_PTR				      ; 1326
+		         50	       01  D0 001D8 30$:    MOVL    #1, RADIX_FLAG					      ; 1327
+				       02  11 001DB 	    BRB     32$							      ; 1311
+				       50  D4 001DD 31$:    CLRL    RADIX_FLAG						      ; 1329
+		         0F	       50  E9 001DF 32$:    BLBC    RADIX_FLAG, 33$					      ; 1331
+		         58	       02  C0 001E2 	    ADDL2   #2, INPUT_PTR					      ; 1334
+		         56	       68  9A 001E5 	    MOVZBL  (INPUT_PTR), CHAR					      ; 1335
+		         67	       02  A2 001E8 	    SUBW2   #2, (R7)						      ; 1336
+		    0C   AE	       02  D0 001EB 	    MOVL    #2, STATE						      ; 1337
+				       3D  11 001EF 	    BRB     36$							      ; 1331
+		         56	  5E   8F  9A 001F1 33$:    MOVZBL  #94, CHAR						      ; 1341
+				     FE67  31 001F5 	    BRW     6$							      ; 1342
+		         50 00000000GEF46  9A 001F8 34$:    MOVZBL  DBG$CHAR_TABLE[CHAR], INDEX				      ; 1357
+		         09	       50  D1 00200 	    CMPL    INDEX, #9						      ; 1358
+				       1C  19 00203 	    BLSS    35$							      ;
+		         1D	       50  D1 00205 	    CMPL    INDEX, #29						      ;
+				       17  14 00208 	    BGTR    35$							      ;
+		    00   BE	       56  90 0020A 	    MOVB    CHAR, @LEXEME_PTR					      ; 1361
+		         6B	       01  B0 0020E 	    MOVW    #1, (R11)						      ; 1362
+      08   BE	         58	       01  C1 00211 	    ADDL3   #1, INPUT_PTR, @8(SP)				      ; 1363
+				       67  B7 00216 	    DECW    (R7)						      ; 1364
+		         50 00000000GEF40  9A 00218 	    MOVZBL  DBG$TOKEN_TABLE-9[INDEX], R0			      ; 1365
+					   04 00220 	    RET     							      ;
+			    000281B8   8F  DD 00221 35$:    PUSHL   #164280						      ; 1372
+	      00000000G  00	       01  FB 00227 	    CALLS   #1, LIB$SIGNAL					      ;
+				     FE32  31 0022E 36$:    BRW     7$							      ; 1124
+
+; Routine Size:  561 bytes
+
+
+
+; Bliss-32 7.352	Saturday 22-AUG-1978 04:37:11	DBB3:[DEBUG.SRC]DBGMAR.B32;5					Page 9
+; Digital Equipment Corporation
+;
+;	1378	END							! End of module
+;	1379	ELUDOM
+
+
+
+
+							    .GLOBL  LIB$SIGNAL
+
+;				       PSECT SUMMARY
+;
+;	Name		 Bytes			       Attributes
+;
+;  DBG$PLIT       	    28  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  DBG$CODE       	   561  NOWRT,  RD ,  EXE,  SHR,  LCL,  REL,  CON,  PIC,ALIGN(0)
+;  $CODE$         	     0  NOWRT,  RD ,  EXE,NOSHR,  LCL,  REL,  CON,NOPIC,ALIGN(2)
+
+
+
+
+;				LIBRARY STATISTICS
+;
+;					     -------- Symbols --------    Blocks
+;	File				     Total    Loaded   Percent      Read
+;
+;  DBA4:[SYSLIB]LIB.L32;1		      5582         5         0       223
+
+
+
+
+
+
+;			COMPILER INTERNAL TIMING
+
+;	Phase	    Faults	Cpu-time      Elapsed-time
+;	LEXSYN	      654	00:18.8		00:22.6
+;	FLOWAN	       23	00:01.6		00:01.6
+;	DELAY	       29	00:01.0		00:01.0
+;	TNBIND	       32	00:01.4		00:01.4
+;	CODE	       51	00:02.1		00:02.1
+;	FINAL	      101	00:03.0		00:03.1
+;	Total	      890	00:27.8		00:31.6
+
+; Size:		561 code + 28 data bytes
+; Run Time:	00:28.1
+; Elapsed Time:	00:32.1
+; Memory Used:	441 pages
+; Compilation Complete
