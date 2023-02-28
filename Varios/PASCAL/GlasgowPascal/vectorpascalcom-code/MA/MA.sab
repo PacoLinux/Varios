@@ -1,0 +1,71 @@
+/* this is a sable file for the definition of the MA language   Paul Cockshott, Lenore Mullin, Paul Keir  Feb 2010*/Package MA;Helpers        cr = 13 ;          lf = 10 ;         tab = 9 ;         letter =[ ['a'..'z']+['A'..'Z']];        digit = ['0'..'9'];		slash = '/';        anum = letter|digit;
+	
+  	quote = ''';        dot = '.';	  fileleadchar = letter|dot|slash;	  filechar = fileleadchar|digit; 	  all =[0..127];  	  schar = [all-'''];  	  not_star = [all - '*'];  	  not_star_slash = [not_star - '/'];Tokens    /* we are using the convention that all token names end with sym to distinguish them from non-terminals */	accesssym='AccessTime';	assignsym='<-';	basesym='Bits'|'Signed'|'Unsigned'|'IEEE'; 	blocksym='Processor'| 'Par'|'Seq'|'Pattern'|'System'|'Program' ;	brasym='(';	colonsym=':';	commasym=',';	constructorsym='Array'|'Stack';	cursym='{';	dyadicsym='DIV'|'+'|'=='|'-'|'*'|'DIV'|'OR'|'AND'|'MIN'|'..'|'PRINT'|
+		'COMPILEDON' /* program COMPILEDON cpu */|
+                'RESERVE'    /* <allocator> RESERVE <alignedtype> */ |
+		'ALIGN'      /* <type> ALIGN <int> */ |
+                'CASTTO'     /* <expression> CASTTO <type> */ |
+		'++'         /* string concatenation */|
+		'|'          /* alternative in patterns */|
+		'_'          /* memory subscript */|
+		'::'         /* such that operation, ( put a constraint on the left operand such that the right operand is true )*/
+		;/* add more operators later */	dosym='Do';	dotsym=dot;	eqsym='='|'In'; 	gotosym='Goto'|'Call';	ifsym='If';	ketsym=')';	leftsym='[';	letsym='Let';	lysm='}';	memsym='Memory';	monadicsym='!'|'NOT'|'LABEL'|'IMPORTED'|'EXPORTED'|'EVAL'|'UNROLL'|'REMOVEINVARIANTS'|'REGISTER'|'RESERVED'; 	ofsym='Of'; 	rightsym=']';	semisym=';';        stringsym = quote schar+ quote;	 /* the order of the symbols below must be retained, those above can be alphabetically ordered */	numbersym = ['0' .. '9']+;	idsym = fileleadchar filechar* ;	whitespace = (' '|cr|lf|tab)*;	comment = '/*' not_star* '*'+ (not_star_slash not_star* '*'+)* '/';Ignored Tokenswhitespace, comment;Productions  /* this is the concrete syntax tree with transformations to the abstract tree *//* block all valid MA files must be a block */	block{->absblock} = blocksym cursym statements lysm{-> New absblock(blocksym,[statements.absstatement])};/*Base types*/	base{->abstype} = basesym extent			{-> New abstype(basesym,extent.absexpr)};	extent{-> absexpr} = leftsym expr rightsym		{-> expr.absexpr};	type{->abstype} = 
+		{b} base 					{-> base . abstype}|
+		constructorsym extent ofsym typeid		{-> New abstype.c(constructorsym,extent.absexpr,typeid.abstype)};	typeid{->abstype} = 
+		base 						{-> base.abstype}| 
+		{i}id						{-> New abstype.i(id.absid)};/* Operators */	 	dyad{->absexpr}= monad dyadicsym value			{-> New absexpr.d(monad.absexpr,dyadicsym,value.absexpr)};	monad{->absexpr} =
+		{m} monadicsym prim				{-> New absexpr.m(monadicsym,prim.absexpr)}|
+		{p} prim					{-> prim.absexpr};	expr{->absexpr} = 
+		{d }dyad   					{-> dyad.absexpr}|
+
+		{m } monad 					{-> monad.absexpr}  ; /* computational expressions */	bracketed{->absexpr} = brasym value ketsym		{-> value.absexpr};	prim{->absexpr} = 
+		{i} id  					{-> New absexpr.i(id.absid)}|
+		{n} numbersym					{-> New absexpr.n(numbersym)}|
+		{s} stringsym					{-> New absexpr.s(stringsym)}| 
+		{b} bracketed					{-> bracketed.absexpr};	id{->absid} =
+		idsym						{-> New absid(idsym)}|
+		{c} idsym dotsym id				{-> New absid.c(idsym,id.absid)};/* Memory decls */	location{->absmemory} = memsym extent ofsym type 	{-> New absmemory(extent.absexpr,type.abstype)};	timedlocation{->absmemory} = location accesssym expr	{-> New absmemory.t(location.absmemory,expr.absexpr)}; 	memory{->absmemory} = 
+		location 					{-> location.absmemory}|
+		{t } timedlocation				{-> timedlocation.absmemory};	statement{->absstatement} = 
+		{d }declaration 				{->declaration.absstatement}| 
+		action						{->action.absstatement};	statements{->absstatement+} = 
+		statement 					{-> [statement.absstatement]}| 
+		{l }statement semisym statements  		{-> [statement.absstatement,statements.absstatement]};	declaration{->absstatement} = letsym idsym eqsym value	{-> New absstatement.decl(New absid(idsym),value.absexpr)};	action{->absstatement} = 
+		{macro} id					{-> New absstatement.macro(id.absid)}|
+		{i}if 						{-> if.absstatement}| 
+		{d}do 						{-> do.absstatement}| 
+		{g}goto   					{-> goto.absstatement}| 
+		{a}assign					{-> assign.absstatement}|
+		{b}block					{-> New absstatement.b(block.absblock)};	assign{->absstatement} = [dest]:expr assignsym expr	{-> New absstatement.a(dest.absexpr,expr.absexpr)};	value { ->absexpr} =
+		{m} memory					{-> New absexpr.l(memory.absmemory)}|
+		{b} block					{-> New absexpr.b(block.absblock)}|
+		{t} type					{-> New absexpr.t(type.abstype)}|
+		{e} expr					{-> expr.absexpr};/* Control structures */	 if{->absstatement} = ifsym bracketed action		{-> New absstatement.i(bracketed.absexpr,action.absstatement)};	 do{->absstatement} = 
+		dosym brasym id assignsym [start]:expr [ca]:colonsym [stop]:expr [cb]:colonsym [stride]:expr ketsym action
+								{-> New absstatement.d(id.absid,start.absexpr,stop.absexpr,stride.absexpr,action.absstatement)};	 goto{->absstatement} = gotosym expr			{-> New absstatement.g(gotosym,expr.absexpr)};   Abstract Syntax Tree /* we are using the convention that all abstract non-terminals start with abs */
+absblock = blocksym absstatement+;
+abstype  = 
+		basesym absexpr|
+		{c } constructorsym absexpr abstype| 
+		{i } absid;
+absstatement =  {macro} absid|
+		{decl} absid absexpr|  
+		{i} absexpr absstatement | /* if */
+		{d}absid [start]:absexpr   [stop]:absexpr   [stride]:absexpr absstatement | 
+		{g} gotosym absexpr| 
+		{a}[dest]:absexpr [source]:absexpr| /* assignment */
+		{b}absblock;
+absmemory =	[extent]:absexpr abstype|
+		{t} absmemory [accesstime]:absexpr;
+absexpr = 
+		{m} monadicsym absexpr|
+		{l} absmemory|
+		{n} numbersym|
+		{i} absid|
+          	{b} absblock|
+	  	{t} abstype|
+		{s} stringsym|
+          	{d} [left]:absexpr dyadicsym [right]:absexpr; 
+absid = 
+		idsym | 
+		{c} idsym absid; 

@@ -1,0 +1,1274 @@
+
+const
+
+      callform = 'far';
+      param_offset = 2;
+      stdout = 1;
+
+var
+  next_label_num,
+  psp,param_sp,discard_param_count:integer;
+  code_str,comment_str:textline;
+  opstack: array [1..60] of lexeme;
+  opsp:1..60;
+  endlab,past,stringcount,next_external:integer;
+
+
+const
+      dynalink:boolean = true;
+      debugging:boolean = false;
+procedure codever;
+begin
+     writeln('Macro code generator version ', codegen_version_number:2:3);
+end;
+
+{ ------------------------------------------------------------------ }
+{       PRINTIDREC                                                   }
+{------------------------------------------------------------------- }
+procedure printidrec(var i:idrec);
+var s:string[200];
+begin
+    with i do begin
+         s:=ptype(typeinfo);
+         writeln;
+          write('ll =',lex_level,' offs =',offset,' id =',psym(identifier));
+          write(' ',s);
+     end;
+end;
+{ ------------------------------------------------------------------ }
+{       PRINTSYMTAB                                                  }
+{ ------------------------------------------------------------------ }
+procedure printsymtab;
+var i:integer;
+begin
+{     for i:=nametop-1 downto nulid do
+         printidrec(scopelist [i] ^);
+         writeln;}
+end;
+procedure Push(l:lexeme);
+begin
+     opstack[opsp]:=l; opsp:=opsp+1;
+end;
+function pop:lexeme;
+begin
+     if opsp>1 then opsp:=opsp-1;
+     pop := opstack[opsp];
+end;
+
+
+function newlab:integer;
+begin
+
+     next_label_num:=next_label_num+1;
+     if next_label_num >=(labmax-5) then error('too many labels');
+     newlab:=next_label_num;
+end;
+function sizeof( t:typerec):integer;   { return size in strides }
+begin
+   sizeof:=stackspace(t) div stride;
+end;
+function heapsizeof( t:typerec):integer;   { return size in strides }
+begin
+   heapsizeof:=heapspace(t) div stride;
+end;
+procedure dispsp;
+begin
+     if trace then writeln(listfile,'; sp=',stack_ptr);
+end;
+procedure incsp( t:typerec);
+var i:integer;
+begin
+     for i:= 1 to sizeof(t) do
+     stack_ptr := stack_ptr -stride;
+    dispsp;
+end;
+procedure notsup;
+begin
+error (' not supported yet for this type')
+end;
+procedure duplicate(t:typerec);
+begin
+
+      incsp(t);
+      case typecode(t) of
+      'i':assem(dupi,0,0);
+      'p':assem(dupp,0,0);
+      else notsup
+
+      end;
+
+end;
+procedure decsp( t:typerec);
+var i:integer;
+begin
+     for i:=1 to sizeof(t) do
+     stack_ptr := stack_ptr +stride;
+     dispsp;
+end;
+
+procedure retractstack(newstack:integer);
+begin
+     if newstack<>stack_ptr then
+        assem(add_sp,newstack-stack_ptr,0);
+     stack_ptr:=newstack;
+     dispsp;
+end;
+
+procedure drop(strides:integer);
+begin
+     retractstack(stack_ptr+strides*stride);
+end;
+procedure claimstack(t:typerec);
+var s:integer;
+begin
+     s:=(stackspace(t)+(stride-1)) div stride;
+     drop(-s);
+end;
+procedure expand_to_pntr(t:typerec);
+{ pads this out till it occupies same space as pntr }
+begin
+    drop(-(sizeof(pntr_type)-sizeof(t)));
+end;
+
+procedure pushax;
+begin
+     assem(push_eax,0,0);
+     incsp(int_type);
+end;
+   procedure extrn(t:textline);
+   begin
+{$IFDEF obj}
+
+        assem(' extrn ',t,':',callform);
+{$ENDIF }
+   end;
+
+
+procedure callc(s:textline);
+var i:integer;
+begin
+    {$ifndef persistent}
+    error('Dynamic linking not in use '+s);
+    {$endif}
+    if not dynalink then extrn(s);
+    assem(push_bx,0,0);
+    assem(int18,0,0);
+    for i:=1 to length(s) do assem(db,ord(s[i]),ord(s[i]));
+    assem(db,0,0);
+    assem(pop_bx,0,0);
+end;
+
+{------------------------------- assignment -----------------------}
+
+procedure assignop( n:namedesc);
+begin
+    with scopelist[n]  ^ do
+      begin
+          decsp(typeinfo);
+          if lex_level = lexical_level then { local }
+                  begin
+                  case typecode(typeinfo) of
+                  'i':assem (localassi,offset,0);
+                  'r':assem (localassr,offset,0);
+                  'p',
+                  'c':assem (localassp,offset,0);
+                  else         notsup
+                  end;
+                  end else
+          if lex_level = global_level then { global }
+              begin
+                  case typecode(typeinfo) of
+                  'i':assem (globalassi,offset,0);
+                  'r':assem (globalassr,offset,0);
+                  'p':assem (globalassp,offset,0);
+                  else notsup
+                  end;
+              end else
+                  begin { other }
+                  case typecode(typeinfo) of
+                  'i':assem (assi,lex_level * - stride,offset);
+                  'r':assem (assr,lex_level * - stride,offset);
+                  'p':assem (assp,lex_level * - stride,offset);
+                  else notsup
+                  end;
+                  end;
+        end;
+end;
+
+{ ---------------------------- load addresses on stack ------------- }
+procedure pushlongpntr(l:labl);
+begin
+   assem(push_cs,0,0);
+   assem(cslea_eax,l,0);
+   assem(push_eax,0,0);
+end;
+procedure form_closure(l:labl);
+begin
+     pushlongpntr(l);
+     incsp(address_type);
+end;
+
+{ -------------------------------------------------------------- }
+{            ARITHMETIC                                          }
+{ -------------------------------------------------------------- }
+procedure notop;
+begin
+  assem(not_op,0,0);
+end;
+
+procedure negop(t:typerec);
+begin
+  if typecode(t)='r' then callc('_negopr') else assem(neg_op,0,0);
+end;
+{----------------------------- arithmetic ---------------------------}
+procedure binaryop(operation:lexeme;T:typerec);
+  var s: textline;op:opcode;
+  procedure intop(op:opcode);
+  begin
+     assem(op,0,0);
+  end;
+  procedure intarith(op:opcode;reverse:boolean);
+  begin
+       if reverse then begin
+           intop(pop_ecx);intop(pop_eax);
+       end else begin
+           intop(pop_eax);intop(pop_ecx);
+       end;
+       intop(op);intop(push_eax);
+  end;
+  procedure operror;
+  begin
+       s:=psym(ord(operation));
+       writeln(s);
+       s:='illegal operator or bad type '+s;
+       error(s);
+  end;
+  procedure callr(t:textline);{ call real arith subroutine }
+  begin
+    callc(t);
+    retractstack(stack_ptr+(stride*sizeof(real_type)));
+  end;
+begin
+  {s:=psym(operation);}
+  {$ifndef ispascal}
+  if (operation = dplus_sy)and isvector(t) then begin
+                   op:=concat_op;
+                   decsp(string_type);
+                   assem(op,0,0 );
+
+
+       end
+  else
+  if eq(t,string_type)or eq(t,cstring_type)
+  then begin
+
+     case operation of
+     dplus_sy:begin
+                   op:=concat_op;
+                   decsp(string_type);
+                   assem(op,0,0 );
+              end;
+     lt_sy,
+     le_sy,
+     gt_sy,
+     ge_sy,
+     eq_sy,
+     neq_sy:begin assem( cmpops,0,0); push(operation);
+                  drop(2*pntr_on_stack_size);   { remove both operands }
+                  assem(cmp_ax,0,0);
+                  end;
+     else operror;
+     end;
+  end else
+  {$endif}
+  case t^.atomictypeid of
+  {$ifndef ispascal}
+  structure_sy:begin
+
+                    push(operation);
+                    callc('_isop');
+                    retractstaCK(STACK_PTR+(STRIDE*SIZEOF(PNTR_TYPE))
+                                 +stride*2 *sizeof(int_type));
+
+                    assem(cmp_ax,1,0);
+               end; {$endif}
+  int_sy,cint_sy: begin
+  case operation of
+  plus_sy:begin intarith(add_eax_ecx,false);
+           end;
+  star_sy:begin intarith(imul_ecx,false);
+           end;
+  minus_sy:begin intarith(sub_eax_ecx,true);
+           end;
+  div_sy:begin
+          intop(pop_ecx);
+          intop(pop_eax);
+          intop(cwdop );
+          intop(idiv_ecx);
+          intop(push_eax);
+           end;
+  shift_l_sy: intarith(shl_eax_cl,true);
+  shift_r_sy: intarith(shr_eax_cl,true);
+  b_and_sy:intarith(and_eax_ecx,false);
+  b_or_sy:intarith(or_eax_ecx,false);
+  rem_sy:begin
+
+          intop(pop_ecx);
+          intop(pop_eax);
+          intop(cwdop );
+          intop(idiv_ecx);
+          intop(push_edx);
+         end;
+  lt_sy,
+  le_sy,
+  gt_sy,
+  ge_sy,
+  eq_sy,
+  neq_sy:begin
+                 intop(pop_ecx);
+                 intop(pop_eax);
+                 intop(cmp_eax_ecx);
+
+                  push(operation);
+                  decsp(t);             { remove both operands }
+                                        { leave result in flags }
+
+                  end;
+  else operror;
+  end;{ of case}
+  decsp(t);
+  end; {of begin }
+  real_sy,creal_sy:  begin
+     case operation of
+     plus_sy:callr('_plusr');
+     minus_sy:callr('_minusr');
+     star_sy:callr('_timesr');
+     slash_sy: callr('_divr');
+     lt_sy,
+     le_sy,
+     gt_sy,
+     ge_sy,
+     eq_sy,
+     neq_sy:begin  push(operation);            { to be used in subs jumps }
+                   callc('_compopr');
+                   retractstack(stack_ptr+2*sizeof(real_type)*stride);
+                   assem( cmp_eax,0,0);
+                                               { leave result in flags }
+                  end;
+     else operror;
+     end;
+  end;
+  else begin
+       if operation in [eq_sy,neq_sy] then begin
+           push(operation);
+           assem(cmpoppntr,0,0);
+           drop(2*pntr_on_stack_size);
+           assem(cmp_eax,0,0);
+       end
+       {$ifndef ispascal}
+       else if (t^.constructr=map) and( t^.maptype=  ord(structure_sy))
+       then begin
+
+                    push(operation);
+                    callc('_isop');
+                    retractstaCK(STACK_PTR+(STRIDE*SIZEOF(PNTR_TYPE))
+                                 +stride*2 *sizeof(int_type));
+
+                    assem(cmp_ax,1,0);
+               end
+       {$endif}
+       else operror;
+       end;
+  end;
+end;
+
+procedure mustbeop;
+begin
+     callc('_mustbe'); drop(pntr_on_stack_size);
+end;
+{ ---------------------------------------------------------------- }
+{      LOAD OPERATIONS                                             }
+{ ---------------------------------------------------------------- }
+procedure ll_int(i:integer);
+begin
+  incsp(int_type);
+  assem(llint ,i,0   )
+end;
+procedure addoffset(n:namedesc);
+begin
+     ll_int(scopelist[n]^.offset);
+     binaryop(plus_sy,int_type);
+end;
+
+procedure loadtrademark(n:namedesc);
+begin
+     { load the address of the trademark record onto the stack }
+	 load(n);
+
+end;
+
+procedure float2op;
+begin
+     ll_int(0);ll_int(0);ll_int(0);
+     callc('_float_lower');
+end;
+procedure floatop;
+begin
+     ll_int(0);ll_int(0);ll_int(0);
+     callc('_float_top');
+end;
+          {
+procedure pushfloatreg;
+begin
+    assem(pushrreg,0,0);
+    incsp(real_type);
+end;       }
+
+procedure datasegprefix;
+begin
+     past:=newlab;stringcount:=newlab;
+     assem(jump ,past,0);
+     assem(plant_label,stringcount,0);
+end;
+procedure ll_real(r:real);
+var f:ieee;i:integer;
+begin
+  incsp(real_type);
+  datasegprefix;
+  realtoieee(r,f);
+  for i:=1 to 8 do assem( db ,f[i],f[i]);
+
+  assem(plant_label,past,0);
+  assem(llreal_op  ,stringcount,0)
+end;
+
+
+
+procedure load(n: namedesc);
+begin
+    with scopelist[n] ^ do
+      begin
+          incsp(typeinfo);
+
+          if lex_level = global_level then { global }
+              begin
+                  case typecode(typeinfo) of
+                  'i':assem (globali,offset,0);
+                  'r':assem (globalr,offset,0);
+                  'p':assem (globalp,offset,0);
+                  'c':begin assem (globali,offset+2,0);
+                            assem (globali,offset,0);
+                            end
+                            ;
+                  else notsup
+                  end;
+              end else
+                  if lex_level = lexical_level then { local }
+                  case typecode(typeinfo) of
+                  'i':assem (locali,offset,0);
+                  'r':assem (localr,offset,0);
+                  'p':assem (localp,offset,0);
+                  'c':begin assem (locali,offset+2,0);
+                            assem (locali,offset,0);
+                            end;
+                  else notsup
+                  end else
+                  case typecode(typeinfo) of
+                  'i':assem (loadi,lex_level* -stride,offset);
+                  'r':assem (loadr,lex_level* -stride,offset);
+                  'p':assem (loadp,lex_level* -stride,offset);
+
+                  'c':begin assem (loadi,lex_level* -stride,offset+2);
+                            assem (loadi,lex_level* -stride,offset);
+                            end;
+                  else notsup
+                  end;
+        end;
+   end;
+
+procedure loadindir(var t:typerec);
+begin
+        t:=rangeof(t);
+        decsp(address_type);incsp(t);
+        case typecode(t) of
+        'i':begin
+                  assem(lindiri,0,0);
+            end;
+        'r':assem(lindirr,0,0);
+        'p':assem(lindirp,0,0);
+        'c':begin
+            assem(lindirc,0,0);
+            end;
+        'b':assem(lindirb,0,0);
+        'a':assem(lindira,stackspace(t),0);
+        else notsup
+        end;
+
+end;
+
+procedure assindir(var t:typerec);
+var t1:typerec;
+begin
+        t1:=rangeof(t);
+        decsp(address_type);decsp(t1);
+        case typecode(t1) of
+        'i':begin assem(pop_eax,0,0);assem(assindireax,0,0);end;
+        'r':assem(assindirr,0,0);
+        'p':assem(assindirp,0,0);
+        'c':assem(assindirc,0,0);
+        'b':begin assem(pop_eax,0,0);assem(assindir_al,0,0);end;
+        'a':assem(assindira,stackspace(t1),0);
+        else notsup
+        end;
+end;
+
+
+procedure load_addr(n: namedesc);
+
+begin
+    with scopelist[n] ^ do
+      begin
+          incsp(address_type);
+          if name_type=constant then pushlongpntr(offset) else
+          if lex_level = global_level then { global }
+              begin assem(globaladdr,offset,0);
+              {
+                    assem(lea_ax_glob,offset,0);
+                    assem(push_ss,0,0);
+                    assem(push_ax,0,0);
+              }
+              end else
+                  if lex_level = lexical_level then { local }
+                  begin
+                    assem(localaddr,offset,0);
+                  end else
+                  begin { other }
+                    assem(loadaddr,
+                           ( lex_level)* -stride,offset);
+                  end;
+        end;
+   end;
+
+procedure pushpreg;
+begin
+     load(pidreg);
+end;
+function ll_nil:integer;
+var i:integer;
+begin
+    for i:= 1 to pntr_on_stack_size do ll_int(0);
+    ll_nil:=stack_ptr;
+end;
+
+{ -------------------------------------------------------------------- }
+{         INPUT OPERATIONS                                             }
+{ -------------------------------------------------------------------- }
+procedure readop(s:lexeme;var t:typerec);
+   procedure stringsetup;begin
+                  t:=string_type;drop(int_size-sizeof(t));
+                end;
+begin
+     case s of
+     {-------------- read pntr ----------------------}
+     readp_sy:begin
+                   t:=pntr_type;drop(int_size-sizeof(t));
+                   callc('_readp');
+                   end;
+     {--------------- STRING READS ------------------}
+     read_sy:begin
+                  stringsetup;
+                  callc('_read');
+             end;
+     reads_sy:begin
+                  stringsetup;
+                  callc('_reads');
+             end;
+     read_a_line_sy:begin
+                  stringsetup;
+                  callc('_read_a_line');
+             end;
+     peek_sy:begin
+                  stringsetup;
+                  callc('_peek');
+             end;
+     {------------------ read REAL ---------------------}
+     readr_sy:begin
+                   t:=real_type;
+                   drop(int_size-real_size);
+                   callc('_readr');
+              end;
+     readb_sy:begin
+                   t:=bool_type;
+                   callc('_readb');
+              end;
+     eoi_sy:begin
+                   t:=bool_type;
+                   callc('_eoi');
+              end;
+
+     readi_sy:begin
+                   t:=int_type;
+                   callc('_readi');
+              end;
+     read_byte_sy:begin
+                   t:=int_type;
+                   callc('_read_byte');
+              end;
+     end;
+end;
+
+{ -------------------------------------------------------------------- }
+{        OUTPUT OPERATIONS                                             }
+{ -------------------------------------------------------------------- }
+
+procedure out_byte_op;
+begin
+  assem(outbyte,0,0);
+  decsp(int_type);decsp(int_type);
+end;
+procedure start_write;
+begin
+  ll_int(stdout);
+end;
+
+procedure writeop(var t:typerec);
+var s:string[10];
+begin
+{$ifndef ispascal}
+  if t^.constructr = atomic
+  then
+  case t^.atomictypeid of
+  int_sy,cint_sy:assem(writeint,0,0);
+  real_sy,creal_sy:assem(writereal,0,0);
+  pntr_sy,cpntr_sy:assem(writepntr,0,0);
+  bool_sy,cbool_sy:assem(writebool,0,0);
+  else error('cant write');
+  end
+  else begin
+     match(t,string_type);
+     assem(writestring,0,0)
+  end
+{$endif}
+end;
+
+procedure end_write;
+begin
+  retractstack(stack_ptr +(stride * int_size)) ;                { remove file }
+end;
+
+{ ----------------------------------------------------------------- }
+{      STACK TIDYING OPERATIONS                                     }
+{ ----------------------------------------------------------------- }
+procedure discard_param(var i:idrec);
+begin
+end;
+
+procedure discard(var i:idrec; t:typerec);
+{ pop tos and assign to i, then make i top of stack }
+var newsp,ownsize,dif:integer;tc :string[5];
+begin
+       tc:=typecode(t);
+       ownsize:= stride* sizeof(i.typeinfo);
+       newsp := i.offset + ownsize- (stride * sizeof(t));
+       if tc<>'v' then
+       case tc [1] of
+       'i':   assem(localmovi,newsp,0);{ return result of block }
+       'r':   assem(localmovr,newsp,0);
+       'p':   assem(localmovp,newsp,0);
+       else notsup
+       end;                                        { adjust internal sp }
+       retractstack(newsp);
+end;
+function enter_stackframe:integer;
+begin
+     param_sp:=6;
+     enter_stackframe := 0;
+end;
+function fixup_param(var i:idrec):word;
+var size:word;
+begin
+     size:=stackspace(i.typeinfo);
+     i.offset:=param_sp;
+     param_sp := size + param_sp;
+     {$ifdef debug}
+     writeln(listfile,ptype(i.typeinfo),' param_sp=',param_sp,'size=',size);
+     {$endif}
+     fixup_param:=size;
+end;
+function fixup_result(var i:idrec;paramsize:word):integer;
+var size:byte;
+begin
+     size:=stackspace(i.typeinfo);
+     i.offset:=param_sp - size;
+     if size>paramsize then i.offset:=i.offset+size-paramsize;
+     param_sp := size + param_sp;
+     fixup_result:=size;
+end;
+procedure correct_param(var i:idrec;paramsize,resultsize:word);
+begin
+    if resultsize >paramsize then i.offset:=i.offset +resultsize-paramsize;
+end;
+
+{ ----------------------------------------------------------------- }
+{             CONTROL FLOW INSTRUCTIONS                             }
+{ ----------------------------------------------------------------- }
+
+procedure plant(l:labl);
+begin
+  assem(plant_label,ord(l),   0)
+end;
+
+procedure bindop;
+begin
+     callc('_bind');
+     drop(3* pntr_on_stack_size - address_size);
+end;
+procedure call_proc( i:namedesc);
+begin
+ with scopelist[i] ^ do begin
+     if typeinfo^.domainspace<typeinfo^.rangespace then  { leave space for result }
+        retractstack(stack_ptr+typeinfo^.domainspace-typeinfo^.rangespace);
+     if name_type = static then begin
+        assem(call_static ,offset,0)
+     end else
+     if lex_level = global_level then { global }
+              begin
+                    assem(call_glob ,offset,0);
+              end else
+                  if lex_level = lexical_level then { local }
+                  begin
+                    assem(call_loc ,offset,0);
+                  end else
+                  begin { other }
+                  assem(call_,lex_level* -stride,offset);
+                  end;
+     if typeinfo^.domainspace > typeinfo^.rangespace then
+     { forget params  they  have been discarded by the ret instruction }
+     stack_ptr:=stack_ptr+typeinfo^.domainspace-typeinfo^.rangespace;
+    end;
+end;
+procedure jumpfar(s:textline);
+begin
+    error('only allowed in compiling obj files');
+end;
+procedure aliencall(s:textline);
+begin
+     callc(s);
+end;
+procedure jumpop(var l:labl);
+begin
+  if l <=0 then l:=newlab;
+  assem(jump ,ord(l),0   )
+end;
+procedure bjump(l:labl);
+begin
+     assem(jump ,ord(l),0);
+end;
+function writecond:opcode;
+  var s:opcode;
+begin
+  s:=jl;
+  case pop of
+  lt_sy:s:=jl;
+  le_sy:s:=jle;
+  gt_sy:s:=jg;
+  ge_sy:s:=jge;
+  eq_sy,is_sy:s:=je;
+  neq_sy,isnt_sy: s:=jnz;
+  else error('Unkown comparison operator ');
+  end;
+  writecond:=s
+ end;
+
+
+procedure jumpt(var l:labl);
+begin
+  assem(writecond,ord(l),0   )
+end;
+procedure form_boolean;
+{ there is a condition code set, convert it to a boolean }
+var l1,l2:labl;
+begin
+     l1:=newlab;l2:=newlab;
+     jumpt(l1);ll_int(0);jumpop(l2);decsp(int_type);
+     plant(l1);ll_int(1);plant(l2);
+end;
+
+procedure jumpf(var l:labl);
+var skip:labl;
+begin
+  skip:=newlab;
+  jumpt(skip);jumpop(l);plant(skip);
+end;
+procedure forprepop;
+begin
+     assem(forprep,0,0);
+end;
+procedure forstepop(complex:boolean; l:labl);
+begin
+  if not complex then assem(minforstep,ord(l),0)else
+  assem(forstep ,ord(l) ,0  );
+  decsp(int_type);decsp(int_type);if complex then decsp(int_type);
+end;
+
+procedure fortestop(complex:boolean;var l:labl);
+begin
+  l:=newlab;
+  if not complex then assem(minfortest,ord(l),0) else
+  assem(fortest ,ord(l)  ,0 )
+end;
+
+
+{ ---------------------------------------------------------------- }
+{       OPERATIONS ON HEAP OBJECTS                                 }
+{ ---------------------------------------------------------------- }
+procedure make_vector;
+begin
+{$ifndef ispascal}
+  assem(makevec_op,0,0);
+{$endif}
+end;
+
+procedure dup;
+begin
+     callc('_dup');
+end;
+procedure mcktab;
+begin
+     callc('_mcktab');
+end;
+procedure inittab;
+begin
+    callc('_inittab');
+    drop(2*sizeof(pntr_type));   { discard all but the table itself }
+end;
+
+procedure iliffeop(levels:integer; var t:typerec);
+var s:string[7];
+    sz:integer;
+begin
+  sz:=sizeof(t);
+  ll_int(sz*stride);
+  ll_int(levels);
+  if ispid(t) then  callc('_iliffepntr')else
+  if sz =int_size then callc('_iliffeint') else
+  if sz=real_size then callc('_iliffereal');
+
+end;
+procedure makepntrarray(lower,upper:namedesc);
+var t:typerec;
+    j:integer;
+begin
+     t:=pntr_type;
+     load(lower);load(upper);j:=ll_nil;iliffeop(1,t);
+end;
+procedure plant_string(s:textline);
+var i :integer;
+begin
+     {$ifndef ispascal}
+     assem( dw ,length(s),0);
+     {$endif}
+
+     {$ifdef ispascal}
+     assem( db ,length(s),0);
+     {$endif}
+     for i:= 1 to length  (s) do
+         assem( db ,ord(s[i]),ord(s[i]));
+
+end;
+
+procedure ll_string(s:textline);
+begin
+     datasegprefix;
+     plant_string(s); plant(past);
+     pushlongpntr(stringcount);
+     {$ifndef ispascal}
+     callc('_llstring');
+     assem( add_sp,4,0); { discard the address of string }
+     pushpreg;
+     {$endif}
+     {$ifdef ispascal}
+     incsp(address_type);
+     {$endif}
+end;
+
+procedure declarestructure( class:textline;
+                            pntrs,reals,ints:integer;
+                            n:namedesc);
+{ this writes information into the datasegment to desscribe a structure class }
+{ this information is of the form
+       <pntrs>     a 8 bit field holding number of pntrs in class
+       <reals>     a 8 bit field holding number of reals in class
+       <ints>                             number of integers in class
+       <len>       length of the name of the class
+       <c>*n       the name itself padded out to at leat 13 bytes
+}
+var i,offset :integer;
+begin
+
+     datasegprefix;
+	 offset:=stringcount;
+     assem(plant_label,offset,0);
+     { plant a nil pid that will be initialised at run time to point to }
+     { the sdesc for the structure class                                }
+     assem(db ,pntrs,pntrs) ;
+      assem(db,reals,reals);
+      assem(db,ints,ints);
+     assem(db  ,length(class),length(class));
+     for i:=1 to length (class) do     assem(db ,ord(class[i]),ord(class[i]));
+     if length(class)<14 then
+        for i:=length(class) to  14 do assem(db,0,0);
+     assem(plant_label ,past,0);
+     pushlongpntr(offset);
+     callc( '_mksdesc');
+     assem(add_sp,6,0);
+	 assem(push_eax,0,0);
+	 incsp(pntr_type);
+end;
+procedure formstruct(n:namedesc);
+{ this is used to create an instance of a structure }
+begin
+     load(n);
+     callc( '_formstruct');
+end;
+procedure loadstruct(n:namedesc);
+begin
+     pushlongpntr (scopelist[n]^.offset);
+     incsp(address_type);
+end;
+
+procedure subsass(field:namedesc;var t:typerec);
+{  pntr, t ->void  }
+
+var objsz:integer;
+begin
+  with scopelist[field]^do begin
+  case typecode(t) of
+  'i':begin assem(subsassi,offset,offset); decsp(t);decsp(pntr_type)end;
+  'r':begin assem(subsassr,offset,offset); decsp(t);decsp(pntr_type)end;
+  'p':
+  { subsassp(offset, rvalue,pntr) }
+   begin
+        if (offset mod 16)<>0 then error('pid field misalignment');
+        ll_int(offset);
+        callc ('_subsassp');
+        t:=scopelist[field]^.typeinfo;
+        drop(2*pntr_on_stack_size+sizeof(int_type));    { throw away the pntr }
+  end;
+  else error('unknown field type '+typecode(t)+' '+ptype(t));
+  end;
+
+  end;
+end;
+
+procedure subs(field:namedesc;var t:typerec);
+{  pntr, t ->pntr  }
+var objsz:integer;
+begin
+  t:=scopelist[field]^.typeinfo;
+  with scopelist[field]^do case typecode(t) of
+
+  'i':begin assem(subsi,offset,offset); incsp(t);decsp(pntr_type)end;
+  'r':begin assem(subsr,offset,offset); incsp(t);decsp(pntr_type)end;
+  'p':
+  { subsp(offset,pid) }
+  begin
+     ll_int(offset);      { field offset }
+     callc ('_subsp'); { address of struct in dx:ax }
+     drop(sizeof(int_type));
+  end;
+  else error('unknown field type '+typecode(t)+' '+ptype(typeinfo));
+  end;
+end;
+
+procedure subsinit(n:namedesc);
+var field:idrec;
+{  pntr ->t   }
+begin
+
+  with scopelist[n]^ do begin
+  assem(mov_ax_sp,0,0);
+  assem(add_eax,sizeof(typeinfo)*stride,0);
+  assem(push_ss,0,0);
+  assem(push_eax,0,0);            { push address of pid on stack }
+  callc ('_wherestruct'); { address of struct in ax }
+  assem(add_sp,4,0);          { remove  param}
+  assem(mov_edi_eax,0,0);          { get offset }
+       case typecode(typeinfo) of
+       'i': begin
+              assem(mov_es_dx,0,0);          { get segment }
+              assem(pop_es_edi,offset,0);   {pop es:[di+offset]}
+             end;
+       'r':  begin
+             assem(add_edi,offset,0);
+             assem(heappopreal,0,0);
+             end;
+        'p': begin
+             assem(add_edi,offset,0);
+             assem(heappopp,0,0);
+             end;
+        else notsup
+        end;
+        decsp(typeinfo);
+    end;
+end;
+
+procedure substrop;
+begin
+  callc('_substrop');
+  drop(2*int_size);
+end;
+
+procedure upbop;
+begin
+     callc('_upbop');
+     drop((pntr_on_stack_size));
+     pushax;
+end;
+procedure lwbop;
+begin
+     callc('_lwbop');
+     drop((pntr_on_stack_size));
+     pushax
+end;
+procedure subv(var t:typerec);
+var s:string[6];padding,target:integer;
+begin
+{$ifndef ispascal}
+  t:=rangeof(t);
+  padding:=0;
+  s:=typecode(t);
+  case s [1] of
+  'i':assem(subv_opi,0,0);
+  'p':assem(subv_opp,0,0);
+  'r':begin padding:=2;
+      assem(push_ax,0,0);
+      assem(push_ax,0,0);
+      assem(subv_opr,0,0);
+    end;
+  else notsup
+  end;
+  target := stack_ptr + (padding+int_size +pntr_on_stack_size - sizeof(t))*stride;
+  retractstack( target );
+{$endif}
+end;
+
+procedure subvass(var t:typerec);
+var s:string[6];
+begin
+{$ifndef ispascal}
+  s:=typecode(t);
+  case s [1] of
+  'i':assem(subvass_opi,0,0);
+  'p':assem(subvass_opp,0,0);
+  'r':assem(subvass_opr,0,0);
+  else notsup
+  end;
+  {$endif}
+end;
+function tab_insert(var t:typerec):textline;
+var s:string[6];
+begin
+     s:=typecode(t);
+     tab_insert:=('tabins'+s);
+end;
+
+function tab_lookup(var t:typerec):textline;
+var s:string[6];target:integer;
+begin
+  s:=typecode(t);
+  tab_lookup:=('slookup'+s);
+
+end;
+
+function declare_global(var t:idrec):integer;
+begin
+    declare_global := stack_ptr;
+end;
+
+function declare_local(var t:idrec):integer;
+begin
+    declare_local := stack_ptr;
+end;
+
+
+procedure release_label(l:integer);
+begin
+{     assem('release_label ',l);}
+end;
+{ external procedures written in c return integer results in ax }
+procedure pushres(t:typerec);
+var sz:integer;
+begin
+    sz:= sizeof(t) ;
+    if int_size= sz  then pushax else
+    if sz=real_size then error('cant push floatreg') else
+     pushpreg;
+end;
+procedure declareexternals;
+begin  extrn(' _writei');
+       extrn(' _writer');
+       extrn(' _writes');
+       extrn(' _writep');
+       extrn(' _lwbop') ;
+       extrn(' _upbop');
+       extrn(' _makevec');
+       extrn(' _iliffeint');
+       extrn(' _iliffereal');
+       extrn(' _iliffepntr');
+       extrn(' _llstring');
+       extrn(' _subvassib');
+       extrn(' _subvassr');
+       extrn(' _subvassp');
+       extrn(' _subvib');
+       extrn(' _subvr');
+       extrn(' _concat');
+       extrn(' _divr');
+       extrn(' _timesr');
+       extrn(' _minusr');
+       extrn(' _plusr');
+       extrn(' _float_top');
+       extrn(' _float_lower');
+       extrn(' _compopr');
+       extrn(' _subvp');
+       extrn(' _substrop');
+       extrn(' _compstr');
+       extrn(' _comppntr');
+       extrn(' _mksdesc');
+       extrn(' _formstruct');
+       extrn(' _validstruct');
+       extrn(' _wherestruct');
+       extrn(' _trace');
+end;
+procedure newlineop;
+var i:integer;
+begin
+     i:=the_line;
+     ll_int (i);
+     assignop(line_number);
+     if (i mod 10)=0 then
+     if not(listing in options ) then begin
+        if batch in options then write('.') else begin
+           gotoxy(10,1);write(i:6);
+        end;
+     end;
+     if trace then callc('_trace');
+end;
+procedure init_cgen(seg,class:textline);
+begin
+  initassem;
+  next_label_num:=1;
+  next_external:=newlab;
+  stack_ptr:=0;psp:=0; opsp:=1;stringcount:=1;
+{  assem(' include salib.mac');
+  if not dynalink then begin
+     assem(seg,' segment byte public ''',class,''' ');
+     assem(' assume cs:',seg );
+  end;}
+end;
+procedure start_program;
+var i :integer;
+begin
+  i:=newlab;
+  jumpop(i);plant(i);
+  assem(   shrink,0,0);
+  assem(   mov_bx_sp,0,0);
+  assem(  mov_bp_sp,0,0);
+  endlab:=newlab;
+  assem(  cslea_eax,endlab,0);
+  assem(  push_eax,0,0);
+  {$ifdef persistent}
+  callc('_defcseg');
+  {$endif}
+  assem(  pop_eax,0,0);
+
+end;
+procedure start_library;
+begin
+    jumpop(next_external);
+end;
+procedure start_external(procname:textline);
+begin
+{$IFNDEF obj}
+     plant(next_external);
+     next_external:=newlab;
+     jumpop(next_external);
+     plant_string(procname);
+
+{$ENDIF}
+{$IFDEF obj}
+     assem(procname,' proc far ');
+     assem( 'public ',procname);
+{$ENDIF}
+end;
+procedure end_external(procname:textline);
+begin
+{$IFDEF obj}
+     assem(procname,'  endp');
+{$ENDIF}
+end;
+
+procedure end_program(seg:textline);
+begin
+   {$ifdef persistent}
+   callc('_terminate');
+   {$endif}
+   assem( mov_eax,$4c00,0);
+   assem( int21, 0,0);
+   plant(endlab);
+end;
+
+procedure end_library(seg:textline);
+begin
+{$IFNDEF obj}
+   plant(next_external);
+   assem( mov_eax,$4c00,0);
+   assem( int21, 0,0);
+   assem(db,0,0);
+
+{$ENDIF}
+{$IFDEF obj}
+ assem(seg,' ends');
+{$ENDIF}
+end;
+procedure finalise_cgen;
+begin
+{$IFDEF obj}
+  assem(' end');
+
+{$ENDIF}
+
+end;
+
+
+
+procedure prologop(ll:integer);
+begin
+  assem(prolog86 ,ll,0);stack_ptr:=stack_ptr-ll*stride ;
+
+  while ll >1 do begin
+    assem(pushdisp,0,0); { push an element of display for each lex level }
+    ll := pred(ll);
+  end;
+  if ll >0 then assem(push_bp,0,0);
+end;
+
+procedure epilogop(proctype:typerec);
+var discard:integer;
+begin
+  with proctype^ do begin
+
+          if domain = nil then discard:=0
+          else
+          if rangespace>domainspace then discard:=0
+          else discard := domainspace - rangespace;
+  end;
+  assem(epilog ,discard,0);
+end;
+
+begin
+      trace:=false;
+
+      next_label_num:=1;
+
+

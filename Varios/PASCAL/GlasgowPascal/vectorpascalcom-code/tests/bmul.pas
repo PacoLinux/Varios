@@ -1,0 +1,4 @@
+program bmul;
+begin
+end.
+

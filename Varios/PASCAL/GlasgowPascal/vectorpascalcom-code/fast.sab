@@ -1,0 +1,152 @@
+Package fast;
+/*\end{verbatim}
+\subsection{Helpers}
+Helpers are regular expressions macros used in the definition of terminal symbols of the grammar.
+\begin{verbatim}*/
+Helpers
+
+  letter = [['A'..'Z']+['a'..'z']];
+  digit = ['0'..'9'];
+  alphanum = [letter+['0'..'9']];
+  cr = 13;
+  lf = 10;
+  tab = 9;
+  digit_sequence = digit+;
+  letseq = letter+;
+  opsym =  '+'|'-'|'='|'\'|'.'|'!'|'#'|'&'|'@'|'*'|'~'|'|'|'%'|'_'|'?'|'<'|'>'|'/';
+  opseq = opsym+;
+  eol = cr lf |cr |lf;        // This takes care of different platforms
+  not_cr_lf = [[32..127] - [cr + lf]];
+  quote = ''';
+  all =[0..127];
+  schar = [all-'''];
+  not_star = [all - '*'];
+  not_star_slash = [not_star - '/'];
+Tokens
+
+arrow= '->';
+bra= '['; 
+comma= ',';
+def='def' ;  
+dot='.';
+else= 'else';
+external= 'external'; 
+fi= 'fi'; 
+if= 'if'; 
+inline= 'ILCG';
+ket= ']'; 
+lparen = '(';
+number= digit_sequence|digit_sequence'.'digit_sequence('e'digit_sequence)?; 
+rparen = ')';
+scalartype= 'c'?'u'?('int'('8'|'16'|'32'|'64')|'ieee'('32'|'64'));
+
+semi= ';';
+then= 'then'; 
+vec= 'vec';
+
+/* composite tokens */
+id = letseq;
+op=opseq;  
+comment = '/*' not_star* '*'+ (not_star_slash not_star* '*'+)* '/';
+string = quote schar+ quote;
+blank = (' '|cr|lf|tab)+;
+
+Ignored Tokens 
+	blank,comment;
+ 
+Productions
+
+
+
+
+
+program {-> absprogram} = fndecl+ {-> New absprogram([fndecl.absfndecl]) };
+
+fndecl {->absfndecl} =
+    {fndec} id lparen params arrow type rparen body  {-> New absfndecl(New abslabel.id(id), New absheader( [params.absparam], type.abstype), body.absbody) }
+  | {opdec} op lparen opparam arrow type rparen body  {-> New absfndecl(New abslabel.op(op), New absheader([opparam.absparam], type.abstype), body.absbody) } ;
+
+body {->absbody} =
+    {expression} expr semi      {-> New absbody.expression(expr.absexpr)}
+  | {inline} inline string semi {-> New absbody.inline(string) }
+  | {external} external  semi   {-> New absbody.external(external) } ;
+
+type {-> abstype} =
+    {scalar} scalartype {-> New abstype.scalar(scalartype) }
+  | {tensor} scalartype vec number {-> New abstype.tensor(scalartype,number) } ;
+
+expr {-> absexpr} =
+    {opexpr}		opexpr		{-> opexpr.absexpr }
+  | {secondary}		secondary	{-> secondary.absexpr } ;
+
+opexpr {-> absexpr} =
+       [left]:primary op [right]:expr {-> New absexpr.map(New abslabel.op(op), [left.absexpr, right.absexpr]) } ;
+
+primary	{-> absexpr} =
+    {map} map {-> map.absexpr }
+  | atom      {-> atom.absexpr } ;
+
+secondary {-> absexpr} =
+    {primary} primary {-> primary.absexpr }
+  | {monad}   op atom {-> New absexpr.map(New abslabel.op(op), [atom.absexpr]) } ;
+
+map {-> absexpr} =
+    id lparen args rparen {-> New absexpr.map(New abslabel.id(id), [args.absexpr]) } ;
+
+opparam {-> absparam*} =
+    [left]:param comma [right]:param {-> [left.absparam, right.absparam] }
+  | {monop} param {-> [param.absparam] } ;
+
+param {-> absparam} = type id {-> New absparam(type.abstype, New abslabel.id(id)) } ;
+
+paramslist {-> absparam*} =
+    {singleton} param                  {-> [param.absparam] }
+  | {list}      param comma paramslist {-> [param.absparam, paramslist.absparam] } ;
+
+params {-> absparam*} =
+    {empty}            {-> []}
+  | {list}  paramslist {-> [paramslist.absparam] } ;
+
+argslist {-> absexpr*} =
+    {singleton} expr                {-> [expr.absexpr] }
+  | {list}      expr comma argslist {-> [expr.absexpr, argslist.absexpr] } ;
+
+args {-> absexpr*} =
+    {empty}          {-> []}
+  | {list}  argslist {-> [argslist.absexpr]} ;
+
+atom {-> absexpr} = {literal} literal {-> New absexpr.literal(literal.absliteral)}
+    | {paramname} id {-> New absexpr.label(New abslabel.id(id))}
+    | {comp} comp {->comp.absexpr} ;
+
+literal {-> absliteral} =
+    {string} string {-> New absliteral.string(string) }
+  | {scalar} number {-> New absliteral.scalar(number) } ;
+
+comp {-> absexpr} =
+    {tensor} tensorcon {-> tensorcon.absexpr }
+  | {if} conval        {-> conval.absexpr }
+  | {bracketed} lparen expr rparen {-> expr.absexpr } ;
+
+conval {-> absexpr} = if [cond]:expr then [true]:expr else [false]:expr fi
+   {-> New absexpr.if(cond.absexpr, true.absexpr, false.absexpr) };
+
+tensorcon {-> absexpr} = bra argslist ket {-> New absexpr.tensor([argslist.absexpr]) } ;
+
+
+Abstract Syntax Tree
+
+absprogram  = absfndecl+ ;
+abslabel    = {op}op|{id}id;
+absfndecl   = abslabel absheader  absbody   ;
+absheader   = absparam* abstype ;
+absparam    = abstype abslabel ;
+abstype     = {scalar} scalartype | {tensor} scalartype number ;
+absbody     = {expression} absexpr | {external} external | {inline} string ;
+absexpr	    = {map} abslabel absexpr*
+            | {if} [cond]:absexpr [then]:absexpr [else]:absexpr
+            | {literal} absliteral
+            | {tensor} absexpr*
+            | {label} abslabel ;
+absliteral  = {string} string | {scalar} number ;
+

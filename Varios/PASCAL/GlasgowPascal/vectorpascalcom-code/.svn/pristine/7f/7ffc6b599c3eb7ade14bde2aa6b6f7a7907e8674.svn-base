@@ -1,0 +1,40 @@
+package ilcg.tree;
+include(`Testparams.m4')
+/**
+ *  Description of the Class
+ *
+ *@author     wpc
+ *@created    30 July 2001
+ */
+public class TestCG extends test {
+
+	/**
+	 *  Create a pentium code generator and overide the rollback buffer with an
+	 *  intel peephole optimizer
+	 */
+	public TestCG() {
+		buf = new gnuIntelPeep();
+		ignorepastfailures=true;
+	}
+
+
+	/**
+	 *  Overide this to provide the mmx parallelism
+	 *
+	 *@param  elementType  Description of Parameter
+	 *@return              The parallelism value
+	 */
+public int getParallelism(String elementType) 
+{   if(elementType.equals(Node.int32)) return li32v;
+    if(elementType.equals(Node.int16)) return li16v;
+    if(elementType.equals(Node.int8)) return li8v;   
+    if(elementType.equals(Node.uint32)) return lu32v;
+    if(elementType.equals(Node.uint16)) return lu16v;
+    if(elementType.equals(Node.uint8)) return lu8v;  
+    if(elementType.equals(Node.ieee32))return lr32v;
+    if(elementType.equals(Node.ieee64))return lr64v;  
+    return 1;  
+} 
+	
+
+

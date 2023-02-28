@@ -1,0 +1,8 @@
+define(li32v,2)
+define(li16v,4)
+define(li8v,8)
+define(lu32v,2)
+define(lu16v,4)
+define(lu8v,8)
+define(lr32v,2)
+define(lr64v,2)

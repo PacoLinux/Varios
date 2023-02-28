@@ -1,0 +1,57 @@
+// pascal lexical analyser
+package ilcg.pascal;
+import java.io.*;
+import java.util.*;
+import ilcg.*;
+%%
+%{
+public String theString,theId;
+	private int token,c,state;
+	public double theNumber;
+	private Hashtable reserved=new Hashtable();
+	private Vector symbols = new Vector(256);
+	private Reader inp;
+	static int unknown=0;
+	static boolean debug=false;
+	boolean echo=true;
+	public final static int TT_QUOTE = '\'';
+	public final static int TT_EOL= StreamTokenizer.TT_EOL;
+	public final static int TT_TAB ='\t';
+	public final static int TT_EOF= StreamTokenizer.TT_EOF;
+	public final static int TT_WORD=StreamTokenizer.TT_WORD;
+	public final static int TT_NUMBER=StreamTokenizer.TT_NUMBER;
+	public final static int TT_COMMENT = '#' ;
+	public final static int TT_STRING=TT_QUOTE;
+	public final static int TT_SEMICOLON=';';
+	public final static int TT_IDENTIFIER=TT_WORD;
+	public final static int TT_FULLSTOP='.';
+/** associate a string with a token in the reserved word table */
+	public void reserveWord(String s )
+	{
+	    symbols.addElement(s );
+	    reserved.put(s,new Integer(symbols.size()));
+	}
+%}
+%init{
+	   thebase=10;
+		state= unknown;
+		//c=getchar();
+		theString="";
+		theNumber=0;
+		token=0;
+		tokenizer=new StreamTokenizer(inp);
+		tokenizer.lowerCaseMode(true);
+		tokenizer.eolIsSignificant(false);
+		tokenizer.commentChar(TT_COMMENT);
+		tokenizer.ordinaryChar('E');
+		tokenizer.ordinaryChar('/');
+		tokenizer.ordinaryChar('.');
+		tokenizer.ordinaryChar('-');
+		tokenizer.quoteChar(TT_QUOTE);
+		 for (int i=0;i<256;i++)
+		 	symbols.insertElementAt(new Character((char)i).toString(),i);
+		 
+	    //symbols.insertElementAt(" IDENTIFIER ",TT_WORD);
+		for(int i=0 ;i<reserved.length;i++)reserveWord(reserved[i]);
+%init}
+%%

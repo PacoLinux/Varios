@@ -1,0 +1,1296 @@
+#LyX 1.6.3 created this file. For more info see http://www.lyx.org/
+\lyxformat 345
+\begin_document
+\begin_header
+\textclass IEEEtran
+\use_default_options true
+\language english
+\inputencoding auto
+\font_roman default
+\font_sans default
+\font_typewriter default
+\font_default_family default
+\font_sc false
+\font_osf false
+\font_sf_scale 100
+\font_tt_scale 100
+
+\graphics default
+\paperfontsize default
+\spacing single
+\use_hyperref false
+\papersize default
+\use_geometry false
+\use_amsmath 1
+\use_esint 1
+\cite_engine basic
+\use_bibtopic false
+\paperorientation portrait
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\defskip medskip
+\quotes_language english
+\papercolumns 1
+\papersides 1
+\paperpagestyle default
+\tracking_changes false
+\output_changes false
+\author "" 
+\author "" 
+\end_header
+
+\begin_body
+
+\begin_layout Title
+Automatic SIMD and Multi-core parallelisation in an imperative language.
+\end_layout
+
+\begin_layout Author
+Paul Cockshott, Tamerlan Tajadinov
+\end_layout
+
+\begin_layout Section
+Hardware Context
+\end_layout
+
+\begin_layout Standard
+One of the most signifficant tendencies that can be observed in the modern
+ processor design is towards an increased parallelisation of computations.
+ Primarily aimed at graphics applications, it was initially introduced in
+ Penitum MMX processors allowing saturated arithmetic to be performed on
+ up to eight 8-bit or two 32-bit integers at a time.
+ The concept was further developed in SSE2 processors by allowing floating
+ point operations to be performed on up to four single precision or two
+ double precision floats at a time, while also doubling the number of possible
+ whole number operands.
+ Sony Cell processor used in PlayStation 3 also operates on vectors of data
+ of similar size.
+ Moreover, the next generation of Intel GPGPUs codenamed Larrabee is also
+ following the present trend by allowing up to 64 8-bit integers or 16 single
+ precision floats to be operated on with a single instruction.
+\end_layout
+
+\begin_layout Standard
+While traditionally an increase in the performance of a CPU used to be associate
+d with an increased clock speed, this historic trend is no longer observed
+ as much.
+ An increase in the clock speed demands a sharp increase in the power consumptio
+n and leads to a rise in the heat dissipation, thus the clock speed is limited
+ by reasons of thermodynamics to presently around 3.5GHz as in case of Wolfdale
+ DP generation of Xeon processors.
+ This limitation is now increasingly commonly compensated for by planting
+ multiple cores on a processor chip - a solution that has originated from
+ high performance systems the performance of which frequently benefits from
+ multiple CPUs.
+ As the number of cores in a system increases, the CPU clock speed tends
+ to be reduced by the processor designers, thus the 4-core Core 2 Quad processor
+ operates on frequencies of up to 3.2GHz depending on the model of the chip
+ compared to its single core predecessor Pentium 4 running on clock speeds
+ of up to 3.8GHz several years prior.
+ In mobile computing demands on reduced power consumption have retained
+ CPU frequencies at much lower rates of around 1-2.5GHz and dual and even
+ quad core processors are widely used.
+\end_layout
+
+\begin_layout Standard
+The above developments in the topic of processor design have introduced
+ further demands in compiler design.
+ Majority of imperative programming languages, especially those derived
+ from C, typically operate on a single element at a time, thus, for example,
+ should we wish to add two vectors of integers together each pair of elements
+ will be added one at a time, which is not in line with the hardware capabilitie
+s allowing for arithmetic operations to be performed on multiple operands
+ at a time.
+ Furthermore, unless multiple threads are explicitly spawned, only one of
+ the cores is likely to be utilised, leading to the reducing processor clock
+ speed being the main performance indicator for applications written in
+ these legacy programming languages.
+ The remainder of this article discusses Vector Pascal, an imperative language
+ designed to utilise the increasing capacity of modern processors through
+ hardware parallelisation.
+\end_layout
+
+\begin_layout Section
+The Example Language
+\end_layout
+
+\begin_layout Standard
+Quick outline of the language Vector Pascal.
+ Mention that it is targeted particularly at image processing applications.
+ Refer to previous publications on it.
+ Explain its relationship to standard pascal.
+ Explain that lessons from this can be extended easily to Fortran 95, ZPL
+ or possible MATLAB compilers.
+ --- TAMERLAN
+\end_layout
+
+\begin_layout Subsection
+Extend array semantics
+\end_layout
+
+\begin_layout Standard
+Standard Pascal allows assignment of whole arrays.
+ Vector Pascal extends this to allow consistent use of mixed rank expressions
+ on the right hand side of an assignment.
+ For example, given:
+\end_layout
+
+\begin_layout LyX-Code
+r1:
+\color red
+array
+\color inherit
+[0..7] 
+\color red
+of real
+\color inherit
+;
+\end_layout
+
+\begin_layout LyX-Code
+r2:
+\color red
+array
+\color inherit
+[0..7,0..7] 
+\color red
+of real
+\end_layout
+
+\begin_layout Standard
+then we can write: 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+  1.
+
+\family default
+ 
+\family typewriter
+r1:= 1/2; 
+\begin_inset Newline newline
+\end_inset
+
+
+\family default
+ 
+\family roman
+2.
+
+\family default
+ 
+\family typewriter
+r2:= r1*3; 
+\begin_inset Newline newline
+\end_inset
+
+
+\family default
+ 
+\family roman
+3.
+
+\family default
+ 
+\family typewriter
+r1:= 
+\backslash
++ r2;        
+\begin_inset Newline newline
+\end_inset
+
+
+\family default
+ 
+\family roman
+4.
+
+\family default
+ 
+\family typewriter
+r1:= r1+r2[1];
+\family default
+ 
+\end_layout
+
+\begin_layout Standard
+Line 1 assigns 
+\family typewriter
+0.5
+\family default
+ to each element of 
+\family typewriter
+r1
+\family default
+.
+ 
+\end_layout
+
+\begin_layout Standard
+Line 2 assigns 
+\family typewriter
+1.5
+\family default
+ to every element of 
+\family typewriter
+r2
+\family default
+.
+ 
+\end_layout
+
+\begin_layout Standard
+In line 3, 
+\family typewriter
+r1
+\family default
+ gets the totals along the rows of 
+\family typewriter
+r2
+\family default
+.
+\end_layout
+
+\begin_layout Standard
+In line 4, 
+\family typewriter
+r1
+\family default
+ is incremented with the corresponding elements of row 1 of 
+\family typewriter
+r2
+\family default
+.
+ 
+\end_layout
+
+\begin_layout Standard
+These are defined to be equivalent to the following standard Pascal loops:
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+1'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+    r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=1/2; 
+\begin_inset Newline newline
+\end_inset
+
+
+\family roman
+2'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+    
+\family default
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+      r2[
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+]:=r1[
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+]*3;
+\family default
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+3'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+   
+\family default
+\color red
+begin
+\family typewriter
+\color inherit
+ 
+\begin_inset Newline newline
+\end_inset
+
+      
+\begin_inset Formula $t$
+\end_inset
+
+:=0; 
+\begin_inset Newline newline
+\end_inset
+
+      
+\family default
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+:=7 
+\family default
+\color red
+downto
+\family typewriter
+\color inherit
+ 0 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+        t:=r2[
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+]+t;
+\begin_inset Newline newline
+\end_inset
+
+      r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=
+\begin_inset Formula $t$
+\end_inset
+
+; 
+\begin_inset Newline newline
+\end_inset
+
+   
+\family default
+\color red
+end
+\family typewriter
+\color inherit
+;
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+4'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+    r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]+r2[1,
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+];
+\family default
+ 
+\end_layout
+
+\begin_layout Standard
+The compiler has to generate an implicit loop
+\begin_inset Index
+status collapsed
+
+\begin_layout Plain Layout
+loop
+\end_layout
+
+\end_inset
+
+.
+ In the above 
+\family typewriter
+
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+,
+\begin_inset Formula $t$
+\end_inset
+
+
+\family default
+ are temporary variables created by the compiler.
+ The implicit indices 
+\family typewriter
+
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+
+\family default
+ etc are accessible to a coder using the syntax 
+\family typewriter
+iota[0], iota[1]
+\family default
+ etc.
+ 
+\end_layout
+
+\begin_layout Subsection
+Data reformatting
+\end_layout
+
+\begin_layout Standard
+Given two conforming matrices a, b
+\end_layout
+
+\begin_layout Standard
+the statement
+\end_layout
+
+\begin_layout LyX-Code
+a:= 
+\color red
+trans
+\color inherit
+ b;
+\end_layout
+
+\begin_layout Standard
+will transpose the matrix b into a.
+\end_layout
+
+\begin_layout Standard
+For more general reorganisations you can permute the implicit indices thus
+\end_layout
+
+\begin_layout LyX-Code
+a:=
+\color red
+perm
+\color inherit
+[1,0] b ;
+\end_layout
+
+\begin_layout LyX-Code
+{ equivalent to a:= trans b }
+\end_layout
+
+\begin_layout LyX-Code
+
+\end_layout
+
+\begin_layout LyX-Code
+z:=
+\color red
+perm
+\color inherit
+[1,2,0] y;
+\end_layout
+
+\begin_layout Standard
+In the second case z and y must be 3 d arrays and the result is such that
+ z[i,j,k]=y[j,k,i].
+ It is clearly desireable to do this in a way which prevents the creation
+ of temporary arrays.
+ We will discuss below the general strategy to minimise the creation of
+ temporaries.
+\end_layout
+
+\begin_layout Standard
+Given 
+\family typewriter
+\size small
+a:
+\size default
+\color red
+array
+\size small
+\color inherit
+[0..10,0..15] 
+\size default
+\color red
+of
+\size small
+\color inherit
+ t
+\family default
+\size default
+; then 
+\end_layout
+
+\begin_layout Standard
+\begin_inset Tabular
+<lyxtabular version="3" rows="4" columns="2">
+<features>
+<column alignment="left" valignment="top" width="0">
+<column alignment="left" valignment="top" width="0">
+<row>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\size small
+a[1]
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\color red
+array
+\size small
+\color inherit
+ [0..15]
+\size default
+\color red
+ of
+\size small
+\color inherit
+ t
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\size small
+a[1..2]
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\color red
+array
+\size small
+\color inherit
+ [0..1,0..15]
+\size default
+\color red
+ of
+\size small
+\color inherit
+ t
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\size small
+a[][1]
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\color red
+array
+\size small
+\color inherit
+[0..10,0..0] 
+\size default
+\color red
+of
+\size small
+\color inherit
+ t
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\size small
+a[1..2,4..6]
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\family typewriter
+\color red
+array
+\size small
+\color inherit
+[0..1,0..3] 
+\size default
+\color red
+of
+\size small
+\color inherit
+ t
+\end_layout
+
+\end_inset
+</cell>
+</row>
+</lyxtabular>
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Subsection
+Implicit mapping
+\end_layout
+
+\begin_layout Standard
+Maps are implicitly defined on both operators and functions.
+ 
+\end_layout
+
+\begin_layout Standard
+If 
+\family typewriter
+f
+\family default
+ is a function or unary operator mapping from type 
+\begin_inset Formula $T_{1}$
+\end_inset
+
+ to type 
+\begin_inset Formula $T_{2}$
+\end_inset
+
+ and 
+\family typewriter
+x
+\family default
+ : 
+\family typewriter
+\color red
+array of
+\family default
+\color inherit
+ 
+\begin_inset Formula $T_{1}$
+\end_inset
+
+ then 
+\family typewriter
+a:=f(x)
+\family default
+ assigns an array of 
+\begin_inset Formula $T_{2}$
+\end_inset
+
+ such that 
+\family typewriter
+a[i]=f(x[i])
+\family default
+.
+ Similarly if we have 
+\family typewriter
+g(p,q:
+\family default
+
+\begin_inset Formula $T_{1}$
+\end_inset
+
+
+\family typewriter
+):
+\family default
+ 
+\begin_inset Formula $T_{2}$
+\end_inset
+
+,then 
+\family typewriter
+a:=g(x,y)
+\family default
+ for 
+\family typewriter
+x,y:
+\color red
+array of
+\family default
+\color inherit
+ 
+\begin_inset Formula $T_{1}$
+\end_inset
+
+ gives 
+\family typewriter
+a[i]=g(x[i],y[i])
+\end_layout
+
+\begin_layout Section
+Parsing and Automatic MappingThese are defined to be equivalent to the following
+ standard Pascal loops: 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+1'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=1/2; 
+\begin_inset Newline newline
+\end_inset
+
+
+\family roman
+2'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+    
+\family default
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ r2[
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+]:=r1[
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+]*3;
+\family default
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+3'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ 
+\end_layout
+
+\begin_layout LyX-Code
+
+\family typewriter
+   
+\family default
+\color red
+begin
+\family typewriter
+\color inherit
+ 
+\begin_inset Newline newline
+\end_inset
+
+      
+\begin_inset Formula $t$
+\end_inset
+
+:=0; 
+\begin_inset Newline newline
+\end_inset
+
+      
+\family default
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{1}$
+\end_inset
+
+:=7 
+\family default
+\color red
+downto
+\family typewriter
+\color inherit
+ 0 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ t:=r2[
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+]+t;
+\begin_inset Newline newline
+\end_inset
+
+      r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=
+\begin_inset Formula $t$
+\end_inset
+
+; 
+\begin_inset Newline newline
+\end_inset
+
+   
+\family default
+\color red
+end
+\family typewriter
+\color inherit
+;
+\end_layout
+
+\begin_layout LyX-Code
+
+\family roman
+4'.
+
+\family default
+ 
+\color red
+for
+\family typewriter
+\color inherit
+ 
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+:=0 
+\family default
+\color red
+to
+\family typewriter
+\color inherit
+ 7 
+\family default
+\color red
+do
+\family typewriter
+\color inherit
+ r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]:=r1[
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+]+r2[1,
+\begin_inset Formula $\iota_{0}$
+\end_inset
+
+];
+\family default
+ 
+\end_layout
+
+\begin_layout Standard
+The compiler has to generate an implicit loop
+\begin_inset Index
+status collapsed
+
+\begin_layout Plain Layout
+loop
+\end_layout
+
+\end_inset
+
+.
+ In the above 
+\family typewriter
+
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+,
+\begin_inset Formula $t$
+\end_inset
+
+
+\family default
+ are temporary variables created by the compiler.
+ The implicit indices 
+\family typewriter
+
+\begin_inset Formula $\iota_{0},\iota_{1}$
+\end_inset
+
+
+\family default
+ etc are accessible to a coder using the syntax 
+\family typewriter
+iota[0], iota[1]
+\family default
+ etc.
+ 
+\end_layout
+
+\begin_layout Section
+ of Operators and Functions
+\end_layout
+
+\begin_layout Standard
+Discuss the semantics of the array extension to Pascal.
+ Explain how the parser does this, how it avoids creating intermediate results.
+ --- PAUL
+\end_layout
+
+\begin_layout Section
+Opportunities to Parallelise Array Assignments
+\end_layout
+
+\begin_layout Standard
+Explain why SIMD code is particularly appropriate for vectors or for the
+ 2nd dimension of matrices.
+ Explain why multi core can readily operate on 1st dimension of matrices.
+ Explain the best assignment of processors to rows of the matrix -- doing
+ alternate rows instead of the first half then the 2nd half.
+ == Tamerlan
+\end_layout
+
+\begin_layout Section
+Transformation for SIMD Parallelism
+\end_layout
+
+\begin_layout Standard
+Explain the code sequence transformations from sequention to vectorised
+ loops === Paul
+\end_layout
+
+\begin_layout LyX-Code
+ 
+\end_layout
+
+\begin_layout Section
+Transformation for Multi-core Parallelism
+\end_layout
+
+\begin_layout Standard
+Paul to do this
+\end_layout
+
+\begin_layout Section
+Task Parallelism Problems with Block Structure
+\end_layout
+
+\begin_layout Standard
+Paul to do this explain how it is necessary for the tasks on other stacks
+ to access intermediate frames on the main stack.
+ ==Paul
+\end_layout
+
+\begin_layout Standard
+Show the code sequence that implements the task execute on the Pentium ===Tamerl
+an
+\end_layout
+
+\begin_layout Section
+The PURE Function Extension
+\end_layout
+
+\begin_layout Standard
+Tamerlan
+\end_layout
+
+\begin_layout Section
+An Example Program
+\end_layout
+
+\begin_layout Standard
+Give 3 versions of Mandelbrot, the current Mandelbrot1a, the Mandlebrot2
+ and a mandelbrot3 derived from 1a but with the use of a Pure function.
+\end_layout
+
+\begin_layout Section
+Performance Comparisons
+\end_layout
+
+\begin_layout Standard
+Compare versions against number of processors and against instructionsets
+\end_layout
+
+\begin_layout Standard
+Compare also with a good C version 
+\end_layout
+
+\begin_layout Standard
+Tamerlan to do this.
+\end_layout
+
+\end_body
+\end_document

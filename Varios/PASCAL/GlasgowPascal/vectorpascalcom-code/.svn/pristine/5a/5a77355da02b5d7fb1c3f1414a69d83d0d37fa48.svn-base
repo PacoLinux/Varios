@@ -1,0 +1,2914 @@
+
+package ilcg;
+import java.io.*;
+import java.util.Dictionary;
+import java.util.Enumeration;
+import java.util.Hashtable;
+import java.util.Vector;
+import ca.mcgill.sable.util.*;
+
+import ilcg.analysis.*;
+import ilcg.lexer.*;
+import ilcg.node.*;
+import ilcg.parser.*;
+import ilcg.tree.Format;
+/**
+ * Translates ilcg to a code generator written in pascal
+ *
+ * @author     Paul Cockshott
+ * @created    22 November 2005
+ */
+public class Ilcp extends
+    DepthFirstAdapter
+{
+    /**
+     * constant to index the 2d array of output files, all with pint in
+     *first dimension are part of the interface
+     */
+    int pint = 0;
+
+    /**
+     * constant to index the 2d array of output files, all with pimp in
+     *first dimension are part of the implementation
+     */
+    int pimp = 1;
+    int pconst = 0;
+    int ptype = 1;
+    int pvar = 2;
+    int pfn = 3;
+
+    PrintWriter out;
+    PrintWriter[][] files = new PrintWriter[2][4];
+    String[][] filenames = new String[2][4];
+    double version = IlcgTreeWalkGeneratorVer.VERSION;
+    int maxalt = 2000;
+
+    String FPAlias = "";
+    String SPAlias = "";
+
+    /**
+     * A hash table that stores the formats of registers as strings, with
+     *each register indexed on its name
+     */
+    public Hashtable globals = new Hashtable();
+    /**
+     * a table to store flags
+     */
+    public Hashtable flags = new Hashtable();
+    /**
+     * a vector of pairs mapping internal names for types to
+     *those used in the assembler
+     */
+    public Vector typerenamevec = new Vector();
+    /**
+     * The symbol table tha handles embeded scopes
+     */
+    public SymbolTable names = new SymbolTable(globals);
+    Dictionary procedureFormats = new Hashtable();
+    Dictionary functionFormats = new Hashtable();
+    Dictionary instructionSet = procedureFormats;
+    Dictionary expandedInstructions = new Hashtable();
+    Dictionary addressModes = new Hashtable();
+    /**
+     * Used to store the altenatives of a pattern as they are being parsed
+     */
+    Vector alternatives;
+    /**
+     * Patterns are either general, address or instruction
+     */
+    String patternContext = "unknown";
+    /**
+     * all generated procedures are numbered to ensure
+     *that no two procedures have the same name
+     */
+    int procNum = 1;
+    String cn, pk, unitname;
+    Hashtable done = new Hashtable();
+    Vector instructionset = new Vector();
+    boolean[] starts = {true, true, true, true, false, false};
+    String[] keywords = {"if", "for", "PUSH", "goto", ":=", "any"};
+    int baseregnum = 0;
+    int regnum = 0;
+    int alternativescount = 0;
+
+    int paramindex = 0;
+
+
+
+    /**
+     * The parameter is the name of the pascal unit to generate
+     *
+     * @param  s                Description of the Parameter
+     * @param  dir              Description of the Parameter
+     * @exception  IOException  Description of the Exception
+     */
+    public Ilcp(String s, String dir)
+    throws IOException
+    {
+        unitname = s;
+        s = s;
+        out = new PrintWriter(new FileOutputStream(dir + "/" + s + ".pas"));
+        for(int i = pint; i <= pimp; i++)
+            {
+                for(int j = pconst; j <= pfn; j++)
+                    {
+                        files[i][j] = new PrintWriter(new FileOutputStream(dir + "/" + (filenames[i][j] = s + i + j + ".pas")));
+                        files[i][j].println("{ file " + filenames[i][j] + " part of codegen " + unitname + "}");
+                    }
+                if(i < 1)
+                    {
+                        files[i][pconst].println("CONST");
+                        files[i][ptype].println("TYPE");
+                    }
+                files[i][pvar].println("VAR");
+            }
+        files[pimp][pvar].println("\ti:integer;");
+        // declare pregiven formats
+        names.put("int8", new Format("octet"));
+        names.put("int16", new Format("halfword"));
+        names.put("int64", new Format("doubleword"));
+        names.put("int32", new Format("word"));
+        names.put("uint8", new Format("octet"));
+        names.put("uint16", new Format("halfword"));
+        names.put("uint64", new Format("doubleword"));
+        names.put("uint32", new Format("word"));
+        names.put("ieee32", new Format("word"));
+        names.put("ieee64", new Format("doubleword"));
+        names.put("octet", new Format("octet"));
+        names.put("halfword", new Format("halfword"));
+        names.put("doubleword", new Format("doubleword"));
+        names.put("word", new Format("word"));
+        names.put("GP", new RegDetails("word", "GP", "GP", null));
+        names.put("FP", new RegDetails("word", "FP", "FP", null));
+        names.put("SP", new RegDetails("word", "SP", "SP", null));
+    }
+
+
+    /**
+     *  The main program for the Ilcp class
+     *
+     * @param  arguments  The command line arguments
+     */
+    public static void main(String[] arguments)
+    {
+        if(arguments.length != 3)
+            {
+                System.out.println("usage:");
+                System.out.println("java ilcg.Ilcp sourcefile destfile dir ");
+                System.exit(1);
+            }
+        try
+            {
+                new Parser(
+                    new Lexer(
+                        new PushbackReader(
+                            new BufferedReader(
+                                new FileReader(arguments[0])
+                            ), 1024)
+                    )
+                ).parse().apply(new Ilcp(arguments[1], arguments[2]));
+            }
+        catch(Exception e)
+            {
+                System.out.println(e);
+                e.printStackTrace();
+            }
+    }
+
+
+    void error(String s)
+    {
+        System.err.println(s);
+        System.exit(-1);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inStart(Start node)
+    {
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outStart(Start node)
+    {
+        out.flush();
+    }
+
+
+    String localname(Object o)
+    {
+        Class c = o.getClass();
+        String n = c.getName();
+        if(n.lastIndexOf(".") >= 0)
+            {
+                n = n.substring(n.lastIndexOf(".") + 1);
+            }
+        return n;
+    }
+
+
+    /**
+     * this function reserves a procedure name
+     *for each node
+     *
+     * @param  n  Description of the Parameter
+     */
+    public void defaultIn(Node n)
+    {
+        setIn(n, "p" + localname(n) + procNum);
+        procNum++;
+    }
+
+
+    /**
+     * Returns the recogniser or printer procedure name for this node
+     *
+     * @param  n  Description of the Parameter
+     * @return    Description of the Return Value
+     */
+    public String procname(Node n)
+    {
+        Object proc = getIn(n);
+        if(n == null)
+            {
+                System.err.println("no procedure declared for " + n);
+                return n.toString();
+            }
+        return pasname(proc.toString());
+    }
+
+
+    String memoname(Node n)
+    {
+        return "m" + procname(n);
+    }
+    // print the start of a tree building func
+
+    void defps(Node n)
+    {
+        if(done.get(procname(n)) != null)
+            {
+                System.out.println("repeat call of ps for " + procname(n));
+                files[100][100].println("crash");
+            }
+        String s = n.toString();
+        files[pint][pfn].println("\t(*! generates tree for\n\t" +
+                                 s.substring(0, s.length() < 80 ? s.length() : 79)
+                                 + "\n\t *)");
+        String heading = "\tFUNCTION " +
+                         procname(n) +
+                         ":pilcgnode;";
+        files[pimp][pfn].println(heading);
+        files[pint][pfn].println(heading);
+        files[pimp][pfn].println("\t\tVAR myrec:pilcgnode;\n\tBEGIN\n\t\tnew(myrec);");
+        done.put(procname(n), "done");
+    }
+
+
+    // print the end of a tree building func
+    void defpeb()
+    {
+        pim("END;");
+    }
+
+
+    void defpe(Node n)
+    {
+        pim(" " + procname(n) + ":=myrec;");
+        defpeb();
+    }
+
+
+    /**
+     * print a procedure that will always fail when
+     *used as a recogniser
+     *
+     * @param  n  Description of the Parameter
+     */
+    public void defaultOut(Node n)
+    {
+        int i = 0;
+        files[pint][pfn].println("{ default procedure " + procname(n) + "  }");
+        defps(n);
+        //  files[pimp][pfn].println("\t\twriteln(' "+
+        //       procname(n)+" "+n+" called ');");
+        files[pimp][pfn].println(procname(n) + ":=nil;");
+        //       System.out.println(" default out called on "+procname(n)+n);
+//	System.out.println("abort "+(9/i));
+        defpe(n);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAProgram(AProgram node)
+    {
+        alternatives = new Vector();
+        String leadin =" include(`";
+        String closer="') ";
+        print("unit " + unitname + ";\n interface uses ilcp;");
+        for(int i = 0; i <= pfn; i++)
+            {
+                print(leadin + filenames[0][i] + closer);
+            }
+        print(leadin + filenames[1][2] + closer);
+        print("implementation ");
+        print(leadin + filenames[1][0] + closer);
+        print(leadin + filenames[1][1] + closer);
+        print(leadin + filenames[1][3] + closer);
+        print("procedure initialisegen; begin");
+        print(" predecp;");
+    }
+
+
+    /**
+     * this generates a pair of recognisers 1  recognising each variant of each
+     *procedure patterns 1 matching each variant of function patterns
+     */
+    public void expandInstructions()
+    {
+        /*
+         *  handle procedure instructions
+         */
+        int e = instructionset.size();
+        files[pint][pconst].println(" instructionsetsize=" + e + ";");
+        print("lastinstruction:=" + (e - 1) + ";");
+        // files[pint][ptype].println(" instructionsetindex=0.."+(e-1)+";");
+        // files[pint][pvar].println(" instructionsetorder:array[instructionsetindex] of patternindex;");
+        try
+            {
+                for(int i = 0; i < e; i++)
+                    {
+                        Object key = instructionset.elementAt(i);
+                        String k = pasname(key.toString());
+                        print("  instructionsetorder[" + i + "]:= pat" + k + ";");
+                    }
+            }
+        catch(NoSuchElementException ne)
+            {
+                System.out.println("in expand instructions " + e);
+            }
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  p  Description of the Parameter
+     */
+    public void expandPattern(pattern p)
+    {
+        String name = pasname(p.name);
+        files[pimp][pfn].println("\tFUNCTION " + name + ":ppattern;");
+        files[pimp][pfn].println("\t\tVAR myrec:ppattern;\n\tBEGIN\n\t\tnew(myrec);\n\t\tWITH myrec^ DO BEGIN");
+        boolean instruction = p.context.equals("instruction");
+        declarevars(p);
+        files[pimp][pfn].println("\t\tmeaning:=" + p.internalrecognisingProc + ";\n\t\tmatchedAssembler:=" +
+                                 p.printingProc + ";");
+        forgetvars(p);
+        files[pimp][pfn].println("\t\tEND;");
+        files[pimp][pfn].println("\t\t" + name + ":=myrec;");
+        files[pimp][pfn].println("\tEND;");
+    }
+
+
+    void declarevars(pattern p)
+    {
+        Enumeration i = p.parameters.elements();
+        int j = 1;
+        while(i.hasMoreElements())
+            {
+                Object o = i.nextElement();
+                Param pa = (Param) o;
+                files[pimp][pfn].println("\t\tparams^[" + pa.index +
+                                         "]:=" + paramref(pa.type) + ";");
+                j++;
+            }
+        files[pimp][pfn].println("\t\tparamcount:=" + j + ";");
+    }
+
+
+    String paramref(String t)
+    {
+        if(t.equals("type"))
+            {
+                return "typeparam";
+            }
+        if(t.equals("label"))
+            {
+                return "patlabel";
+            }
+        return "pat" + pasname(t);
+    }
+
+
+    void forgetvars(pattern p)
+    {
+        //print("bindings=oldbindings;");
+    }
+
+
+    /**
+     * create a new alternatives structure to hold
+     *the ordered list of instructions. It is
+     *important to retain the ordering in this list
+     *in order to give the specifier of an instructionset
+     *some control of the order in which alternative
+     *instructions will be attempted when doing a match
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAInstructionlist(AInstructionlist node)
+    {
+        alternatives = new Vector();
+        defaultIn(node);
+    }
+
+
+    /**
+     * declaress the constructor for the code generator class
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAProgram(AProgram node)
+    {
+        instructionset = alternatives;
+        try
+            {
+                //	files[pint][pconst].println("\tlastreg:integer="+(regnum-1)+";");
+                //        files[pint][pvar].println("\tregisters:array[0..maxreg] of register ;");
+                files[pint][pconst].println("\tmaxbasereg=" + baseregnum + ";");
+                print("lastreg:=maxbasereg;");
+                files[pint][pvar].println("\treservedregs:reservationcode;");
+                files[pint][ptype].println("\tbasereg=0..maxbasereg;");
+                files[pint][ptype].println("\tregcode=0..maxreg;\n\t{reservationcode=set of basereg;}");
+                files[pint][ptype].println("\tregset=set of regcode;");
+                expandInstructions();
+                print("{ generated by Ilcp }");
+                if(FPAlias.equals(""))
+                    {
+                        System.err.println("FP alias not declared");
+                        files[5][6].println("halt");
+                    }
+                else
+                    {
+                        print("fp:=" + FPAlias + "code;registers[fp].permanentlyreserved:=true;");
+                    }
+                if(SPAlias.equals(""))
+                    {
+                        System.err.println("SP alias not declared");
+                        System.exit(-1);
+                    }
+                else
+                    {
+                        out.println("sp:=" + SPAlias + "code;registers[sp].permanentlyreserved:=true;");
+                    }
+                pim("procedure predecp;begin\n");
+                int firstalt = alternativescount;
+                alternativescount += typerenamevec.size();
+                int lastalt = alternativescount - 1;
+                pim("\tpattype_^.meaning^.first:=" + firstalt + ";");
+                pim("\tpattype_^.meaning^.last:=" + lastalt + ";");
+                for(int i = 0; i < typerenamevec.size(); i++)
+                    {
+                        String[] pair = (String[]) typerenamevec.elementAt(i);
+                        //	out.println("typerename("+pair[0]+",'"+pair[1]+"');");
+                        predecpat(pair[0], pair[1], i + firstalt);
+                    }
+                pim("end;");
+                print("{ initialises the flags declared in the cpu description }");
+                Enumeration f = flags.keys();
+                while(f.hasMoreElements())
+                    {
+                        Object k = f.nextElement();
+                        Object val = flags.get(k);
+                        print("flags[" + k + "]:= " + val + ";");
+                    }
+                print("\tlastalt:=" + lastalt + ";");
+                print("end; begin initialisegen end.");
+                out.close();
+                for(int i = 0; i <= pimp; i++)
+                    {
+                        for(int j = 0; j <= pfn; j++)
+                            {
+                                files[i][j].close();
+                            }
+                    }
+                // handle register space
+            }
+        catch(Exception e2)
+            {
+                System.out.println(" in outAProgram trapped " + e2);
+            }
+    }
+
+
+    boolean containsAnId(ADerefRhs node)
+    {
+        PRefval rv = node.getRefval();
+        if(rv instanceof ARefval)
+            {
+                ARefval arv = (ARefval) rv;
+                PLoc pl = arv.getLoc();
+                return (pl instanceof AIdLoc);
+            }
+        return false;
+    }
+
+
+    AIdLoc getTheId(ADerefRhs node)
+    {
+        return (AIdLoc)((ARefval) node.getRefval()).getLoc();
+    }
+    // check if the id labels a set of alternatives
+
+    Node getAlts(AIdLoc node)
+    {
+        String theId = node.getIdentifier().getText();
+        print("// the id is " + theId);
+        Object val = names.get(theId);
+        // check its type!!!
+        if(val == null)
+            {
+                error("undeclared variable " + theId);
+            }
+        else if(val instanceof Param)
+            {
+                //print("// it is a parameter id");
+                String typeName = ((Param) val).type;
+                //print("// its type is "+typeName);
+                Object typeDenotation = names.get(typeName);
+                if(typeDenotation == null)
+                    {
+                        error("undeclared type " + typeName + " in  getAlts " + node);
+                    }
+                else
+                    {
+                        pattern p = (pattern) typeDenotation;
+                        Node n = p.getNode();
+                        return n;
+                    }
+            }
+        return null;
+    }
+
+
+    boolean containsJustARegId(ADerefRhs node)
+    {
+        if(containsAnId(node))
+            {
+                //	print("// contains an id");
+                Node n = getAlts(getTheId(node));
+                if(n == null)
+                    {
+                        return false;
+                    }
+                //	print("// and the alternatives are not null ");
+                if(n instanceof AAlternativesPatterndecl)
+                    {
+                        //		print("// and the result is an alternative pattern ");
+                        if(allRegisters((AAlternativesPatterndecl) n))
+                            {
+                                return true;
+                            }
+                        //		print("// but the alternatives are not all registers ");
+                    }
+            }
+        return false;
+    }
+
+
+    void pim(String s)
+    {
+        files[pimp][pfn].println("\t\t" + s);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outADerefRhs(ADerefRhs node)
+    {
+        files[pint][pfn].println("\t(*! recongnises deref(refval) *)");
+        defps(node);
+        pim("\t\tmyrec^.tag:=deref;");
+        pim("\t\tmyrec^.arg:=" + procname(node.getRefval()) + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReallitNumber(AReallitNumber node)
+    {
+        pim("(*! recognises a real in number context *)");
+        defps(node);
+        pim("myrec^.tag:=reallit;");
+        pim("myrec^.reallitarg:=" + node + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPredeclaredtypeType(APredeclaredtypeType node)
+    {
+        pim("(*! recognises a predeclared type *)");
+        defps(node);
+        pim("myrec^.tag:=format;");
+        pim("myrec^.formatarg:=f" + node + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAFormatPredeclaredtype(AFormatPredeclaredtype node)
+    {
+        pim("(*! recognises a predeclared type *)");
+        defps(node);
+        pim("myrec^.tag:=format;");
+        pim("myrec^.formatarg:=f" + node + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATformatPredeclaredtype(ATformatPredeclaredtype node)
+    {
+        pim("(*! recognises a predeclared type *)");
+        defps(node);
+        pim("myrec^.tag:=format;");
+        pim("myrec^.formatarg:=f" + node + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIntegerNumber(AIntegerNumber node)
+    {
+        pim("(*! recognises an integer literal in number context *)");
+        defps(node);
+        pim("myrec^.tag:=intlit;");
+        pim("myrec^.intlitarg:=" + node + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outALocValue(ALocValue node)
+    {
+        out.println(
+            "\t(*! recogises loc in value context *)");
+        pim("(*" + node + "*)");
+        defps(node);
+//	pim("myrec^.tag:=location;");
+        pim("myrec:=" + procname(node.getLoc()) + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outANumberRhs(ANumberRhs node)
+    {
+        pim("(*! recognizes a number *) ");
+        defps(node);
+        pim("myrec:=" + procname(node.getNumber()) + ";");
+        defpe(node);
+    }
+
+
+
+    void defforms(Node n)
+    {
+        out.println("(* defforms output-> " + procname(n) + "*)");
+    }
+
+
+    void pf(String f, String s)
+    {
+        pim("myrec^." + f + ":=" + s + ";");
+    }
+
+
+    void ptag(String s)
+    {
+        pf("tag", s);
+    }
+
+
+    void pformat(String s)
+    {
+        ptag("format");
+        pf("formatarg", s);
+    }
+
+
+    void print(String s)
+    {
+        out.println("\t\t" + s);
+    }
+
+
+    void deff(Node n, String s)
+    {
+        defps(n);
+        pformat(s);
+        defpe(n);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAOctetFormat(AOctetFormat node)
+    {
+        deff(node, "foctet");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAHalfwordFormat(AHalfwordFormat node)
+    {
+        deff(node, "fhalfword");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAWordFormat(AWordFormat node)
+    {
+        deff(node, "fword");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outADoublewordFormat(ADoublewordFormat node)
+    {
+        deff(node, "fdword");
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAQuadwordFormat(AQuadwordFormat node)
+    {
+        deff(node, "fqword");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReference(AReference node)
+    {
+        defps(node);
+        ptag("ref");
+        pf("arg", procname(node.getType()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAArrayType(AArrayType node)
+    {
+        defps(node);
+        ptag("format");
+        AArray a = (AArray) node.getArray();
+        pf("formatarg", "vectorof(f" + node.getTypeprim() + "," +
+           a.getNumber() +
+           ")");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReftypeType(AReftypeType node)
+    {
+        setres(node, node.getReference());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATypeidType(ATypeidType node)
+    {
+        setres(node, node.getTypeid());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATypeidTypeprim(ATypeidTypeprim node)
+    {
+        setres(node, node.getTypeid());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASignedTformat(ASignedTformat node)
+    {
+        setres(node, node.getSigned());
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAUnsignedTformat(AUnsignedTformat node)
+    {
+        setres(node, node.getUnsigned());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIeee32Tformat(AIeee32Tformat node)
+    {
+        deff(node, "fieee32");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIeee63Tformat(AIeee63Tformat node)
+    {
+        deff(node, "fieee64");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARhsValue(ARhsValue node)
+    {
+        setres(node, (node.getRhs()));
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASigned(ASigned node)
+    {
+        deff(node, "fint32");
+    }
+
+
+    void setres(Node node, Node n)
+    {
+//	System.out.println(node.toString()+n);
+        defps(node);
+        pim("myrec:=" + (n != null ? procname(n) : "nil") + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAInt8Signed(AInt8Signed node)
+    {
+        deff(node, "fint8");
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAInt16Signed(AInt16Signed node)
+    {
+        deff(node, "fint16");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAInt64Signed(AInt64Signed node)
+    {
+        deff(node, "fint64");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAUnsigned(AUnsigned node)
+    {
+        deff(node, "fuint32");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAUint8Unsigned(AUint8Unsigned node)
+    {
+        deff(node, "fuint8");
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAUint16Unsigned(AUint16Unsigned node)
+    {
+        deff(node, "fuint16");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAUint64Unsigned(AUint64Unsigned node)
+    {
+        deff(node, "fuint64");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAMonadicValue(AMonadicValue node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMonadicValue(AMonadicValue node)
+    {
+        defps(node);
+        ptag("monad");
+        pf("arg", procname(node.getValue()));
+        pf("fn", procname(node.getMonadic()));
+        defpe(node);
+    }
+
+
+    void defop(Node n, String op)
+    {
+        defps(n);
+        ptag("monop");
+        pf("opname", "ilcp" + op);
+        defpe(n);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAbsMonadic(AAbsMonadic node)
+    {
+        defop(node, "ABS");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAExtendMonadic(AExtendMonadic node)
+    {
+        defop(node, "EXTEND");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASqrtMonadic(ASqrtMonadic node)
+    {
+        defop(node, "SQRT");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATanMonadic(ATanMonadic node)
+    {
+        defop(node, "TAN");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outACosMonadic(ACosMonadic node)
+    {
+        defop(node, "COS");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outALnMonadic(ALnMonadic node)
+    {
+        defop(node, "LN");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASinMonadic(ASinMonadic node)
+    {
+        defop(node, "SIN");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+//	public void outAPopMonadic(APopMonadic node)
+//	{
+//		defop(node, "POP");
+//	}
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outANotMonadic(ANotMonadic node)
+    {
+        defop(node, "NOT");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAFloatMonadic(AFloatMonadic node)
+    {
+        defop(node, "FLOAT");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARoundMonadic(ARoundMonadic node)
+    {
+        defop(node, "ROUND");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATruncMonadic(ATruncMonadic node)
+    {
+        defop(node, "TRUNCATE");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outADyadicValue(ADyadicValue node)
+    {
+        defps(node);
+        ptag("dyad");
+        String lrec = procname(node.getLeft());
+        String rrec = procname(node.getRight());
+        String op = procname(node.getDyadic());
+        pf("arg", lrec);
+        pf("arg2", rrec);
+        pf("fn", op);
+        defpe(node);
+    }
+
+
+    String notrailingspaces(String s)
+    {
+        int len = s.length();
+        if(s.charAt(len - 1) == ' ')
+            {
+                return notrailingspaces(s.substring(0, len - 1));
+            }
+        return s;
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outACastRhs(ACastRhs node)
+    {
+        String castType = notrailingspaces(node.getType().toString());
+        pim("(*! try to cast to type: " + castType + "*)");
+        defps(node);
+        ptag("typecast");
+        pf("arg", procname(node.getType()));
+        pf("arg2", procname(node.getValue()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outACastpopRhs(ACastpopRhs node)
+    {
+        String castType = notrailingspaces(node.getType().toString());
+        pim("(*! try to cast to type: " + castType + "*)");
+        defps(node);
+        ptag("typecast");
+        pf("arg", procname(node.getType()));
+        pf("arg2", procname(node.getValue()));
+        pf("arg2", "new_monad(ilcppop,myrec^.arg2)");
+        defpe(node);
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARefval(ARefval node)
+    {
+        pim("(*! recognises a refval which is a location *)");
+        setres(node, node.getLoc());
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARefcastRefval(ARefcastRefval node)
+    {
+        String castType = notrailingspaces(node.getType().toString());
+        print("(*! try to cast to type: " + castType + "*)");
+        pim("(*! try to cast to type: " + castType + "*)");
+        defps(node);
+        String prefix = "";
+        ptag("typecast");
+        pf("arg", procname(node.getType()));
+        pim("(*" + node.getLoc().getClass() + "*)");
+        pf("arg2", procname(node.getLoc()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAConstRhs(AConstRhs node)
+    {
+        Token id = node.getIdentifier();
+        print("(*! matches a literal  to the tree at this point*)");
+        defps(node);
+        ptag("constant");
+        Object val = names.get(id.getText());
+        // check its type!!!
+        if(val == null)
+            {
+                error("undeclared variable " + id);
+            }
+        else if(val instanceof Param)
+            {
+                pf("arg", "buildparamref(" + ((Param) val).index + ");");
+            }
+        defpe(node);
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIdLoc(AIdLoc node)
+    {
+        Token id = node.getIdentifier();
+        print("(*! Matches identifier " + id + " to the tree at this point*)");
+        pim("(*! Match " + node + "*)");
+        defps(node);
+        Object val = names.get(id.getText());
+        // check its type!!!
+        if(val == null)
+            {
+                error("undeclared variable " + id);
+            }
+        else if(val instanceof RegDetails)
+            {
+                pim("myrec^.tag:=patterntag;");
+                pim("myrec^.pat:=pat" +
+                    pasname(((RegDetails) val).internalname) + ";");
+            }
+        else if(val instanceof Param)
+            {
+                pim("myrec:=buildparamref(" + ((Param) val).index + ");");
+            }
+        defpe(node);
+    }
+
+
+    void memorecord(Node n)
+    {
+        //print (memoname(n)+"=nstr;");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAForMeaning(AForMeaning node)
+    {
+        defps(node);
+        ptag("forloop");
+        if(node.getRefval() != null)
+            {
+                String refhandler = procname(node.getRefval());
+                pf("indexvar", refhandler);
+            }
+        else
+            {
+                error("illegalfor loop" + node);
+            }
+        if(node.getStart() != null)
+            {
+                String handler = procname(node.getStart());
+                pf("start", handler);
+            }
+        else
+            {
+                error("illegal for loop " + node);
+            }
+        if(node.getStop() != null)
+            {
+                String handler = procname(node.getStop());
+                pf("stop", handler);
+            }
+        else
+            {
+                error("illegal for loop " + node);
+            }
+        if(node.getIncrement() != null)
+            {
+                String handler = procname(node.getIncrement());
+                pf("incr", handler);
+            }
+        else
+            {
+                error("illegal for loop " + node);
+            }
+        if(node.getMeaning() != null)
+            {
+                String meaning = procname(node.getMeaning());
+                pf("action", meaning);
+            }
+        defpe(node);
+    }
+
+
+    /*
+     *  public void inARegisterLoc(ARegisterLoc node)
+     *  {
+     *  defaultIn(node);
+     *  }
+     *  public void outARegisterLoc(ARegisterLoc node)
+     *  {
+     *  defaultOut(node);
+     *  }
+     */
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMemoryLoc(AMemoryLoc node)
+    {
+        defps(node);
+        ptag("memref");
+        Node val = node.getValue();
+        pf("arg", procname(val));
+        defpe(node);
+    }
+
+
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAReallitNumber(AReallitNumber node)
+    {
+        defaultIn(node);
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAIntegerNumber(AIntegerNumber node)
+    {
+        defaultIn(node);
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAReallit(AReallit node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReallit(AReallit node)
+    {
+        defaultOut(node);
+    }
+
+
+    void defds(Node n)
+    {
+        String nom = procname(n);
+        out.println("(* defds ->public boolean " + nom +
+                    "*)");
+    }
+
+
+    void handledyad(Node node, String s)
+    {
+        defps(node);
+        ptag("dyadicop");
+        pf("opname", "ilcp" + s);
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASatmultDyadic(ASatmultDyadic node)
+    {
+        handledyad(node, "satmult");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASatminusDyadic(ASatminusDyadic node)
+    {
+        handledyad(node, "satminus");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMaxDyadic(AMaxDyadic node)
+    {
+        handledyad(node, ilcg.tree.Node.max);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMinDyadic(AMinDyadic node)
+    {
+        handledyad(node, ilcg.tree.Node.min);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inALtDyadic(ALtDyadic node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outALtDyadic(ALtDyadic node)
+    {
+        handledyad(node, "lt");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReplicateDyadic(AReplicateDyadic node)
+    {
+        handledyad(node, "rep");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAGtDyadic(AGtDyadic node)
+    {
+        handledyad(node, "gt");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outASatplusDyadic(ASatplusDyadic node)
+    {
+        handledyad(node, "satplus");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAEqDyadic(AEqDyadic node)
+    {
+        handledyad(node, "eq");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPushDyadic(APushDyadic node)
+    {
+        handledyad(node, "push");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPlusDyadic(APlusDyadic node)
+    {
+        handledyad(node, "plus");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outACallDyadic(ACallDyadic node)
+    {
+        handledyad(node, "apply");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMinusDyadic(AMinusDyadic node)
+    {
+        handledyad(node, "minus");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAOrDyadic(AOrDyadic node)
+    {
+        handledyad(node, "or");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAndDyadic(AAndDyadic node)
+    {
+        handledyad(node, "and");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAXorDyadic(AXorDyadic node)
+    {
+        handledyad(node, "xor");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAShlDyadic(AShlDyadic node)
+    {
+        handledyad(node, "shl");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAShrDyadic(AShrDyadic node)
+    {
+        handledyad(node, "shr");
+    }
+
+
+    /**
+     * this resolves the identifier at build time
+     *on the assumption that instruction formats
+     *that contain operators are expanded to
+     *handle all the operators
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIdentifierDyadic(AIdentifierDyadic node)
+    {
+        defds(node);
+        defps(node);
+        Token id = node.getIdentifier();
+        String key = id.getText();
+        Object value = names.get(key);
+        if(value instanceof Param)
+            {
+                pim("myrec:=buildparamref(" + ((Param) value).index + ");");
+            }
+        else
+            {
+                error(key + " had no value ");
+            }
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATimesDyadic(ATimesDyadic node)
+    {
+        handledyad(node, "times");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outADivideDyadic(ADivideDyadic node)
+    {
+        handledyad(node, "divide");
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARemainderDyadic(ARemainderDyadic node)
+    {
+        handledyad(node, "remainder");
+    }
+
+
+    /**
+     * Converts a TString into a string stripping off leading and
+     *trailing quotes
+     *
+     * @param  s  Description of the Parameter
+     * @return    Description of the Return Value
+     */
+    String printable(TString s)
+    {
+        String raw = s.getText();
+        return raw.substring(1, raw.length() - 1);
+    }
+
+
+    /**
+     * convert an ilcg format to its pascal encoding
+     *
+     * @param  f  Description of the Parameter
+     * @return    Description of the Return Value
+     */
+    String pasformat(String f)
+    {
+        String form = "(0";
+        Format F = new Format(f);
+        if(Format.isRef(f))
+            {
+                form = form + "+fref";
+            }
+        if(Format.isVector(f))
+            {
+                form = form + "+fvector";
+                form = form + "+" + Format.getVectorTypeLength(f) + "*fvecmult";
+                f = Format.getVectorElementType(f);
+            }
+        f = Format.typeDeref(f);
+        if(Format.isSigned(f))
+            {
+                form = form + "+fsigned";
+            }
+        else if(Format.isUnsigned(f))
+            {
+                form = form + "+funsigned";
+            }
+        if(Format.isReal(f))
+            {
+                form = form + "+freal";
+            }
+        int length = Format.lengthInBytes(f);
+        if(length <= 2)
+            {
+                form = form + "+" + (length - 1);
+            }
+        if(length == 4)
+            {
+                form = form + "+" + (2);
+            }
+        if(length == 8)
+            {
+                form = form + "+" + (3);
+            }
+        if(length == 16)
+            {
+                form = form + "+" + (4);
+            }
+        return form + ")";
+    }
+
+
+    /**
+     * plant a declaratrion of the  in the tree walker
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARegisterdecl(ARegisterdecl node)
+    {
+        String id = notrailingspaces(node.getIdentifier().toString());
+        String printsAs = printable(node.getString());
+        Node t = node.getType();
+        Node a = node.getAggregate();
+        String aggs = a.toString();
+        String typestr = "int32";
+        RegDetails det = new RegDetails("ref " + (typestr = notrailingspaces(t.toString())),
+                                        printsAs,
+                                        id,
+                                        null);
+        if(names.get(id) != null)
+            {
+                error("register " + id + " is not a unique name ");
+            }
+        names.put(id, det);
+        boolean isStack = aggs.startsWith("stack");
+        boolean isVector = aggs.startsWith("vector");
+        boolean res = node.getReservation().toString().startsWith("reserved");
+        String rname = regname(id);
+        files[pimp][pvar].println("\tpat" + pasname(id) + ":ppattern;");
+        print("\tnew(pat" + pasname(id) + ");");
+        String pref1 = "\tpat" + pasname(id) + "^.";
+        print("new(" + pref1 + "meaning);");
+        print("new(" + pref1 + "matchedassembler);");
+        print(pref1 + "meaning^.tag:=reg;");
+        if(!isStack)
+            {
+                print(pref1 + "meaning^.index:=" + rname + "code;");
+            }
+        print(pref1 + "params:=nil;");
+        print(pref1 + "matchedassembler:=string2printlist('" + printsAs + "');");
+        if(isStack)
+            {
+                files[pint][pvar].println("\t" + rname + ":RegisterStack;");
+                print("\t" + rname + ".format:=" + pasformat(det.format) + ";");
+                print(pref1 + "meaning^.tag:=regstack;");
+                print("\t" + rname + ".printsas:='" + printsAs + "';");
+                print("\t" + rname + ".depth:=" + aggs.substring(5) + ";");
+                print(pref1 + "meaning^.stackdetails:=" + rname + ";");
+                //print("RegisterStack "+regname(id)+"= new RegisterStack(\""+printsAs+
+                //"\",\""+det.format+"\","+aggs.substring(5)+",registerSet,registerIndex);");
+            }
+        else if(isVector)
+            {
+                error("register vectors not currently supported by ilcp");
+                //	print("RegisterVector "+regname(id)+"= new RegisterVector(\""+printsAs+
+                //	"\",\""+det.format+"\","+aggs.substring(6)+");");
+            }
+        else
+            {
+                String pref = "\tregisters[" + rname + "code]";
+                print(pref + ".format:=" + pasformat(det.format) + ";");
+                print(pref + ".printsas:='" + printsAs + "';");
+                print(pref + ".permanentlyreserved:=" + res + ";");
+                print(pref + ".code:=" + rname + "code;");
+                print(pref + ".basecode:=[" + baseregnum + ".." + (baseregnum + Format.lengthInBytes(typestr) - 1) + "];");
+                files[pint][pconst].println("\t" + rname + "code=" + (regnum++) + ";");
+                // allocate bits in the reservation map for each byte in the register
+                baseregnum = baseregnum + Format.lengthInBytes(typestr);
+                //  print("Register reg"+id+"=new Register(\""+printsAs
+                //	+"\",\""+det.format+"\", "+ res+",registerSet,registerIndex);");
+            }
+    }
+
+
+    /*
+     *  public void outAFpAliasdecl(AAliasdecl node)
+     *  {
+     *  String child="FP";
+     *  String parent=notrailingspaces(node.getParent().toString());
+     *  String lows,highs;
+     *  lows=node.getLowbit().toString();
+     *  Integer low=new Integer(notrailingspaces(lows));
+     *  Integer high=new Integer(notrailingspaces(node.getHighbit().toString()));
+     *  Object rd=names.get(child);
+     *  if(rd==null){
+     *  System.err.println("register "+child+" not declared at point "+
+     *  node);
+     *  return;
+     *  }
+     *  if(names.get(parent)==null)
+     *  System.err.println("register "+parent+" not declared for use as alias in"+node);
+     *  else{
+     *  RegAlias ra=new RegAlias((RegDetails)names.get(parent),low.intValue(),high.intValue());
+     *  ((RegDetails)rd).alias=ra;
+     *  print("\tfp:="+regname(parent)+"code;");
+     *  /  print("Register regFP=new Register(\""+printsAs+"\",\""+((RegDetails)rd).format+"\",registerSet,registerIndex);");
+     *  }
+     *  }
+     */
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAliasdecl(AAliasdecl node)
+    {
+        String child = notrailingspaces(node.getChild().toString());
+        String parent = notrailingspaces(node.getParent().toString());
+        String lows;
+        String highs;
+        lows = node.getLowbit().toString();
+        Integer low = new Integer(notrailingspaces(lows));
+        Integer high = new Integer(notrailingspaces(node.getHighbit().toString()));
+        Object rd = names.get(child);
+        if(names.get(parent) == null)
+            {
+                System.err.println("register " + parent + " not declared for use as alias in" + node);
+            }
+        else if(child.equals("FP"))
+            {
+                FPAlias = regname(parent);
+            }
+        else if(child.equals("SP"))
+            {
+                SPAlias = regname(parent);
+            }
+        else
+            {
+                if(rd != null)
+                    {
+                        System.err.println("register " + child + " declared at point " + node);
+                        return;
+                    }
+                String id = child;
+                String printsAs = printable(node.getString());
+                String typestr = "int32";
+                RegDetails det = new RegDetails("ref " + (typestr = notrailingspaces(node.getType().toString())),
+                                                printsAs,
+                                                id,
+                                                null);
+                if(names.get(id) != null)
+                    {
+                        error(id + " is not unique");
+                    }
+                names.put(id, det);
+                RegAlias ra = new RegAlias((RegDetails) names.get(parent), low.intValue(), high.intValue());
+                det.alias = ra;
+                int lowoff = low.intValue() / 8;
+                int highoff = high.intValue() / 8;
+                int code = regnum;
+                String rname = regname(child);
+                String pref = "\tregisters[" + code + "]";
+                print(pref + ".format:=" + pasformat(det.format) + ";");
+                print(pref + ".printsas:='" + printsAs + "';");
+                print(pref + ".permanentlyreserved:=" + false + ";");
+                print(pref + ".code:=" + rname + "code;");
+                String baseregnum = "(" + regname(parent) + "code+" + lowoff + ")";
+                print(pref + ".basecode:=[" + baseregnum + ".." + baseregnum + "+" + (Format.lengthInBytes(typestr) - 1) + "];");
+                files[pint][pconst].println("\t" + rname + "code=" + (regnum++) + ";");
+                files[pimp][pvar].println("\tpat" + pasname(id) + ":ppattern;");
+                print("\tnew(pat" + pasname(id) + ");");
+                String pref1 = "\tpat" + pasname(id) + "^.";
+                print("new(" + pref1 + "meaning);");
+                print("new(" + pref1 + "matchedassembler);");
+                print(pref1 + "meaning^.tag:=reg;");
+                print(pref1 + "meaning^.index:=" + rname + "code;");
+                print(pref1 + "params:=nil;");
+                print(pref1 + "matchedassembler:=string2printlist('" + printsAs + "');");
+            }
+    }
+
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAOpdecl(AOpdecl node)
+    {
+        String id = notrailingspaces(node.getIdentifier().toString());
+        String oper = notrailingspaces(node.getOperator().toString());
+        String printsAs = printable(node.getString());
+        if(names.get(id) != null)
+            {
+                error(id + " not unique");
+            }
+        names.put(id, new Operation(id, oper, printsAs));
+        Node meaning = node.getOperator();
+        Node assemblesto = node.getString();
+        files[pimp][pvar].println("\tpat" + pasname(id) + ":ppattern;");
+        print("new(pat" + pasname(id) + ");");
+        String pref = "pat" + pasname(id) + "^.";
+        print("new(" + pref + "meaning);");
+        print(pref + "meaning" + "^.tag:=dyadicop;");
+        print(pref + "meaning" + "^.opname:='" + oper + "';");
+        print(pref + "matchedassembler:=string2printlist(" + assemblesto + ");");
+    }
+
+
+    void predecpat(String id, String assemblesto, int altno)
+    {
+        files[pimp][pvar].println("\tpat" + pasname(id) + ":ppattern;");
+        pim("new(pat" + pasname(id) + ");");
+        String pref = "pat" + pasname(id) + "^.";
+        pim("new(" + pref + "meaning);");
+        pim(pref + "meaning" + "^.tag:=format;");
+        pim(pref + "meaning" + "^.formatarg:=f" + id + ";");
+        pim(pref + "matchedassembler:=string2printlist('" + assemblesto + "');");
+        pim("alternatives[" + altno + "]:=" + "pat" + pasname(id) + ";");
+    }
+
+
+    String regname(String id)
+    {
+        return "reg" + pasname(id);
+    }
+
+
+    /**
+     * Convert an id to a case insensitive form
+     *
+     * @param  id  Description of the Parameter
+     * @return     Description of the Return Value
+     */
+    String pasname(String id)
+    {
+        String name = id + "_";
+        for(int i = 0; i < id.length(); i++)
+            {
+                if(id.charAt(i) <= 'Z')
+                    {
+                        name = name + id.charAt(i);
+                    }
+            }
+        return name;
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPlusOperator(APlusOperator node)
+    {
+//       defaultOut(node);
+    }
+
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAMinusOperator(AMinusOperator node)
+    {
+        //     defaultOut(node);
+    }
+
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATimesOperator(ATimesOperator node)
+    {
+//        defaultOut(node);
+    }
+
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outADivideOperator(ADivideOperator node)
+    {
+//        defaultOut(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAssign(AAssign node)
+    {
+        defps(node);
+        ptag("assignop");
+        pf("src", procname(node.getValue()));
+        pf("dest", procname(node.getRefval()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAValueMeaning(AValueMeaning node)
+    {
+        setres(node, node.getValue());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAssignMeaning(AAssignMeaning node)
+    {
+        setres(node, node.getAssign());
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outALocMeaning(ALocMeaning node)
+    {
+//		setres(node, node.getValue());
+        defps(node);
+        pim("myrec^.tag:=location;");
+        pim("myrec^.locvalue:=" + procname(node.getValue()) + ";");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIfMeaning(AIfMeaning node)
+    {
+        defps(node);
+        ptag("ifnode");
+        pf("condition", procname(node.getValue()));
+        pf("action", procname(node.getMeaning()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAGotoMeaning(AGotoMeaning node)
+    {
+        defps(node);
+        ptag("gotonode");
+        pf("dest", procname(node.getValue()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAFailMeaning(AFailMeaning node)
+    {
+        defps(node);
+        ptag("failure");
+        pf("arg", procname(node.getValue()));
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAPatterndecl(APatterndecl node)
+    {
+        setIn(node, "p" + localname(node) + procNum + node.getIdentifier().getText());
+        procNum++;
+        names.enterScope();
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPatterndecl(APatterndecl node)
+    {
+        String name = node.getIdentifier().getText();
+        Dictionary params = names.getCurrentScope();
+        int i = 0;
+        Node meaning = node.getMeaning();
+        Node assemblesto = node.getAssemblesto();
+        pattern p = new pattern(node, name, patternContext, params, procname(meaning),
+                                procname(assemblesto),
+                                meaning.toString());
+        names.leaveScope();
+        if(names.get(name) != null)
+            {
+                error("not a unique id " + name);
+            }
+        names.put(name, p);
+        if(patternContext == "address")
+            {
+                addressModes.put(name, p);
+            }
+        if(patternContext == "instruction")
+            {
+                instructionSet.put(name, p);
+            }
+        files[pimp][pvar].println("\tpat" + pasname(name) + ":ppattern;");
+        print("new(pat" + pasname(name) + ");");
+        String pref = "pat" + pasname(name) + "^.";
+        print(pref + "meaning:=" + procname(meaning) + ";");
+        print(pref + "matchedassembler:=" + procname(assemblesto) + ";");
+        print("new(" + pref + "params);");
+        print("for i:= 1 to maxparam do " + pref + "params^[i]:=nil;");
+        for(Enumeration e = params.elements();
+                e.hasMoreElements();)
+            {
+                Param pp = (Param) e.nextElement();
+                if(pp.index > 12)
+                    {
+                        error("too many parameters " + node);
+                    }
+                String np;
+                // print("new("+(
+                np = (pref + "params^[" + pp.index + "]")
+                     //)+");")
+                     ;
+                print(np +
+                      /*
+                       *  "^.paramtype"+
+                       */
+                      ":=pat" + pasname(pp.type) + ";");
+            }
+        // defps(node);
+        // print("boolean res;");
+        expandPattern(p);
+        // print("return res;");
+        // defpe();
+        print(" ");
+    }
+
+
+    /**
+     * Add an alternative to the vector
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAAlternativesPatterndecl(AAlternativesPatterndecl node)
+    {
+        defaultIn(node);
+        alternatives = new Vector(0);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     * @return       Description of the Return Value
+     */
+    public boolean allRegisters(AAlternativesPatterndecl node)
+    {
+        print("// are the following all registers ? " + node);
+        boolean allregs = true;
+        AAlternatives pa = (AAlternatives) node.getAlternatives();
+        Object temp[] = pa.getAlts().toArray();
+        for(int i = 0; i < temp.length; i++)
+            {
+                Object alti = temp[i];
+                Object altt = ((AAlts) alti).getType();
+                if(altt instanceof ATypeidType)
+                    {
+                        ATypeidType att = (ATypeidType) altt;
+                        String alt = ((ATypeid) att.getTypeid()).getIdentifier().getText();
+                        print("//alternative (" + i + ") " + alt);
+                        Object whatIsIt = names.get(alt);
+                        if(whatIsIt instanceof pattern)
+                            {
+                                whatIsIt = ((pattern) whatIsIt).getNode();
+                            }
+                        if(whatIsIt instanceof AAlternativesPatterndecl)
+                            {
+                                allregs = allregs && allRegisters((AAlternativesPatterndecl) whatIsIt);
+                            }
+                        else
+                            {
+                                allregs = allregs && (whatIsIt instanceof RegDetails);
+                            }
+                    }
+                else
+                    {
+                        allregs = false;
+                    }
+            }
+        return allregs;
+    }
+
+
+    /**
+     * Collects all the alternatives into a vector of alternatives
+     *indexed under the pattern name
+     *If all the alternatives are patterns constructs a switch statement
+     *and remembers which switch alternative succeded last time.
+     *If the input string it identical to a past success go straight to it.
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAlternativesPatterndecl(AAlternativesPatterndecl node)
+    {
+        //defaultOut(node);
+        String patternid = notrailingspaces(node.getIdentifier().toString());
+        names.put(patternid, new pattern(node, patternid, patternContext,
+                                         new Hashtable(), procname(node), "defprintproc", "alternatives"));
+        //memotest(node);
+        int firstalt = alternativescount;
+        alternativescount += alternatives.size();
+        int lastalt = alternativescount - 1;
+        if(lastalt > maxalt)
+            {
+                error("Machine description too large ");
+            }
+        defps(node);
+        ptag("alternation");
+        pf("first", " " + firstalt);
+        pf("last", " " + lastalt);
+        for(int i = 0; i < alternatives.size(); i++)
+            {
+                print("alternatives[" + (firstalt + i) + "]:=pat" + pasname(alternatives.elementAt(i).toString()) + ";");
+            }
+        print("lastalt:=" + lastalt + ";");
+        defpe(node);
+        files[pimp][pvar].println("\tpat" + pasname(patternid) + ":ppattern;");
+        print("new(pat" + pasname(patternid) + ");");
+        String pref = "pat" + pasname(patternid) + "^.";
+        print(pref + "meaning:=" + procname(node) + ";");
+        print(pref + "matchedassembler:=nil;");
+        print(pref + "params :=nil;");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAParamlist(AParamlist node)
+    {
+        //   defaultIn(node);
+        paramindex = 0;
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAParamlist(AParamlist node)
+    {
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAParam(AParam node)
+    {
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAParam(AParam node)
+    {
+        String type = notrailingspaces(node.getTypeid().toString());
+        String id = notrailingspaces(node.getIdentifier().toString());
+        Param p = new Param(id, type, paramindex++);
+        Object typeinfo = names.get(type);
+        if(typeinfo == null)
+            {
+                error("type " + type + " undelclared");
+            }
+        names.put(id, p);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inATypeparamParam(ATypeparamParam node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATypeparamParam(ATypeparamParam node)
+    {
+        String id = notrailingspaces(node.getIdentifier().toString());
+        names.put(id, new Param(id, "type", paramindex++));
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outALabelParam(ALabelParam node)
+    {
+        String id = notrailingspaces(node.getIdentifier().toString());
+        names.put(id, new Param(id, "label", paramindex++));
+    }
+
+
+    /**
+     * checks that the identifier is declared
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inATypeid(ATypeid node)
+    {
+        defaultIn(node);
+        // String id=node.getIdentifier().toString();
+        String id = notrailingspaces(node.toString());
+        Object result = names.get(id);
+        if(result == null)
+            {
+                Token t = node.getIdentifier();
+                System.err.println(id + " undeclared on line " +
+                                   t.getLine() + "," + t.getPos());
+            }
+    }
+
+
+    /**
+     * generates a procedure which if called checks that
+     *the current tree matches the type currently asssociated
+     *with the identifier
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATypeid(ATypeid node)
+    {
+        //defaultOut(node);
+        Token t = node.getIdentifier();
+        //  print("/** checks that the current tree matches the type ");
+        //  print("currently associated with "+t+"*/");
+        //  Object o = names.get(t.toString());
+        Object o = names.get(notrailingspaces(node.toString()));
+        defps(node);
+        pim("{ " + t + " " + o + "}");
+        if(o instanceof Param)
+            {
+                ptag("param");
+                pf("index", " " + ((Param) o).index);
+            }
+        else
+            {
+                ptag("format");
+                pf("formatarg", pasformat(t.toString()));
+            }
+        // print("dlog(\" ATypeid \",n);");
+        // print("if( typecompatiblewith(n,\""+t.getText()+"\")) {  return true;}else return false;");
+        defpe(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAParamtail(AParamtail node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAParamtail(AParamtail node)
+    {
+        // defaultOut(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAAlternatives(AAlternatives node)
+    {
+        alternatives = new Vector();
+        alternatives.addElement(notrailingspaces(node.getType().toString()));
+        //defaultIn(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAlternatives(AAlternatives node)
+    {
+        //defaultOut(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAAlts(AAlts node)
+    {
+        // defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAlts(AAlts node)
+    {
+        // defaultOut(node);
+        alternatives.addElement(notrailingspaces(node.getType().toString()));
+    }
+    // declares start of an assembler output method
+
+    void defas(Node n)
+    {
+        files[pimp][pfn].println("\tFUNCTION " +
+                                 procname(n) + ":pprintlist;");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAssemblesto(AAssemblesto node)
+    {
+        defas(node);
+        Node ap = node.getAssemblypattern();
+        files[pimp][pfn].println("\tbegin\n\t\t" + procname(node) + ":=" + procname(ap) + ";");
+        defpeb();
+        //defaultOut(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAAssemblypattern(AAssemblypattern node)
+    {
+        defaultIn(node);
+        defas(node);
+        files[pimp][pfn].println("\t var list:pprintlist;\n\tbegin\n\t\tlist:=nil;");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAssemblypattern(AAssemblypattern node)
+    {
+        files[pimp][pfn].println("\t\t" + procname(node) + ":=list;");
+        defpeb();
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAStringAssemblertoken(AStringAssemblertoken node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAStringAssemblertoken(AStringAssemblertoken node)
+    {
+        files[pimp][pfn].println("\t\tpappends(list," + node.toString() + ");");
+        // defaultOut(node);
+        // print("+\""+printable(node.getString())+"\"");
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAIdentifierAssemblertoken(AIdentifierAssemblertoken node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAIdentifierAssemblertoken(AIdentifierAssemblertoken node)
+    {
+        //defaultOut(node);
+        String id = node.getIdentifier().getText();
+        Object defn = names.get(id);
+        if(defn != null)
+            {
+                if(defn instanceof Param)
+                    {
+                        Param p = (Param) defn;
+                        files[pimp][pfn].println("\t\tpappendp(list," + p.index + ");");
+                        if(p.type.equals("type"))
+                            {
+                                //	print("+ type2Assembler(bindings[1]["+p.index+"].toString())");
+                                return;
+                            }
+                        //	print("+ type2Assembler(bindings[1]["+p.index+"].toString())");
+                    }
+            }
+        // print(" defn is "+defn);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAliasdeclStatement(AAliasdeclStatement node)
+    {
+        // defaultOut(node);
+    }
+
+
+    /**
+     * Stores the association between the ilcg type and the assembler type
+     *in a hash table
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outATyperenameStatement(ATyperenameStatement node)
+    {
+        String[] pair = {notrailingspaces(node.getPredeclaredtype().toString()), node.getIdentifier().getText()};
+        typerenamevec.addElement(pair);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outARegisterdeclStatement(ARegisterdeclStatement node)
+    {
+        //
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAAddressmodeStatement(AAddressmodeStatement node)
+    {
+        patternContext = "address";
+        //defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAAddressmodeStatement(AAddressmodeStatement node)
+    {
+        //defaultOut(node);
+        patternContext = "general";
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAInstructionformatStatement(AInstructionformatStatement node)
+    {
+        //defaultIn(node);
+        patternContext = "instruction";
+        instructionSet = procedureFormats;
+    }
+
+
+    /**
+     * enters a name for the recogniser in the symbol table and sets
+     *the pattern context to be instruction
+     *
+     * @param  node  Description of the Parameter
+     */
+    /*
+     *  public void inAInstructionfunctionStatement(AInstructionfunctionStatement node)
+     *  {	setIn(node,"p" +procNum+node.getIdentifier().getText());
+     *  procNum++;
+     *  names.enterScope();
+     *  patternContext="instruction";
+     *  instructionSet=functionFormats;
+     *  }
+     */
+    public void outAInstructionformatStatement(AInstructionformatStatement node)
+    {
+        //defaultOut(node);
+        patternContext = "general";
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAReturnval(AReturnval node)
+    {
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAOpdeclStatement(AOpdeclStatement node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAFlagStatement(AFlagStatement node)
+    {
+        String id = node.getIdentifier().getText();
+        flags.put(id, new Integer(node.getIntlit().getText()));
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAOpdeclStatement(AOpdeclStatement node)
+    {
+        //  defaultOut(node);
+    }
+
+
+    /**
+     *  Description of the Method
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void inAPatterndeclStatement(APatterndeclStatement node)
+    {
+        defaultIn(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAPatterndeclStatement(APatterndeclStatement node)
+    {
+        // defaultOut(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+
+    public void outAStatementlist(AStatementlist node)
+    {
+        // defaultOut(node);
+    }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAInstructionlist(AInstructionlist node) { }
+
+
+    /**
+     * dummy to prevent uneccessary recognising proc being generated
+     *
+     * @param  node  Description of the Parameter
+     */
+    public void outAStatements(AStatements node)
+    {
+        // defaultOut(node);
+    }
+
+}
+
+

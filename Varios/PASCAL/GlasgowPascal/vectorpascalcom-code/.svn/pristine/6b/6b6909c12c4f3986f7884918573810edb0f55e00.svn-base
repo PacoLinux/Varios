@@ -1,0 +1,311 @@
+#!/bin/bash
+# A script which runs all of the Vector Pascal test scripts and generates xml
+# based on their results
+
+# Usage: test [compiler] [test_directory] [cpu_type(s) ...]
+
+
+
+generate_xml()
+{
+# This is run after every compile to generate the xml for the perl script to 
+# interpret.
+#
+# This is passed in $file $test_path $cpu_type $compiler_name
+#
+# $test_filename is the name of the file which has been compiled (param 4)
+# $test_suite_source_dir is the directory containing the file to compile
+#	(param 2)
+# $target_cpu is used to sort out paths to files, such as the xml (param 3) 
+# $comp_name dictates the options which are sent to the compiler (param 1)
+# $error is anything printed to STDOUT when compiling the program
+# $java_error is anything the compiler printed to STDERR
+# $compilation_result is whether the test was a success or not (binary exists)
+# $execution_result is the text outputted after running the compiled program
+#
+# XML should be in the following file:
+# ./testReportSuite/$compiler_name_no_slash\_$test_suite_source_dir_$target_cpu/$test_name.xml
+#
+# and format:
+# <?xml version="1.0" encoding="ISO-8859-1"?>
+# <?xml-stylesheet type="text/css" href="../reportStyle.css"?>
+# <testReport>
+#   <testName> $test_filename </testName>
+#   <testSuiteName>$test_suite_source_dir </testSuiteName>
+#   <cpuName> $target_cpu </cpuName>
+#   <osName> lin </osName>
+#   <compilerName> $comp_name </compilerName>
+#   <compilationOutput>
+#     <compilationOutputLine> $error </compilationOutputLine>
+#     ...
+#   </compilationOutput>
+#   <javaOutput>
+#     <javaOutputLine> $java_error </javaOutputLine>
+#     ...
+#   </javaOutput>
+#   <compilationResult> $compilation_result </compilationResult>
+#   <executionResult>
+#     <executionResultLine>  $exectution_printout </executionResultLine>
+#     ...
+#   </executionResult>
+# -----------------------------------------------------------------------------
+# Quirk, if the test fails, the $compilation_result should encased in 
+# <executionResultLine> tags, and contain the text "FAIL". e.g.
+# <compilationResult> 
+#   <executionResultLine> FAIL </executionResultLine>
+# </compilationResult>
+# -----------------------------------------------------------------------------
+# </testReport>
+
+	test_path_no_slash=$( echo $test_path | sed "s/\///g") # strip out any slashes in the path
+	compiler_name_no_slash=$( echo $compiler_name | sed "s/\///g")
+	file_without_extension=`echo $file | sed s/.pas//`
+	out_file=./testReportSuite/$compiler_name_no_slash\_$test_path_no_slash\_$cpu_type/$file_without_extension.xml
+
+	mkdir -p ./testReportSuite/$compiler_name_no_slash\_$test_path_no_slash\_$cpu_type/
+
+	isTab="" # change this to "\t" for nice formatting of the XML file
+
+	echo '<?xml version="1.0" encoding="ISO-8859-1"?>' > $out_file
+	echo '<?xml-stylesheet type="text/css" href="../reportStyle.css"?>' >> $out_file
+	echo '<testReport>' >> $out_file
+	echo -e $isTab'<testName>' $file '</testName>' >> $out_file
+	echo -e $isTab'<testSuiteName>' $test_path_no_slash '</testSuiteName>' >> $out_file
+	echo -e $isTab'<cpuName>' $cpu_type '</cpuName>' >> $out_file
+	echo -e $isTab'<osName> '`uname -s`' </osName>' >> $out_file
+	echo -e $isTab'<compilerName>' $compiler_name '</compilerName>' >> $out_file
+	echo -e $isTab'<compilationOutput>' >> $out_file
+	i=1
+	while [ $i -le $(cat -s ./testReportSuite/$file.error | wc -l) ]; do 
+		echo -e -n $isTab$isTab'<compilationOutputLine> ' >> $out_file
+		echo -n `cat -s ./testReportSuite/$file.error | head -n $i | tail -n 1` >> $out_file
+		echo -e '</compilationOutputLine>' >> $out_file
+		i=$[$i+1] 
+	done
+	echo -e $isTab'</compilationOutput>' >> $out_file
+	echo -e $isTab'<javaOutput>' >> $out_file
+	i=1
+	while [ $i -le $(cat -s ./testReportSuite/$file.java_error | wc -l) ]; do 
+		echo -e -n $isTab$isTab'<javaOutputLine> ' >> $out_file
+		echo -n `cat -s ./testReportSuite/$file.java_error | head -n $i | tail -n 1` >> $out_file
+		echo -e '</javaOutputLine>' >> $out_file
+		i=$[$i+1] 
+	done
+	echo -e $isTab'</javaOutput>' >> $out_file
+	if [ -f ./testReportSuite/$file.run ]; then
+		echo -e $isTab'<compilationResult> Success </compilationResult>' >> $out_file
+		echo -e $isTab'<executionResult>' >> $out_file
+		i=1
+		while [ $i -le $(cat -s ./testReportSuite/$file.run | wc -l) ]; do 
+			echo -e -n $isTab$isTab'<executionResultLine> ' >> $out_file
+			echo -n `cat -s ./testReportSuite/$file.run | head -n $i | tail -n 1` >> $out_file
+			echo -e '</executionResultLine>' >> $out_file
+			i=$[$i+1] 
+		done
+
+		echo -e $isTab'</executionResult>' >> $out_file
+	else
+		echo -e $isTab'<compilationResult>'  >> $out_file
+		echo -e  $isTab$isTab'<executionResultLine> FAIL </executionResultLine>'  >> $out_file
+		echo -e $isTab'</compilationResult>'  >> $out_file
+	fi
+	echo -e '</testReport>'  >> $out_file
+}
+
+
+run_test()
+{
+# The name of the test, used for the various echos and log
+# The path to the test (.pas/.PAS) files 
+# test_path=~/vp4sf/vectorpascalcom/tests/ACCEPT/
+
+	compiler_name=$1
+	test_path=$2
+	cpu_list=$3\ $4\ $5\ $6\ $7
+	
+
+	echo Running test on $1 
+	echo with tests $test_path
+	echo -n Preparing 
+	
+	clean $2 >>/dev/null 2> /dev/null
+	echo -n .
+# As the compiler does not handle source files which have an upper case 
+# extension (.PAS), we symlink all of those so that they have a lower case 
+# extension (.pas)
+	for file in $(ls -1 $test_path | grep .PAS); do 
+		ln -s $file $test_path/_$file.pas 2> /dev/null
+	done
+	echo -n .
+# So that we get nice percentage readouts, we first have to calculate the total
+# number of files and initialise variables
+	total=$(ls -1 $test_path/*.pas | wc -l)
+	echo .
+	current=0
+	last_print=0
+	mkdir -p ./testReportSuite/
+
+	
+	# Set up defaults for compiler choice
+	compiler=$compiler_name
+	compiler_suffix=""
+	post_compile=""
+	use_cpu_type=false
+	
+	found=false
+
+	
+	
+	# Figure out which compiler to use
+	if [ $compiler_name == "vpc" -o $compiler_name == "vp" ]; then
+		if ! [ -z $MMPCDIR ]; then
+			mmpcdir=$MMPCDIR
+		fi
+		if [ -f $mmpcdir/vp ]; then
+			found=$mmpcdir/vpc
+		elif [ -f $mmpcdir/vpc ]; then
+			ln -s $mmpcdir/vpc $mmpcdir/vp 2> /dev/null
+			found=$mmpcdir/vpc
+		fi	
+		#compiler_name=vp
+		use_cpu_type=true
+	elif [ $compiler_name == "gpc" ]; then
+		compiler_suffix=" -o $compiled_bin"
+	elif [ $compiler_name == "vpt" ]; then
+		compiler_suffix=" -NOVPWORDS"
+		if [ -f $mmpcdir/vpc ]; then
+			ln -s $mmpcdir/vpc $mmpcdir/vpt 2> /dev/null
+			found=$mmpcdir/vpt
+		else
+			echo "To use vpt, please export \$mmpcdir :"
+			echo "export mmpcdir=/path/to/mmpc"
+			exit 1
+		fi
+		use_cpu_type=true
+	elif [ $compiler_name == "tp7" ]; then
+		# Nothing to do here
+		nothing=nothing
+	elif [ compiler_name == "fpc" ]; then
+		compiler_suffix=" -o $compiled_bin"
+	fi
+	
+	
+	if [ $found == false ]; then
+		for elem in `echo $PATH | sed "s/\:/ /g"`; do 
+			if [ -f $elem/$compiler_name ]; then
+				found=$elem/$compiler_name
+				if [ `echo $elem | grep "/cygdrive"` ]; then
+					echo "Unable to use $compiler_name."
+					echo "Although it exists in $elem, Java needs a native path to it"
+					echo "e.g. c:\\path\\to\\vpc"
+					echo "To fix this, please export \$mmpcdir"
+					exit 1
+				fi
+				echo "Found $compiler_name in $elem"
+			fi
+		done
+	fi
+	if [ $found == false ]; then
+		echo "$compiler_name not found. Add it to your \$PATH with the following command:"
+		echo "export PATH=\$PATH:/path/to/$compiler_name"
+		exit 1
+	else
+		compiler=$found
+	fi
+
+	for cpu_type in $cpu_list; do
+		echo Running tests on $cpu_type, Hold CTRL+C to cancel
+		if [ $use_cpu_type == true ]; then
+			compiler_suffix="$compiler_suffix -cpu$cpu_type"
+		fi
+		echo -n 0% complete
+		current=0
+
+
+	# Perform the test on all files in the directory and dump all outputs to the 
+	# files, then go and print the pretty percentage completion
+		for file in $(ls -1 $test_path | grep .pas); do
+			echo 
+			echo $file
+			echo > ./testReportSuite/$file.error
+			echo > ./testReportSuite/$file.java_error
+			
+
+			compiled_bin="`echo $test_path/$file | sed s/.pas//`"
+
+			# compile the source
+			$compiler $test_path/$file $compiler_suffix > ./testReportSuite/$file.error 2> ./testReportSuite/$file.java_error
+			
+			$post_compile
+			
+			
+			
+			# run the compiled file
+			if [ -f $compiled_bin ]; then
+					bash -c $compiled_bin > ./testReportSuite/$file.run 2> ./testReportSuite/$file.run
+					# delete binary file so it is not used by the next cpu in the test sequence
+					rm $compiled_bin
+			fi 
+			# sleep 0.1
+			current=$[$current+1]
+	
+			generate_xml $file $test_path $cpu_type $compiler_name
+	
+			if [ $last_print -ne $[$current*100/ $total] ]; then
+				backspaces_printed=0
+				# Figure out how many backspaces to print to completely remove the 
+				# previously printed percentage
+				while [ $backspaces_printed -le $[ $(echo $last_print | wc -m) + 8 ]  ] ; do
+					echo -e '\b\c'
+					backspaces_printed=$[$backspaces_printed+1]
+				done
+				echo -n $[$current*100/ $total]% complete 
+				last_print=$[$current*100/ $total]
+			fi
+		done
+		echo
+	done
+	echo Finishing
+	
+# Call the perl script to build the page
+	perl buildReport.pl
+# Remove all of the symlinks we created earlier
+	clean $test_path
+}
+
+clean()
+{
+# Clear up the dump directory
+	rm ./testReportSuite/*.error
+	rm ./testReportSuite/*.java_error
+	rm ./testReportSuite/*.run
+# All the symlinks we made to compensate for no uppercase extension on files
+	rm $test_path/_*.pas 
+# Remove any broken symlinks
+	rm $test_path/__*
+}
+
+print_help() # Displays help text
+{
+	echo 'Usage: testvp [COMPILER] [TEST_DIRECTORY] [CPU_TYPE(S)...]'
+	echo -e "\t" "-h, --help Displays this text"
+	echo -e "\t" "-v, --version Displays version information\n"	
+}
+
+print_version() # Displays version information
+{
+	echo 'Version 0.1 of the (Bash) Vector Pascal Compiler Test Suite'
+}
+
+if [ $# -le 2 ]; then
+	if [ $1 = "--help" -o $1 = "-h" ]; then
+		print_help
+	elif [ $1 = "--version" -o $1 = "-v" ]; then
+		print_version
+	else
+		echo Test requires at least 3 parameters
+		print_help
+	fi
+else
+	run_test $1 $2 $3 $4 $5 $6 $7
+fi
